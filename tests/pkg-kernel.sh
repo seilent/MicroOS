@@ -33,4 +33,5 @@ done
 
 "$here/pkg-kernel/dts-drivers.sh" "$dtbs" "$kdir/config"
 "$here/pkg-kernel/gpu-opp.sh" "$dtbs" >/dev/null
+"$here/pkg-kernel/fan-trips.sh" "$dtbs"
 echo "pkg-kernel: $(basename "$rpm") ok"

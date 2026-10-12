@@ -130,7 +130,7 @@
 
 	fan: pwm-fan {
 		compatible = "pwm-fan";
-		cooling-levels = <0 100 130 160 190 210 230 245 255>;
+		cooling-levels = <0 26 45 83 121 159 255>;
 		#cooling-cells = <2>;
 		pwms = <&pm8150l_lpg 4 40000>;
 		interrupt-parent = <&tlmm>;
@@ -257,6 +257,296 @@
 		port {
 			sbu_mux_usb_con: endpoint {
 				remote-endpoint = <&pm8150b_typec_sbu_out>;
+			};
+		};
+	};
+
+	thermal-zones {
+		cluster0-thermal {
+			trips {
+				c0_fan0: fan-0 {
+					temperature = <65000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				c0_fan1: fan-1 {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				c0_fan2: fan-2 {
+					temperature = <77500>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				c0_fan3: fan-3 {
+					temperature = <80000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				c0_fan4: fan-4 {
+					temperature = <82500>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				c0_fan5: fan-5 {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+			};
+
+			cooling-maps {
+				map-fan0 {
+					trip = <&c0_fan0>;
+					cooling-device = <&fan 1 1>;
+				};
+
+				map-fan1 {
+					trip = <&c0_fan1>;
+					cooling-device = <&fan 2 2>;
+				};
+
+				map-fan2 {
+					trip = <&c0_fan2>;
+					cooling-device = <&fan 3 3>;
+				};
+
+				map-fan3 {
+					trip = <&c0_fan3>;
+					cooling-device = <&fan 4 4>;
+				};
+
+				map-fan4 {
+					trip = <&c0_fan4>;
+					cooling-device = <&fan 5 5>;
+				};
+
+				map-fan5 {
+					trip = <&c0_fan5>;
+					cooling-device = <&fan 6 6>;
+				};
+			};
+		};
+
+		cluster1-thermal {
+			trips {
+				c1_fan0: fan-0 {
+					temperature = <65000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				c1_fan1: fan-1 {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				c1_fan2: fan-2 {
+					temperature = <77500>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				c1_fan3: fan-3 {
+					temperature = <80000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				c1_fan4: fan-4 {
+					temperature = <82500>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				c1_fan5: fan-5 {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+			};
+
+			cooling-maps {
+				map-fan0 {
+					trip = <&c1_fan0>;
+					cooling-device = <&fan 1 1>;
+				};
+
+				map-fan1 {
+					trip = <&c1_fan1>;
+					cooling-device = <&fan 2 2>;
+				};
+
+				map-fan2 {
+					trip = <&c1_fan2>;
+					cooling-device = <&fan 3 3>;
+				};
+
+				map-fan3 {
+					trip = <&c1_fan3>;
+					cooling-device = <&fan 4 4>;
+				};
+
+				map-fan4 {
+					trip = <&c1_fan4>;
+					cooling-device = <&fan 5 5>;
+				};
+
+				map-fan5 {
+					trip = <&c1_fan5>;
+					cooling-device = <&fan 6 6>;
+				};
+			};
+		};
+
+		gpu-top-thermal {
+			trips {
+				gt_fan0: fan-0 {
+					temperature = <65000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				gt_fan1: fan-1 {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				gt_fan2: fan-2 {
+					temperature = <77500>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				gt_fan3: fan-3 {
+					temperature = <80000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				gt_fan4: fan-4 {
+					temperature = <82500>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				gt_fan5: fan-5 {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+			};
+
+			cooling-maps {
+				map-fan0 {
+					trip = <&gt_fan0>;
+					cooling-device = <&fan 1 1>;
+				};
+
+				map-fan1 {
+					trip = <&gt_fan1>;
+					cooling-device = <&fan 2 2>;
+				};
+
+				map-fan2 {
+					trip = <&gt_fan2>;
+					cooling-device = <&fan 3 3>;
+				};
+
+				map-fan3 {
+					trip = <&gt_fan3>;
+					cooling-device = <&fan 4 4>;
+				};
+
+				map-fan4 {
+					trip = <&gt_fan4>;
+					cooling-device = <&fan 5 5>;
+				};
+
+				map-fan5 {
+					trip = <&gt_fan5>;
+					cooling-device = <&fan 6 6>;
+				};
+			};
+		};
+
+		gpu-bottom-thermal {
+			trips {
+				gb_fan0: fan-0 {
+					temperature = <65000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				gb_fan1: fan-1 {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				gb_fan2: fan-2 {
+					temperature = <77500>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				gb_fan3: fan-3 {
+					temperature = <80000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				gb_fan4: fan-4 {
+					temperature = <82500>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+
+				gb_fan5: fan-5 {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "active";
+				};
+			};
+
+			cooling-maps {
+				map-fan0 {
+					trip = <&gb_fan0>;
+					cooling-device = <&fan 1 1>;
+				};
+
+				map-fan1 {
+					trip = <&gb_fan1>;
+					cooling-device = <&fan 2 2>;
+				};
+
+				map-fan2 {
+					trip = <&gb_fan2>;
+					cooling-device = <&fan 3 3>;
+				};
+
+				map-fan3 {
+					trip = <&gb_fan3>;
+					cooling-device = <&fan 4 4>;
+				};
+
+				map-fan4 {
+					trip = <&gb_fan4>;
+					cooling-device = <&fan 5 5>;
+				};
+
+				map-fan5 {
+					trip = <&gb_fan5>;
+					cooling-device = <&fan 6 6>;
+				};
 			};
 		};
 	};
