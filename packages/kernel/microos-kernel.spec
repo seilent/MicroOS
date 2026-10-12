@@ -4,7 +4,7 @@
 
 Name:           microos-kernel
 Version:        %{kversion}
-Release:        1.microos
+Release:        1%{?dist}.microos
 Summary:        Linux kernel for the AYANEO Pocket MICRO 2
 License:        GPL-2.0-only WITH Linux-syscall-note
 URL:            https://github.com/seilent/MicroOS

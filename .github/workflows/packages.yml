@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [gamescope-session]
+        package: [gamescope-session, kernel]
     env:
       PKG: ${{ matrix.package }}
       REPO: ghcr.io/seilent/microos/pkg/${{ matrix.package }}
@@ -101,12 +101,31 @@ jobs:
             exit 1
           fi
 
+      - name: Wait for the build PC
+        id: local
+        if: steps.check.outputs.state == 'missing' && matrix.package == 'kernel' && github.event_name != 'workflow_dispatch'
+        env:
+          HASH: ${{ steps.hash.outputs.hash }}
+        run: |
+          echo "::notice::$REPO:$HASH comes from the build PC (just pkg-push kernel); run this workflow by hand to build it here"
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+
+      - name: Restore ccache
+        if: steps.check.outputs.state == 'missing' && matrix.package == 'kernel' && steps.local.outputs.skip != 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.package }}-${{ steps.hash.outputs.hash }}
+          restore-keys: ccache-${{ matrix.package }}-
+
       - name: Build
-        if: steps.check.outputs.state == 'missing'
-        run: just pkg "$PKG"
+        if: steps.check.outputs.state == 'missing' && steps.local.outputs.skip != 'true'
+        env:
+          CACHE: ${{ matrix.package == 'kernel' && format('{0}/ccache', runner.temp) || '' }}
+        run: PKG_CCACHE="$CACHE" just pkg "$PKG"
 
       - name: Push, sign, verify
-        if: steps.check.outputs.state == 'missing'
+        if: steps.check.outputs.state == 'missing' && steps.local.outputs.skip != 'true'
         env:
           HASH: ${{ steps.hash.outputs.hash }}
           GH_ACTOR: ${{ github.actor }}

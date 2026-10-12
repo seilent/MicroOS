@@ -12,7 +12,8 @@ cp "$root/build/pkg-hash.sh" "$tmp/build/"
 echo base > "$tmp/build/pkg.Containerfile"
 echo one > "$tmp/packages/a/build.sh"
 echo one > "$tmp/packages/b/build.sh"
-pkghash() { "$tmp/build/pkg-hash.sh" "$1"; }
+git -C "$tmp" init -q
+pkghash() { git -C "$tmp" add -A && "$tmp/build/pkg-hash.sh" "$1"; }
 
 h=$(pkghash a)
 [[ $h =~ ^[0-9a-f]{16}$ ]] || fail "format: $h"
@@ -46,6 +47,12 @@ echo test > "$tmp/tests/pkg-a.sh"
 rm "$tmp/tests/pkg-a.sh"
 
 [[ $(pkghash a) == "$h" ]] || fail "not restored"
+echo scratch > "$tmp/packages/a/untracked"
+git -C "$tmp" add -A
+git -C "$tmp" rm -q --cached "$tmp/packages/a/untracked"
+[[ $("$tmp/build/pkg-hash.sh" a) == "$h" ]] || fail "counts an untracked file"
+rm "$tmp/packages/a/untracked"
+
 pkghash missing 2>/dev/null && fail "accepts a missing package"
 pkghash ../build 2>/dev/null && fail "accepts a path"
 
