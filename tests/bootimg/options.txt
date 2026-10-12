@@ -1,0 +1,1 @@
+root=UUID=6f1c2b4e-8d3a-4f5e-9b7c-1a2d3e4f5a6b rw boot=UUID=2a3b4c5d-6e7f-4a8b-9c0d-1e2f3a4b5c6d rootflags=subvol=root

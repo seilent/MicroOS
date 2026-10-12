@@ -1,0 +1,13 @@
+[Unit]
+Description=Import provisioning files from the ESP
+After=local-fs.target
+Before=sshd.service NetworkManager.service
+RequiresMountsFor=/boot/efi
+ConditionDirectoryNotEmpty=/boot/efi/microos
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-provision
+
+[Install]
+WantedBy=multi-user.target

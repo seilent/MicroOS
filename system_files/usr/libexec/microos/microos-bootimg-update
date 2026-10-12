@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-bootimg-update
+die() { echo "$me: $*" >&2; exit 1; }
+
+esp=${MICROOS_ESP:-/boot/efi}
+boot=${MICROOS_BOOT:-/boot}
+sysroot=${MICROOS_SYSROOT:-/sysroot}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+
+check_esp() {
+  local line fstype opts src sys espdisk sysdisk
+  line=$(findmnt -nr -o FSTYPE,OPTIONS,SOURCE -M "$esp" | tail -1) || die "$esp is not a mount"
+  read -r fstype opts src <<< "$line"
+  [[ $fstype == vfat ]] || die "$esp is $fstype, not vfat"
+  [[ ,$opts, == *,rw,* ]] || die "$esp is not mounted rw"
+  sys=$(findmnt -nvr -o SOURCE -M "$sysroot" | tail -1) || die "$sysroot is not a mount"
+  sys=${sys%%\[*}
+  espdisk=$(lsblk -no PKNAME "$src") || die "no parent disk for $src"
+  sysdisk=$(lsblk -no PKNAME "$sys") || die "no parent disk for $sys"
+  [[ -n $espdisk && $espdisk == "$sysdisk" ]] || die "$esp ($src) and $sysroot ($sys) are not on the same disk"
+}
+
+bls() {
+  sed -n "s/^$1[[:space:]]\+//p" "$2" | head -1
+}
+
+case ${1:-} in
+  --check) check_esp; exit 0 ;;
+  "") ;;
+  *) die "usage: $me [--check]" ;;
+esac
+
+install -d -m 0755 "$rundir"
+exec 9> "$rundir/bootimg.lock"
+flock -w 60 9 || die "timed out waiting for $rundir/bootimg.lock"
+
+check_esp
+
+remap=0
+if [[ -e $rundir/remapped ]]; then
+  echo "$me: this boot was remapped: $(tr '\n' ' ' < "$rundir/remapped")"
+  [[ -e $rundir/remap-baked ]] || remap=1
+fi
+
+entry=$(
+  for f in "$boot"/loader/entries/*.conf; do
+    [[ -f $f ]] || continue
+    v=$(bls version "$f")
+    if [[ $v =~ ^[0-9]+$ ]]; then
+      printf '%s\t%s\n' "$v" "$f"
+    fi
+  done | sort -t$'\t' -k1,1nr | head -1 | cut -f2
+)
+[[ -n $entry ]] || die "no BLS entry in $boot/loader/entries"
+
+linux=$(bls linux "$entry")
+initrd=$(bls initrd "$entry")
+fdtdir=$(bls fdtdir "$entry")
+options=$(bls options "$entry")
+[[ -n $linux && -n $initrd && -n $fdtdir ]] || die "$entry lacks linux, initrd or fdtdir"
+
+bootlink=""
+set -f
+for w in $options; do
+  if [[ $w == ostree=* ]]; then
+    bootlink=${w#ostree=}
+    break
+  fi
+done
+set +f
+[[ -n $bootlink ]] || die "no ostree= in $entry"
+droot=$(realpath -e "$sysroot$bootlink") || die "$bootlink does not resolve under $sysroot"
+
+conf=$droot/usr/lib/microos/bootimg.conf
+[[ -r $conf ]] || die "missing $conf"
+. "$conf"
+
+build=$droot/usr/libexec/microos/microos-bootimg-build
+args=(
+  --root "$droot"
+  --kernel "$boot${linux#/boot}"
+  --initrd "$boot${initrd#/boot}"
+  --dtb "$boot${fdtdir#/boot}/$MICROOS_DTB"
+  --options "$options"
+  --sysroot "$sysroot"
+)
+
+rm -f "$esp/KERNEL.TMP"
+id=$("$build" "${args[@]}" --id)
+stamp=""
+if [[ -f $esp/.microos-bootimg.id ]]; then
+  stamp=$(< "$esp/.microos-bootimg.id")
+fi
+if [[ -f $esp/KERNEL && $stamp == "$id" ]] && (( ! remap )); then
+  echo "$me: skip, $esp/KERNEL already holds ${droot##*/}"
+  exit 0
+fi
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"; rm -f "$esp/KERNEL.TMP"' EXIT
+built=$("$build" "${args[@]}" --out "$work/KERNEL")
+[[ $built == "$id" ]] || die "id changed during the bake"
+
+need=$(( $(stat -c %s "$work/KERNEL") + 4194304 ))
+read -r blocks bsize <<< "$(stat -f -c '%a %S' "$esp")"
+[[ $blocks =~ ^[0-9]+$ && $bsize =~ ^[0-9]+$ ]] || die "cannot read free space on $esp"
+(( blocks * bsize >= need )) || die "$esp needs $need bytes free, has $((blocks * bsize))"
+
+rm -f "$esp/.microos-bootimg.id"
+cp "$work/KERNEL" "$esp/KERNEL.TMP"
+sync "$esp/KERNEL.TMP"
+mv -f "$esp/KERNEL.TMP" "$esp/KERNEL"
+sync -f "$esp"
+echo "$id" > "$esp/.microos-bootimg.id"
+sync -f "$esp"
+if (( remap )); then
+  : > "$rundir/remap-baked"
+fi
+echo "$me: baked ${droot##*/} into $esp/KERNEL"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+dev=${!#}
+dev=${dev#/dev/}
+[[ $dev == sd?[0-9]* ]] || exit 1
+echo "${dev%%[0-9]*}"

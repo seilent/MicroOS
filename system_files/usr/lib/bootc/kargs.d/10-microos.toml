@@ -1,0 +1,7 @@
+match-architectures = ["aarch64"]
+kargs = [
+  "console=tty0",
+  "fw_devlink.strict=1",
+  "pcie_ports=compat",
+  "rootflags=noatime,compress=zstd:1",
+]

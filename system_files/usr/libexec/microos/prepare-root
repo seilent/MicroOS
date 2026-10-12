@@ -1,0 +1,68 @@
+#!/bin/sh
+
+prep=${MICROOS_PREPARE_ROOT:-/usr/lib/ostree/ostree-prepare-root}
+sysroot=${MICROOS_SYSROOT:-/sysroot}
+cmdfile=${MICROOS_CMDLINE:-/proc/cmdline}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+kmsg=${MICROOS_KMSG:-/dev/kmsg}
+
+unchanged() {
+	exec "$prep" "$sysroot"
+}
+
+cmdline=
+read -r cmdline < "$cmdfile" 2>/dev/null
+
+set -f
+ostree=
+deploy=
+for w in $cmdline; do
+	case $w in
+	ostree=*) ostree=${w#ostree=} ;;
+	microos.deploy=*) deploy=${w#microos.deploy=} ;;
+	esac
+done
+set +f
+
+if [ -z "$deploy" ] || [ -z "$ostree" ]; then
+	unchanged
+fi
+case $deploy in
+*/* | . | ..) unchanged ;;
+esac
+
+cur=$(realpath -e "$sysroot$ostree" 2>/dev/null)
+[ "${cur##*/}" = "$deploy" ] && unchanged
+
+link=
+real=
+for l in "$sysroot"/ostree/boot.0/*/*/* "$sysroot"/ostree/boot.1/*/*/*; do
+	[ -L "$l" ] || continue
+	r=$(realpath -e "$l" 2>/dev/null) || continue
+	if [ -z "$r" ] || [ "${r##*/}" != "$deploy" ]; then
+		continue
+	fi
+	if [ -z "$real" ]; then
+		link=$l
+		real=$r
+	elif [ "$r" != "$real" ]; then
+		unchanged
+	fi
+done
+[ -n "$link" ] || unchanged
+
+new=${link#"$sysroot"}
+args=
+set -f
+for w in $cmdline; do
+	case $w in
+	ostree=*) w=ostree=$new ;;
+	esac
+	args=${args:+$args }$w
+done
+set +f
+
+(mkdir -p "$rundir" && printf '%s %s\n' "$ostree" "$new" > "$rundir/remapped") 2>/dev/null
+(printf 'microos: ostree=%s names no deployment %s, booting %s\n' "$ostree" "$deploy" "$new" > "$kmsg") 2>/dev/null
+
+exec "$prep" "$sysroot" "$args"

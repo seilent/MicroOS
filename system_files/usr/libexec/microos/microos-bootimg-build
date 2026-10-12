@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-bootimg-build
+die() { echo "$me: $*" >&2; exit 1; }
+usage="usage: $me --root <deployment root> --kernel <vmlinuz> --initrd <img> --dtb <dtb> --options <options> --sysroot <sysroot> --out <file> [--id]"
+
+root="" kernel="" initrd="" dtb="" options="" sysroot="" out="" idonly=0
+while (( $# )); do
+  case $1 in
+    --root) root=${2:?$usage}; shift 2 ;;
+    --kernel) kernel=${2:?$usage}; shift 2 ;;
+    --initrd) initrd=${2:?$usage}; shift 2 ;;
+    --dtb) dtb=${2:?$usage}; shift 2 ;;
+    --options) options=${2?$usage}; shift 2 ;;
+    --sysroot) sysroot=${2:?$usage}; shift 2 ;;
+    --out) out=${2:?$usage}; shift 2 ;;
+    --id) idonly=1; shift ;;
+    *) die "$usage" ;;
+  esac
+done
+[[ -n $root && -n $kernel && -n $initrd && -n $dtb && -n $sysroot ]] || die "$usage"
+(( idonly )) || [[ -n $out ]] || die "$usage"
+
+conf=$root/usr/lib/microos/bootimg.conf
+[[ -r $conf ]] || die "missing $conf"
+. "$conf"
+
+vfile=$root/usr/lib/microos/version
+[[ -r $vfile ]] || die "missing $vfile"
+version=$(sed -n 's/^IMAGE_VERSION=//p' "$vfile" | head -1 | tr -d "\"'")
+[[ $version =~ ^([0-9]{4})([0-9]{2})[0-9]{2}\.[0-9a-z]+$ ]] || die "bad IMAGE_VERSION '$version' in $vfile"
+patch=${BASH_REMATCH[1]}-${BASH_REMATCH[2]}
+
+bootlink=""
+set -f
+for w in $options; do
+  if [[ $w == ostree=* ]]; then
+    bootlink=${w#ostree=}
+    break
+  fi
+done
+set +f
+[[ -n $bootlink ]] || die "no ostree= in the options"
+target=$(realpath -e "$sysroot$bootlink") || die "$bootlink does not resolve under $sysroot"
+deploy=${target##*/}
+[[ $deploy =~ ^[0-9a-f]{64}\.[0-9]+$ ]] || die "$bootlink resolves to $target, not a deployment"
+
+cmdline=$(microos_cmdline "$options" "$deploy") || die "cannot build the cmdline"
+id=$(microos_bootimg_id "$cmdline" "$kernel" "$initrd" "$dtb" "$patch") || die "cannot compute the id"
+if (( idonly )); then
+  echo "$id"
+  exit 0
+fi
+
+[[ $(od -An -tx1 -j56 -N4 "$kernel" | tr -d ' \n') == 41524d64 ]] || die "$kernel is not a raw arm64 Image"
+[[ $(od -An -tx1 -N4 "$dtb" | tr -d ' \n') == d00dfeed ]] || die "$dtb is not a DTB"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+gzip -n -9 -c "$kernel" > "$work/kernel"
+cat "$dtb" >> "$work/kernel"
+
+read -ra args <<< "$MICROOS_BOOTIMG_ARGS"
+"${MKBOOTIMG:-/usr/bin/mkbootimg}" "${args[@]}" --os_patch_level "$patch" \
+  --kernel "$work/kernel" --ramdisk "$initrd" --cmdline "$cmdline" --output "$work/KERNEL" >&2
+mv -f "$work/KERNEL" "$out"
+echo "$id"

@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-provision
+esp=${MICROOS_ESP:-/boot/efi}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+nmdir=${MICROOS_NMDIR:-/var/lib/NetworkManager/system-connections}
+home=${MICROOS_HOME:-/var/home/micro}
+user=micro
+as=(runuser -u "$user" --)
+src=$esp/microos
+
+install -d -m 0755 "$rundir" || exit 1
+exec 9>"$rundir/bootimg.lock"
+flock -w 60 9 || { echo "$me: $rundir/bootimg.lock is busy" >&2; exit 1; }
+
+rc=0
+done_with() {
+  shred -u -n 1 -z "$1" 2>/dev/null || rm -f "$1"
+  echo "$me: imported ${1##*/}"
+}
+failed() {
+  echo "$me: ${1##*/} not imported, kept on the ESP" >&2
+  rc=1
+}
+
+for f in "$src"/*.nmconnection; do
+  [[ -f $f ]] || continue
+  if install -d -m 0700 "$nmdir" && install -m 0600 -o root -g root "$f" "$nmdir/${f##*/}"; then
+    done_with "$f"
+  else
+    failed "$f"
+  fi
+done
+
+f=$src/authorized_keys
+if [[ -f $f ]]; then
+  ssh=$home/.ssh
+  t=
+  if [[ -L $ssh || ( -e $ssh && ! -d $ssh ) ]]; then
+    echo "$me: $ssh is not a directory" >&2
+    failed "$f"
+  elif { [[ -d $home ]] || install -d -m 0700 -o "$user" -g "$user" "$home"; } \
+    && "${as[@]}" mkdir -p -m 0700 "$ssh" && "${as[@]}" chmod 0700 "$ssh" \
+    && t=$("${as[@]}" mktemp "$ssh/.authorized_keys.XXXXXX") \
+    && "${as[@]}" tee "$t" < "$f" >/dev/null \
+    && "${as[@]}" mv -f "$t" "$ssh/authorized_keys"; then
+    done_with "$f"
+  else
+    [[ -z $t ]] || "${as[@]}" rm -f "$t"
+    failed "$f"
+  fi
+fi
+
+f=$src/password
+if [[ -f $f ]]; then
+  pw=
+  IFS= read -r pw < "$f" || [[ -n $pw ]]
+  pw=${pw%$'\r'}
+  if [[ -n $pw ]] && printf '%s:%s\n' "$user" "$pw" | chpasswd; then
+    done_with "$f"
+  else
+    failed "$f"
+  fi
+fi
+
+exit "$rc"
