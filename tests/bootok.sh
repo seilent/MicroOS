@@ -307,6 +307,17 @@ finalize
 real || fail "default run after a killed first boot ok: $(cat "$tmp/uout")"
 bak_ok || fail "KERNEL.BAK names a deployment with no bootlink after a killed first boot ok"
 [[ -e $sys/ostree/deploy/default/deploy/$P ]] && fail "fixture finalize kept the unpinned P"
+echo "quiet microos.deploy=$B" > "$tmp/cmdline"
+rm -f "$MICROOS_ESP/.microos-bootimg.id"
+MICROOS_BOOT=$boot MICROOS_SYSROOT=$sys MICROOS_CMDLINE=$tmp/cmdline "$bootlog" run finalize -- "$update" > /dev/null 2>&1 ||
+  fail "bootlog run of the bake"
+[[ $(tail -n 1 "$boot/microos/shutdown.log") == *" step=finalize rc=0 booted=$B microos-bootimg-update: KERNEL $B baked, KERNEL.BAK $B kept" ]] ||
+  fail "finalize log line: $(tail -n 1 "$boot/microos/shutdown.log")"
+out=$(MICROOS_BOOT=$boot MICROOS_SYSROOT=$sys MICROOS_CMDLINE=$tmp/cmdline "$bootlog" run bak -- "$update" --bak "$B" 2> /dev/null) ||
+  fail "bootlog run of --bak"
+[[ $(grep '^bak ' <<< "$out") == "bak $B $(cat "$MICROOS_ESP/.microos-bootimg-bak.id")" ]] || fail "--bak line through bootlog: $out"
+[[ $(tail -n 1 "$boot/microos/shutdown.log") == *" step=bak rc=0 booted=$B microos-bootimg-update: KERNEL $B kept, KERNEL.BAK $B kept" ]] ||
+  fail "--bak log line: $(tail -n 1 "$boot/microos/shutdown.log")"
 
 export MICROOS_BOOT=$tmp/bootfs MICROOS_CMDLINE=$tmp/cmdline MICROOS_BOOTID=$tmp/bootid
 log=$MICROOS_BOOT/microos/shutdown.log

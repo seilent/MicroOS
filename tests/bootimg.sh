@@ -255,7 +255,8 @@ resolves() { [[ $(realpath -e "$sys$1" 2>/dev/null) == */"$2" ]]; }
 
 cp "$esp/KERNEL" "$tmp/kb"
 st "$A b" "$B p"
-out=$("$update" --bak "$B" 2>/dev/null) || fail "--bak of a pinned deployment failed"
+out=$("$update" --bak "$B" 2>"$tmp/err") || fail "--bak of a pinned deployment failed"
+[[ $(tail -n 1 "$tmp/err") == "microos-bootimg-update: KERNEL $B kept, KERNEL.BAK $B baked" ]] || fail "--bak summary: $(tail -n 1 "$tmp/err")"
 [[ $(tail -n 1 <<< "$out") == "bak $B $(bid "$B" "$opts_b")" ]] || fail "--bak last line: $out"
 [[ $(deploy_of "$esp/KERNEL.BAK") == "$B" ]] || fail "--bak KERNEL.BAK does not name $B"
 [[ $(bakstamp) == "$(bid "$B" "$opts_b")" ]] || fail "--bak stamp is not the bake id"
@@ -279,17 +280,20 @@ out=$(up) || fail "default run with confirmed failed: $out"
 [[ $(deploy_of "$esp/KERNEL") == "$B" ]] || fail "KERNEL is not the highest version entry"
 [[ $(deploy_of "$esp/KERNEL.BAK") == "$A" ]] || fail "KERNEL.BAK is not confirmed"
 [[ $(bakstamp) == "$(bid "$A" "$opts_a")" ]] || fail "BAK stamp after the default run"
+[[ $(tail -n 1 <<< "$out") == "microos-bootimg-update: KERNEL $B baked, KERNEL.BAK $A baked" ]] || fail "baked summary: $(tail -n 1 <<< "$out")"
 kb=$(stat -c '%i %Y' "$esp/KERNEL")
 bb=$(stat -c '%i %Y' "$esp/KERNEL.BAK")
 sleep 1
 out=$(up) || fail "second default run failed: $out"
 [[ $(grep -c "skip, " <<< "$out") == 2 ]] || fail "second default run did not skip both: $out"
+[[ $(tail -n 1 <<< "$out") == "microos-bootimg-update: KERNEL $B kept, KERNEL.BAK $A kept" ]] || fail "kept summary: $(tail -n 1 <<< "$out")"
 [[ $(stat -c '%i %Y' "$esp/KERNEL") == "$kb" && $(stat -c '%i %Y' "$esp/KERNEL.BAK") == "$bb" ]] || fail "second default run rewrote an image"
 
 rm -f "$MICROOS_STATEDIR/confirmed" "$esp/KERNEL.BAK" "$esp/.microos-bootimg-bak.id"
 st "$A b" "$B"
-up >/dev/null || fail "default run with no source failed"
+out=$(up) || fail "default run with no source failed"
 [[ ! -e $esp/KERNEL.BAK ]] || fail "KERNEL.BAK created with no confirmed and no pin"
+[[ $(tail -n 1 <<< "$out") == "microos-bootimg-update: KERNEL $B kept, KERNEL.BAK absent" ]] || fail "absent summary: $(tail -n 1 <<< "$out")"
 
 echo "$B" > "$MICROOS_STATEDIR/confirmed"
 printf '%s\n' "$B" "$A" "$D" > "$MICROOS_STATEDIR/boot-ok-pins"
@@ -322,6 +326,7 @@ rm -f "$esp/.microos-bootimg.id"
 out=$(up) || fail "default run with a dead confirmed failed: $out"
 [[ ! -e $esp/KERNEL.BAK && ! -e $esp/.microos-bootimg-bak.id ]] || fail "dead KERNEL.BAK kept"
 [[ $out == *"removed $esp/KERNEL.BAK"* ]] || fail "dead KERNEL.BAK removal not printed: $out"
+[[ $(tail -n 1 <<< "$out") == "microos-bootimg-update: KERNEL $B baked, KERNEL.BAK $D removed" ]] || fail "removed summary: $(tail -n 1 <<< "$out")"
 [[ $(deploy_of "$esp/KERNEL") == "$B" && $(kstamp) == "$(bid "$B" "$opts_b")" ]] || fail "KERNEL not baked next to a dead KERNEL.BAK"
 
 rm -f "$MICROOS_STATEDIR/confirmed"
@@ -358,7 +363,8 @@ same "$esp/KERNEL.BAK" "$tmp/baka" || fail "KERNEL.BAK changed on a failed renam
 same "$esp/KERNEL" "$tmp/kcur" || fail "KERNEL changed by a failed BAK rename"
 [[ $(kstamp) == "$(bid "$B" "$opts_b")" ]] || fail "KERNEL stamp lost by a failed BAK rename"
 rm -f "$esp/.microos-bootimg.id"
-FAKE_MV_FAIL=1 up >/dev/null && fail "update ignored a failed KERNEL rename"
+out=$(FAKE_MV_FAIL=1 up) && fail "update ignored a failed KERNEL rename"
+[[ $(tail -n 1 <<< "$out") == "microos-bootimg-update: KERNEL $B kept (bake failed), KERNEL.BAK $B baked" ]] || fail "failed summary: $(tail -n 1 <<< "$out")"
 [[ $(deploy_of "$esp/KERNEL.BAK") == "$B" && $(bakstamp) == "$(bid "$B" "$opts_b")" ]] || fail "BAK not baked after a failed KERNEL bake"
 up >/dev/null || fail "KERNEL rebake failed"
 
@@ -415,6 +421,7 @@ holder=$!
 sleep 0.5
 out=$(up) && fail "update ran past a 70 s lock holder"
 [[ $out == *"timed out waiting for $run/bootimg.lock"* ]] || fail "lock timeout message: $out"
+[[ $(tail -n 1 <<< "$out") == "microos-bootimg-update: KERNEL $(deploy_of "$tmp/k70") kept, KERNEL.BAK $(deploy_of "$tmp/b70") kept" ]] || fail "lock timeout summary: $(tail -n 1 <<< "$out")"
 { same "$esp/KERNEL" "$tmp/k70" && same "$esp/KERNEL.BAK" "$tmp/b70"; } || fail "lock timeout changed an image"
 [[ ! -e $esp/.microos-bootimg.id && ! -e $esp/.microos-bootimg-bak.id ]] || fail "lock timeout wrote a stamp"
 kill "$holder" 2>/dev/null || true

@@ -96,6 +96,7 @@ bake() {
   fi
   if [[ -f $esp/$target && $old == "$id" ]] && (( ! force )); then
     baked=$id
+    result=kept
     say "skip, $esp/$target already holds ${droot##*/}"
     return 0
   fi
@@ -116,19 +117,43 @@ bake() {
   fi
   { echo "$id" > "$esp/$stamp" && sync -f "$esp"; } || { say "cannot write $esp/$stamp"; return 1; }
   baked=$id
+  result=baked
   say "baked ${droot##*/} into $esp/$target"
 }
 
-dead_bak() {
-  local f=$esp/KERNEL.BAK name="" w link t seen=" " booted
-  [[ -f $f ]] || return 0
+deploy_in() {
+  local w name=""
+  local -
   set -f
-  for w in $(head -c 576 "$f" | tail -c 512 | tr -d '\0'); do
+  [[ -f $1 ]] || return 1
+  for w in $(head -c 576 "$1" | tail -c 512 | tr -d '\0'); do
     if [[ $w == microos.deploy=* ]]; then
       name=${w#microos.deploy=}
     fi
   done
-  set +f
+  echo "$name"
+}
+
+summary() {
+  local k b
+  if k=$(deploy_in "$esp/KERNEL"); then
+    k="KERNEL ${k:-unknown} $kstate"
+  else
+    k="KERNEL absent"
+  fi
+  if [[ $bstate == removed ]]; then
+    b="KERNEL.BAK $removed removed"
+  elif b=$(deploy_in "$esp/KERNEL.BAK"); then
+    b="KERNEL.BAK ${b:-unknown} $bstate"
+  else
+    b="KERNEL.BAK absent"
+  fi
+  say "$k, $b"
+}
+
+dead_bak() {
+  local f=$esp/KERNEL.BAK name link t seen=" " booted
+  name=$(deploy_in "$f") || return 0
   [[ -n $name ]] || return 0
   booted=$(jq -r '.deployments[] | select(.booted) | "\(.checksum).\(.serial)"' <<< "$status" 2> /dev/null) || booted=""
   for link in "$sysroot"/ostree/boot.{0,1}/*/*/*; do
@@ -142,6 +167,8 @@ dead_bak() {
   [[ $seen != *" $name "* ]] || return 0
   rm -f "$f" "$esp/.microos-bootimg-bak.id"
   sync -f "$esp"
+  bstate=removed
+  removed=$name
   say "removed $f, it names $name, which no bootlink resolves"
 }
 
@@ -171,9 +198,11 @@ bak_default() {
     return 0
   fi
   if ! bake KERNEL.BAK KBAK.TMP .microos-bootimg-bak.id "$(entry_for "$src")" 0; then
+    bstate="kept (bake failed)"
     dead_bak
     return 1
   fi
+  bstate=$result
 }
 
 mode=default
@@ -189,6 +218,13 @@ case ${1:-} in
   *) die "$usage" ;;
 esac
 
+kstate=kept
+bstate=kept
+removed=""
+work=""
+trap 'summary' EXIT
+trap 'exit 143' TERM
+
 install -d -m 0755 "$rundir"
 exec 9> "$rundir/bootimg.lock"
 flock -w 60 9 || die "timed out waiting for $rundir/bootimg.lock"
@@ -196,8 +232,7 @@ flock -w 60 9 || die "timed out waiting for $rundir/bootimg.lock"
 check_esp
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"; rm -f "$esp/KERNEL.TMP" "$esp/KBAK.TMP"' EXIT
-trap 'exit 143' TERM
+trap 'rm -rf "$work"; rm -f "$esp/KERNEL.TMP" "$esp/KBAK.TMP"; summary' EXIT
 
 status=$(ostree admin status --json) || status=""
 
@@ -206,9 +241,11 @@ if [[ $mode == bak ]]; then
   is_pinned "$bakid" || die "$bakid is not a pinned deployment, KERNEL.BAK untouched"
   entry=$(entry_for "$bakid") || die "no BLS entry resolves to $bakid, KERNEL.BAK untouched"
   if ! bake KERNEL.BAK KBAK.TMP .microos-bootimg-bak.id "$entry" 0; then
+    bstate="kept (bake failed)"
     dead_bak
     exit 1
   fi
+  bstate=$result
   echo "bak $bakid $baked"
   exit 0
 fi
@@ -232,10 +269,12 @@ entry=$(
 
 rc=0
 if bake KERNEL KERNEL.TMP .microos-bootimg.id "$entry" "$remap"; then
+  kstate=$result
   if (( remap )); then
     : > "$rundir/remap-baked"
   fi
 else
+  kstate="kept (bake failed)"
   rc=1
 fi
 bak_default || rc=1
