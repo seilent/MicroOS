@@ -1,0 +1,91 @@
+From: seilent <github@seilent.net>
+Subject: [PATCH] usb: typec: qcom-pmic-typec: open CC on set_cc(TYPEC_CC_OPEN)
+
+set_cc(TYPEC_CC_OPEN) only wrote the Rp current select and left the
+port in its toggling mode, so Rd stayed on CC and the PORT_RESET that
+TCPM runs at registration never detached a source already attached.
+Disable the Type-C state machine on CC open; start_toggling restores
+the mode. port_start runs after tcpm_register_port and may follow
+PORT_RESET, so it keeps the port disabled while CC is open instead of
+overwriting it with EN_TRY_SNK.
+
+---
+--- a/drivers/usb/typec/tcpm/qcom/qcom_pmic_typec_port.c
++++ b/drivers/usb/typec/tcpm/qcom/qcom_pmic_typec_port.c
+@@ -178,6 +178,7 @@
+ 
+ 	int				cc;
+ 	bool				debouncing_cc;
++	bool				cc_open;
+ 	struct delayed_work		cc_debounce_dwork;
+ 
+ 	spinlock_t			lock;	/* Register atomicity */
+@@ -479,6 +480,7 @@
+ 	switch (cc) {
+ 	case TYPEC_CC_OPEN:
+ 		currsrc = TYPEC_SRC_RP_SEL_80UA;
++		mode = TYPEC_DISABLE_CMD;
+ 		break;
+ 	case TYPEC_CC_RP_DEF:
+ 		currsrc = TYPEC_SRC_RP_SEL_80UA;
+@@ -499,7 +501,13 @@
+ 		goto done;
+ 	}
+ 
+-	if (mode == EN_SRC_ONLY) {
++	if (mode == TYPEC_DISABLE_CMD) {
++		ret = regmap_write(pmic_typec_port->regmap,
++				   pmic_typec_port->base + TYPEC_MODE_CFG_REG,
++				   TYPEC_DISABLE_CMD);
++		if (ret)
++			goto done;
++	} else if (mode == EN_SRC_ONLY) {
+ 		ret = regmap_write(pmic_typec_port->regmap,
+ 				   pmic_typec_port->base + TYPEC_CURRSRC_CFG_REG,
+ 				   currsrc);
+@@ -508,6 +516,7 @@
+ 	}
+ 
+ 	pmic_typec_port->cc = cc;
++	pmic_typec_port->cc_open = mode == TYPEC_DISABLE_CMD;
+ 	qcom_pmic_set_cc_debounce(pmic_typec_port);
+ 	ret = 0;
+ 
+@@ -516,6 +525,7 @@
+ 
+ 	dev_dbg(dev, "set_cc: currsrc=%x %s mode %s debounce %d attached %d cc=%s\n",
+ 		currsrc, rp_sel_to_name(currsrc),
++		mode == TYPEC_DISABLE_CMD ? "DISABLE" :
+ 		mode == EN_SRC_ONLY ? "EN_SRC_ONLY" : "EN_SNK_ONLY",
+ 		pmic_typec_port->debouncing_cc, !!(misc & CC_ATTACHED),
+ 		misc_to_cc(misc));
+@@ -604,6 +614,7 @@
+ 		misc, !!(misc & CC_ATTACHED), port_type, pmic_typec_port->cc, cc);
+ 
+ 	qcom_pmic_set_cc_debounce(pmic_typec_port);
++	pmic_typec_port->cc_open = false;
+ 
+ 	/* force it to toggle at least once */
+ 	ret = regmap_write(pmic_typec_port->regmap,
+@@ -639,6 +650,7 @@
+ 				      struct tcpm_port *tcpm_port)
+ {
+ 	struct pmic_typec_port *pmic_typec_port = tcpm->pmic_typec_port;
++	unsigned long flags;
+ 	int i;
+ 	int mask;
+ 	int ret;
+@@ -656,9 +668,11 @@
+ 	if (ret)
+ 		goto done;
+ 
+-	/* start in TRY_SNK mode */
++	spin_lock_irqsave(&pmic_typec_port->lock, flags);
+ 	ret = regmap_write(pmic_typec_port->regmap,
+-			   pmic_typec_port->base + TYPEC_MODE_CFG_REG, EN_TRY_SNK);
++			   pmic_typec_port->base + TYPEC_MODE_CFG_REG,
++			   pmic_typec_port->cc_open ? TYPEC_DISABLE_CMD : EN_TRY_SNK);
++	spin_unlock_irqrestore(&pmic_typec_port->lock, flags);
+ 	if (ret)
+ 		goto done;
+ 

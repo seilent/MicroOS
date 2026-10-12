@@ -4,8 +4,9 @@ RUN find /etc/yum.repos.d -type f ! -name fedora.repo ! -name fedora-updates.rep
  && dnf -y --setopt=install_weak_deps=False install \
       rpm-build systemd-rpm-macros \
       gcc make perl-interpreter python3 \
-      git-core curl tar gzip xz zstd cpio findutils diffutils which \
+      git-core curl tar gzip xz zstd cpio findutils diffutils patch which \
       bc bison flex dwarves dtc openssl openssl-devel elfutils-libelf-devel kmod ccache \
+ && if [ "$(uname -m)" = x86_64 ]; then dnf -y --setopt=install_weak_deps=False install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu; fi \
  && dnf clean all
 
 ENV MICROOS_MARCH="-march=armv8.2-a+fp16+dotprod+rcpc -mtune=cortex-a77"

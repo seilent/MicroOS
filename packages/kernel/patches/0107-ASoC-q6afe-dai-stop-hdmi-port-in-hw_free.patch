@@ -1,0 +1,36 @@
+From: seilent <github@seilent.net>
+Subject: [PATCH] ASoC: qcom: q6afe-dai: stop the HDMI/DP port in hw_free
+
+hdmi-codec turns the DP audio engine off in its shutdown, which runs
+before the q6afe-dai shutdown that stops the AFE port. On SM8250
+DISPLAY_PORT_RX the start after such a stop often gets no answer from
+the DSP within 3 s (AFE enable for port 0x6020 failed -110). Stop the
+port in hw_free, which runs for every DAI before any shutdown, while the
+DP engine is still on.
+
+---
+--- a/sound/soc/qcom/qdsp6/q6afe-dai.c
++++ b/sound/soc/qcom/qdsp6/q6afe-dai.c
+@@ -384,6 +384,14 @@
+ 
+ }
+ 
++static int q6hdmi_hw_free(struct snd_pcm_substream *substream,
++			  struct snd_soc_dai *dai)
++{
++	q6afe_dai_shutdown(substream, dai);
++
++	return 0;
++}
++
+ static int q6afe_dai_prepare(struct snd_pcm_substream *substream,
+ 		struct snd_soc_dai *dai)
+ {
+@@ -714,6 +722,7 @@
+ 	.remove			= msm_dai_q6_dai_remove,
+ 	.prepare		= q6afe_dai_prepare,
+ 	.hw_params		= q6hdmi_hw_params,
++	.hw_free		= q6hdmi_hw_free,
+ 	.shutdown		= q6afe_dai_shutdown,
+ };
+ 

@@ -10,3 +10,26 @@ Projects MicroOS builds, with their authors and license.
 | `gamescope-session-steam` | [OpenGamingCollective/gamescope-session-steam](https://github.com/OpenGamingCollective/gamescope-session-steam) `82c45fc112` | ChimeraOS and Open Gaming Collective contributors | MIT |
 
 Built as is, no patches. License texts in `packages/gamescope-session/`.
+
+## Kernel
+
+Linux 7.2.6 from [kernel.org](https://www.kernel.org/), GPL-2.0-only WITH Linux-syscall-note. Patches and their
+origins in `packages/kernel/PATCHES.md`.
+
+| What | Origin | Author | License |
+|---|---|---|---|
+| Qualcomm SPMI haptics driver | patchwork `20210816221931.1998187-3-caleb@connolly.tech`, Retroid kernel `51ef2f2ed1da` | Casey Connolly, Teguh Sobirin | GPL-2.0-only |
+| Qualcomm SMB5 charger and PM8150B fuel gauge | [map220v/sm8150-mainline](https://github.com/map220v/sm8150-mainline) `27f8b500c7a6`, `50cf85d48047`; Retroid kernel `71fae666971c`; ROCKNIX `0393a000d2`, `1dc63e1531`, `7b4da83200` | Teguh Sobirin, Casey Connolly, Joel Selvaraj, Yassine Oudjana, map220v, Nefirim, Xenocideend, sunshineinabox | GPL-2.0-only |
+| PM8150B charger, fuel gauge and haptics nodes | map220v/sm8150-mainline `462e45bc434a`; Retroid kernel `23f7c4590989`, `876b57545d04` | Teguh Sobirin, map220v | BSD-3-Clause |
+| PM8150L LCDB regulator and node | [ROCKNIX](https://github.com/ROCKNIX/distribution) `063e530e58` | Philippe Simons | GPL-2.0-only, BSD-3-Clause |
+| wcd938x headphone jack detection | [batocera.linux](https://github.com/batocera-linux/batocera.linux) `ea7bbd5c7f84` | Daniel Martin | GPL-2.0 |
+| HDMI audio `hw_params` callback | lore `20250925040530.20731-1-liujianfeng1994@gmail.com` | Jianfeng Liu | MIT |
+| msm DP `audio_prepare` unplugged | lore `20260616151252.3599089-2-kumar.singh@oss.qualcomm.com` | Kumar Anurag | GPL-2.0-only |
+| ufs-qcom lane clocks | `mkp/scsi.git` `f07317a8d57f` | Nitin Rawat | GPL-2.0-only |
+| qcom-geni force suspend in system sleep | Linux `d0cd9c8d0fd5` | Praveen Talari | GPL-2.0 |
+| AR16 panel driver, base of the AR18 driver | ROCKNIX SM8550 `0064`, `aa418ad72e` | danyi | GPL-2.0-only |
+| Sitronix ST7123 driver, base of the ST7123 driver | [raspberrypi/linux](https://github.com/raspberrypi/linux) `6d4adb6bfea6` | Waveshare, Sitronix | GPL-2.0 |
+| Rumble report format in `hid-ayaneo` | stock Android 4.19.157 `hid-ayaneo` | AYANEO | GPL-2.0 |
+| PM2 DTS layout shared with other SM8250 boards | Linux `qrb5165-rb5.dts`; `sm8250-retroidpocket-common.dtsi`; `sm8250-ayn-thorlite.dts`; SBU mux routing in Armada `9741312` | Linaro; Teguh Sobirin (Retroid Pocket); Philippe Simons; Tom | BSD-3-Clause |
+
+Retroid kernel is [lineageos-on-retroid/android_kernel_retroid_sm8250_ack](https://github.com/lineageos-on-retroid/android_kernel_retroid_sm8250_ack).
