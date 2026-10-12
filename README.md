@@ -9,7 +9,8 @@ No image is published yet.
 ## License
 
 GPL-2.0-or-later, see [LICENSE](LICENSE). Components taken from other projects keep their own license and are listed
-in `CREDITS.md` once they land.
+in [CREDITS.md](CREDITS.md).
 
-MicroOS is not provided or supported by the Fedora Project. Steam is a trademark of Valve. MicroOS is not affiliated
+MicroOS is not provided or supported by the Fedora Project. Official Fedora is available at
+[fedoraproject.org](https://fedoraproject.org/). Steam is a trademark of Valve. MicroOS is not affiliated
 with Valve or AYANEO.

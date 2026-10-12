@@ -1,0 +1,124 @@
+name: packages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: packages
+  cancel-in-progress: false
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [gamescope-session]
+    env:
+      PKG: ${{ matrix.package }}
+      REPO: ghcr.io/seilent/microos/pkg/${{ matrix.package }}
+      PUBKEY: system_files/usr/share/microos/keys/microos.pub
+      JUST_VERSION: 1.58.0
+      JUST_SHA256: 748237128c4c40cbdabc65e841d05ceba13cc23a91eaba395495894c1d9764df
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman skopeo
+          tarball=just-$JUST_VERSION-aarch64-unknown-linux-musl.tar.gz
+          curl -fsSL -o "$RUNNER_TEMP/$tarball" "https://github.com/casey/just/releases/download/$JUST_VERSION/$tarball"
+          echo "$JUST_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" just
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v2.6.3
+
+      - name: Hash
+        id: hash
+        run: |
+          hash=$(build/pkg-hash.sh "$PKG")
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Check registry
+        id: check
+        env:
+          HASH: ${{ steps.hash.outputs.hash }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if err=$(skopeo inspect --no-creds --raw "docker://$REPO:$HASH" 2>&1 > /dev/null); then
+            echo "$REPO:$HASH exists"
+            echo "state=exists" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! grep -qiE 'manifest unknown|404|denied|unauthorized' <<< "$err"; then
+            echo "::error::$err"
+            exit 1
+          fi
+          skopeo login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          if err=$(skopeo inspect --raw "docker://$REPO:$HASH" 2>&1 > /dev/null); then
+            echo "::error::$REPO:$HASH exists but is not public"
+            exit 1
+          fi
+          if ! grep -qiE 'manifest unknown|404' <<< "$err"; then
+            echo "::error::$err"
+            exit 1
+          fi
+          echo "state=missing" >> "$GITHUB_OUTPUT"
+
+      - name: Verify existing
+        if: steps.check.outputs.state == 'exists'
+        env:
+          HASH: ${{ steps.hash.outputs.hash }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          if cosign verify --key "$PUBKEY" "$REPO:$HASH" > /dev/null; then
+            exit 0
+          fi
+          digest=$(skopeo inspect --no-creds --format '{{.Digest}}' "docker://$REPO:$HASH")
+          echo "::warning::$REPO@$digest has no valid signature, signing it"
+          cosign login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          cosign sign --yes --new-bundle-format=false --key env://COSIGN_PRIVATE_KEY "$REPO@$digest"
+          if ! cosign verify --key "$PUBKEY" "$REPO@$digest" > /dev/null; then
+            echo "::error::$REPO@$digest fails cosign verify after signing"
+            exit 1
+          fi
+
+      - name: Build
+        if: steps.check.outputs.state == 'missing'
+        run: just pkg "$PKG"
+
+      - name: Push, sign, verify
+        if: steps.check.outputs.state == 'missing'
+        env:
+          HASH: ${{ steps.hash.outputs.hash }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          podman login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          podman tag "localhost/microos-pkg/$PKG:$HASH" "$REPO:$HASH"
+          podman push --digestfile "$RUNNER_TEMP/digest" "$REPO:$HASH"
+          digest=$(cat "$RUNNER_TEMP/digest")
+          cosign login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          cosign sign --yes --new-bundle-format=false --key env://COSIGN_PRIVATE_KEY "$REPO@$digest"
+          cosign verify --key "$PUBKEY" "$REPO@$digest" > /dev/null
+          echo "$REPO:$HASH $digest"
