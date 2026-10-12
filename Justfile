@@ -6,6 +6,9 @@ pkg name:
     #!/usr/bin/env bash
     set -euo pipefail
     hash=$(build/pkg-hash.sh "$1")
+    mapfile -t inputs < <(build/pkg-hash.sh --inputs "$1")
+    dirty=0
+    [[ -z $(git status --porcelain -- "${inputs[@]}") ]] || dirty=1
     out=out/pkg/$1
     tag=localhost/microos-pkg/$1:$hash
     podman build -t {{builder}} -f build/pkg.Containerfile build
@@ -26,10 +29,7 @@ pkg name:
         -v "$PWD/$out:/out:ro,Z" \
         {{builder}} "/tests/pkg-$1.sh" /out
     fi
-    printf 'FROM scratch\nCOPY *.rpm /rpms/\n' > "$out/Containerfile"
-    podman build -f "$out/Containerfile" \
-      --label org.opencontainers.image.source=https://github.com/seilent/MicroOS \
-      -t "$tag" "$out"
+    podman build -f build/pkg-wrap.Containerfile --label "microos.dirty=$dirty" -t "$tag" "$out"
     echo "$tag"
 
 kernel:
@@ -38,11 +38,17 @@ kernel:
 pkg-push name:
     #!/usr/bin/env bash
     set -euo pipefail
-    if [[ -n $(git status --porcelain -- "packages/$1" build/pkg.Containerfile "tests/pkg-$1.sh") ]]; then
+    mapfile -t inputs < <(build/pkg-hash.sh --inputs "$1")
+    if [[ -n $(git status --porcelain -- "${inputs[@]}") ]]; then
       echo "uncommitted changes in the inputs of $1" >&2
       exit 1
     fi
     hash=$(build/pkg-hash.sh "$1")
+    local=localhost/microos-pkg/$1:$hash
+    if [[ $(podman inspect -f '{{{{index .Labels "microos.dirty"}}' "$local") != 0 ]]; then
+      echo "$local was built from uncommitted inputs" >&2
+      exit 1
+    fi
     repo=ghcr.io/seilent/microos/pkg/$1
     api=/user/packages/container/microos%2Fpkg%2F$1
     keys=${MICROOS_KEYS:-$HOME/.config/microos/keys}
@@ -52,24 +58,31 @@ pkg-push name:
       start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
       gh workflow run package-init.yml -R seilent/MicroOS -f name="$1"
       run=
-      while [[ -z $run ]]; do
+      for _ in $(seq 60); do
         sleep 5
-        run=$(gh run list -R seilent/MicroOS --workflow package-init.yml --json databaseId,createdAt \
+        run=$(gh run list -R seilent/MicroOS --workflow package-init.yml --event workflow_dispatch \
+          --user seilent --json databaseId,createdAt \
           --jq "[.[] | select(.createdAt >= \"$start\")][0].databaseId // empty")
+        [[ -z $run ]] || break
       done
+      [[ -n $run ]] || { echo "package-init run not found" >&2; exit 1; }
       gh run watch "$run" -R seilent/MicroOS --exit-status >/dev/null
     fi
-    if skopeo inspect --raw "docker://$repo:$hash" >/dev/null 2>&1; then
+    if err=$(skopeo inspect --raw "docker://$repo:$hash" 2>&1 >/dev/null); then
       echo "$repo:$hash exists" >&2
       exit 1
     fi
-    podman tag "localhost/microos-pkg/$1:$hash" "$repo:$hash"
+    if ! grep -qiE 'manifest unknown|404' <<< "$err"; then
+      echo "$err" >&2
+      exit 1
+    fi
+    podman tag "$local" "$repo:$hash"
     digest=$(mktemp)
     trap 'rm -f "$digest"' EXIT
     podman push --digestfile "$digest" "$repo:$hash"
     COSIGN_PASSWORD=$(cat "$keys/microos.password") \
       "$cosign" sign -y --new-bundle-format=false --key "$keys/microos.key" "$repo@$(cat "$digest")"
-    "$cosign" verify --key system_files/usr/share/microos/keys/microos.pub "$repo:$hash" >/dev/null
+    "$cosign" verify --key system_files/usr/share/microos/keys/microos.pub "$repo@$(cat "$digest")" >/dev/null
     init=$(gh api "$api/versions" --jq '.[] | select(.metadata.container.tags | index("init")) | .id')
     if [[ -n $init ]]; then
       gh api -X DELETE "$api/versions/$init"

@@ -3,7 +3,7 @@ set -euo pipefail
 
 dtb=${1:?usage: dts-drivers.sh <dtb> <config> [table]}
 config=${2:?usage: dts-drivers.sh <dtb> <config> [table]}
-table=${3:-$(dirname "$0")/fixtures/compatible-symbols.txt}
+table=${3:-$(dirname "$0")/compatible-symbols.txt}
 
 dtc -q -I dtb -O dts "$dtb" | awk -v table="$table" -v config="$config" '
 BEGIN {

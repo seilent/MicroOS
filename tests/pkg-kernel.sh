@@ -31,6 +31,6 @@ for s in "${builtin[@]}"; do
   grep -qx "CONFIG_$s=y" "$kdir/config" || { echo "pkg-kernel: CONFIG_$s is not built in" >&2; exit 1; }
 done
 
-"$here/dts-drivers.sh" "$dtbs" "$kdir/config"
-"$here/gpu-opp.sh" "$dtbs" >/dev/null
+"$here/pkg-kernel/dts-drivers.sh" "$dtbs" "$kdir/config"
+"$here/pkg-kernel/gpu-opp.sh" "$dtbs" >/dev/null
 echo "pkg-kernel: $(basename "$rpm") ok"

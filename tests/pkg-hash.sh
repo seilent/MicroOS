@@ -46,6 +46,12 @@ echo test > "$tmp/tests/pkg-a.sh"
 [[ $(pkghash b) == "$hb" ]] || fail "tests/pkg-a.sh changes another package"
 rm "$tmp/tests/pkg-a.sh"
 
+mkdir -p "$tmp/tests/pkg-a"
+echo helper > "$tmp/tests/pkg-a/helper.sh"
+[[ $(pkghash a) != "$h" ]] || fail "ignores tests/pkg-a/"
+[[ $(pkghash b) == "$hb" ]] || fail "tests/pkg-a/ changes another package"
+rm -r "$tmp/tests/pkg-a"
+
 [[ $(pkghash a) == "$h" ]] || fail "not restored"
 echo scratch > "$tmp/packages/a/untracked"
 git -C "$tmp" add -A

@@ -12,9 +12,9 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | Patch | Earliest origin | Author | Chain | Confidence |
 |---|---|---|---|---|
 | 0001 input: add Qualcomm SPMI haptics driver | linux-arm-msm v3 2/6, 2021-08-16, `20210816221931.1998187-3-caleb@connolly.tech` (series v1 2021-06-12 to v7 2022-10-15, never merged); boost GPIO and relaxed actuator check `lineageos-on-retroid/android_kernel_retroid_sm8250_ack` `51ef2f2ed1da`, 2024-11-24 | Casey Connolly (the file says Caleb Connolly); Teguh Sobirin | patchwork v3, Teguh's Retroid kernel, ROCKNIX-old `SD865/0008` 2024-11-30, ROCKNIX `SM8250/0009` | CONFIRMED. The copy is v3 plus Teguh's commit plus a `void remove()` conversion by an unknown rebaser |
-| 0002 power: supply: add Qualcomm SMB5 charger and PM8150B fuel gauge | `qcom_fg`: Joel Selvaraj, 2021-02-03, `map220v/sm8150-mainline` `27f8b500c7a6` (`MODULE_AUTHOR` Casey Connolly, Joel Selvaraj, Yassine Oudjana); pm8150b support map220v, 2023-08-02, `50cf85d48047`; SMB5 charger Teguh Sobirin, 2024-11-20, `android_kernel_retroid_sm8250_ack` `71fae666971c` (`MODULE_AUTHOR` Casey Connolly) | Teguh Sobirin, Casey Connolly, Joel Selvaraj, Yassine Oudjana, map220v; later Nefirim (ROCKNIX `0393a000d2`, 2025-10-24, capacity scale), Xenocideend (ROCKNIX `1dc63e1531`, 2026-09-25, float voltage and charge current, committed by Jacob Cook, credit line says "with Claude Opus 5.5"), sunshineinabox (ROCKNIX `7b4da83200`, 2026-09-29, charge status) | sm8150-mainline, Teguh's Retroid kernel, ROCKNIX-old `SD865/0010` 2024-11-30, ROCKNIX `SM8250/0011` | PLAUSIBLE. The SMB5 driver's relation to Casey's mainline `qcom_smbx.c` is not traced line by line. The Makefile hunk context is rebased to 7.2.6, no code change |
+| 0002 power: supply: add Qualcomm SMB5 charger and PM8150B fuel gauge | `qcom_fg`: Qualcomm downstream fuel gauge, 2020 (The Linux Foundation copyright in the file), commit not traced; mainline port Joel Selvaraj, 2021-02-03, `map220v/sm8150-mainline` `27f8b500c7a6` (`MODULE_AUTHOR` Casey Connolly, Joel Selvaraj, Yassine Oudjana); pm8150b support map220v, 2023-08-02, `50cf85d48047`; SMB5 charger Teguh Sobirin, 2024-11-20, `android_kernel_retroid_sm8250_ack` `71fae666971c` (`MODULE_AUTHOR` Casey Connolly) | The Linux Foundation (Qualcomm downstream), Teguh Sobirin, Casey Connolly, Joel Selvaraj, Yassine Oudjana, map220v; later Nefirim (ROCKNIX `0393a000d2`, 2025-10-24, capacity scale), Xenocideend (ROCKNIX `1dc63e1531`, 2026-09-25, float voltage and charge current, committed by Jacob Cook, credit line says "with Claude Opus 5.5"), sunshineinabox (ROCKNIX `7b4da83200`, 2026-09-29, charge status) | sm8150-mainline, Teguh's Retroid kernel, ROCKNIX-old `SD865/0010` 2024-11-30, ROCKNIX `SM8250/0011` | PLAUSIBLE. The SMB5 driver's relation to Casey's mainline `qcom_smbx.c` is not traced line by line. The Makefile hunk context is rebased to 7.2.6, no code change |
 | 0003 arm64: dts: qcom: pm8150b: add charger, fuel gauge and haptics nodes | fg node map220v, 2023-08-02, `map220v/sm8150-mainline` `462e45bc434a`; charger node and ADC channels Teguh Sobirin, 2024-11-20, `android_kernel_retroid_sm8250_ack` `23f7c4590989`; haptics node Teguh Sobirin, 2024-11-24, `876b57545d04` | Teguh Sobirin, map220v | sm8150-mainline, Teguh's Retroid kernel, ROCKNIX-old `SD865/0004` 2024-11-30, ROCKNIX `SM8250/0004` | CONFIRMED (hunks compared with the three commits) |
-| 0004 regulator: add qcom pm8150l lcdb | ROCKNIX `063e530e58`, 2026-09-15 | Philippe Simons, "Ported from the downstream qpnp-lcdb-regulator driver" | ROCKNIX `SM8250/0066` | CONFIRMED |
+| 0004 regulator: add qcom pm8150l lcdb | Qualcomm downstream `qpnp-lcdb-regulator`, commit not traced; port ROCKNIX `063e530e58`, 2026-09-15 | Philippe Simons; The Linux Foundation (Qualcomm downstream) | ROCKNIX `SM8250/0066` | CONFIRMED |
 | 0005 arm64: dts: qcom: pm8150l: add LCDB node | ROCKNIX `063e530e58`, 2026-09-15 | Philippe Simons | ROCKNIX `SM8250/0067` | CONFIRMED |
 | 0006 ASoC: codecs: wcd938x-sdw: handle interrupts only on the TX device | `batocera-linux/batocera.linux` `ea7bbd5c7f84`, 2026-03-14 | Daniel Martin | batocera, ROCKNIX `957ddf7216` 2026-03-17 (`SM8250/0300`, context whitespace damaged) | CONFIRMED. The batocera file has no `From:`, only `#Signed-off-by: Daniel Martin`; header added here |
 | 0007 drm/display: add hw_params callback to drm_connector_hdmi_audio_ops | dri-devel and linux-arm-msm v2, 2025-09-25, `20250925040530.20731-1-liujianfeng1994@gmail.com` (v1 2025-09-24); patchwork state new on dri-devel | Jianfeng Liu | lore, ROCKNIX SM8550 `0006`, ROCKNIX SM8250 `0017` (bare diff, Edvard Pedersen `705f43d24e`) | CONFIRMED. Taken from the patchwork mbox |
@@ -73,50 +73,5 @@ header and context differences drop out. Run 2026-10-12.
 
 ## Author check for my files
 
-Run 2026-10-12 against Armada `b995457`, one `git log b995457 --format='%an <%ae>' -- <path>` per file (no
-`--follow`), then `grep -ciE 'armada|device-env'` on the file:
-
-```
-packages/kernel/dts/sm8250-ayaneo-pocket-micro2.dts
-      1 seilent <88354811+seilent@users.noreply.github.com>
-      6 seilent <github@seilent.net>
-  hits: 0
-packages/kernel/patches/0301-drm-panel-add-ayaneo-ar18-panel.patch
-      1 seilent <88354811+seilent@users.noreply.github.com>
-  hits: 0
-packages/kernel/patches/0302-input-touchscreen-add-sitronix-st7123.patch
-      1 seilent <88354811+seilent@users.noreply.github.com>
-  hits: 0
-packages/kernel/patches/0303-hid-add-ayaneo-pocket-micro2-force-feedback.patch
-      1 seilent <88354811+seilent@users.noreply.github.com>
-  hits: 0
-packages/kernel/patches/0304-ASoC-wcd938x-treat-failed-zdet-ramp-as-floating.patch
-      1 seilent <88354811+seilent@users.noreply.github.com>
-  hits: 0
-packages/kernel/patches/0305-backlight-qcom-wled-always-disable-ovp-irq-at-probe.patch
-      1 seilent <88354811+seilent@users.noreply.github.com>
-  hits: 0
-packages/kernel/patches/0306-usb-typec-qcom-pmic-typec-open-cc-on-set_cc-open.patch
-      1 seilent <github@seilent.net>
-  hits: 0
-packages/kernel/patches/0307-ASoC-q6afe-dai-stop-hdmi-port-in-hw_free.patch
-      1 seilent <github@seilent.net>
-  hits: 0
-packages/kernel/patches/0309-ASoC-qcom-q6afe-keep-the-lpass-core-hw-vote-handle.patch
-      1 seilent <github@seilent.net>
-  hits: 0
-packages/kernel/patches/0310-ASoC-codecs-lpass-macro-release-core-hw-votes-in-runtime-suspend.patch
-      1 seilent <github@seilent.net>
-  hits: 0
-packages/kernel/patches/0311-clk-qcom-camcc-sm8250-keep-gdsc-clk-on-outside-ccf.patch
-      1 seilent <github@seilent.net>
-  hits: 0
-packages/kernel/patches/0312-drm-msm-dsi-phy-unprepare-iface-clk-across-system-sleep.patch
-      1 seilent <github@seilent.net>
-  hits: 0
-```
-
-ROCKNIX `pocket-micro2` `d4aaf4b235`, `0068`, `0069`, `0070`, `0073`: 5 commits, all `seilent <github@seilent.net>`.
-
-Armada `0301` to `0312` map to `0101` to `0111` in order (there is no `0308`). The DTS adds
-`&gpu_opp_table { /delete-node/ opp-670000000; };`, so no GPU OPP is above 587 MHz.
+2026-10-12: every own file (the PM2 DTS, 0101 to 0111) has only my commits in Armada `b995457` (plain `git log`, no
+`--follow`) and ROCKNIX `pocket-micro2` `d4aaf4b235`, and no Armada specific names.
