@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-boot-ok
+die() { echo "$me: $*" >&2; exit 1; }
+
+rundir=${MICROOS_RUNDIR:-/run/microos}
+statedir=${MICROOS_STATEDIR:-/var/lib/microos}
+esp=${MICROOS_ESP:-/boot/efi}
+conf=${MICROOS_BOOT_OK_CONF:-/usr/lib/microos/boot-ok.conf}
+bootimg=${MICROOS_BOOTIMG_UPDATE:-/usr/libexec/microos/microos-bootimg-update}
+lockwait=${MICROOS_BOOT_OK_LOCK_WAIT:-1800}
+pins=$statedir/boot-ok-pins
+
+[[ -r $conf ]] || die "missing $conf"
+. "$conf"
+
+units_ok() {
+  local u
+  for u in $MICROOS_BOOT_OK_FAILED; do
+    if systemctl is-failed --quiet "$u"; then
+      echo "$me: not confirmed: $u failed" >&2
+      return 1
+    fi
+  done
+  for u in $MICROOS_BOOT_OK_ACTIVE; do
+    if [[ $(systemctl show -p ConditionResult --value "$u") == yes ]] && ! systemctl is-active --quiet "$u"; then
+      echo "$me: not confirmed: $u is not active" >&2
+      return 1
+    fi
+  done
+}
+
+write() {
+  local f=$1
+  shift
+  if (( $# )); then
+    printf '%s\n' "$@" > "$f.tmp"
+  else
+    : > "$f.tmp"
+  fi
+  sync "$f.tmp"
+  mv -f "$f.tmp" "$f"
+  sync -f "$f"
+}
+
+read_status() {
+  status=$(ostree admin status --json) || die "ostree admin status failed"
+}
+
+id_of() {
+  jq -r "[.deployments[] | select($1) | \"\(.checksum).\(.serial)\"] | first // empty" <<< "$status"
+}
+
+pinned() {
+  jq -e --arg id "$1" 'any(.deployments[]; .pinned and "\(.checksum).\(.serial)" == $id)' <<< "$status" > /dev/null
+}
+
+index_of() {
+  jq -r --arg id "$1" '.deployments[] | select("\(.checksum).\(.serial)" == $id) | .index' <<< "$status"
+}
+
+waited=0
+until systemctl is-active --quiet "$MICROOS_BOOT_OK_TARGET"; do
+  (( waited < MICROOS_BOOT_OK_WAIT )) || die "not confirmed: $MICROOS_BOOT_OK_TARGET not active after $MICROOS_BOOT_OK_WAIT s"
+  sleep "$MICROOS_BOOT_OK_STEP"
+  waited=$(( waited + MICROOS_BOOT_OK_STEP ))
+done
+held=0
+while :; do
+  units_ok || exit 1
+  (( held < MICROOS_BOOT_OK_HOLD )) || break
+  sleep "$MICROOS_BOOT_OK_STEP"
+  held=$(( held + MICROOS_BOOT_OK_STEP ))
+done
+
+read_status
+booted=$(id_of .booted)
+[[ $booted =~ ^[0-9a-f]{64}\.[0-9]+$ ]] || die "no booted deployment in ostree admin status"
+b=$(bootc status --json | jq -r '.status.booted.ostree | "\(.checksum).\(.deploySerial)"') || die "bootc status failed"
+[[ $b == "$booted" ]] || die "ostree booted $booted, bootc booted $b"
+
+install -d -m 0755 "$rundir" "$statedir"
+exec 8> "$rundir/update.lock"
+if ! flock -w "$lockwait" 8; then
+  echo "$me: not confirmed: update.lock busy" >&2
+  exit 3
+fi
+
+listed=()
+if [[ -f $pins ]]; then
+  while read -r id; do
+    [[ -n $id ]] && listed+=("$id")
+  done < "$pins"
+fi
+was_listed=0
+for id in "${listed[@]}"; do
+  [[ $id != "$booted" ]] || was_listed=1
+done
+
+read_status
+if ! pinned "$booted"; then
+  if (( ! was_listed )); then
+    listed+=("$booted")
+    write "$pins" "${listed[@]}"
+    was_listed=1
+  fi
+  ostree admin pin booted > /dev/null
+fi
+
+read_status
+[[ $(id_of .booted) == "$booted" ]] || die "the booted deployment changed to $(id_of .booted)"
+pinned "$booted" || die "$booted is not pinned"
+
+write "$statedir/confirmed" "$booted"
+
+out=$("$bootimg" --bak "$booted") || die "KERNEL.BAK not baked from $booted, pins kept"
+read -r word deploy bake <<< "$(tail -n 1 <<< "$out")"
+stamp=""
+if [[ -f $esp/.microos-bootimg-bak.id ]]; then
+  stamp=$(< "$esp/.microos-bootimg-bak.id")
+fi
+[[ $word == bak && $deploy == "$booted" && -n $bake && $bake == "$stamp" ]] ||
+  die "KERNEL.BAK does not hold $booted, pins kept"
+
+pinset() {
+  jq -r '.deployments[] | select(.pinned) | "\(.checksum).\(.serial)"' <<< "$status" | LC_ALL=C sort | paste -sd' '
+}
+ids() {
+  jq -r '.deployments[] | "\(.checksum).\(.serial)"' <<< "$status"
+}
+
+read_status
+target=" "
+for id in $(pinset) "$booted"; do
+  [[ $target == *" $id "* ]] && continue
+  if [[ $id == "$booted" || " ${listed[*]} " != *" $id "* ]]; then
+    target+="$id "
+  fi
+done
+
+fails=0
+while :; do
+  read_status
+  cur=" $(pinset) "
+  op="" id=""
+  for x in $(ids); do
+    if [[ $target == *" $x "* && $cur != *" $x "* ]]; then
+      op=pin id=$x
+      break
+    fi
+  done
+  if [[ -z $op ]]; then
+    for x in $cur; do
+      if [[ $target != *" $x "* ]]; then
+        op=unpin id=$x
+        break
+      fi
+    done
+  fi
+  [[ -n $op ]] || break
+  if [[ $op == pin ]]; then
+    want=$({ tr ' ' '\n' <<< "$cur"; echo "$id"; } | grep . | LC_ALL=C sort | paste -sd' ')
+    if [[ $id == "$booted" ]]; then
+      ostree admin pin booted > /dev/null
+    else
+      ostree admin pin "$(index_of "$id")" > /dev/null
+    fi
+  else
+    want=$(tr ' ' '\n' <<< "$cur" | grep . | grep -Fvx "$id" | LC_ALL=C sort | paste -sd' ' || true)
+    ostree admin pin --unpin "$(index_of "$id")" > /dev/null
+  fi
+  read_status
+  if [[ $(pinset) != "$want" ]]; then
+    fails=$(( fails + 1 ))
+    (( fails < 3 )) || die "deployment indexes kept moving, $pins unchanged"
+  fi
+done
+
+if (( was_listed )); then
+  write "$pins" "$booted"
+else
+  write "$pins"
+fi
+echo "$me: confirmed $booted"

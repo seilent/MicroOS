@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "bootc $*" >> "$FAKE_STATE/bootc.log"
+exit 1

@@ -2,14 +2,14 @@ name: image
 
 on:
   push:
-    branches-ignore: [main]
+    branches: ['**']
   workflow_dispatch:
 
 permissions: {}
 
 concurrency:
   group: image-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 defaults:
   run:
@@ -20,6 +20,7 @@ env:
   PKG_KERNEL: ghcr.io/seilent/microos/pkg/kernel
   PUBKEY: system_files/usr/share/microos/keys/microos.pub
   BIB: quay.io/centos-bootc/bootc-image-builder@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b
+  SOURCE_TYPE: application/vnd.microos.source.v1
 
 jobs:
   image:
@@ -29,7 +30,10 @@ jobs:
       packages: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
-      tag: ${{ steps.version.outputs.tag }}
+      push_tag: ${{ steps.version.outputs.push_tag }}
+      final_tag: ${{ steps.version.outputs.final_tag }}
+      short: ${{ steps.version.outputs.short }}
+      channel: ${{ steps.version.outputs.channel }}
     steps:
       - uses: ublue-os/remove-unwanted-software@cc0becac701cf642c8f0a6613bbdaf5dc36b259e
 
@@ -59,14 +63,29 @@ jobs:
         id: version
         run: |
           short=${GITHUB_SHA::7}
-          echo "tag=dev-$short" >> "$GITHUB_OUTPUT"
-          echo "version=$(date -u +%Y%m%d).$short" >> "$GITHUB_OUTPUT"
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            push_tag=testing-$short
+            final_tag=testing
+            channel=true
+          else
+            push_tag=dev-$short
+            final_tag=dev-$short
+            channel=false
+          fi
+          {
+            echo "short=$short"
+            echo "push_tag=$push_tag"
+            echo "final_tag=$final_tag"
+            echo "channel=$channel"
+            echo "version=$(date -u +%Y%m%d).$short"
+          } >> "$GITHUB_OUTPUT"
+          echo "$push_tag $final_tag"
 
       - name: Build
         env:
           KERNEL_REF: ${{ steps.kernel.outputs.ref }}
           VERSION: ${{ steps.version.outputs.version }}
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ steps.version.outputs.push_tag }}
         run: |
           podman build \
             --build-arg "KERNEL_REF=$KERNEL_REF" \
@@ -75,15 +94,31 @@ jobs:
 
       - name: Test
         env:
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ steps.version.outputs.push_tag }}
         run: |
           podman run --rm -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/image.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootimg.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootok.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/update.sh
+
+      - name: Source RPMs
+        env:
+          TAG: ${{ steps.version.outputs.push_tag }}
+        run: |
+          podman run --rm "$IMAGE:$TAG" rpm -qa --qf '%{NAME}\t%{SOURCERPM}\t%{VENDOR}\n' > "$RUNNER_TEMP/srpms.tsv"
+          wc -l < "$RUNNER_TEMP/srpms.tsv"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: srpms-${{ steps.version.outputs.short }}
+          path: ${{ runner.temp }}/srpms.tsv
+          if-no-files-found: error
+          retention-days: 1
 
       - name: Push
         id: push
         env:
-          TAG: ${{ steps.version.outputs.tag }}
+          TAG: ${{ steps.version.outputs.push_tag }}
           GH_ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -92,6 +127,12 @@ jobs:
           digest=$(cat "$RUNNER_TEMP/digest")
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "$IMAGE:$TAG $digest"
+
+      - name: Unsigned check
+        env:
+          TAG: ${{ steps.version.outputs.push_tag }}
+        run: |
+          podman run --rm -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/verify-sig.sh unsigned "docker://$IMAGE:$TAG"
 
       - name: Sign
         env:
@@ -109,15 +150,191 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign verify --key "$PUBKEY" "$IMAGE@$DIGEST" > /dev/null
 
-  disk:
+      - name: Signed check
+        env:
+          TAG: ${{ steps.version.outputs.push_tag }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          podman run --rm -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" \
+            /tests/verify-sig.sh signed "docker://$IMAGE@$DIGEST" dir:/var/tmp/signed
+
+  source:
     needs: image
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DIGEST: ${{ needs.image.outputs.digest }}
+      SHORT: ${{ needs.image.outputs.short }}
+      MODE: ${{ needs.image.outputs.channel == 'true' && 'full' || 'base' }}
+      ORAS_VERSION: 1.3.4
+      ORAS_SHA256: 15702c6e3a4a56a8bd8ac5c17efdbcab56d9bada661ccbcf017f5b10c1d89399
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+          tarball=oras_${ORAS_VERSION}_linux_arm64.tar.gz
+          curl -fsSL -o "$RUNNER_TEMP/$tarball" "https://github.com/oras-project/oras/releases/download/v$ORAS_VERSION/$tarball"
+          echo "$ORAS_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" oras
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v2.6.3
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: srpms-${{ needs.image.outputs.short }}
+          path: ${{ runner.temp }}/srpms
+
+      - name: Sources
+        run: |
+          start=$SECONDS
+          build/source-artifact.sh "$RUNNER_TEMP/srpms/srpms.tsv" "$RUNNER_TEMP/source" "$MODE"
+          echo "$((SECONDS - start)) s"
+
+      - name: Attach
+        id: attach
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          oras login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          cd "$RUNNER_TEMP/source"
+          want=$(awk '{ print $1 " sha256:" $2 }' SOURCES | sort)
+          refs=$(oras discover --artifact-type "$SOURCE_TYPE" --format json --depth 1 "$IMAGE@$DIGEST" \
+            | jq -r 'if (.referrers | type) == "array" then .referrers[].digest else error("no referrers list") end')
+          art=
+          for d in $refs; do
+            oras manifest fetch "$IMAGE@$d" > "$RUNNER_TEMP/ref.json"
+            got=$(jq -r '.layers[] | select(.annotations["org.opencontainers.image.title"] != "SOURCES")
+              | "\(.annotations["org.opencontainers.image.title"]) \(.digest)"' "$RUNNER_TEMP/ref.json" | sort)
+            [[ $got == "$want" ]] || continue
+            layer=$(jq -r '.layers[] | select(.annotations["org.opencontainers.image.title"] == "SOURCES") | .digest' "$RUNNER_TEMP/ref.json")
+            if [[ -n $layer && $layer != *$'\n'* ]] && oras blob fetch --output - "$IMAGE@$layer" | cmp -s - SOURCES; then
+              art=$d
+              echo "reusing $IMAGE@$art"
+              break
+            fi
+          done
+          if [[ -z $art ]]; then
+            start=$SECONDS
+            mapfile -t files < <(cut -d' ' -f1 SOURCES)
+            art=$(oras attach --artifact-type "$SOURCE_TYPE" --format go-template --template '{{.digest}}' \
+              "$IMAGE@$DIGEST" "${files[@]}" SOURCES)
+            echo "attached $IMAGE@$art in $((SECONDS - start)) s"
+          fi
+          [[ $art == sha256:* ]] || { echo "::error::no artifact digest: $art"; exit 1; }
+          echo "digest=$art" >> "$GITHUB_OUTPUT"
+
+      - name: Sign source
+        env:
+          ART: ${{ steps.attach.outputs.digest }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          COSIGN_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          cosign login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          cosign sign --yes --new-bundle-format=false --key env://COSIGN_PRIVATE_KEY "$IMAGE@$ART"
+
+      - name: Check source
+        env:
+          ART: ${{ steps.attach.outputs.digest }}
+        run: |
+          cosign verify --key "$PUBKEY" "$IMAGE@$ART" > /dev/null
+          . packages/kernel/SOURCE.env
+          names=$(printf '%s\n' "microos-$SHORT.tar.gz" "linux-$KERNEL_VERSION.tar.xz")
+          if [[ $MODE == full ]]; then
+            names+=$'\n'$(awk -F'\t' '$3 != "MicroOS" && $2 != "(none)" { print $2 }' "$RUNNER_TEMP/srpms/srpms.tsv" | sort -u)
+          fi
+          cd "$RUNNER_TEMP/source"
+          [[ $(cut -d' ' -f1 SOURCES | sort) == "$(sort <<< "$names")" ]] || { echo "::error::SOURCES is not the $MODE set"; exit 1; }
+          refs=$(oras discover --artifact-type "$SOURCE_TYPE" --format json --depth 1 "$IMAGE@$DIGEST" \
+            | jq -r 'if (.referrers | type) == "array" then .referrers[].digest else error("no referrers list") end')
+          grep -qxF "$ART" <<< "$refs" || { echo "::error::$IMAGE@$ART is not a referrer of $DIGEST"; exit 1; }
+          oras manifest fetch "$IMAGE@$ART" > "$RUNNER_TEMP/source.json"
+          got=$(jq -r '.layers[] | select(.annotations["org.opencontainers.image.title"] != "SOURCES")
+            | "\(.annotations["org.opencontainers.image.title"]) \(.digest)"' "$RUNNER_TEMP/source.json" | sort)
+          [[ $got == "$(awk '{ print $1 " sha256:" $2 }' SOURCES | sort)" ]] || { echo "::error::layers differ from SOURCES"; exit 1; }
+          layer=$(jq -r '.layers[] | select(.annotations["org.opencontainers.image.title"] == "SOURCES") | .digest' "$RUNNER_TEMP/source.json")
+          [[ $layer == sha256:* && $layer != *$'\n'* ]] || { echo "::error::no single SOURCES layer"; exit 1; }
+          oras blob fetch --output - "$IMAGE@$layer" | cmp -s - SOURCES || { echo "::error::attached SOURCES differs"; exit 1; }
+          echo "$IMAGE@$ART: $MODE, $(wc -l < SOURCES) files, $(echo "$refs" | wc -l) source artifacts on $DIGEST"
+
+  publish:
+    needs: [image, source]
+    if: needs.image.outputs.channel == 'true'
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    env:
+      DIGEST: ${{ needs.image.outputs.digest }}
+      TAG: ${{ needs.image.outputs.final_tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v2.6.3
+
+      - name: Publish
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          head=$(git ls-remote --exit-code "https://github.com/$GITHUB_REPOSITORY" refs/heads/main | cut -f1)
+          if [[ $head != "$GITHUB_SHA" ]]; then
+            echo "::notice::main is at $head, not $GITHUB_SHA; $IMAGE:$TAG stays"
+            exit 0
+          fi
+          label() { skopeo inspect --no-creds --format '{{index .Labels "org.opencontainers.image.version"}}' "$1"; }
+          new=$(label "docker://$IMAGE@$DIGEST")
+          [[ $new =~ ^[0-9]{8}\.[0-9a-f]{7}$ ]] || { echo "::error::$IMAGE@$DIGEST version '$new'"; exit 1; }
+          if err=$(skopeo inspect --no-creds --raw "docker://$IMAGE:$TAG" 2>&1 > /dev/null); then
+            old=$(label "docker://$IMAGE:$TAG")
+            [[ $old =~ ^[0-9]{8}\.[0-9a-f]{7}$ ]] || { echo "::error::$IMAGE:$TAG version '$old'"; exit 1; }
+            if (( 10#${new%%.*} < 10#${old%%.*} )); then
+              echo "::error::$new is older than $IMAGE:$TAG $old"
+              exit 1
+            fi
+          elif ! grep -qiE 'manifest unknown|404' <<< "$err"; then
+            echo "::error::$err"
+            exit 1
+          fi
+          cosign verify --key "$PUBKEY" "$IMAGE@$DIGEST" > /dev/null
+          skopeo login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          skopeo copy --preserve-digests --remove-signatures "docker://$IMAGE@$DIGEST" "docker://$IMAGE:$TAG"
+          got=sha256:$(skopeo inspect --raw "docker://$IMAGE:$TAG" | sha256sum | cut -d' ' -f1)
+          [[ $got == "$DIGEST" ]] || { echo "::error::$IMAGE:$TAG resolves to $got, not $DIGEST"; exit 1; }
+          echo "$IMAGE:$TAG $DIGEST"
+
+  disk:
+    needs: [image, source]
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: read
     env:
       DIGEST: ${{ needs.image.outputs.digest }}
-      TAG: ${{ needs.image.outputs.tag }}
+      TAG: ${{ needs.image.outputs.final_tag }}
+      PUSH_TAG: ${{ needs.image.outputs.push_tag }}
     steps:
       - uses: ublue-os/remove-unwanted-software@cc0becac701cf642c8f0a6613bbdaf5dc36b259e
 
@@ -158,7 +375,7 @@ jobs:
           mapfile -t raws < <(sudo find "$RUNNER_TEMP/bib" -name '*.raw')
           [[ ${#raws[@]} == 1 ]] || { echo "::error::expected one raw image, got ${raws[*]}"; exit 1; }
           echo "RAW=${raws[0]}" >> "$GITHUB_ENV"
-          echo "OUT=$RUNNER_TEMP/microos-$TAG.img.gz" >> "$GITHUB_ENV"
+          echo "OUT=$RUNNER_TEMP/microos-$PUSH_TAG.img.gz" >> "$GITHUB_ENV"
 
       - name: Finalize
         run: sudo build/finalize-disk.sh "$RAW" "$IMAGE:$TAG"
@@ -174,7 +391,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: microos-${{ needs.image.outputs.tag }}.img.gz
+          name: microos-${{ needs.image.outputs.push_tag }}.img.gz
           path: ${{ env.OUT }}
           if-no-files-found: error
           retention-days: 7

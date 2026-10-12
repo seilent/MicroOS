@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+[[ $1 == --bak ]] || exit 2
+echo "bak $2 confirmed=$(cat "$MICROOS_STATEDIR/confirmed" 2> /dev/null)" >> "$FAKE_STATE/events"
+if [[ -n ${FAKE_BAK_SLEEP:-} ]]; then
+  echo $$ > "$FAKE_STATE/bak-sleeping"
+  sleep "$FAKE_BAK_SLEEP"
+fi
+[[ ${FAKE_BAK_FAIL:-0} != 1 ]] || exit 1
+id=$(printf '%s' "$2" | sha256sum | cut -d' ' -f1)
+echo "$id" > "$MICROOS_ESP/.microos-bootimg-bak.id"
+[[ ${FAKE_BAK_WRONG:-0} != 1 ]] || id=$(printf 0%.0s {1..64})
+echo "microos-bootimg-update: baked $2 into $MICROOS_ESP/KERNEL.BAK" >&2
+echo "bak $2 $id"

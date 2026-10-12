@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_DIR/skopeo.calls"
+if [[ ${FAKE_REGISTRY_DOWN:-0} == 1 ]]; then
+  echo "pinging container registry: dial tcp: lookup ghcr.io: no such host" >&2
+  exit 1
+fi
+if [[ ${FAKE_TAG_MISSING:-0} == 1 ]]; then
+  echo "reading manifest: manifest unknown" >&2
+  exit 2
+fi
+n=$(( $(cat "$FAKE_DIR/skopeo.reads" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$FAKE_DIR/skopeo.reads"
+digest=$FAKE_CHANNEL_DIGEST
+if (( n > 1 )) && [[ -n ${FAKE_CHANNEL_DIGEST_LATER:-} ]]; then
+  digest=$FAKE_CHANNEL_DIGEST_LATER
+fi
+ref=${!#}
+jq -n --arg n "${ref#docker://}" --arg d "$digest" --arg v "$FAKE_CHANNEL_VERSION" \
+  '{Name: $n, Digest: $d, Labels: {"org.opencontainers.image.version": $v}}'

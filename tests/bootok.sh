@@ -1,0 +1,420 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+tree=${MICROOS_TREE:-$here/../system_files}
+bootok=$tree/usr/libexec/microos/microos-boot-ok
+bootlog=$tree/usr/libexec/microos/microos-bootlog
+applied=$tree/usr/libexec/microos/microos-update-applied
+update=$tree/usr/libexec/microos/microos-bootimg-update
+conf=$tree/usr/lib/microos/bootimg.conf
+build=$tree/usr/libexec/microos/microos-bootimg-build
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+rc=0
+fail() { echo "FAIL: $*" >&2; rc=1; }
+
+export MICROOS_RUNDIR=$tmp/run MICROOS_STATEDIR=$tmp/state MICROOS_ESP=$tmp/esp FAKE_STATE=$tmp/fake
+export MICROOS_BOOT_OK_CONF=$tree/usr/lib/microos/boot-ok.conf
+export MICROOS_BOOTIMG_UPDATE=$here/bootok/bin/fake-bootimg-update
+export MICROOS_BOOT_OK_HOLD=0 MICROOS_BOOT_OK_STEP=1 MICROOS_BOOT_OK_WAIT=2
+export PATH=$here/bootok/bin:$here/bootimg/bin:$PATH
+
+c() { local s; s=$(printf '%064d' 0); echo "${s//0/$1}"; }
+P=$(c a).0
+B=$(c b).0
+H=$(c 9).0
+C=$(c c).0
+D=$(c d).0
+
+flag() { if [[ $1 == *$2* ]]; then echo true; else echo false; fi; }
+st() {
+  local e id fl i=0 sep=""
+  {
+    printf '{"deployments":['
+    for e; do
+      id=${e%% *}
+      fl=${e#"$id"}
+      printf '%s{"checksum":"%s","serial":%s,"index":%d,"booted":%s,"pinned":%s,"staged":%s}' "$sep" \
+        "${id%.*}" "${id##*.}" "$i" "$(flag "$fl" b)" "$(flag "$fl" p)" "$(flag "$fl" s)"
+      sep=,
+      i=$((i + 1))
+    done
+    printf ']}\n'
+  } > "$FAKE_STATE/status.json"
+}
+reset() {
+  rm -rf "$MICROOS_RUNDIR" "$MICROOS_STATEDIR" "$MICROOS_ESP" "$FAKE_STATE/status.json" "$FAKE_STATE/reads" \
+    "$FAKE_STATE/events" "$FAKE_STATE/ostree.log" "$FAKE_STATE/lockprobe" "$FAKE_STATE/shifted" "$FAKE_STATE/shifted-pin" "$FAKE_STATE/stages" \
+    "$FAKE_STATE/bak-sleeping"
+  mkdir -p "$MICROOS_RUNDIR" "$MICROOS_STATEDIR" "$MICROOS_ESP" "$FAKE_STATE"
+}
+is_pinned() { jq -e --arg id "$1" 'any(.deployments[]; .pinned and "\(.checksum).\(.serial)" == $id)' "$FAKE_STATE/status.json" > /dev/null; }
+pins() { paste -sd, "$MICROOS_STATEDIR/boot-ok-pins" 2> /dev/null || true; }
+events() { cat "$FAKE_STATE/events" 2> /dev/null || true; }
+writes() { grep -E '^ostree admin (pin|undeploy)' "$FAKE_STATE/ostree.log" 2> /dev/null || true; }
+run() { "$bootok" > "$tmp/out" 2>&1; }
+run_rc() { r=0; run || r=$?; }
+
+mkdir -p "$FAKE_STATE"
+
+reset
+st "$B b" "$P p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+echo "$P" > "$MICROOS_STATEDIR/confirmed"
+MICROOS_BOOT_OK_HOLD=2 run || fail "criterion pass: $(cat "$tmp/out")"
+mapfile -t ev < <(events)
+[[ ${ev[0]:-} == "pin booted pins=$P,$B confirmed=$P" ]] || fail "first event is not the pin after the append: ${ev[0]:-}"
+[[ ${ev[1]:-} == "bak $B confirmed=$B" ]] || fail "second event is not --bak after confirmed: ${ev[1]:-}"
+[[ ${ev[2]:-} == "unpin 1 $P" ]] || fail "third event is not the unpin of the listed id: ${ev[2]:-}"
+(( ${#ev[@]} == 3 )) || fail "extra events: $(events)"
+[[ $(pins) == "$B" ]] || fail "boot-ok-pins after a pass: $(pins)"
+[[ $(cat "$MICROOS_STATEDIR/confirmed") == "$B" ]] || fail "confirmed after a pass"
+is_pinned "$B" || fail "booted not pinned after a pass"
+is_pinned "$P" && fail "listed id still pinned after a pass"
+[[ $(cat "$FAKE_STATE/lockprobe") == held ]] || fail "update.lock was free while ostree ran"
+[[ $(tail -n 1 "$tmp/out") == "microos-boot-ok: confirmed $B" ]] || fail "last line: $(tail -n 1 "$tmp/out")"
+
+reset
+st "$B b"
+( exec 7> "$MICROOS_RUNDIR/update.lock"; flock 7; exec sleep 4 ) &
+holder=$!
+sleep 0.3
+run &
+pid=$!
+sleep 2
+[[ -z $(writes) ]] || fail "ostree pin while update.lock was held"
+wait "$pid" || fail "boot ok after the lock was released: $(cat "$tmp/out")"
+wait "$holder" || true
+is_pinned "$B" || fail "booted not pinned after the lock wait"
+reset
+st "$B b"
+( exec 7> "$MICROOS_RUNDIR/update.lock"; flock 7; exec sleep 5 ) &
+holder=$!
+sleep 0.3
+r=0
+MICROOS_BOOT_OK_LOCK_WAIT=1 run || r=$?
+(( r == 3 )) || fail "lock timeout exit $r"
+grep -q "not confirmed: update.lock busy" "$tmp/out" || fail "lock timeout message: $(cat "$tmp/out")"
+[[ -z $(writes) ]] || fail "ostree write on a lock timeout"
+kill "$holder" 2> /dev/null || true
+wait "$holder" 2> /dev/null || true
+
+reset
+st "$B b" "$P p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+FAKE_FAILED=NetworkManager.service MICROOS_BOOT_OK_HOLD=2 run_rc
+(( r == 1 )) || fail "failed unit exit $r"
+[[ -z $(writes) && -z $(events) ]] || fail "a failed unit still pinned or baked: $(events)"
+
+reset
+st "$B b"
+FAKE_INACTIVE=sshd.service FAKE_COND_NO=sshd.service MICROOS_BOOT_OK_HOLD=2 run || fail "sshd with ConditionResult=no: $(cat "$tmp/out")"
+reset
+st "$B b"
+FAKE_INACTIVE=sshd.service MICROOS_BOOT_OK_HOLD=2 run_rc
+(( r == 1 )) || fail "sshd inactive with ConditionResult=yes: exit $r"
+[[ -z $(writes) ]] || fail "inactive sshd still pinned"
+
+reset
+st "$B b"
+t0=$SECONDS
+FAKE_INACTIVE=multi-user.target run_rc
+(( r == 1 )) || fail "target never active: exit $r"
+(( SECONDS - t0 >= 2 )) || fail "target wait shorter than MICROOS_BOOT_OK_WAIT"
+
+reset
+st "$B b" "$P p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+FAKE_BAK_FAIL=1 run_rc
+(( r == 1 )) || fail "BAK failure exit $r"
+is_pinned "$P" || fail "old pin dropped on a BAK failure"
+grep -q '^unpin' "$FAKE_STATE/events" && fail "unpin after a BAK failure"
+[[ $(pins) == "$P,$B" ]] || fail "boot-ok-pins after a BAK failure: $(pins)"
+: > "$FAKE_STATE/events"
+run || fail "pass after a BAK failure: $(cat "$tmp/out")"
+grep -q '^pin booted' "$FAKE_STATE/events" && fail "already pinned booted pinned again"
+is_pinned "$P" && fail "old pin kept after the pass"
+[[ $(pins) == "$B" ]] || fail "boot-ok-pins after the pass: $(pins)"
+
+reset
+st "$B b" "$P p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+FAKE_BAK_WRONG=1 run_rc
+(( r == 1 )) || fail "wrong bake id exit $r"
+is_pinned "$P" || fail "unpinned after a wrong bake id"
+grep -q '^unpin' "$FAKE_STATE/events" && fail "unpin after a wrong bake id"
+
+reset
+st "$B b" "$P p" "$H p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+run || fail "pass with a hand pin: $(cat "$tmp/out")"
+is_pinned "$H" || fail "hand pin dropped"
+grep -q "$H" "$MICROOS_STATEDIR/boot-ok-pins" && fail "hand pin listed"
+reset
+st "$H b p"
+run || fail "pass with a hand pinned booted: $(cat "$tmp/out")"
+[[ -z $(pins) ]] || fail "hand pinned booted listed: $(pins)"
+st "$B b" "$H p"
+run || fail "pass after a hand pinned booted: $(cat "$tmp/out")"
+is_pinned "$H" || fail "hand pinned deployment unpinned by a later boot ok"
+[[ $(pins) == "$B" ]] || fail "boot-ok-pins after the later boot ok: $(pins)"
+
+reset
+st "$B b" "$P p" "$H p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+FAKE_BAK_SLEEP=10 "$bootok" > "$tmp/out" 2>&1 &
+pid=$!
+for _ in $(seq 1 100); do
+  [[ -e $FAKE_STATE/bak-sleeping ]] && break
+  sleep 0.1
+done
+[[ -e $FAKE_STATE/bak-sleeping ]] || fail "the bake did not start"
+kill -TERM "$pid"
+wait "$pid" 2> /dev/null || true
+kill "$(cat "$FAKE_STATE/bak-sleeping")" 2> /dev/null || true
+{ is_pinned "$P" && is_pinned "$B" && is_pinned "$H"; } || fail "pins changed by a stop during the bake"
+[[ $(pins) == "$P,$B" ]] || fail "boot-ok-pins after a stop during the bake: $(pins)"
+st "$C b" "$B p" "$P p" "$H p"
+run || fail "pass after a stop: $(cat "$tmp/out")"
+is_pinned "$P" && fail "P still pinned after the next pass"
+is_pinned "$B" && fail "B still pinned after the next pass"
+is_pinned "$H" || fail "hand pin dropped after the next pass"
+is_pinned "$C" || fail "C not pinned"
+[[ $(pins) == "$C" ]] || fail "boot-ok-pins after the next pass: $(pins)"
+
+reset
+st "$B b" "$P p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+FAKE_STAGE_ON_READ=3 run || fail "pass with a stage inside the window: $(cat "$tmp/out")"
+grep -qE '^ostree admin pin [0-9]' "$FAKE_STATE/ostree.log" && fail "pin by index"
+grep -q "^unpin [0-9]* $B" "$FAKE_STATE/events" && fail "booted unpinned"
+is_pinned "$B" || fail "booted not pinned after a stage"
+is_pinned "$P" && fail "P pinned after a stage"
+reset
+st "$B b" "$P p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+FAKE_SHIFT_ON_UNPIN=1 run || fail "pass with an index shift: $(cat "$tmp/out")"
+grep -q "^unpin 1 $B" "$FAKE_STATE/events" || fail "the shift did not hit booted: $(events)"
+[[ $(grep -c '^pin booted' "$FAKE_STATE/events") == 2 ]] || fail "booted not pinned again after the shift: $(events)"
+is_pinned "$B" || fail "booted not pinned after the shift"
+is_pinned "$P" && fail "P pinned after the shift"
+[[ $(pins) == "$B" ]] || fail "boot-ok-pins after the shift: $(pins)"
+npinned() { jq '[.deployments[] | select(.pinned)] | length' "$FAKE_STATE/status.json"; }
+U=$(c 8).0
+reset
+st "$B b" "$H p" "$P p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+FAKE_SHIFT_ON_UNPIN=1 run || fail "pass with a shift onto a hand pin: $(cat "$tmp/out")"
+grep -q "^unpin 2 $H" "$FAKE_STATE/events" || fail "the shift did not hit the hand pin: $(events)"
+grep -q "^pin [0-9]* $H" "$FAKE_STATE/events" || fail "hand pin not pinned again by its id: $(events)"
+{ is_pinned "$B" && is_pinned "$H"; } || fail "booted or hand pin lost after a shift"
+is_pinned "$P" && fail "P pinned after a shift onto a hand pin"
+[[ $(npinned) == 2 ]] || fail "extra pins after a shift onto a hand pin: $(npinned)"
+[[ $(pins) == "$B" ]] || fail "boot-ok-pins after a shift onto a hand pin: $(pins)"
+reset
+st "$B b p" "$U" "$H p" "$P p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+FAKE_SHIFT_ON_UNPIN=1 FAKE_SHIFT_ON_PIN=1 run || fail "pass with two shifts: $(cat "$tmp/out")"
+grep -q "^pin [0-9]* $U" "$FAKE_STATE/events" || fail "the second shift did not pin U: $(events)"
+grep -q "^unpin [0-9]* $U" "$FAKE_STATE/events" || fail "the leaked pin on U was not removed: $(events)"
+{ is_pinned "$B" && is_pinned "$H"; } || fail "booted or hand pin lost after two shifts"
+is_pinned "$U" && fail "pin leaked onto U"
+is_pinned "$P" && fail "P pinned after two shifts"
+[[ $(npinned) == 2 ]] || fail "extra pins after two shifts: $(npinned)"
+
+reset
+st "$B b p"
+echo "$B" > "$MICROOS_STATEDIR/boot-ok-pins"
+echo "$B" > "$MICROOS_STATEDIR/confirmed"
+run || fail "pass with nothing to do: $(cat "$tmp/out")"
+[[ -z $(writes) ]] || fail "pin or unpin with nothing to do: $(writes)"
+[[ $(events) == "bak $B confirmed=$B" ]] || fail "--bak not called with nothing to do: $(events)"
+
+sys=$tmp/sysroot
+boot=$tmp/boot
+bootcsum=$(c f)
+kver=7.2.6-microos
+bdir=$boot/ostree/default-$bootcsum
+. "$conf"
+fixture() {
+  local i=0 id d
+  rm -rf "$sys" "$boot"
+  mkdir -p "$bdir/dtb/qcom" "$boot/loader/entries" "$sys/ostree/boot.1/default/$bootcsum"
+  { head -c 56 /dev/zero; printf 'ARMd'; seq 1 3000; } > "$bdir/vmlinuz-$kver"
+  seq 1 500 > "$bdir/initramfs-$kver.img"
+  { printf '\xd0\x0d\xfe\xed'; seq 1 50; } > "$bdir/dtb/$MICROOS_DTB"
+  for id; do
+    d=$sys/ostree/deploy/default/deploy/$id
+    mkdir -p "$d/usr/lib/microos" "$d/usr/libexec/microos"
+    cp "$conf" "$d/usr/lib/microos/"
+    cp "$build" "$d/usr/libexec/microos/"
+    echo "IMAGE_VERSION=20261013.1234567" > "$d/usr/lib/microos/version"
+    ln -s "../../../deploy/default/deploy/$id" "$sys/ostree/boot.1/default/$bootcsum/$i"
+    printf 'title MicroOS\nversion %s\noptions root=UUID=r rw ostree=/ostree/boot.1/default/%s/%s\nlinux %s\ninitrd %s\nfdtdir %s\n' \
+      "$(( 9 - i ))" "$bootcsum" "$i" "/boot/ostree/default-$bootcsum/vmlinuz-$kver" \
+      "/boot/ostree/default-$bootcsum/initramfs-$kver.img" "/boot/ostree/default-$bootcsum/dtb" \
+      > "$boot/loader/entries/ostree-$i.conf"
+    i=$((i + 1))
+  done
+}
+finalize() {
+  local id e l
+  for id in $(jq -r '.deployments[] | select((.pinned or .booted) | not) | "\(.checksum).\(.serial)"' "$FAKE_STATE/status.json"); do
+    rm -rf "$sys/ostree/deploy/default/deploy/$id"
+  done
+  for l in "$sys"/ostree/boot.1/default/"$bootcsum"/*; do
+    [[ -e $l ]] || rm -f "$l"
+  done
+  for e in "$boot"/loader/entries/*.conf; do
+    l=$(sed -n 's/^options .*ostree=\([^ ]*\).*/\1/p' "$e")
+    [[ -e $sys$l ]] || rm -f "$e"
+  done
+  jq '.deployments |= map(select(.pinned or .booted)) | .deployments |= (to_entries | map(.value.index = .key | .value))' \
+    "$FAKE_STATE/status.json" > "$FAKE_STATE/status.new"
+  mv -f "$FAKE_STATE/status.new" "$FAKE_STATE/status.json"
+}
+bak_ok() {
+  local name l t
+  [[ -e $MICROOS_ESP/KERNEL.BAK ]] || return 0
+  name=$(head -c 576 "$MICROOS_ESP/KERNEL.BAK" | tail -c 512 | tr -d '\0' | grep -o 'microos.deploy=[^ ]*' | cut -d= -f2)
+  for l in "$sys"/ostree/boot.{0,1}/*/*/*; do
+    t=$(realpath -e "$l" 2> /dev/null) || continue
+    [[ ${t##*/} != "$name" ]] || return 0
+  done
+  return 1
+}
+real() { MICROOS_BOOT=$boot MICROOS_SYSROOT=$sys "$update" "$@" > "$tmp/uout" 2>&1; }
+
+reset
+fixture "$B" "$P" "$D"
+st "$B b" "$P p" "$D"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+echo "$P" > "$MICROOS_STATEDIR/confirmed"
+real --bak "$P" || fail "fixture bake of P: $(cat "$tmp/uout")"
+{ FAKE_KILL_AFTER_PIN=1 run_rc; } 2> /dev/null
+[[ $(cat "$MICROOS_STATEDIR/confirmed") == "$P" ]] || fail "confirmed written before the kill"
+finalize
+real || fail "default run after a killed boot ok: $(cat "$tmp/uout")"
+bak_ok || fail "KERNEL.BAK names a deployment with no bootlink after a killed boot ok"
+reset
+fixture "$B" "$P" "$D"
+st "$B b" "$P p" "$D"
+real --bak "$P" || fail "fixture bake of P: $(cat "$tmp/uout")"
+st "$B b" "$P" "$D"
+{ FAKE_KILL_AFTER_PIN=1 run_rc; } 2> /dev/null
+finalize
+real || fail "default run after a killed first boot ok: $(cat "$tmp/uout")"
+bak_ok || fail "KERNEL.BAK names a deployment with no bootlink after a killed first boot ok"
+[[ -e $sys/ostree/deploy/default/deploy/$P ]] && fail "fixture finalize kept the unpinned P"
+
+export MICROOS_BOOT=$tmp/bootfs MICROOS_CMDLINE=$tmp/cmdline MICROOS_BOOTID=$tmp/bootid
+log=$MICROOS_BOOT/microos/shutdown.log
+echo "ostree=/ostree/boot.1/default/x/0 quiet microos.deploy=$B" > "$MICROOS_CMDLINE"
+echo "0123456789abcdef-rest" > "$MICROOS_BOOTID"
+rm -f "$FAKE_STATE/bootc.log.bootlog"
+mkdir -p "$MICROOS_BOOT"
+bootc_calls=$(wc -l < "$FAKE_STATE/bootc.log" 2> /dev/null || echo 0)
+
+r=0
+out=$(FAKE_MOUNT_FAIL=1 "$bootlog" run step1 -- sh -c 'echo hi; exit 5' 2>&1) || r=$?
+(( r == 5 )) || fail "bootlog with ro /boot: exit $r"
+[[ $out == *"warning: no "* ]] || fail "bootlog with ro /boot: no warning: $out"
+[[ ! -e $log ]] || fail "bootlog wrote with ro /boot"
+
+r=0
+out=$("$bootlog" run step2 -- sh -c 'echo first; echo second; exit 4' 2> /dev/null) || r=$?
+(( r == 4 )) || fail "bootlog exit $r"
+[[ $out == $'first\nsecond' ]] || fail "bootlog output: $out"
+line=$(tail -n 1 "$log")
+[[ $line =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\ boot=01234567\ step=step2\ rc=4\ booted=$B\ second$ ]] || fail "bootlog line: $line"
+echo "quiet" > "$MICROOS_CMDLINE"
+"$bootlog" run step3 -- true || fail "bootlog of true"
+[[ $(tail -n 1 "$log") == *" step=step3 rc=0 booted=unknown "* ]] || fail "bootlog without microos.deploy: $(tail -n 1 "$log")"
+
+seq 1 200000 | sed 's/^/padding line /' > "$log"
+"$bootlog" run trim -- echo trimmed > /dev/null || fail "bootlog trim run"
+[[ $(wc -l < "$log") == 2000 ]] || fail "trimmed log has $(wc -l < "$log") lines"
+[[ $(tail -n 1 "$log") == *" step=trim rc=0 "*" trimmed" ]] || fail "trimmed log last line"
+
+: > "$log"
+"$bootlog" run para1 -- sh -c 'sleep 0.5; echo one' > /dev/null &
+p1=$!
+"$bootlog" run para2 -- sh -c 'sleep 0.5; echo two' > /dev/null &
+p2=$!
+wait "$p1" "$p2"
+{ grep -q ' step=para1 .* one$' "$log" && grep -q ' step=para2 .* two$' "$log"; } || fail "concurrent lines: $(cat "$log")"
+
+r=0
+"$bootlog" run killed -- sh -c 'kill -TERM $$' > /dev/null 2>&1 || r=$?
+(( r == 143 )) || fail "command killed by SIGTERM: exit $r"
+[[ $(tail -n 1 "$log") == *" step=killed rc=143 "* ]] || fail "SIGTERM status not logged: $(tail -n 1 "$log")"
+
+out=$("$bootlog" run big -- seq 1 300000 2> /dev/null) || fail "big output run"
+[[ $out == "$(seq 1 300000)" ]] || fail "big output not printed in full"
+
+"$bootlog" run term -- sh -c 'echo early; exec sleep 30' > "$tmp/termout" 2>&1 &
+pid=$!
+sleep 1
+t0=$SECONDS
+kill -TERM "$pid"
+r=0
+wait "$pid" || r=$?
+(( r == 143 )) || fail "bootlog under SIGTERM: exit $r"
+(( SECONDS - t0 <= 5 )) || fail "bootlog under SIGTERM took $((SECONDS - t0)) s"
+grep -qx early "$tmp/termout" || fail "bootlog under SIGTERM lost the output: $(cat "$tmp/termout")"
+[[ $(tail -n 1 "$log") == *" step=term rc=143 "*" early" ]] || fail "bootlog under SIGTERM line: $(tail -n 1 "$log")"
+
+"$bootlog" run abrt -- sh -c 'echo early; exec sleep 30' > "$tmp/abrtout" 2>&1 &
+pid=$!
+sleep 1
+kill -ABRT "$pid"
+r=0
+wait "$pid" || r=$?
+(( r == 134 )) || fail "bootlog under SIGABRT: exit $r"
+grep -qx early "$tmp/abrtout" || fail "bootlog under SIGABRT lost the output: $(cat "$tmp/abrtout")"
+[[ $(tail -n 1 "$log") == *" step=abrt rc=134 "*" early" ]] || fail "bootlog under SIGABRT line: $(tail -n 1 "$log")"
+
+( exec 7> "$MICROOS_RUNDIR/bootlog.lock"; flock 7; exec sleep 10 ) &
+holder=$!
+sleep 0.3
+t0=$SECONDS
+r=0
+"$bootlog" run held -- sh -c 'exit 6' > /dev/null 2>&1 || r=$?
+(( r == 6 )) || fail "bootlog with a held lock: exit $r"
+(( SECONDS - t0 <= 5 )) || fail "bootlog with a held lock took $((SECONDS - t0)) s"
+grep -q ' step=held ' "$log" && fail "bootlog wrote under a held lock"
+kill "$holder" 2> /dev/null || true
+wait "$holder" 2> /dev/null || true
+
+[[ $(wc -l < "$FAKE_STATE/bootc.log" 2> /dev/null || echo 0) == "$bootc_calls" ]] || fail "bootlog called bootc"
+unset MICROOS_BOOT MICROOS_CMDLINE MICROOS_BOOTID
+
+reset
+st "$B b"
+nap=$MICROOS_RUNDIR/update-not-applied
+exp=$MICROOS_STATEDIR/expected-deployment
+digest=sha256:$(c 1)
+other=sha256:$(c 2)
+"$applied" > /dev/null || fail "update applied with no expected file"
+[[ ! -e $nap ]] || fail "not applied written with no expected file"
+printf 'deploy=%s\ndigest=%s\nversion=20261013.abc\nimage=ghcr.io/seilent/microos:testing\nstaged=2026-10-13T00:00:00Z\n' "$B" "$other" > "$exp"
+echo stale > "$nap"
+"$applied" > /dev/null || fail "update applied by id"
+[[ ! -e $exp && ! -e $nap ]] || fail "files kept after an applied id"
+printf 'deploy=%s\ndigest=%s\nversion=20261013.abc\n' "$C" "$digest" > "$exp"
+echo stale > "$nap"
+"$applied" > /dev/null || fail "update applied by digest"
+[[ ! -e $exp && ! -e $nap ]] || fail "files kept after an applied digest"
+printf 'deploy=%s\ndigest=%s\nversion=20261013.abc\n' "$C" "$other" > "$exp"
+out=$("$applied" 2>&1) || fail "update not applied run"
+[[ -e $exp ]] || fail "expected file removed when not applied"
+[[ $(cat "$nap" 2> /dev/null) == "expected=$C"$'\n'"booted=$B"$'\n'"digest=$other"$'\n'"version=20261013.abc" ]] || fail "not applied file: $(cat "$nap" 2> /dev/null)"
+[[ $out == *"microos-update-applied: expected $C, booted $B"* ]] || fail "not applied message: $out"
+
+! grep -q rollback "$FAKE_STATE/bootc.log" 2> /dev/null || fail "bootc rollback was called"
+
+if (( rc == 0 )); then
+  echo "bootok: ok"
+fi
+exit "$rc"

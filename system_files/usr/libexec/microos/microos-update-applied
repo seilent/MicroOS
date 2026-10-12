@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-update-applied
+die() { echo "$me: $*" >&2; exit 1; }
+
+statedir=${MICROOS_STATEDIR:-/var/lib/microos}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+expected=$statedir/expected-deployment
+notapplied=$rundir/update-not-applied
+
+[[ -f $expected ]] || exit 0
+get() { sed -n "s/^$1=//p" "$expected" | head -1; }
+deploy=$(get deploy)
+digest=$(get digest)
+version=$(get version)
+
+booted=$(ostree admin status --json | jq -r '[.deployments[] | select(.booted) | "\(.checksum).\(.serial)"] | first // empty') ||
+  die "ostree admin status failed"
+[[ -n $booted ]] || die "no booted deployment in ostree admin status"
+bdigest=$(bootc status --json | jq -r '.status.booted.image.imageDigest // empty') || die "bootc status failed"
+
+if [[ -n $deploy && $booted == "$deploy" ]] || [[ -n $digest && $bdigest == "$digest" ]]; then
+  rm -f "$expected" "$notapplied"
+  echo "$me: $booted is the expected deployment"
+  exit 0
+fi
+
+install -d -m 0755 "$rundir"
+printf 'expected=%s\nbooted=%s\ndigest=%s\nversion=%s\n' "$deploy" "$booted" "$digest" "$version" > "$notapplied.tmp"
+mv -f "$notapplied.tmp" "$notapplied"
+echo "$me: expected $deploy, booted $booted"

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+u=${!#}
+case $1 in
+  is-active) [[ " ${FAKE_INACTIVE:-} " != *" $u "* ]] ;;
+  is-failed) [[ " ${FAKE_FAILED:-} " == *" $u "* ]] ;;
+  show) if [[ " ${FAKE_COND_NO:-} " == *" $u "* ]]; then echo no; else echo yes; fi ;;
+  *) exit 1 ;;
+esac

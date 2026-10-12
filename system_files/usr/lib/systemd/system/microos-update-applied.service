@@ -1,0 +1,12 @@
+[Unit]
+Description=Check that the staged update is the booted deployment
+ConditionPathExists=/var/lib/microos/expected-deployment
+After=local-fs.target
+RequiresMountsFor=/var/lib/microos
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-update-applied
+
+[Install]
+WantedBy=multi-user.target

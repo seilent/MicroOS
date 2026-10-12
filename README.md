@@ -4,8 +4,8 @@ A bootc image for the AYANEO Pocket MICRO 2, built on Fedora (`quay.io/fedora/fe
 
 Sessions: Steam game mode, ES-DE, CASDAP and a niri desktop. Pocket MICRO 2 only.
 
-Development images are built by CI as `ghcr.io/seilent/microos:dev-<sha>`, with an SD card image as a workflow
-artifact. No release channel yet.
+CI builds the `testing` channel, `ghcr.io/seilent/microos:testing`, from `main`, and `ghcr.io/seilent/microos:dev-<sha>`
+from other branches, each with an SD card image as a workflow artifact.
 
 ## License
 

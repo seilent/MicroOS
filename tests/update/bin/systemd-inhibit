@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_DIR/inhibit.calls"
+while [[ $1 == --* ]]; do
+  shift
+done
+FAKE_INHIBITED=1 exec "$@"

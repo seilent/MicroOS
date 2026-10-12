@@ -1,0 +1,15 @@
+[Unit]
+Description=Confirm the booted deployment and pin it
+ConditionPathExists=/run/ostree-booted
+After=multi-user.target microos-bootimg-regen.service ostree-finalize-staged.service
+RequiresMountsFor=/var/lib/microos /boot /boot/efi
+
+[Service]
+Type=exec
+RemainAfterExit=yes
+PrivateMounts=yes
+SuccessExitStatus=3
+ExecStart=/usr/libexec/microos/microos-bootlog run boot-ok -- /usr/libexec/microos/microos-boot-ok
+
+[Install]
+WantedBy=multi-user.target

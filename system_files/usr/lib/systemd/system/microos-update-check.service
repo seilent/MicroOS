@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the MicroOS channel for an update
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/microos
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/microos-update --check
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+Nice=19
+SuccessExitStatus=3 4 7

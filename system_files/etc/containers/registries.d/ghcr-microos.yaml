@@ -1,0 +1,3 @@
+docker:
+  ghcr.io/seilent/microos:
+    use-sigstore-attachments: true

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-bootlog
+boot=${MICROOS_BOOT:-/boot}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+cmdline=${MICROOS_CMDLINE:-/proc/cmdline}
+bootid=${MICROOS_BOOTID:-/proc/sys/kernel/random/boot_id}
+
+if [[ ${1:-} != run || -z ${2:-} || ${3:-} != -- || $# -lt 4 ]]; then
+  echo "usage: $me run <step> -- <command...>" >&2
+  exit 2
+fi
+step=$2
+shift 3
+
+install -d -m 0755 "$rundir" || echo "$me: warning: cannot create $rundir" >&2
+out=$(mktemp "$rundir/bootlog.XXXXXX" 2> /dev/null || mktemp) || exec "$@"
+
+sig=""
+child=""
+trap 'sig=TERM; [[ -z $child ]] || kill -TERM "$child" 2> /dev/null' TERM
+trap 'sig=ABRT; [[ -z $child ]] || kill -ABRT "$child" 2> /dev/null' ABRT
+"$@" > "$out" 2>&1 &
+child=$!
+[[ -z $sig ]] || kill -"$sig" "$child" 2> /dev/null
+wait "$child"
+rc=$?
+while kill -0 "$child" 2> /dev/null; do
+  wait "$child"
+  rc=$?
+done
+
+cat "$out"
+last=$(tail -n 1 "$out" | tr -d '\r')
+rm -f "$out"
+
+id=$(head -c 8 "$bootid" 2> /dev/null) || id=""
+booted=""
+words=()
+read -r -a words 2> /dev/null < "$cmdline" || true
+for w in "${words[@]}"; do
+  if [[ $w == microos.deploy=* ]]; then
+    booted=${w#microos.deploy=}
+  fi
+done
+line="$(date -u +%Y-%m-%dT%H:%M:%SZ) boot=${id:-unknown} step=$step rc=$rc booted=${booted:-unknown} $last"
+
+append='mount -o remount,rw "$1" && mkdir -p "$1/microos" && log=$1/microos/shutdown.log &&
+printf "%s\n" "$2" >> "$log" &&
+{ [ "$(stat -c %s "$log")" -le 1048576 ] || { tail -n 2000 "$log" > "$log.tmp" && mv -f "$log.tmp" "$log"; }; } &&
+sync -f "$log"'
+if ! flock -w 2 "$rundir/bootlog.lock" timeout 3 unshare -m sh -c "$append" sh "$boot" "$line"; then
+  echo "$me: warning: no $boot/microos/shutdown.log line for $step" >&2
+fi
+
+case $sig in
+  TERM) exit 143 ;;
+  ABRT) exit 134 ;;
+esac
+exit "$rc"

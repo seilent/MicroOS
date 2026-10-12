@@ -1,0 +1,21 @@
+{
+  "default": [{"type": "reject"}],
+  "transports": {
+    "docker": {
+      "": [{"type": "insecureAcceptAnything"}],
+      "ghcr.io/seilent/microos": [{
+        "type": "sigstoreSigned",
+        "keyPaths": ["/usr/share/microos/keys/microos.pub", "/usr/share/microos/keys/microos-backup.pub", "/usr/share/microos/keys/microos-next.pub"],
+        "signedIdentity": {"type": "matchRepository"}
+      }]
+    },
+    "containers-storage": {"": [{"type": "insecureAcceptAnything"}]},
+    "dir": {"": [{"type": "insecureAcceptAnything"}]},
+    "docker-archive": {"": [{"type": "insecureAcceptAnything"}]},
+    "docker-daemon": {"": [{"type": "insecureAcceptAnything"}]},
+    "oci": {"": [{"type": "insecureAcceptAnything"}]},
+    "oci-archive": {"": [{"type": "insecureAcceptAnything"}]},
+    "sif": {"": [{"type": "insecureAcceptAnything"}]},
+    "tarball": {"": [{"type": "insecureAcceptAnything"}]}
+  }
+}

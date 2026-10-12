@@ -3,11 +3,14 @@ set -euo pipefail
 
 me=microos-bootimg-update
 die() { echo "$me: $*" >&2; exit 1; }
+say() { echo "$me: $*" >&2; }
 
 esp=${MICROOS_ESP:-/boot/efi}
 boot=${MICROOS_BOOT:-/boot}
 sysroot=${MICROOS_SYSROOT:-/sysroot}
 rundir=${MICROOS_RUNDIR:-/run/microos}
+statedir=${MICROOS_STATEDIR:-/var/lib/microos}
+usage="usage: $me [--check | --bak <checksum>.<serial>]"
 
 check_esp() {
   local line fstype opts src sys espdisk sysdisk
@@ -26,10 +29,164 @@ bls() {
   sed -n "s/^$1[[:space:]]\+//p" "$2" | head -1
 }
 
+bootlink_of() {
+  local w
+  local -
+  set -f
+  for w in $1; do
+    if [[ $w == ostree=* ]]; then
+      echo "${w#ostree=}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+entry_for() {
+  local f link t
+  for f in "$boot"/loader/entries/*.conf; do
+    [[ -f $f ]] || continue
+    link=$(bootlink_of "$(bls options "$f")") || continue
+    t=$(realpath -e "$sysroot$link" 2> /dev/null) || continue
+    if [[ ${t##*/} == "$1" ]]; then
+      echo "$f"
+      return 0
+    fi
+  done
+  return 1
+}
+
+is_pinned() {
+  [[ -n $status ]] && jq -e --arg id "$1" \
+    'any(.deployments[]; .pinned and (.staged | not) and "\(.checksum).\(.serial)" == $id)' \
+    <<< "$status" > /dev/null
+}
+
+bake() {
+  local target=$1 tmp=$2 stamp=$3 entry=$4 force=$5
+  local linux initrd fdtdir options bootlink droot conf build id old built need blocks bsize
+  local -a args
+  baked=""
+  linux=$(bls linux "$entry")
+  initrd=$(bls initrd "$entry")
+  fdtdir=$(bls fdtdir "$entry")
+  options=$(bls options "$entry")
+  [[ -n $linux && -n $initrd && -n $fdtdir ]] || { say "$entry lacks linux, initrd or fdtdir"; return 1; }
+  bootlink=$(bootlink_of "$options") || { say "no ostree= in $entry"; return 1; }
+  droot=$(realpath -e "$sysroot$bootlink") || { say "$bootlink does not resolve under $sysroot"; return 1; }
+  conf=$droot/usr/lib/microos/bootimg.conf
+  [[ -r $conf ]] || { say "missing $conf"; return 1; }
+  . "$conf" || { say "cannot read $conf"; return 1; }
+
+  build=$droot/usr/libexec/microos/microos-bootimg-build
+  args=(
+    --root "$droot"
+    --kernel "$boot${linux#/boot}"
+    --initrd "$boot${initrd#/boot}"
+    --dtb "$boot${fdtdir#/boot}/$MICROOS_DTB"
+    --options "$options"
+    --sysroot "$sysroot"
+  )
+
+  rm -f "$esp/$tmp" || { say "cannot remove $esp/$tmp"; return 1; }
+  id=$("$build" "${args[@]}" --id) || { say "no bake id for ${droot##*/}"; return 1; }
+  old=""
+  if [[ -f $esp/$stamp ]]; then
+    old=$(< "$esp/$stamp")
+  fi
+  if [[ -f $esp/$target && $old == "$id" ]] && (( ! force )); then
+    baked=$id
+    say "skip, $esp/$target already holds ${droot##*/}"
+    return 0
+  fi
+
+  built=$("$build" "${args[@]}" --out "$work/$target") || { say "bake of ${droot##*/} failed"; return 1; }
+  [[ $built == "$id" ]] || { say "id changed during the bake"; return 1; }
+
+  need=$(( $(stat -c %s "$work/$target") + 4194304 ))
+  read -r blocks bsize <<< "$(stat -f -c '%a %S' "$esp")"
+  [[ $blocks =~ ^[0-9]+$ && $bsize =~ ^[0-9]+$ ]] || { say "cannot read free space on $esp"; return 1; }
+  (( blocks * bsize >= need )) || { say "$esp needs $need bytes free for $target, has $((blocks * bsize))"; return 1; }
+
+  rm -f "$esp/$stamp" || { say "cannot remove $esp/$stamp"; return 1; }
+  if ! { cp "$work/$target" "$esp/$tmp" && sync "$esp/$tmp" && mv -f "$esp/$tmp" "$esp/$target" && sync -f "$esp"; }; then
+    rm -f "$esp/$tmp"
+    say "cannot write $esp/$target"
+    return 1
+  fi
+  { echo "$id" > "$esp/$stamp" && sync -f "$esp"; } || { say "cannot write $esp/$stamp"; return 1; }
+  baked=$id
+  say "baked ${droot##*/} into $esp/$target"
+}
+
+dead_bak() {
+  local f=$esp/KERNEL.BAK name="" w link t seen=" " booted
+  [[ -f $f ]] || return 0
+  set -f
+  for w in $(head -c 576 "$f" | tail -c 512 | tr -d '\0'); do
+    if [[ $w == microos.deploy=* ]]; then
+      name=${w#microos.deploy=}
+    fi
+  done
+  set +f
+  [[ -n $name ]] || return 0
+  booted=$(jq -r '.deployments[] | select(.booted) | "\(.checksum).\(.serial)"' <<< "$status" 2> /dev/null) || booted=""
+  for link in "$sysroot"/ostree/boot.{0,1}/*/*/*; do
+    t=$(realpath -e "$link" 2> /dev/null) || continue
+    seen+="${t##*/} "
+  done
+  if [[ -z $booted || $seen != *" $booted "* ]]; then
+    say "KERNEL.BAK kept, no bootlink resolves the booted deployment"
+    return 0
+  fi
+  [[ $seen != *" $name "* ]] || return 0
+  rm -f "$f" "$esp/.microos-bootimg-bak.id"
+  sync -f "$esp"
+  say "removed $f, it names $name, which no bootlink resolves"
+}
+
+bak_default() {
+  local src="" c id i
+  local -a listed=()
+  [[ -n $status ]] || { say "no ostree status, KERNEL.BAK untouched"; return 1; }
+  if [[ -f $statedir/confirmed ]]; then
+    c=$(head -1 "$statedir/confirmed")
+    if is_pinned "$c" && entry_for "$c" > /dev/null; then
+      src=$c
+    fi
+  fi
+  if [[ -z $src && -f $statedir/boot-ok-pins ]]; then
+    mapfile -t listed < "$statedir/boot-ok-pins"
+    for (( i = ${#listed[@]} - 1; i >= 0; i-- )); do
+      id=${listed[i]}
+      if is_pinned "$id" && entry_for "$id" > /dev/null; then
+        src=$id
+        say "KERNEL.BAK from boot ok pin $id"
+        break
+      fi
+    done
+  fi
+  if [[ -z $src ]]; then
+    dead_bak
+    return 0
+  fi
+  if ! bake KERNEL.BAK KBAK.TMP .microos-bootimg-bak.id "$(entry_for "$src")" 0; then
+    dead_bak
+    return 1
+  fi
+}
+
+mode=default
+bakid=""
 case ${1:-} in
-  --check) check_esp; exit 0 ;;
-  "") ;;
-  *) die "usage: $me [--check]" ;;
+  --check) (( $# == 1 )) || die "$usage"; check_esp; exit 0 ;;
+  --bak)
+    [[ $# == 2 && $2 =~ ^[0-9a-f]{64}\.[0-9]+$ ]] || die "$usage"
+    mode=bak
+    bakid=$2
+    ;;
+  "") (( $# == 0 )) || die "$usage" ;;
+  *) die "$usage" ;;
 esac
 
 install -d -m 0755 "$rundir"
@@ -38,9 +195,27 @@ flock -w 60 9 || die "timed out waiting for $rundir/bootimg.lock"
 
 check_esp
 
+work=$(mktemp -d)
+trap 'rm -rf "$work"; rm -f "$esp/KERNEL.TMP" "$esp/KBAK.TMP"' EXIT
+trap 'exit 143' TERM
+
+status=$(ostree admin status --json) || status=""
+
+if [[ $mode == bak ]]; then
+  [[ -n $status ]] || die "no ostree status, KERNEL.BAK untouched"
+  is_pinned "$bakid" || die "$bakid is not a pinned deployment, KERNEL.BAK untouched"
+  entry=$(entry_for "$bakid") || die "no BLS entry resolves to $bakid, KERNEL.BAK untouched"
+  if ! bake KERNEL.BAK KBAK.TMP .microos-bootimg-bak.id "$entry" 0; then
+    dead_bak
+    exit 1
+  fi
+  echo "bak $bakid $baked"
+  exit 0
+fi
+
 remap=0
 if [[ -e $rundir/remapped ]]; then
-  echo "$me: this boot was remapped: $(tr '\n' ' ' < "$rundir/remapped")"
+  say "this boot was remapped: $(tr '\n' ' ' < "$rundir/remapped")"
   [[ -e $rundir/remap-baked ]] || remap=1
 fi
 
@@ -55,67 +230,13 @@ entry=$(
 )
 [[ -n $entry ]] || die "no BLS entry in $boot/loader/entries"
 
-linux=$(bls linux "$entry")
-initrd=$(bls initrd "$entry")
-fdtdir=$(bls fdtdir "$entry")
-options=$(bls options "$entry")
-[[ -n $linux && -n $initrd && -n $fdtdir ]] || die "$entry lacks linux, initrd or fdtdir"
-
-bootlink=""
-set -f
-for w in $options; do
-  if [[ $w == ostree=* ]]; then
-    bootlink=${w#ostree=}
-    break
+rc=0
+if bake KERNEL KERNEL.TMP .microos-bootimg.id "$entry" "$remap"; then
+  if (( remap )); then
+    : > "$rundir/remap-baked"
   fi
-done
-set +f
-[[ -n $bootlink ]] || die "no ostree= in $entry"
-droot=$(realpath -e "$sysroot$bootlink") || die "$bootlink does not resolve under $sysroot"
-
-conf=$droot/usr/lib/microos/bootimg.conf
-[[ -r $conf ]] || die "missing $conf"
-. "$conf"
-
-build=$droot/usr/libexec/microos/microos-bootimg-build
-args=(
-  --root "$droot"
-  --kernel "$boot${linux#/boot}"
-  --initrd "$boot${initrd#/boot}"
-  --dtb "$boot${fdtdir#/boot}/$MICROOS_DTB"
-  --options "$options"
-  --sysroot "$sysroot"
-)
-
-rm -f "$esp/KERNEL.TMP"
-id=$("$build" "${args[@]}" --id)
-stamp=""
-if [[ -f $esp/.microos-bootimg.id ]]; then
-  stamp=$(< "$esp/.microos-bootimg.id")
+else
+  rc=1
 fi
-if [[ -f $esp/KERNEL && $stamp == "$id" ]] && (( ! remap )); then
-  echo "$me: skip, $esp/KERNEL already holds ${droot##*/}"
-  exit 0
-fi
-
-work=$(mktemp -d)
-trap 'rm -rf "$work"; rm -f "$esp/KERNEL.TMP"' EXIT
-built=$("$build" "${args[@]}" --out "$work/KERNEL")
-[[ $built == "$id" ]] || die "id changed during the bake"
-
-need=$(( $(stat -c %s "$work/KERNEL") + 4194304 ))
-read -r blocks bsize <<< "$(stat -f -c '%a %S' "$esp")"
-[[ $blocks =~ ^[0-9]+$ && $bsize =~ ^[0-9]+$ ]] || die "cannot read free space on $esp"
-(( blocks * bsize >= need )) || die "$esp needs $need bytes free, has $((blocks * bsize))"
-
-rm -f "$esp/.microos-bootimg.id"
-cp "$work/KERNEL" "$esp/KERNEL.TMP"
-sync "$esp/KERNEL.TMP"
-mv -f "$esp/KERNEL.TMP" "$esp/KERNEL"
-sync -f "$esp"
-echo "$id" > "$esp/.microos-bootimg.id"
-sync -f "$esp"
-if (( remap )); then
-  : > "$rundir/remap-baked"
-fi
-echo "$me: baked ${droot##*/} into $esp/KERNEL"
+bak_default || rc=1
+exit "$rc"

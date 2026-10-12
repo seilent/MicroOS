@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+s=$FAKE_STATE/status.json
+echo "ostree $*" >> "$FAKE_STATE/ostree.log"
+put() { jq "$@" "$s" > "$s.new" && mv -f "$s.new" "$s"; }
+stage() {
+  local n
+  n=$(( $(cat "$FAKE_STATE/stages" 2> /dev/null || echo 0) + 1 ))
+  echo "$n" > "$FAKE_STATE/stages"
+  put --arg c "$(printf '%064d' "$n" | tr 0 e)" \
+    '.deployments = [{"checksum":$c,"serial":0,"booted":false,"pinned":false,"staged":true}] + .deployments
+     | .deployments |= (to_entries | map(.value.index = .key | .value))'
+}
+case "$*" in
+  "admin status --json")
+    n=$(( $(cat "$FAKE_STATE/reads" 2> /dev/null || echo 0) + 1 ))
+    echo "$n" > "$FAKE_STATE/reads"
+    [[ $n != "${FAKE_STAGE_ON_READ:-}" ]] || stage
+    cat "$s"
+    ;;
+  "admin pin booted")
+    if flock -n "$MICROOS_RUNDIR/update.lock" true; then
+      echo free >> "$FAKE_STATE/lockprobe"
+    else
+      echo held >> "$FAKE_STATE/lockprobe"
+    fi
+    echo "pin booted pins=$(paste -sd, "$MICROOS_STATEDIR/boot-ok-pins" 2> /dev/null) confirmed=$(cat "$MICROOS_STATEDIR/confirmed" 2> /dev/null)" >> "$FAKE_STATE/events"
+    put '(.deployments[] | select(.booted) | .pinned) = true'
+    [[ ${FAKE_KILL_AFTER_PIN:-0} != 1 ]] || kill -KILL "$PPID"
+    ;;
+  "admin pin --unpin "*)
+    if [[ ${FAKE_SHIFT_ON_UNPIN:-0} == 1 && ! -e $FAKE_STATE/shifted ]]; then
+      : > "$FAKE_STATE/shifted"
+      stage
+    fi
+    id=$(jq -r --argjson i "$4" '.deployments[] | select(.index == $i) | "\(.checksum).\(.serial)"' "$s")
+    echo "unpin $4 $id" >> "$FAKE_STATE/events"
+    put --argjson i "$4" '(.deployments[] | select(.index == $i) | .pinned) = false'
+    ;;
+  "admin pin "[0-9]*)
+    if [[ ${FAKE_SHIFT_ON_PIN:-0} == 1 && ! -e $FAKE_STATE/shifted-pin ]]; then
+      : > "$FAKE_STATE/shifted-pin"
+      stage
+    fi
+    echo "pin $3 $(jq -r --argjson i "$3" '.deployments[] | select(.index == $i) | "\(.checksum).\(.serial)"' "$s")" >> "$FAKE_STATE/events"
+    put --argjson i "$3" '(.deployments[] | select(.index == $i) | .pinned) = true'
+    ;;
+  *)
+    exit 1
+    ;;
+esac

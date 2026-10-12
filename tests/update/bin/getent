@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+if [[ -n ${FAKE_PASSWD_HOME:-} && $1 == passwd ]]; then
+  echo "root:x:0:0:Super User:$FAKE_PASSWD_HOME:/bin/bash"
+else
+  exec /usr/bin/getent "$@"
+fi

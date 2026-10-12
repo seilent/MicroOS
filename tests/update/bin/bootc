@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+echo "inhibit=${FAKE_INHIBITED:-0} $*" >> "$FAKE_DIR/bootc.calls"
+case "$1 ${2:-}" in
+  "status --json")
+    cat "$FAKE_DIR/bootc.json"
+    ;;
+  "upgrade --check")
+    if [[ ${FAKE_CHECK_FAIL:-0} == 1 ]]; then
+      echo "error: signature verification failed" >&2
+      exit 1
+    fi
+    echo "Update available for: docker://fake"
+    ;;
+  switch*|upgrade*)
+    if [[ ${FAKE_BOOTC_FAIL:-0} == 1 ]]; then
+      echo "error: fake bootc failure" >&2
+      exit 1
+    fi
+    for f in bootc ostree; do
+      if [[ -f $FAKE_DIR/$f.after.json ]]; then
+        mv "$FAKE_DIR/$f.after.json" "$FAKE_DIR/$f.json"
+      fi
+    done
+    ;;
+  *)
+    exit 1
+    ;;
+esac

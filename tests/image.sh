@@ -25,6 +25,10 @@ for u in bootloader-update.service systemd-backlight@.service systemd-hibernate.
   [[ $(readlink "/etc/systemd/system/$u") == /dev/null ]] || fail "$u is not masked"
 done
 
+for u in microos-boot-ok.service microos-update-applied.service microos-update.service microos-update-check.service \
+  microos-update-check.timer; do
+  [[ -f /usr/lib/systemd/system/$u ]] || fail "$u missing"
+done
 units=()
 for u in /usr/lib/systemd/system/microos-*; do
   [[ -f $u ]] || continue
@@ -37,6 +41,29 @@ done
 SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "${units[@]}" \
   /usr/lib/systemd/system/sshd.service /usr/lib/systemd/system/bootc-generic-growpart.service \
   /usr/lib/systemd/system/ostree-finalize-staged.service || fail "systemd-analyze verify"
+
+[[ $(grep '^ExecStop=' /usr/lib/systemd/system/ostree-finalize-staged.service) == 'ExecStop=/usr/bin/ostree admin finalize-staged' ]] \
+  || fail "ostree-finalize-staged.service ExecStop changed"
+stops=$(systemctl cat ostree-finalize-staged.service \
+  | awk '/^ExecStop=/ { sub(/^ExecStop=/, ""); if ($0 == "") n = 0; else l[++n] = $0 } END { for (i = 1; i <= n; i++) print l[i] }') \
+  || fail "systemctl cat ostree-finalize-staged.service"
+[[ $stops == '/usr/libexec/microos/microos-bootlog run finalize-staged -- /usr/bin/ostree admin finalize-staged'$'\n''-/usr/libexec/microos/microos-bootlog run finalize -- /usr/libexec/microos/microos-bootimg-update' ]] \
+  || fail "effective ostree-finalize-staged.service ExecStop: $stops"
+after=$(systemctl cat microos-boot-ok.service | sed -n 's/^After=//p' | tr ' ' '\n') || fail "systemctl cat microos-boot-ok.service"
+for u in ostree-finalize-staged.service microos-bootimg-regen.service; do
+  grep -qx "$u" <<< "$after" || fail "microos-boot-ok.service is not After=$u"
+done
+
+pol=/etc/containers/policy.json
+keys=(/usr/share/microos/keys/microos.pub /usr/share/microos/keys/microos-backup.pub /usr/share/microos/keys/microos-next.pub)
+jq -e '.default == [{"type": "reject"}]' "$pol" >/dev/null || fail "policy default is not reject"
+jq -e '.transports.docker["ghcr.io/seilent/microos"] == [{"type": "sigstoreSigned", "keyPaths": $ARGS.positional,
+  "signedIdentity": {"type": "matchRepository"}}]' --args "${keys[@]}" < "$pol" >/dev/null || fail "policy scope ghcr.io/seilent/microos"
+for k in "${keys[@]}"; do
+  openssl pkey -pubin -noout -in "$k" 2>/dev/null || fail "$k is not a public key"
+done
+[[ $(< /etc/containers/registries.d/ghcr-microos.yaml) == $'docker:\n  ghcr.io/seilent/microos:\n    use-sigstore-attachments: true' ]] \
+  || fail "registries.d ghcr-microos.yaml"
 
 mkdir -p "$tmp/etc/ssh"
 ssh-keygen -A -f "$tmp" >/dev/null
@@ -72,10 +99,11 @@ done
 lsinitrd -f usr/lib/systemd/system/ostree-prepare-root.service "$img" | grep -qx 'ExecStart=/usr/lib/ostree/ostree-prepare-root /sysroot' \
   || fail "ostree-prepare-root.service ExecStart changed"
 
-scripts=(/usr/libexec/microos/* /usr/lib/microos/* /usr/lib/dracut/modules.d/91microos-ostree-remap/*)
-if grep -n '/etc/' "${scripts[@]}"; then
-  fail "MicroOS scripts reference /etc"
-fi
+[[ -x /usr/bin/microos-update ]] || fail "/usr/bin/microos-update missing"
+scripts=(/usr/libexec/microos/* /usr/lib/microos/* /usr/lib/dracut/modules.d/91microos-ostree-remap/* /usr/bin/microos-*)
+etc=$(grep -n '/etc/' "${scripts[@]}" \
+  | grep -vxE '/usr/bin/microos-update:[0-9]+:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/etc/containers/policy\.json' || true)
+[[ -z $etc ]] || fail "MicroOS scripts reference /etc: $etc"
 
 chmod 711 "$tmp"
 esp=$tmp/esp

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+echo "bootc $*" >> "$FAKE_STATE/bootc.log"
+[[ "$*" == "status --json" ]] || exit 1
+jq --arg d "${FAKE_BOOTED_DIGEST:-sha256:$(printf 1%.0s {1..64})}" \
+  '{status: {booted: (.deployments[] | select(.booted) | {ostree: {checksum, deploySerial: .serial}, image: {imageDigest: $d}})}}' \
+  "$FAKE_STATE/status.json"

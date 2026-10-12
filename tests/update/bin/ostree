@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_DIR/ostree.calls"
+case "$1 ${2:-}" in
+  "admin status")
+    n=$(( $(cat "$FAKE_DIR/ostree.reads" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$FAKE_DIR/ostree.reads"
+    if [[ -f $FAKE_DIR/ostree.json.$n ]]; then
+      cat "$FAKE_DIR/ostree.json.$n"
+    else
+      cat "$FAKE_DIR/ostree.json"
+    fi
+    ;;
+  "admin undeploy")
+    ;;
+  *)
+    exit 1
+    ;;
+esac

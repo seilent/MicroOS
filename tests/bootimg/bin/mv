@@ -2,4 +2,7 @@
 if [[ ${FAKE_MV_FAIL:-0} == 1 && ${!#} == "$MICROOS_ESP/KERNEL" ]]; then
   exit 1
 fi
+if [[ ${FAKE_MV_FAIL_BAK:-0} == 1 && ${!#} == "$MICROOS_ESP/KERNEL.BAK" ]]; then
+  exit 1
+fi
 exec /usr/bin/mv "$@"

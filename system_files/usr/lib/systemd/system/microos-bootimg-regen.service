@@ -5,14 +5,14 @@ DefaultDependencies=no
 After=local-fs.target systemd-journal-flush.service
 Before=ostree-finalize-staged.service final.target
 Conflicts=final.target
-RequiresMountsFor=/sysroot /boot /boot/efi
+RequiresMountsFor=/sysroot /boot /boot/efi /var/lib/microos
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 TimeoutStopSec=180
-ExecStart=-/usr/libexec/microos/microos-bootimg-update
-ExecStop=/usr/libexec/microos/microos-bootimg-update
+ExecStart=-/usr/libexec/microos/microos-bootlog run regen-start -- /usr/libexec/microos/microos-bootimg-update
+ExecStop=/usr/libexec/microos/microos-bootlog run regen-stop -- /usr/libexec/microos/microos-bootimg-update
 
 [Install]
 WantedBy=multi-user.target

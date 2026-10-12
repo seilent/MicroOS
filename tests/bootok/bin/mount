@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "mount $*" >> "$FAKE_STATE/mount.log"
+[[ ${FAKE_MOUNT_FAIL:-0} != 1 ]]
