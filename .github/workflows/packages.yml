@@ -65,7 +65,7 @@ jobs:
             echo "state=exists" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if ! grep -qiE 'manifest unknown|404|denied|unauthorized' <<< "$err"; then
+          if ! grep -qiE 'manifest unknown|404|403|denied|unauthorized' <<< "$err"; then
             echo "::error::$err"
             exit 1
           fi
@@ -74,7 +74,7 @@ jobs:
             echo "::error::$REPO:$HASH exists but is not public"
             exit 1
           fi
-          if ! grep -qiE 'manifest unknown|404' <<< "$err"; then
+          if ! grep -qiE 'manifest unknown|404|403' <<< "$err"; then
             echo "::error::$err"
             exit 1
           fi
