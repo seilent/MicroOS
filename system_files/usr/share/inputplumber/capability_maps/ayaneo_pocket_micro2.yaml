@@ -1,0 +1,221 @@
+version: 2
+kind: CapabilityMap
+name: AYANEO Pocket MICRO 2 Gamepad
+id: ayaneo_pocket_micro2
+
+mapping:
+  - name: South
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_EAST
+          value_type: button
+    target_event:
+      gamepad:
+        button: South
+
+  - name: East
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_SOUTH
+          value_type: button
+    target_event:
+      gamepad:
+        button: East
+
+  - name: West
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_NORTH
+          value_type: button
+    target_event:
+      gamepad:
+        button: West
+
+  - name: North
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_WEST
+          value_type: button
+    target_event:
+      gamepad:
+        button: North
+
+  - name: Left bumper
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_TL
+          value_type: button
+    target_event:
+      gamepad:
+        button: LeftBumper
+
+  - name: Right bumper
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_TR
+          value_type: button
+    target_event:
+      gamepad:
+        button: RightBumper
+
+  - name: Left stick click
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_THUMBL
+          value_type: button
+    target_event:
+      gamepad:
+        button: LeftStick
+
+  - name: Right stick click
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_THUMBR
+          value_type: button
+    target_event:
+      gamepad:
+        button: RightStick
+
+  - name: Select
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_SELECT
+          value_type: button
+    target_event:
+      gamepad:
+        button: Select
+
+  - name: Start
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_START
+          value_type: button
+    target_event:
+      gamepad:
+        button: Start
+
+  - name: Left back
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_Z
+          value_type: button
+    target_event:
+      gamepad:
+        button: LeftPaddle1
+
+  - name: Right back
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_C
+          value_type: button
+    target_event:
+      gamepad:
+        button: RightPaddle1
+
+  - name: DPad up
+    source_events:
+      - evdev:
+          event_type: ABS
+          event_code: ABS_HAT0Y
+          value_type: button
+          axis_direction: negative
+    target_event:
+      gamepad:
+        button: DPadUp
+
+  - name: DPad down
+    source_events:
+      - evdev:
+          event_type: ABS
+          event_code: ABS_HAT0Y
+          value_type: button
+          axis_direction: positive
+    target_event:
+      gamepad:
+        button: DPadDown
+
+  - name: DPad left
+    source_events:
+      - evdev:
+          event_type: ABS
+          event_code: ABS_HAT0X
+          value_type: button
+          axis_direction: negative
+    target_event:
+      gamepad:
+        button: DPadLeft
+
+  - name: DPad right
+    source_events:
+      - evdev:
+          event_type: ABS
+          event_code: ABS_HAT0X
+          value_type: button
+          axis_direction: positive
+    target_event:
+      gamepad:
+        button: DPadRight
+
+  - name: Left trigger
+    source_events:
+      - evdev:
+          event_type: ABS
+          event_code: ABS_BRAKE
+          value_type: trigger
+    target_event:
+      gamepad:
+        trigger:
+          name: LeftTrigger
+
+  - name: Right trigger
+    source_events:
+      - evdev:
+          event_type: ABS
+          event_code: ABS_GAS
+          value_type: trigger
+    target_event:
+      gamepad:
+        trigger:
+          name: RightTrigger
+
+  - name: Left stick
+    source_events:
+      - evdev:
+          event_type: ABS
+          event_code: ABS_X
+          value_type: joystick_x
+      - evdev:
+          event_type: ABS
+          event_code: ABS_Y
+          value_type: joystick_y
+    target_event:
+      gamepad:
+        axis:
+          name: LeftStick
+
+  - name: Right stick
+    source_events:
+      - evdev:
+          event_type: ABS
+          event_code: ABS_Z
+          value_type: joystick_x
+      - evdev:
+          event_type: ABS
+          event_code: ABS_RZ
+          value_type: joystick_y
+    target_event:
+      gamepad:
+        axis:
+          name: RightStick

@@ -1,0 +1,43 @@
+version: 2
+kind: CapabilityMap
+name: AYANEO Pocket MICRO 2 Front Keys
+id: ayaneo_pocket_micro2_front
+
+mapping:
+  - name: Home
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: KEY_PROG1
+          value_type: button
+    target_event:
+      gamepad:
+        button: Guide
+
+  - name: Space
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: KEY_PROG2
+          value_type: button
+    target_event:
+      gamepad:
+        button: QuickAccess
+
+  - name: LC
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: KEY_PROG3
+          value_type: button
+    target_event:
+      keyboard: KeyF14
+
+  - name: RC
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: KEY_PROG4
+          value_type: button
+    target_event:
+      keyboard: KeyF15
