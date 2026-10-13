@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+if [[ $# == 2 && $2 == micro ]]; then
+  case $1 in
+    -u) echo 1000 ;;
+    -g)
+      if [[ -n ${FAKE_ID_G_FAIL:-} ]]; then
+        echo "id: 'micro': no such user" >&2
+        exit 1
+      fi
+      echo 1001
+      ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+exec /usr/bin/id "$@"

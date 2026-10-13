@@ -1,0 +1,8 @@
+#!/usr/bin/bash
+for arg; do
+  if [[ $arg == --check ]]; then
+    echo "FW up to date"
+    exit 7
+  fi
+done
+exit 0

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=steamos-select-branch
+statedir=${MICROOS_STATEDIR:-/var/lib/microos}
+
+channel=testing
+if [[ -e $statedir/update-channel ]]; then
+  channel=$(tr -d '[:space:]' < "$statedir/update-channel")
+fi
+
+case ${1:-} in
+  -c)
+    case $channel in
+      testing) echo beta ;;
+      stable) echo rel ;;
+      *) echo "$me: $statedir/update-channel names '$channel', not testing or stable" >&2; exit 1 ;;
+    esac
+    ;;
+  -l)
+    printf '%s\n' rel beta
+    ;;
+  *)
+    logger -t "$me" "branch $(printf %q "${1:-}") not set, the channel stays $channel"
+    exit 1
+    ;;
+esac

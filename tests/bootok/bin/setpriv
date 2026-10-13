@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+echo "setpriv $*" >> "$FAKE_STATE/setpriv.log"
+fds=$(readlink /proc/$$/fd/0)
+for n in $(seq 3 64); do
+  [[ ! -e /proc/$$/fd/$n ]] || fds+=" $n"
+done
+echo "$fds" >> "$FAKE_STATE/setpriv-fds.log"
+while [[ ${1:-} == -* ]]; do
+  shift
+done
+[[ $1 == env && $2 == -i ]] || exit 1
+shift 2
+exec env "$@"

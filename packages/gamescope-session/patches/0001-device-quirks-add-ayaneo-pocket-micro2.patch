@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Tue, 13 Oct 2026 12:00:00 +0000
+Subject: [PATCH] device-quirks: add AYANEO Pocket MICRO 2
+
+---
+ usr/share/gamescope-session-plus/device-quirks | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/usr/share/gamescope-session-plus/device-quirks b/usr/share/gamescope-session-plus/device-quirks
+index f5605bb..2a0bd6f 100644
+--- a/usr/share/gamescope-session-plus/device-quirks
++++ b/usr/share/gamescope-session-plus/device-quirks
+@@ -280,6 +280,12 @@ if [[ ":AYANEO Pocket EVO:" =~ ":$SYS_ID:" ]]; then
+   export STEAM_DISPLAY_REFRESH_LIMITS=60,120
+ fi
+ 
++if [[ ":AYANEO Pocket MICRO 2:" =~ ":$SYS_ID:" ]]; then
++  OUTPUT_CONNECTOR='*,DSI-1'
++  FAKE_OUTPUT_MM=177x118
++  GAMESCOPE_STARTUP_TIMEOUT=15
++fi
++
+ if [[ ":AYANEO Pocket S2:AYANEO Pocket S 2K:" =~ ":$SYS_ID:" ]]; then
+   ORIENTATION=right
+   CUSTOM_REFRESH_RATES=60
+-- 
+2.43.0
+

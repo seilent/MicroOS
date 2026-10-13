@@ -21,6 +21,7 @@ build() {
     "$src/$name.spec"
 }
 
+cp "$src"/patches/*.patch "$top/SOURCES/"
 build gamescope-session "$GAMESCOPE_SESSION_URL" "$GAMESCOPE_SESSION_REF" \
   "$GAMESCOPE_SESSION_DATE" "$GAMESCOPE_SESSION_SHA256"
 build gamescope-session-steam "$GAMESCOPE_SESSION_STEAM_URL" "$GAMESCOPE_SESSION_STEAM_REF" \

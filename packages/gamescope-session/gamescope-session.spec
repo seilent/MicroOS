@@ -8,6 +8,8 @@ Summary:        Gamescope session launcher and common session files
 License:        MIT
 URL:            https://github.com/OpenGamingCollective/gamescope-session
 Source0:        %{url}/archive/%{commit}/%{name}-%{commit}.tar.gz
+Patch0:         0001-device-quirks-add-ayaneo-pocket-micro2.patch
+Patch1:         0002-gamescope-session-plus-startup-timeout.patch
 Vendor:         MicroOS
 BuildArch:      noarch
 BuildRequires:  systemd-rpm-macros
@@ -18,7 +20,7 @@ gamescope-session-plus from the Open Gaming Collective: the session launcher,
 its systemd user units and the device quirks it reads.
 
 %prep
-%autosetup -n %{name}-%{commit}
+%autosetup -p1 -n %{name}-%{commit}
 
 %build
 

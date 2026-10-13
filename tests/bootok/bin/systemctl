@@ -1,7 +1,32 @@
 #!/usr/bin/env bash
 u=${!#}
+if [[ $1 == --user ]]; then
+  echo "systemctl $*" >> "$FAKE_STATE/user.log"
+  n=$(( $(cat "$FAKE_STATE/user-reads" 2> /dev/null || echo 0) + 1 ))
+  echo "$n" > "$FAKE_STATE/user-reads"
+  [[ $2 == show && $XDG_RUNTIME_DIR == /run/user/1000 ]] || exit 1
+  if (( n <= ${FAKE_USER_DOWN:-0} )); then
+    echo "Failed to connect to user scope bus via local transport: No such file or directory" >&2
+    exit 1
+  fi
+  if [[ " ${FAKE_USER_INACTIVE:-} " == *" $u "* ]] || (( n <= ${FAKE_USER_ACTIVE_AFTER:-0} )); then
+    printf 'ActiveState=inactive\nInvocationID=\n'
+  elif [[ -n ${FAKE_USER_RESTART_AFTER:-} ]] && (( n > FAKE_USER_RESTART_AFTER )); then
+    printf 'ActiveState=active\nInvocationID=%s\n' "$(printf 2%.0s {1..32})"
+  else
+    printf 'ActiveState=active\nInvocationID=%s\n' "$(printf 1%.0s {1..32})"
+  fi
+  exit 0
+fi
 case $1 in
-  is-active) [[ " ${FAKE_INACTIVE:-} " != *" $u "* ]] ;;
+  is-active)
+    if [[ $u == "${FAKE_INACTIVE_LATE:-}" ]]; then
+      n=$(( $(cat "$FAKE_STATE/late-reads" 2> /dev/null || echo 0) + 1 ))
+      echo "$n" > "$FAKE_STATE/late-reads"
+      (( n < 2 )) || exit 1
+    fi
+    [[ " ${FAKE_INACTIVE:-} " != *" $u "* ]]
+    ;;
   is-failed) [[ " ${FAKE_FAILED:-} " == *" $u "* ]] ;;
   show) if [[ " ${FAKE_COND_NO:-} " == *" $u "* ]]; then echo no; else echo yes; fi ;;
   *) exit 1 ;;

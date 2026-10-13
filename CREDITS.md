@@ -12,8 +12,9 @@ Projects MicroOS builds, with their authors and license.
 | `gamescope` RPM spec and packaging patches | Fedora [rpms/gamescope](https://src.fedoraproject.org/rpms/gamescope) `a846be4c` | František Zatloukal, Neal Gompa and Fedora packagers | MIT |
 | `inputplumber` | [ShadowBlip/InputPlumber](https://github.com/ShadowBlip/InputPlumber) `v0.82.0` `d951ef9` | William Edwards, Derek J. Clark and InputPlumber contributors | GPL-3.0-or-later |
 
-`gamescope` carries Fedora's packaging patches (`packages/gamescope/PATCHES.md`); the others are built as is. License
-texts in `packages/gamescope/`, `packages/gamescope-session/` and `packages/inputplumber/`.
+`gamescope-session` carries my PM2 `device-quirks` entry and `gamescope` carries Fedora's packaging patches (`PATCHES.md`
+in each package); the others are built as is. License texts in `packages/gamescope/`, `packages/gamescope-session/` and
+`packages/inputplumber/`.
 
 ## Kernel
 

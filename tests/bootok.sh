@@ -46,7 +46,8 @@ st() {
 reset() {
   rm -rf "$MICROOS_RUNDIR" "$MICROOS_STATEDIR" "$MICROOS_ESP" "$FAKE_STATE/status.json" "$FAKE_STATE/reads" \
     "$FAKE_STATE/events" "$FAKE_STATE/ostree.log" "$FAKE_STATE/lockprobe" "$FAKE_STATE/shifted" "$FAKE_STATE/shifted-pin" "$FAKE_STATE/stages" \
-    "$FAKE_STATE/bak-sleeping"
+    "$FAKE_STATE/bak-sleeping" "$FAKE_STATE/user.log" "$FAKE_STATE/user-reads" "$FAKE_STATE/setpriv.log" \
+    "$FAKE_STATE/setpriv-fds.log" "$FAKE_STATE/late-reads"
   mkdir -p "$MICROOS_RUNDIR" "$MICROOS_STATEDIR" "$MICROOS_ESP" "$FAKE_STATE"
 }
 is_pinned() { jq -e --arg id "$1" 'any(.deployments[]; .pinned and "\(.checksum).\(.serial)" == $id)' "$FAKE_STATE/status.json" > /dev/null; }
@@ -122,6 +123,85 @@ t0=$SECONDS
 FAKE_INACTIVE=multi-user.target run_rc
 (( r == 1 )) || fail "target never active: exit $r"
 (( SECONDS - t0 >= 2 )) || fail "target wait shorter than MICROOS_BOOT_OK_WAIT"
+
+S=gamescope-session-plus@steam.service
+reset
+st "$B b"
+t0=$SECONDS
+FAKE_USER_INACTIVE=$S run_rc
+(( r == 1 )) || fail "session never active: exit $r"
+(( SECONDS - t0 >= 2 )) || fail "session wait shorter than MICROOS_BOOT_OK_WAIT"
+grep -q "not confirmed: $S not active after 2 s" "$tmp/out" || fail "session never active message: $(cat "$tmp/out")"
+[[ -z $(writes) && -z $(events) ]] || fail "pinned with the session never active: $(events)"
+reset
+st "$B b"
+FAKE_USER_RESTART_AFTER=2 MICROOS_BOOT_OK_HOLD=3 run_rc
+(( r == 1 )) || fail "session restarted: exit $r"
+grep -q "not confirmed: $S restarted" "$tmp/out" || fail "session restarted message: $(cat "$tmp/out")"
+[[ -z $(writes) && -z $(events) ]] || fail "pinned with a restarted session: $(events)"
+reset
+st "$B b"
+(
+  for n in $(seq 3 64); do eval "exec $n>&-"; done
+  FAKE_USER_ACTIVE_AFTER=1 MICROOS_BOOT_OK_HOLD=3 run
+) || fail "session active through the hold: $(cat "$tmp/out")"
+is_pinned "$B" || fail "booted not pinned with the session active through the hold"
+(( $(cat "$FAKE_STATE/user-reads") >= 5 )) || fail "session read $(cat "$FAKE_STATE/user-reads") times in the wait and hold"
+[[ $(sort -u "$FAKE_STATE/user.log") == "systemctl --user show -p ActiveState,InvocationID $S" ]] ||
+  fail "session query: $(sort -u "$FAKE_STATE/user.log")"
+[[ $(sort -u "$FAKE_STATE/setpriv.log") == "setpriv --reuid=1000 --regid=1001 --init-groups --no-new-privs env -i XDG_RUNTIME_DIR=/run/user/1000 systemctl --user show -p ActiveState,InvocationID $S" ]] ||
+  fail "session query user: $(sort -u "$FAKE_STATE/setpriv.log")"
+[[ $(sort -u "$FAKE_STATE/setpriv-fds.log") == /dev/null ]] || fail "session query stdin or extra fds: $(sort -u "$FAKE_STATE/setpriv-fds.log")"
+reset
+st "$B b"
+FAKE_USER_INACTIVE=$S MICROOS_BOOT_OK_USER_ACTIVE='' run || fail "empty MICROOS_BOOT_OK_USER_ACTIVE: $(cat "$tmp/out")"
+[[ ! -e $FAKE_STATE/user-reads ]] || fail "session read with an empty MICROOS_BOOT_OK_USER_ACTIVE"
+is_pinned "$B" || fail "booted not pinned with an empty MICROOS_BOOT_OK_USER_ACTIVE"
+reset
+st "$B b"
+FAKE_USER_DOWN=1 FAKE_INACTIVE_LATE=multi-user.target run_rc
+(( r == 1 )) || fail "target down after the session: exit $r"
+grep -q "not confirmed: multi-user.target not active after 2 s" "$tmp/out" || fail "target down after the session message: $(cat "$tmp/out")"
+reset
+st "$B b"
+FAKE_ID_G_FAIL=1 run_rc
+(( r == 1 )) || fail "no group for the user: exit $r"
+grep -q "^id:" "$tmp/out" && fail "id stderr in the output: $(cat "$tmp/out")"
+reset
+st "$B b"
+FAKE_USER_DOWN=2 run || fail "user manager up late: $(cat "$tmp/out")"
+is_pinned "$B" || fail "booted not pinned after the user manager came up"
+(( $(cat "$FAKE_STATE/user-reads") >= 3 )) || fail "user manager down: read $(cat "$FAKE_STATE/user-reads") times"
+reset
+st "$B b"
+FAKE_USER_DOWN=100 run_rc
+(( r == 1 )) || fail "user manager never up: exit $r"
+grep -q "not confirmed: $S not active after 2 s" "$tmp/out" || fail "user manager never up message: $(cat "$tmp/out")"
+[[ -z $(writes) && -z $(events) ]] || fail "pinned with no user manager: $(events)"
+
+reset
+st "$B b" "$P p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+echo "$B" > "$MICROOS_STATEDIR/boot-ok-skip"
+run_rc
+(( r == 3 )) || fail "skip file naming the booted deployment: exit $r"
+[[ $(tail -n 1 "$tmp/out") == "microos-boot-ok: skipped once" ]] || fail "skip message: $(cat "$tmp/out")"
+[[ ! -e $MICROOS_STATEDIR/boot-ok-skip ]] || fail "skip file kept after a skip"
+[[ -z $(writes) && -z $(events) ]] || fail "pinned or baked on a skip: $(events)"
+[[ ! -e $MICROOS_STATEDIR/confirmed ]] || fail "confirmed written on a skip"
+[[ $(pins) == "$P" ]] || fail "boot-ok-pins changed on a skip: $(pins)"
+run || fail "pass after a skip: $(cat "$tmp/out")"
+is_pinned "$B" || fail "booted not pinned after a skip"
+is_pinned "$P" && fail "P still pinned after the pass after a skip"
+reset
+st "$B b" "$P p"
+echo "$P" > "$MICROOS_STATEDIR/boot-ok-pins"
+echo "$C" > "$MICROOS_STATEDIR/boot-ok-skip"
+run || fail "skip file naming another deployment: $(cat "$tmp/out")"
+[[ ! -e $MICROOS_STATEDIR/boot-ok-skip ]] || fail "skip file kept after a mismatch"
+grep -q "boot-ok-skip names '$C', booted $B, not skipped" "$tmp/out" || fail "skip mismatch message: $(cat "$tmp/out")"
+is_pinned "$B" || fail "booted not pinned after a skip mismatch"
+[[ $(pins) == "$B" ]] || fail "boot-ok-pins after a skip mismatch: $(pins)"
 
 reset
 st "$B b" "$P p"

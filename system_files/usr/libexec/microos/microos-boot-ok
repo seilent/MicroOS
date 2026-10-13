@@ -11,12 +11,35 @@ conf=${MICROOS_BOOT_OK_CONF:-/usr/lib/microos/boot-ok.conf}
 bootimg=${MICROOS_BOOTIMG_UPDATE:-/usr/libexec/microos/microos-bootimg-update}
 lockwait=${MICROOS_BOOT_OK_LOCK_WAIT:-1800}
 pins=$statedir/boot-ok-pins
+skip=$statedir/boot-ok-skip
 
 [[ -r $conf ]] || die "missing $conf"
 . "$conf"
 
+declare -A inv=()
+user_unit() {
+  local out uid gid
+  uid=$(id -u "$MICROOS_BOOT_OK_USER" 2> /dev/null) || return 0
+  gid=$(id -g "$MICROOS_BOOT_OK_USER" 2> /dev/null) || return 0
+  out=$(setpriv --reuid="$uid" --regid="$gid" --init-groups --no-new-privs env -i XDG_RUNTIME_DIR="/run/user/$uid" \
+    systemctl --user show -p ActiveState,InvocationID "$1" < /dev/null 2> /dev/null) || return 0
+  echo "$(sed -n 's/^ActiveState=//p' <<< "$out") $(sed -n 's/^InvocationID=//p' <<< "$out")"
+}
+
+users_up() {
+  local u s id
+  for u in ${MICROOS_BOOT_OK_USER_ACTIVE:-}; do
+    read -r s id <<< "$(user_unit "$u")"
+    if [[ $s != active || -z $id ]]; then
+      down=$u
+      return 1
+    fi
+    inv[$u]=$id
+  done
+}
+
 units_ok() {
-  local u
+  local u s id
   for u in $MICROOS_BOOT_OK_FAILED; do
     if systemctl is-failed --quiet "$u"; then
       echo "$me: not confirmed: $u failed" >&2
@@ -26,6 +49,17 @@ units_ok() {
   for u in $MICROOS_BOOT_OK_ACTIVE; do
     if [[ $(systemctl show -p ConditionResult --value "$u") == yes ]] && ! systemctl is-active --quiet "$u"; then
       echo "$me: not confirmed: $u is not active" >&2
+      return 1
+    fi
+  done
+  for u in ${MICROOS_BOOT_OK_USER_ACTIVE:-}; do
+    read -r s id <<< "$(user_unit "$u")"
+    if [[ $s != active ]]; then
+      echo "$me: not confirmed: $u is not active" >&2
+      return 1
+    fi
+    if [[ $id != "${inv[$u]}" ]]; then
+      echo "$me: not confirmed: $u restarted" >&2
       return 1
     fi
   done
@@ -60,9 +94,27 @@ index_of() {
   jq -r --arg id "$1" '.deployments[] | select("\(.checksum).\(.serial)" == $id) | .index' <<< "$status"
 }
 
+if [[ -e $skip ]]; then
+  want=$(tr -d '[:space:]' < "$skip")
+  rm -f "$skip"
+  sync -f "$statedir"
+  read_status
+  booted=$(id_of .booted)
+  if [[ -n $booted && $booted == "$want" ]]; then
+    echo "$me: skipped once"
+    exit 3
+  fi
+  echo "$me: boot-ok-skip names '$want', booted $booted, not skipped" >&2
+fi
+
+ready() {
+  down=$MICROOS_BOOT_OK_TARGET
+  systemctl is-active --quiet "$MICROOS_BOOT_OK_TARGET" && users_up
+}
+
 waited=0
-until systemctl is-active --quiet "$MICROOS_BOOT_OK_TARGET"; do
-  (( waited < MICROOS_BOOT_OK_WAIT )) || die "not confirmed: $MICROOS_BOOT_OK_TARGET not active after $MICROOS_BOOT_OK_WAIT s"
+until ready; do
+  (( waited < MICROOS_BOOT_OK_WAIT )) || die "not confirmed: $down not active after $MICROOS_BOOT_OK_WAIT s"
   sleep "$MICROOS_BOOT_OK_STEP"
   waited=$(( waited + MICROOS_BOOT_OK_STEP ))
 done
