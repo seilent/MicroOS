@@ -1,0 +1,17 @@
+#!/usr/bin/bash
+me=steamos-priv-write
+node=/sys/class/backlight/backlight/brightness
+dir=${MICROOS_SYSFS:-/sys}/class/backlight/backlight
+
+refuse() {
+  logger -t "$me" "$1:$(printf ' %q' "${@:2}")"
+  exit 1
+}
+
+(( $# == 2 )) || refuse "refused, expected <path> <value>" "$@"
+[[ $1 == "$node" ]] || refuse "refused, path not allowed" "$@"
+[[ $2 =~ ^[0-9]{1,9}$ ]] || refuse "refused, value is not an integer" "$@"
+max=$(< "$dir/max_brightness") || refuse "refused, no max_brightness" "$@"
+[[ $max =~ ^[0-9]{1,9}$ ]] || refuse "refused, max_brightness is $(printf %q "$max")" "$@"
+(( 10#$2 <= 10#$max )) || refuse "refused, value above $max" "$@"
+printf '%d\n' "$((10#$2))" > "$dir/brightness" || refuse "write failed" "$@"

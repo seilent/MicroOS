@@ -1,0 +1,2 @@
+enable steamos-manager.service
+enable upower.service

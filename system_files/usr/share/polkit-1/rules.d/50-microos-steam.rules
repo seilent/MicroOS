@@ -1,0 +1,12 @@
+polkit.addRule(function(action, subject) {
+  var ids = [
+    "org.freedesktop.login1.inhibit-handle-power-key",
+    "org.freedesktop.login1.inhibit-handle-suspend-key",
+    "org.freedesktop.login1.suspend",
+    "org.freedesktop.login1.reboot",
+    "org.freedesktop.login1.power-off"
+  ];
+  if (ids.indexOf(action.id) >= 0 && subject.user == "micro") {
+    return polkit.Result.YES;
+  }
+});

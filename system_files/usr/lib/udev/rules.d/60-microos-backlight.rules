@@ -1,0 +1,1 @@
+ACTION=="add", SUBSYSTEM=="backlight", KERNEL=="backlight", RUN+="/usr/bin/chgrp wheel /sys%p/brightness", RUN+="/usr/bin/chmod g+w /sys%p/brightness"

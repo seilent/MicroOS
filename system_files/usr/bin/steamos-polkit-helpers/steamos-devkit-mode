@@ -1,0 +1,4 @@
+#!/usr/bin/bash
+[[ $# == 1 && $1 == --disable ]] && exit 0
+logger -t steamos-devkit-mode "devkit mode refused"
+exit 1
