@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=$HOME/.local/share/Steam
+client=$root/steamrtarm64/steam
+[[ -x $client ]] || { echo "steam: $client is missing or not executable" >&2; exit 127; }
+
+running=0
+while read -r p; do
+  [[ $p == "$$" || $(awk '/^PPid:/ {print $2}' "/proc/$p/status" 2>/dev/null) == "$$" ]] || running=1
+done < <(pgrep -u "$UID" -x steam)
+if (( ! running )); then
+  rm -f "$root/.crash" "$root/steam.pid" "$HOME/.steam/steam.pid" \
+    "$root/config/htmlcache/SingletonLock" "$root/config/htmlcache/SingletonCookie" \
+    "$root/config/htmlcache/SingletonSocket"
+fi
+
+export SteamDeck=1
+export LD_LIBRARY_PATH=$root/steamrtarm64:$root/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export PATH=$root/steam-runtime-steamrt-arm64/bin:$PATH
+export FUSERMOUNT_PROG=/run/host/usr/bin/fusermount3
+export SYSTEM_PATH=$PATH
+export SYSTEM_LD_LIBRARY_PATH=$LD_LIBRARY_PATH
+cd "$root/steamrtarm64"
+exec "$client" "$@"

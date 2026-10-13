@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-steam-seed
+die() { echo "$me: $*" >&2; exit 1; }
+
+seeddir=${MICROOS_SEED_DIR:-/usr/share/microos-seed}
+share=$HOME/.local/share
+steam=$share/Steam
+dot=$HOME/.steam
+stamp=$share/microos/steam-seed
+tmp=$share/.microos-seed.tmp
+declare -A links=(
+  [steam]=../.local/share/Steam
+  [root]=../.local/share/Steam
+  [sdk32]=../.local/share/Steam/linux32
+  [sdk64]=../.local/share/Steam/linux64
+  [sdkarm64]=../.local/share/Steam/linuxarm64
+  [bin32]=../.local/share/Steam/ubuntu12_32
+  [bin64]=../.local/share/Steam/ubuntu12_64
+)
+
+user=(steamapps userdata config compatibilitytools.d appcache logs dumps)
+
+trap 'rm -rf "$tmp"' EXIT
+rm -rf "$tmp"
+version=$(cat "$seeddir/steam-seed.version")
+
+write_stamp() {
+  mkdir -p "${stamp%/*}"
+  echo "$version" > "$stamp.tmp"
+  mv "$stamp.tmp" "$stamp"
+}
+
+user_entries() {
+  local n
+  for n in "${user[@]}"; do
+    [[ -e $1/$n || -L $1/$n ]] && echo "$1/$n"
+  done
+  compgen -G "$1/ssfn*" || true
+}
+
+has_user_data() {
+  [[ -n $(user_entries "$1") || -n $(find "$1/" -name steamapps -print -quit 2> /dev/null) ]]
+}
+
+restore() {
+  local d from="" src moved=() kept=()
+  for d in "$steam".broken-*; do
+    [[ -d $d && ! -L $d ]] && has_user_data "$d" && from=$d
+  done
+  [[ -n $from ]] || return 0
+  while IFS= read -r src; do
+    if [[ -e $steam/${src##*/} || -L $steam/${src##*/} ]] || ! mv -T "$src" "$steam/${src##*/}"; then
+      kept+=("${src##*/}")
+    else
+      moved+=("${src##*/}")
+    fi
+  done < <(user_entries "$from")
+  (( ${#moved[@]} == 0 )) || echo "$me: moved back from $from: ${moved[*]}" >&2
+  if (( ${#kept[@]} )); then
+    echo "$me: kept in $from, not moved back: ${kept[*]}" >&2
+    return 1
+  fi
+}
+
+prune() {
+  local d newest="" size
+  for d in "$steam".broken-*; do
+    [[ -e $d || -L $d ]] && newest=$d
+  done
+  for d in "$steam".broken-*; do
+    [[ $d != "$newest" && ( -e $d || -L $d ) ]] || continue
+    has_user_data "$d" && continue
+    size=$(du -sh "$d" 2> /dev/null | cut -f1)
+    rm -rf "$d"
+    echo "$me: removed $d ($size)" >&2
+  done
+}
+
+finish() {
+  if restore; then
+    prune
+  fi
+}
+
+if [[ ( -e $steam || -L $steam ) && ! -x $steam/steamrtarm64/steam ]]; then
+  aside=$steam.broken-$(date -u +%Y%m%dT%H%M%SZ)
+  mv -T "$steam" "$aside"
+  rm -f "$stamp"
+  echo "$me: Steam tree has no steamrtarm64/steam, moved to $aside" >&2
+fi
+
+if [[ -e $steam || -L $steam ]]; then
+  mkdir -p "$dot"
+  for l in "${!links[@]}"; do
+    if [[ ! -e $dot/$l ]]; then
+      ln -sfn "${links[$l]}" "$dot/$l"
+      echo "$me: recreated ~/.steam/$l"
+    fi
+  done
+  [[ -f $stamp ]] || write_stamp
+  finish
+  exit 0
+fi
+
+mkdir -p "$tmp"
+zstd -dcq "$seeddir/steam-seed.tar.zst" | tar -x -C "$tmp"
+[[ -x $tmp/.local/share/Steam/steamrtarm64/steam ]] || die "seed has no steamrtarm64/steam"
+for l in "${!links[@]}" registry.vdf; do
+  [[ -e $tmp/.steam/$l || -L $tmp/.steam/$l ]] || die "seed has no .steam/$l"
+done
+sync -f "$tmp"
+mkdir -p "$dot"
+mv "$tmp/.local/share/Steam" "$steam"
+for l in "${!links[@]}" registry.vdf; do
+  [[ -e $dot/$l || -L $dot/$l ]] || mv "$tmp/.steam/$l" "$dot/$l"
+done
+write_stamp
+echo "$me: seeded Steam $version"
+finish
