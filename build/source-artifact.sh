@@ -8,12 +8,14 @@ repo=https://github.com/seilent/MicroOS
 
 fail() { echo "source-artifact: $*" >&2; exit 1; }
 
-(( $# == 3 )) || { echo "usage: source-artifact.sh <srpms.tsv> <outdir> <full|base>" >&2; exit 2; }
+(( $# == 4 )) || { echo "usage: source-artifact.sh <srpms.tsv> <outdir> <full|base> <pkgdir>" >&2; exit 2; }
 tsv=$1
 out=$2
 mode=$3
+pkgs=$4
 [[ $mode == full || $mode == base ]] || fail "mode is $mode, not full or base"
 [[ -s $tsv ]] || fail "$tsv is empty"
+[[ -d $pkgs ]] || fail "$pkgs is not a dir"
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/packages/kernel/SOURCE.env"
@@ -24,11 +26,21 @@ out=$(cd "$out" && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+nevra='^([A-Za-z0-9][A-Za-z0-9._+~^-]*)-([A-Za-z0-9._+~^]+)-([A-Za-z0-9._+~^]+)\.src\.rpm$'
+: > "$tmp/own"
 while IFS=$'\t' read -r name srpm vendor; do
   [[ $vendor == MicroOS ]] || continue
   case $name in
-    microos-kernel) ;;
-    *) fail "no source rule for the MicroOS package $name ($srpm)" ;;
+    microos-kernel|microos-steam-seed) ;;
+    *)
+      [[ $srpm =~ $nevra && $srpm != *..* ]] || fail "bad source rpm name $srpm for the MicroOS package $name"
+      found=("$pkgs"/*/"$srpm")
+      [[ ${#found[@]} == 1 && -f ${found[0]} ]] || fail "no source rpm $srpm in $pkgs for the MicroOS package $name"
+      pkg=${found[0]%/*}
+      ref=$(awk -v n="${pkg##*/}" '$1 == n { print $2 }' "$pkgs/refs" 2>/dev/null || true)
+      [[ $ref == *@sha256:* ]] || fail "no pkg image ref for ${pkg##*/} in $pkgs/refs"
+      printf '%s %s %s\n' "$srpm" "${found[0]}" "$ref" >> "$tmp/own"
+      ;;
   esac
 done < "$tsv"
 
@@ -43,9 +55,12 @@ curl -fsSL --retry 5 --retry-all-errors -o "$out/$kernel" "$KERNEL_URL"
 printf '%s %s\n' "$kernel" "$KERNEL_URL" >> "$tmp/origins"
 
 if [[ $mode == full ]]; then
+  sort -u "$tmp/own" | while read -r f path url; do
+    cp "$path" "$out/$f"
+    printf '%s %s\n' "$f" "$url" >> "$tmp/origins"
+  done
   awk -F'\t' '$3 != "MicroOS" && $2 != "(none)" { print $2 }' "$tsv" | sort -u > "$tmp/srpms"
   [[ -s $tmp/srpms ]] || fail "no source rpms in $tsv"
-  nevra='^([A-Za-z0-9][A-Za-z0-9._+~^-]*)-([A-Za-z0-9._+~^]+)-([A-Za-z0-9._+~^]+)\.src\.rpm$'
   get=()
   while read -r f; do
     [[ $f =~ $nevra && $f != *..* ]] || fail "bad source rpm name $f"

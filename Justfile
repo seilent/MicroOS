@@ -12,6 +12,11 @@ pkg name:
     out=out/pkg/$1
     tag=localhost/microos-pkg/$1:$hash
     podman build -t {{builder}} -f build/pkg.Containerfile build
+    img={{builder}}
+    if [[ -f packages/$1/Containerfile ]]; then
+      img={{builder}}-$1
+      podman build -t "$img" -f "packages/$1/Containerfile" "packages/$1"
+    fi
     rm -rf "$out"
     mkdir -p "$out"
     cache=()
@@ -22,12 +27,12 @@ pkg name:
     podman run --rm "${cache[@]}" \
       -v "$PWD/packages/$1:/src:ro,Z" \
       -v "$PWD/$out:/out:Z" \
-      {{builder}} /src/build.sh /out
+      "$img" /src/build.sh /out
     if [[ -f tests/pkg-$1.sh ]]; then
       podman run --rm \
         -v "$PWD/tests:/tests:ro,Z" \
         -v "$PWD/$out:/out:ro,Z" \
-        {{builder}} "/tests/pkg-$1.sh" /out
+        "$img" "/tests/pkg-$1.sh" /out
     fi
     podman build -f build/pkg-wrap.Containerfile --label "microos.dirty=$dirty" -t "$tag" "$out"
     echo "$tag"

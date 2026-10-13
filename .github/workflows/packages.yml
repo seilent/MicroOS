@@ -1,18 +1,42 @@
 name: packages
 
 on:
-  push:
-    branches: [main]
+  workflow_call:
+    secrets:
+      SIGNING_SECRET:
+        required: true
+      SIGNING_PASSWORD:
+        required: true
   workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: packages
+  group: packages-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  list:
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    outputs:
+      packages: ${{ steps.list.outputs.packages }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: List
+        id: list
+        run: |
+          packages=$(git ls-files -- 'packages/*/build.sh' | cut -d/ -f2 | jq -Rnc '[inputs]')
+          [[ $packages != '[]' ]] || { echo "::error::no packages"; exit 1; }
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+          echo "$packages"
+
   package:
+    needs: list
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -20,7 +44,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [gamescope-session, kernel]
+        package: ${{ fromJSON(needs.list.outputs.packages) }}
     env:
       PKG: ${{ matrix.package }}
       REPO: ghcr.io/seilent/microos/pkg/${{ matrix.package }}
@@ -79,39 +103,48 @@ jobs:
             exit 1
           fi
           echo "state=missing" >> "$GITHUB_OUTPUT"
+          echo "build=true" >> "$GITHUB_OUTPUT"
 
       - name: Verify existing
+        id: verify
         if: steps.check.outputs.state == 'exists'
         env:
           HASH: ${{ steps.hash.outputs.hash }}
-          GH_ACTOR: ${{ github.actor }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
-          COSIGN_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: |
-          if cosign verify --key "$PUBKEY" "$REPO:$HASH" > /dev/null; then
-            exit 0
-          fi
-          digest=$(skopeo inspect --no-creds --format '{{.Digest}}' "docker://$REPO:$HASH")
-          echo "::warning::$REPO@$digest has no valid signature, signing it"
-          cosign login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
-          cosign sign --yes --new-bundle-format=false --key env://COSIGN_PRIVATE_KEY "$REPO@$digest"
-          if ! cosign verify --key "$PUBKEY" "$REPO@$digest" > /dev/null; then
-            echo "::error::$REPO@$digest fails cosign verify after signing"
-            exit 1
-          fi
+          sig() {
+            local out
+            for _ in 1 2 3; do
+              if out=$(cosign verify --key "$PUBKEY" "$1" 2>&1 > /dev/null); then echo signed; return; fi
+              if grep -qE 'no signatures found|no matching signatures: (.*invalid signature|signature not found in transparency log)' <<< "$out"; then
+                echo unsigned
+                return
+              fi
+              echo "::warning::cosign verify $1: $out" >&2
+              sleep 10
+            done
+            echo "::error::cosign verify $1: $out" >&2
+            return 1
+          }
+          state=$(sig "$REPO:$HASH")
+          [[ $state == unsigned ]] || exit 0
+          echo "::warning::$REPO:$HASH has no valid signature, building and pushing a new one"
+          echo "build=true" >> "$GITHUB_OUTPUT"
 
       - name: Wait for the build PC
         id: local
-        if: steps.check.outputs.state == 'missing' && matrix.package == 'kernel' && github.event_name != 'workflow_dispatch'
+        if: >-
+          (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && matrix.package == 'kernel'
+          && !(github.event_name == 'workflow_dispatch' && github.workflow == 'packages')
         env:
           HASH: ${{ steps.hash.outputs.hash }}
         run: |
-          echo "::notice::$REPO:$HASH comes from the build PC (just pkg-push kernel); run this workflow by hand to build it here"
+          echo "::notice::$REPO:$HASH comes from the build PC (just pkg-push kernel); run packages.yml by hand to build it here"
           echo "skip=true" >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
-        if: steps.check.outputs.state == 'missing' && matrix.package == 'kernel' && steps.local.outputs.skip != 'true'
+        if: >-
+          (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && matrix.package == 'kernel'
+          && steps.local.outputs.skip != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ runner.temp }}/ccache
@@ -119,21 +152,55 @@ jobs:
           restore-keys: ccache-${{ matrix.package }}-
 
       - name: Build
-        if: steps.check.outputs.state == 'missing' && steps.local.outputs.skip != 'true'
+        if: (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && steps.local.outputs.skip != 'true'
         env:
           CACHE: ${{ matrix.package == 'kernel' && format('{0}/ccache', runner.temp) || '' }}
         run: PKG_CCACHE="$CACHE" just pkg "$PKG"
 
       - name: Push, sign, verify
-        if: steps.check.outputs.state == 'missing' && steps.local.outputs.skip != 'true'
+        if: (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && steps.local.outputs.skip != 'true'
         env:
           HASH: ${{ steps.hash.outputs.hash }}
+          REPLACE: ${{ steps.verify.outputs.build }}
           GH_ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
           COSIGN_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: |
+          sig() {
+            local out
+            for _ in 1 2 3; do
+              if out=$(cosign verify --key "$PUBKEY" "$1" 2>&1 > /dev/null); then echo signed; return; fi
+              if grep -qE 'no signatures found|no matching signatures: (.*invalid signature|signature not found in transparency log)' <<< "$out"; then
+                echo unsigned
+                return
+              fi
+              echo "::warning::cosign verify $1: $out" >&2
+              sleep 10
+            done
+            echo "::error::cosign verify $1: $out" >&2
+            return 1
+          }
           podman login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          if [[ $REPLACE == true ]]; then
+            state=$(sig "$REPO:$HASH")
+            if [[ $state == signed ]]; then
+              echo "::notice::$REPO:$HASH is signed meanwhile, not pushed"
+              exit 0
+            fi
+          elif err=$(skopeo inspect --raw "docker://$REPO:$HASH" 2>&1 > /dev/null); then
+            echo "::notice::$REPO:$HASH appeared meanwhile, not pushed"
+            for _ in $(seq 20); do
+              state=$(sig "$REPO:$HASH")
+              [[ $state == unsigned ]] || exit 0
+              sleep 15
+            done
+            echo "::error::$REPO:$HASH fails cosign verify"
+            exit 1
+          elif ! grep -qiE 'manifest unknown|404|403' <<< "$err"; then
+            echo "::error::$err"
+            exit 1
+          fi
           podman tag "localhost/microos-pkg/$PKG:$HASH" "$REPO:$HASH"
           podman push --digestfile "$RUNNER_TEMP/digest" "$REPO:$HASH"
           digest=$(cat "$RUNNER_TEMP/digest")

@@ -23,7 +23,17 @@ env:
   SOURCE_TYPE: application/vnd.microos.source.v1
 
 jobs:
+  packages:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/packages.yml
+    secrets:
+      SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
+      SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+
   image:
+    needs: packages
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -59,6 +69,35 @@ jobs:
           echo "ref=$PKG_KERNEL@$digest" >> "$GITHUB_OUTPUT"
           echo "$PKG_KERNEL:$hash $digest"
 
+      - name: Packages
+        run: |
+          mkdir -p "$RUNNER_TEMP/pkgs" "$RUNNER_TEMP/srpms/pkgs" "$RUNNER_TEMP/oci"
+          for name in $(git ls-files -- 'packages/*/build.sh' | cut -d/ -f2); do
+            [[ $name != kernel ]] || continue
+            hash=$(build/pkg-hash.sh "$name")
+            repo=$IMAGE/pkg/$name
+            digest=sha256:$(skopeo inspect --no-creds --raw "docker://$repo:$hash" | sha256sum | cut -d' ' -f1)
+            cosign verify --key "$PUBKEY" "$repo@$digest" > /dev/null
+            oci=$RUNNER_TEMP/oci/$name
+            tree=$RUNNER_TEMP/tree/$name
+            skopeo copy --quiet --src-no-creds "docker://$repo@$digest" "oci:$oci"
+            manifest=$(jq -r '.manifests[0].digest' "$oci/index.json")
+            mapfile -t layers < <(jq -r '.layers[].digest' "$oci/blobs/sha256/${manifest#sha256:}")
+            [[ ${#layers[@]} == 1 && ${layers[0]} =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::$repo@$digest has ${#layers[@]} layers"; exit 1; }
+            blob=$oci/blobs/sha256/${layers[0]#sha256:}
+            bad=$(tar -tvf "$blob" | awk '$1 !~ /^[-d]/ { print; next } { p = $NF; sub(/^\.\//, "", p) } p != "rpms/" && p !~ /^rpms\/[^\/]+$/ { print }')
+            [[ -z $bad ]] || { echo "::error::$repo@$digest has entries other than files in rpms/: $bad"; exit 1; }
+            mkdir -p "$tree"
+            tar -xf "$blob" -C "$tree" --no-same-owner --no-same-permissions
+            [[ -d $tree/rpms ]] || { echo "::error::$repo@$digest has no /rpms"; exit 1; }
+            mv "$tree/rpms" "$RUNNER_TEMP/pkgs/$name"
+            mkdir -p "$RUNNER_TEMP/srpms/pkgs/$name"
+            find "$RUNNER_TEMP/pkgs/$name" -maxdepth 1 -name '*.src.rpm' -exec cp -t "$RUNNER_TEMP/srpms/pkgs/$name" {} +
+            echo "$name $repo@$digest" >> "$RUNNER_TEMP/srpms/pkgs/refs"
+            echo "$repo:$hash $digest"
+          done
+          rm -rf "$RUNNER_TEMP/oci" "$RUNNER_TEMP/tree"
+
       - name: Version
         id: version
         run: |
@@ -90,7 +129,14 @@ jobs:
           podman build \
             --build-arg "KERNEL_REF=$KERNEL_REF" \
             --build-arg "MICROOS_VERSION=$VERSION" \
+            --build-context "pkgs=$RUNNER_TEMP/pkgs" \
             -t "$IMAGE:$TAG" .
+
+      - name: InputPlumber config
+        run: |
+          podman run --rm -v "$PWD:/repo:ro" -v "$RUNNER_TEMP/pkgs/inputplumber:/rpms:ro" \
+            quay.io/fedora/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d \
+            sh -c 'dnf -yq --setopt=install_weak_deps=False install cpio python3-jsonschema python3-pyyaml && /repo/tests/inputplumber-config.sh /rpms'
 
       - name: Test
         env:
@@ -100,18 +146,19 @@ jobs:
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootimg.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootok.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/update.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/audio.sh
 
       - name: Source RPMs
         env:
           TAG: ${{ steps.version.outputs.push_tag }}
         run: |
-          podman run --rm "$IMAGE:$TAG" rpm -qa --qf '%{NAME}\t%{SOURCERPM}\t%{VENDOR}\n' > "$RUNNER_TEMP/srpms.tsv"
-          wc -l < "$RUNNER_TEMP/srpms.tsv"
+          podman run --rm "$IMAGE:$TAG" rpm -qa --qf '%{NAME}\t%{SOURCERPM}\t%{VENDOR}\n' > "$RUNNER_TEMP/srpms/srpms.tsv"
+          wc -l < "$RUNNER_TEMP/srpms/srpms.tsv"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: srpms-${{ steps.version.outputs.short }}
-          path: ${{ runner.temp }}/srpms.tsv
+          path: ${{ runner.temp }}/srpms
           if-no-files-found: error
           retention-days: 1
 
@@ -198,7 +245,7 @@ jobs:
       - name: Sources
         run: |
           start=$SECONDS
-          build/source-artifact.sh "$RUNNER_TEMP/srpms/srpms.tsv" "$RUNNER_TEMP/source" "$MODE"
+          build/source-artifact.sh "$RUNNER_TEMP/srpms/srpms.tsv" "$RUNNER_TEMP/source" "$MODE" "$RUNNER_TEMP/srpms/pkgs"
           echo "$((SECONDS - start)) s"
 
       - name: Attach
@@ -254,7 +301,8 @@ jobs:
           . packages/kernel/SOURCE.env
           names=$(printf '%s\n' "microos-$SHORT.tar.gz" "linux-$KERNEL_VERSION.tar.xz")
           if [[ $MODE == full ]]; then
-            names+=$'\n'$(awk -F'\t' '$3 != "MicroOS" && $2 != "(none)" { print $2 }' "$RUNNER_TEMP/srpms/srpms.tsv" | sort -u)
+            names+=$'\n'$(awk -F'\t' '$2 != "(none)" && ($3 != "MicroOS" || ($1 != "microos-kernel" && $1 != "microos-steam-seed")) { print $2 }' \
+              "$RUNNER_TEMP/srpms/srpms.tsv" | sort -u)
           fi
           cd "$RUNNER_TEMP/source"
           [[ $(cut -d' ' -f1 SOURCES | sort) == "$(sort <<< "$names")" ]] || { echo "::error::SOURCES is not the $MODE set"; exit 1; }

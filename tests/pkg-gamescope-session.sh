@@ -11,6 +11,11 @@ check() {
   rpm=$(find "$dir" -maxdepth 1 -name "$name-0^*.noarch.rpm")
   if [[ -z $rpm || $(wc -l <<<"$rpm") -ne 1 ]]; then fail "$name: expected one noarch RPM in $dir"; return 0; fi
 
+  local srpm
+  srpm=$(find "$dir" -maxdepth 1 -name "$name-0^*.src.rpm")
+  if [[ -z $srpm || $(wc -l <<<"$srpm") -ne 1 ]]; then fail "$name: expected one SRPM in $dir"
+  elif [[ $(rpm -qp --qf '%{SOURCERPM}' "$rpm") != "${srpm##*/}" ]]; then fail "$name: SOURCERPM is not ${srpm##*/}"; fi
+
   if [[ $(rpm -qp --qf '%{RELEASE}' "$rpm") != *.microos ]]; then fail "$name: release"; fi
   if [[ $(rpm -qp --qf '%{VENDOR}' "$rpm") != MicroOS ]]; then fail "$name: vendor"; fi
   if grep -qE '^steam( |$)' <<<"$(rpm -qp --requires "$rpm")"; then fail "$name: requires steam"; fi
@@ -54,5 +59,8 @@ check gamescope-session-steam \
   '!/usr/bin/steamos-session-select' \
   '!/usr/bin/steamos-polkit-helpers' \
   '!/usr/share/polkit-1/actions/org.chimeraos.update.policy'
+
+debug=$(find "$dir" -maxdepth 1 \( -name '*-debuginfo-*' -o -name '*-debugsource-*' \))
+if [[ -n $debug ]]; then fail "debug RPMs: $debug"; fi
 
 exit "$rc"

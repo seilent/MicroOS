@@ -38,6 +38,13 @@ for u in /usr/lib/systemd/system/microos-*; do
   fi
 done
 (( ${#units[@]} )) || fail "no MicroOS units"
+
+rpm -q mesa-dri-drivers mesa-vulkan-drivers mesa-libgbm mesa-libEGL mesa-libGL vulkan-loader vulkan-tools pipewire \
+  pipewire-alsa pipewire-pulseaudio pipewire-utils pulseaudio-utils wireplumber alsa-ucm alsa-ucm-utils alsa-utils >/dev/null || fail "base stack rpms missing"
+[[ -f /usr/share/vulkan/icd.d/freedreno_icd.aarch64.json ]] || fail "Turnip ICD missing"
+[[ $(rpm -q --qf '%{VENDOR}' inputplumber) == MicroOS ]] || fail "inputplumber is not the MicroOS build"
+[[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
+[[ $(systemctl is-enabled inputplumber.service) == enabled ]] || fail "inputplumber.service is not enabled"
 SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "${units[@]}" \
   /usr/lib/systemd/system/sshd.service /usr/lib/systemd/system/bootc-generic-growpart.service \
   /usr/lib/systemd/system/ostree-finalize-staged.service || fail "systemd-analyze verify"

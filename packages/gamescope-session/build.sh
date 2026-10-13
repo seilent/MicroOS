@@ -14,7 +14,7 @@ build() {
   local tarball=$top/SOURCES/$name-$ref.tar.gz
   curl -fsSL --retry 3 -o "$tarball" "$url/archive/$ref.tar.gz"
   echo "$sha256  $tarball" | sha256sum -c -
-  rpmbuild -bb \
+  rpmbuild -ba \
     --define "_topdir $top" \
     --define "commit $ref" \
     --define "snapdate $date" \
@@ -26,4 +26,4 @@ build gamescope-session "$GAMESCOPE_SESSION_URL" "$GAMESCOPE_SESSION_REF" \
 build gamescope-session-steam "$GAMESCOPE_SESSION_STEAM_URL" "$GAMESCOPE_SESSION_STEAM_REF" \
   "$GAMESCOPE_SESSION_STEAM_DATE" "$GAMESCOPE_SESSION_STEAM_SHA256"
 
-find "$top/RPMS" -name '*.rpm' -exec cp -t "$out" {} +
+find "$top/RPMS" "$top/SRPMS" -name '*.rpm' -exec cp -t "$out" {} +

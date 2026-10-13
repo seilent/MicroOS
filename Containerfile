@@ -14,7 +14,9 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx /ctx/steps/20-release.sh
 
-RUN --mount=type=bind,from=ctx,source=/,target=/ctx /ctx/steps/30-packages.sh
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=bind,from=pkgs,source=/,target=/pkgs \
+    /ctx/steps/30-packages.sh
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx /ctx/steps/40-system-files.sh
 

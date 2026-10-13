@@ -19,6 +19,19 @@ if (( ${#units[@]} )); then
   systemctl preset "${units[@]}"
 fi
 
+shopt -s nullglob
+for kind in system user; do
+  files=("/usr/lib/systemd/$kind-preset/"*microos*.preset)
+  (( ${#files[@]} )) || continue
+  mapfile -t named < <(awk '($1 == "enable" || $1 == "disable") && $2 !~ /[*?[]/ { print $2 }' "${files[@]}" | sort -u)
+  (( ${#named[@]} )) || continue
+  if [[ $kind == user ]]; then
+    systemctl --global preset "${named[@]}"
+  else
+    systemctl preset "${named[@]}"
+  fi
+done
+
 systemctl mask \
   bootloader-update.service \
   systemd-backlight@.service \
