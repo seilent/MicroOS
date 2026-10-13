@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+import os
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+NAME = "org.freedesktop.login1"
+PATH = "/org/freedesktop/login1"
+IFACE = "org.freedesktop.login1.Manager"
+XML = f"""
+<node>
+  <interface name="{IFACE}">
+    <method name="Inhibit">
+      <arg type="s" direction="in"/><arg type="s" direction="in"/>
+      <arg type="s" direction="in"/><arg type="s" direction="in"/>
+      <arg type="h" direction="out"/>
+    </method>
+    <method name="Suspend"><arg type="b" direction="in"/></method>
+    <method name="EmitPrepareForSleep"><arg type="b" direction="in"/></method>
+    <signal name="PrepareForSleep"><arg type="b"/></signal>
+  </interface>
+</node>
+"""
+LOG = sys.argv[1]
+DENY = set(filter(None, os.environ.get("STUB_DENY", "").split(",")))
+held = {}
+
+
+def record(line):
+    with open(LOG, "a") as f:
+        f.write(line + "\n")
+
+
+def released(fd, _cond, label):
+    record(f"release {label}")
+    os.close(fd)
+    held.pop(fd, None)
+    return GLib.SOURCE_REMOVE
+
+
+def method(conn, _sender, _path, _iface, name, params, invocation):
+    if name == "Inhibit":
+        what, _who, _why, mode = params.unpack()
+        label = f"{what} {mode}"
+        if what in DENY:
+            record(f"deny {label}")
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.AccessDenied", "denied by the stub")
+            return
+        r, w = os.pipe()
+        fds = Gio.UnixFDList.new()
+        idx = fds.append(w)
+        os.close(w)
+        held[r] = GLib.io_add_watch(r, GLib.PRIORITY_DEFAULT, GLib.IO_HUP | GLib.IO_ERR, released, label)
+        record(f"inhibit {label}")
+        invocation.return_value_with_unix_fd_list(GLib.Variant("(h)", (idx,)), fds)
+    elif name == "Suspend":
+        record("suspend")
+        invocation.return_value(None)
+    elif name == "EmitPrepareForSleep":
+        value = params.unpack()[0]
+        conn.emit_signal(None, PATH, IFACE, "PrepareForSleep", GLib.Variant("(b)", (value,)))
+        record(f"sleep {str(value).lower()}")
+        invocation.return_value(None)
+
+
+def acquired(_conn, _name):
+    record("ready")
+
+
+bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+bus.register_object_with_closures2(PATH, Gio.DBusNodeInfo.new_for_xml(XML).interfaces[0], method, None, None)
+Gio.bus_own_name_on_connection(bus, NAME, Gio.BusNameOwnerFlags.NONE, acquired, None)
+GLib.MainLoop().run()

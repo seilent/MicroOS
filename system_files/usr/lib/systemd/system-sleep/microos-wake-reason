@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+
+root=${MICROOS_WAKE_ROOT:-}
+[[ ${1:-} == post ]] || exit 0
+irq=$(cat "$root/sys/power/pm_wakeup_irq" 2>/dev/null) || { echo "microos-wake-reason: no wakeup irq"; exit 0; }
+name=$(awk -v irq="$irq:" '$1 == irq { for (i = 2; i <= NF && $i ~ /^[0-9]+$/; i++); s = $i; for (i++; i <= NF; i++) s = s " " $i; print s }' "$root/proc/interrupts")
+echo "microos-wake-reason: irq $irq ${name:-unknown}"

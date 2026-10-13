@@ -1,0 +1,2 @@
+ACTION=="add", SUBSYSTEM=="platform", KERNEL=="a8f8800.usb|a800000.usb", ATTR{power/wakeup}="disabled"
+ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="a8f8800.usb|a800000.usb", DRIVER=="dwc3-qcom-legacy|dwc3", ATTR{power/wakeup}="disabled"

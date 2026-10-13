@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+if [[ $* == "--format=json list cards" ]]; then
+  if [[ -e $STUB_DIR/hang-list ]]; then
+    echo $$ > "$STUB_DIR/hang.pid"
+    exec sleep 30
+  fi
+  [[ ! -e $STUB_DIR/slow-list ]] || sleep 2
+  printf '[{"name":"alsa_card.platform-sound","active_profile":"%s"}]\n' "$(cat "$STUB_DIR/profile")"
+elif [[ ${1:-} == set-card-profile && ${2:-} == alsa_card.platform-sound ]]; then
+  echo "pactl $3" >> "$STUB_DIR/logind.log"
+  if [[ -e $STUB_DIR/hang ]]; then
+    echo $$ > "$STUB_DIR/hang.pid"
+    exec sleep 30
+  fi
+  echo "$3" > "$STUB_DIR/profile"
+else
+  echo "pactl stub: $*" >&2
+  exit 1
+fi

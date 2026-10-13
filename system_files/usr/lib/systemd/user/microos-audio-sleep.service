@@ -1,0 +1,11 @@
+[Unit]
+Description=Turn the internal audio card off across suspend
+After=pipewire-pulse.service wireplumber.service
+
+[Service]
+ExecStart=/usr/libexec/microos/microos-audio-sleep
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

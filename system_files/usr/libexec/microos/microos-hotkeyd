@@ -1,0 +1,217 @@
+#!/usr/bin/env python3
+import errno
+import fcntl
+import os
+import struct
+import sys
+import time
+
+import evdev
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-hotkeyd"
+NODE_NAME = "pm8941_pwrkey"
+LOGIN1 = ("org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager")
+EVENT = struct.Struct("llHHi")
+EVIOCSCLOCKID = 0x400445A0
+LONG_MS = 1000
+WAKE_GRACE = 1.5
+EVENTS = os.environ.get("MICROOS_HOTKEYD_EVENTS")
+STEAM = os.environ.get("MICROOS_HOTKEYD_STEAM", "/usr/bin/steam")
+PIPE = os.path.expanduser("~/.steam/steam.pipe")
+
+
+def log(msg):
+    print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+
+
+def open_node():
+    if EVENTS:
+        return os.open(EVENTS, os.O_RDONLY)
+    for path in evdev.list_devices():
+        try:
+            dev = evdev.InputDevice(path)
+        except OSError:
+            continue
+        if dev.name == NODE_NAME:
+            fd = os.dup(dev.fd)
+            dev.close()
+            fcntl.ioctl(fd, EVIOCSCLOCKID, struct.pack("i", time.CLOCK_MONOTONIC))
+            return fd
+        dev.close()
+    raise OSError(errno.ENODEV, f"no {NODE_NAME} event node")
+
+
+def client_running():
+    try:
+        fd = os.open(PIPE, os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
+class Hotkeyd:
+    def __init__(self, bus, node):
+        self.bus = bus
+        self.node = node
+        self.buf = b""
+        self.block_fd = None
+        self.delay_fd = None
+        self.sleeps = 0
+        self.slept = None
+        self.woke = None
+        self.down = None
+        self.timer = None
+        self.loop = GLib.MainLoop()
+
+    def inhibit(self, what, why, mode):
+        result, fds = self.bus.call_with_unix_fd_list_sync(
+            *LOGIN1,
+            "Inhibit",
+            GLib.Variant("(ssss)", (what, "MicroOS", why, mode)),
+            GLib.VariantType("(h)"),
+            Gio.DBusCallFlags.NONE,
+            -1,
+            None,
+            None,
+        )
+        return fds.get(result.unpack()[0])
+
+    def take_delay(self):
+        if self.delay_fd is not None:
+            return
+        try:
+            self.delay_fd = self.inhibit("sleep", "Record the sleep before the freeze", "delay")
+        except GLib.Error as err:
+            log(f"sleep inhibitor failed: {err.message}")
+
+    def prepare_for_sleep(self, _conn, _sender, _path, _iface, _signal, params):
+        if params.unpack()[0]:
+            self.sleeps += 1
+            self.slept = time.monotonic()
+            if self.delay_fd is not None:
+                os.close(self.delay_fd)
+                self.delay_fd = None
+        else:
+            self.woke = time.monotonic()
+            self.take_delay()
+
+    def drain(self):
+        try:
+            self.bus.call_sync(
+                LOGIN1[0], LOGIN1[1], "org.freedesktop.DBus.Peer", "Ping",
+                None, None, Gio.DBusCallFlags.NONE, 1000, None,
+            )
+        except GLib.Error:
+            pass
+        ctx = GLib.MainContext.default()
+        while ctx.pending():
+            ctx.iteration(False)
+
+    def dropped(self, down_at, sleeps):
+        if sleeps != self.sleeps:
+            return True
+        if self.slept is None:
+            return False
+        if self.woke is None or self.woke < self.slept:
+            return True
+        return self.slept <= down_at <= self.woke + WAKE_GRACE
+
+    def press(self, uri):
+        down_at, sleeps = self.down
+        self.down = None
+        self.drain()
+        if self.block_fd is None or self.dropped(down_at, sleeps):
+            return
+        if not client_running():
+            if uri == "steam://shortpowerpress":
+                log("Steam is not running, suspending")
+                self.bus.call(
+                    *LOGIN1, "Suspend", GLib.Variant("(b)", (False,)),
+                    None, Gio.DBusCallFlags.NONE, -1, None, self.suspended, None,
+                )
+            return
+        try:
+            GLib.spawn_async([STEAM, "-ifrunning", uri])
+        except GLib.Error as err:
+            log(f"{STEAM} {uri} failed: {err.message}")
+
+    def suspended(self, bus, result, _data):
+        try:
+            bus.call_finish(result)
+        except GLib.Error as err:
+            log(f"suspend failed: {err.message}")
+
+    def long_press(self):
+        self.timer = None
+        if self.down is not None:
+            self.press("steam://longpowerpress")
+        return GLib.SOURCE_REMOVE
+
+    def key(self, sec, usec, value):
+        if value == 1:
+            if self.timer is not None:
+                GLib.source_remove(self.timer)
+            self.down = (sec + usec / 1e6, self.sleeps)
+            self.timer = GLib.timeout_add(LONG_MS, self.long_press)
+        elif value == 0:
+            if self.timer is not None:
+                GLib.source_remove(self.timer)
+                self.timer = None
+                if self.down is not None:
+                    self.press("steam://shortpowerpress")
+            self.down = None
+
+    def readable(self, _fd, _cond):
+        try:
+            data = os.read(self.node, EVENT.size * 64)
+        except BlockingIOError:
+            return GLib.SOURCE_CONTINUE
+        except OSError as err:
+            log(f"reading the power key failed: {err}")
+            self.loop.quit()
+            return GLib.SOURCE_REMOVE
+        if not data:
+            log("the power key node closed")
+            self.loop.quit()
+            return GLib.SOURCE_REMOVE
+        self.buf += data
+        while len(self.buf) >= EVENT.size:
+            sec, usec, etype, code, value = EVENT.unpack_from(self.buf)
+            self.buf = self.buf[EVENT.size:]
+            if etype == evdev.ecodes.EV_KEY and code == evdev.ecodes.KEY_POWER:
+                self.key(sec, usec, value)
+        return GLib.SOURCE_CONTINUE
+
+
+def main():
+    try:
+        node = open_node()
+    except OSError as err:
+        log(f"cannot read the power key: {err}")
+        return 1
+    bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    daemon = Hotkeyd(bus, node)
+    bus.signal_subscribe(
+        LOGIN1[0], LOGIN1[2], "PrepareForSleep", LOGIN1[1], None,
+        Gio.DBusSignalFlags.NONE, daemon.prepare_for_sleep,
+    )
+    try:
+        daemon.block_fd = daemon.inhibit(
+            "handle-power-key:handle-suspend-key", "Steam handles the power key", "block"
+        )
+    except GLib.Error as err:
+        log(f"inhibit failed: {err.message}")
+        return 1
+    daemon.take_delay()
+    GLib.io_add_watch(node, GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, daemon.readable)
+    daemon.loop.run()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
