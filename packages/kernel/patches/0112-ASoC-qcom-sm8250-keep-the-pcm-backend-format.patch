@@ -1,0 +1,24 @@
+From: seilent <github@seilent.net>
+Subject: [PATCH] ASoC: qcom: sm8250: keep the PCM backend format
+
+sm8250_be_hw_params_fixup() adds S16_LE to the backend format mask.
+params_format() takes the lowest set bit, so every PCM backend ran at
+16 bit and a 24 bit stream was truncated in the DSP. Set S16_LE only
+when the mask is empty, which is the compressed playback case the
+fixup was added for. PCM backends keep the frontend format.
+
+---
+diff --git a/sound/soc/qcom/sm8250.c b/sound/soc/qcom/sm8250.c
+index f193d0b..e9dbbee 100644
+--- a/sound/soc/qcom/sm8250.c
++++ b/sound/soc/qcom/sm8250.c
+@@ -66,7 +66,8 @@ static int sm8250_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
+ 
+ 	rate->min = rate->max = 48000;
+ 	channels->min = channels->max = 2;
+-	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
++	if (snd_mask_empty(fmt))
++		snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
+ 
+ 	return 0;
+ }

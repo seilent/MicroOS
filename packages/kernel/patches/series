@@ -19,3 +19,4 @@
 0109-ASoC-codecs-lpass-macro-release-core-hw-votes-in-runtime-suspend.patch
 0110-clk-qcom-camcc-sm8250-keep-gdsc-clk-on-outside-ccf.patch
 0111-drm-msm-dsi-phy-unprepare-iface-clk-across-system-sleep.patch
+0112-ASoC-qcom-sm8250-keep-the-pcm-backend-format.patch
