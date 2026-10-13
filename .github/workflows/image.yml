@@ -159,7 +159,8 @@ jobs:
             --build-context "pkgs=$RUNNER_TEMP/pkgs" \
             --build-context "seed=$RUNNER_TEMP/seed" \
             -t "$IMAGE:$TAG" .
-          base=$(sed -n 's/^FROM \(quay\.io\/fedora\/fedora-bootc[^ ]*\)$/\1/p' Containerfile)
+          base=$(sed -n 's/^FROM \([^ ]*\/fedora-bootc:[^ ]*\)$/\1/p' Containerfile)
+          [[ -n $base ]] || { echo "::error::no fedora-bootc FROM line in Containerfile"; exit 1; }
           mapfile -t want < <(podman image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$base" | sed '/^$/d')
           mapfile -t got < <(podman image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$IMAGE:$TAG" | sed '/^$/d')
           n=${#want[@]}
