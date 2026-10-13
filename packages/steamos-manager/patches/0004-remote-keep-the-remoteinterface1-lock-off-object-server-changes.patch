@@ -1,0 +1,254 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Wed, 14 Oct 2026 02:17:39 +0900
+Subject: [PATCH] remote: keep the RemoteInterface1 lock off object server
+ changes
+
+Loading or unloading a remote held the RemoteInterface1 lock while its
+interface was added to or removed from the object server. zbus holds the
+object server lock in a Properties Get while it waits for the interface,
+so a Get on RemoteInterface1 in that window blocked both, and every
+later property read on the session bus hung. Load and unload now take
+the remote out under the lock, register or unregister it without the
+lock, and put it back.
+---
+ steamos-manager-macros/src/lib.rs   |  79 +++++++++++++++-------
+ steamos-manager/src/manager/user.rs | 101 ++++++++++++++++++++++++++++
+ 2 files changed, 154 insertions(+), 26 deletions(-)
+
+diff --git a/steamos-manager-macros/src/lib.rs b/steamos-manager-macros/src/lib.rs
+index 9bd7abf..42767f9 100644
+--- a/steamos-manager-macros/src/lib.rs
++++ b/steamos-manager-macros/src/lib.rs
+@@ -794,29 +794,22 @@ impl ToTokens for BaseInterface {
+                                         let manager = object_server
+                                             .interface::<_, RemoteInterface1>(MANAGER_PATH)
+                                             .await?;
+-                                        let emitter = manager.signal_emitter();
+-                                        manager
+-                                            .get_mut()
+-                                            .await
+-                                            .unload(
+-                                                <#struct_name as Interface>::name().as_str(),
+-                                                emitter,
+-                                            )
+-                                            .await?;
++                                        RemoteInterface1::unload(
++                                            &manager,
++                                            <#struct_name as Interface>::name().as_str(),
++                                            &object_server,
++                                        )
++                                        .await?;
+                                     }
+                                     Some(owner) => {
+                                         let manager = object_server
+                                             .interface::<_, RemoteInterface1>(MANAGER_PATH)
+                                             .await?;
+-                                        let emitter = manager.signal_emitter();
+-                                        manager
+-                                            .get_mut()
+-                                            .await
+-                                            .load(
+-                                                <#struct_name as Interface>::name().as_str(),
+-                                                emitter,
+-                                            )
+-                                            .await?;
++                                        RemoteInterface1::load(
++                                            &manager,
++                                            <#struct_name as Interface>::name().as_str(),
++                                        )
++                                        .await?;
+                                     }
+                                 }
+                             },
+@@ -1126,21 +1119,32 @@ pub fn remote_manager(input: TokenStream) -> TokenStream {
+                 }
+             }
+ 
+-            async fn load(&mut self, name: &str, ctxt: &SignalEmitter<'_>) -> Result<()> {
++            async fn load(
++                manager: &zbus::object_server::InterfaceRef<Self>,
++                name: &str,
++            ) -> Result<()> {
+                 use anyhow::bail;
+ 
+                 tracing::debug!("Interface {name} loading");
+                 match name {
+                     #(_ if name == <#iface as Interface>::name().as_str() => {
+-                        let Some(iface) = self.#var.as_mut() else {
++                        let Some(mut iface) = manager.get_mut().await.#var.take() else {
+                             bail!("Interface {name} not registered!");
+                         };
+-                        match iface.register().await {
++                        let registered = iface.register().await;
++                        let mut this = manager.get_mut().await;
++                        if this.#var.is_none() {
++                            this.#var = Some(iface);
++                        }
++                        match registered {
+                             Ok(_) => (),
+                             Err(fdo::Error::ServiceUnknown(_) | fdo::Error::NameHasNoOwner(_)) => (),
+-                            Err(e) => return Err(e.into()),
++                            Err(e) => {
++                                this.remote_interfaces_changed(manager.signal_emitter()).await?;
++                                return Err(e.into());
++                            }
+                         }
+-                        self.remote_interfaces_changed(ctxt).await?;
++                        this.remote_interfaces_changed(manager.signal_emitter()).await?;
+                     })*
+                     _ => bail!("Unknown interface {name}"),
+                 }
+@@ -1189,11 +1193,34 @@ pub fn remote_manager(input: TokenStream) -> TokenStream {
+             }
+ 
+             async fn unload(
+-                &mut self,
++                manager: &zbus::object_server::InterfaceRef<Self>,
+                 name: &str,
+-                ctxt: &SignalEmitter<'_>,
++                object_server: &ObjectServer,
+             ) -> Result<()> {
+-                self.unregister(name, None, ctxt, true).await?;
++                use anyhow::bail;
++
++                match name {
++                    #(_ if name == <#iface as Interface>::name().as_str() => {
++                        let Some(mut owner) = manager.get_mut().await.#var.take() else {
++                            return Ok(());
++                        };
++                        let unregistered =
++                            #iface::unregister(Some(&mut owner.context), object_server).await;
++                        let mut this = manager.get_mut().await;
++                        if unregistered.is_ok() {
++                            owner.registered = false;
++                        }
++                        if this.#var.is_none() && (unregistered.is_err() || !owner.is_transient) {
++                            this.#var = Some(owner);
++                        }
++                        if let Err(e) = unregistered {
++                            this.remote_interfaces_changed(manager.signal_emitter()).await?;
++                            return Err(e.into());
++                        }
++                        this.remote_interfaces_changed(manager.signal_emitter()).await?;
++                    })*
++                    _ => bail!("Unknown interface {name}"),
++                }
+                 Ok(())
+             }
+ 
+diff --git a/steamos-manager/src/manager/user.rs b/steamos-manager/src/manager/user.rs
+index 8c73e50..00cb5c2 100644
+--- a/steamos-manager/src/manager/user.rs
++++ b/steamos-manager/src/manager/user.rs
+@@ -3792,6 +3792,107 @@ mod test {
+         assert_eq!(count_properties_changed(&mut changed, &interface).await, 1);
+     }
+ 
++    struct SharedRemoteSetup {
++        remote: Option<Connection>,
++    }
++
++    #[async_trait]
++    impl TestSetup for SharedRemoteSetup {
++        async fn setup(
++            &mut self,
++            handle: &testing::TestHandle,
++            _connection: &Connection,
++        ) -> Result<()> {
++            let mut config = String::new();
++            for name in ["CpuScaling1", "GpuPerformanceLevel1", "PerformanceProfile1"] {
++                config.push_str(&format!(
++                    "[{name}]\nbus_name = \"com.steampowered.TestDaemon\"\nobject_path = \"/foo\"\n"
++                ));
++            }
++            write(
++                path("/usr/share/steamos-manager/remotes.d/00-test.toml"),
++                config.as_bytes(),
++            )
++            .await?;
++            let remote_conn = handle.new_connection().await?;
++            remote_conn
++                .request_name("com.steampowered.TestDaemon")
++                .await?;
++            self.remote = Some(remote_conn);
++            Ok(())
++        }
++    }
++
++    #[tokio::test]
++    async fn remote_shared_name_reowned() {
++        let mut test = start(TestConfig::only_setup(SharedRemoteSetup { remote: None }))
++            .await
++            .unwrap();
++        let manager = test
++            .connection
++            .object_server()
++            .interface::<_, RemoteInterface1>(MANAGER_PATH)
++            .await
++            .unwrap();
++        {
++            let mut manager = manager.get_mut().await;
++            let remote = manager.remote_cpu_scaling1.as_mut().unwrap();
++            remote.ping_success = true;
++            assert!(remote.register().await.unwrap());
++            let remote = manager.remote_gpu_performance_level1.as_mut().unwrap();
++            remote.ping_success = true;
++            assert!(remote.register().await.unwrap());
++            let remote = manager.remote_performance_profile1.as_mut().unwrap();
++            remote.ping_success = true;
++            assert!(remote.register().await.unwrap());
++        }
++
++        let client = test.handle.new_connection().await.unwrap();
++        let proxy = RemoteInterface1Proxy::builder(&client)
++            .destination(test.connection.unique_name().unwrap().to_owned())
++            .unwrap()
++            .cache_properties(CacheProperties::No)
++            .build()
++            .await
++            .unwrap();
++        assert_eq!(proxy.remote_interfaces().await.unwrap().len(), 3);
++
++        let mut readers = Vec::new();
++        for _ in 0..8 {
++            let proxy = proxy.clone();
++            readers.push(spawn(async move {
++                loop {
++                    let _ = proxy.remote_interfaces().await;
++                }
++            }));
++        }
++
++        let mut remote_conn = test.setup.remote.take().unwrap();
++        for _ in 0..20 {
++            drop(remote_conn);
++            sleep(Duration::from_millis(50)).await;
++            remote_conn = test.handle.new_connection().await.unwrap();
++            remote_conn
++                .request_name("com.steampowered.TestDaemon")
++                .await
++                .unwrap();
++            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
++            while tokio::time::timeout_at(deadline, proxy.remote_interfaces())
++                .await
++                .expect("RemoteInterfaces timed out")
++                .unwrap()
++                .len()
++                != 3
++            {
++                assert!(tokio::time::Instant::now() < deadline);
++                sleep(Duration::from_millis(10)).await;
++            }
++        }
++        for reader in readers {
++            reader.abort();
++        }
++    }
++
+     #[derive(Debug)]
+     struct MockTdpLimit1 {
+         limit: u32,
+-- 
+2.43.0
+

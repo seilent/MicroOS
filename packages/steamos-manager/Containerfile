@@ -1,0 +1,5 @@
+FROM localhost/microos-pkg-builder
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+      cargo rust clang-devel systemd-devel glib2-devel speech-dispatcher-devel dbus-daemon gsettings-desktop-schemas \
+ && dnf clean all

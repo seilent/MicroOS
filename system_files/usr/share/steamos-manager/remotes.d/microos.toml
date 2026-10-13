@@ -1,0 +1,11 @@
+[PerformanceProfile1]
+bus_name = "net.seilent.MicroOs.Power"
+object_path = "/net/seilent/MicroOs/Power"
+
+[GpuPerformanceLevel1]
+bus_name = "net.seilent.MicroOs.Power"
+object_path = "/net/seilent/MicroOs/Power"
+
+[CpuScaling1]
+bus_name = "net.seilent.MicroOs.Power"
+object_path = "/net/seilent/MicroOs/Power"

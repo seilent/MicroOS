@@ -1,0 +1,274 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Tue, 13 Oct 2026 22:31:27 +0900
+Subject: [PATCH] wifi: keep NetworkManager up when a backend is missing
+
+set_wifi_backend refuses iwd when iwd.service does not exist and does
+nothing when the requested backend is already set. set_nm_settings skips
+the other backend's unit when it does not exist and starts NetworkManager
+again on every path after stopping it. DisableUnitFiles of a missing
+iwd.service no longer leaves the system with NetworkManager stopped.
+---
+ steamos-manager/src/systemd.rs |  22 ++++-
+ steamos-manager/src/wifi.rs    | 175 ++++++++++++++++++++++++++++++---
+ 2 files changed, 177 insertions(+), 20 deletions(-)
+
+diff --git a/steamos-manager/src/systemd.rs b/steamos-manager/src/systemd.rs
+index b55fe29..cdbb9ee 100644
+--- a/steamos-manager/src/systemd.rs
++++ b/steamos-manager/src/systemd.rs
+@@ -332,6 +332,7 @@ pub mod test {
+     pub struct MockUnit {
+         pub active: String,
+         pub unit_file: String,
++        pub not_found: bool,
+         job: u32,
+     }
+ 
+@@ -354,7 +355,11 @@ pub mod test {
+ 
+         #[zbus(property)]
+         fn load_state(&self) -> fdo::Result<String> {
+-            Ok(String::from("loaded"))
++            if self.not_found {
++                Ok(String::from("not-found"))
++            } else {
++                Ok(String::from("loaded"))
++            }
+         }
+ 
+         async fn restart(
+@@ -487,6 +492,17 @@ pub mod test {
+         ) -> fdo::Result<Vec<(String, String, String)>> {
+             let mut res = Vec::new();
+             for file in files {
++                let path = PathBuf::from("/org/freedesktop/systemd1/unit").join(escape(&file));
++                let mock_unit = object_server
++                    .interface::<_, MockUnit>(path.to_string_lossy())
++                    .await;
++                if let Ok(ref mock_unit) = mock_unit
++                    && mock_unit.get().await.not_found
++                {
++                    return Err(fdo::Error::FileNotFound(format!(
++                        "Unit {file} does not exist."
++                    )));
++                }
+                 if let Some(state) = self.states.get(&file) {
+                     if *state == EnableState::Enabled {
+                         self.states.insert(file.to_string(), EnableState::Disabled);
+@@ -496,10 +512,6 @@ pub mod test {
+                     self.states.insert(file.to_string(), EnableState::Disabled);
+                     res.push((String::default(), String::default(), file.to_string()));
+                 }
+-                let path = PathBuf::from("/org/freedesktop/systemd1/unit").join(escape(&file));
+-                let mock_unit = object_server
+-                    .interface::<_, MockUnit>(path.to_string_lossy())
+-                    .await;
+                 if let Ok(mock_unit) = mock_unit {
+                     let mut unit = mock_unit.get_mut().await;
+                     unit.unit_file = String::from("disabled");
+diff --git a/steamos-manager/src/wifi.rs b/steamos-manager/src/wifi.rs
+index 1b7dce1..94ffc2d 100644
+--- a/steamos-manager/src/wifi.rs
++++ b/steamos-manager/src/wifi.rs
+@@ -350,23 +350,25 @@ async fn set_nm_settings(
+     let unit = SystemdUnit::new(connection, "NetworkManager.service").await?;
+ 
+     if restart {
+-        let backend_unit = SystemdUnit::new(
+-            connection,
+-            match backend {
+-                WifiBackend::Iwd => "wpa_supplicant.service",
+-                WifiBackend::WPASupplicant => "iwd.service",
+-            },
+-        )
+-        .await?;
++        let other = match backend {
++            WifiBackend::Iwd => "wpa_supplicant.service",
++            WifiBackend::WPASupplicant => "iwd.service",
++        };
++        let backend_unit = if SystemdUnit::exists(connection, other).await? {
++            Some(SystemdUnit::new(connection, other).await?)
++        } else {
++            None
++        };
+ 
+         unit.stop(JobMode::Fail).await?.wait().await?;
+-        // These systemd units are not set to enabled permanently, NetworkManager will pull them as necessary
+-        backend_unit.disable().await?;
+-        backend_unit.stop(JobMode::Fail).await?.wait().await?;
+-
+-        // Restart NetworkManager even if this fails, otherwise the system is
+-        // left with no networking at all
+-        let res = ensure_default_interface().await;
++        let res: Result<()> = async {
++            if let Some(backend_unit) = backend_unit {
++                backend_unit.disable().await?;
++                backend_unit.stop(JobMode::Fail).await?.wait().await?;
++            }
++            ensure_default_interface().await
++        }
++        .await;
+         unit.start(JobMode::Fail).await?;
+         res?;
+     } else {
+@@ -381,6 +383,12 @@ pub(crate) async fn get_wifi_backend() -> Result<WifiBackend> {
+ 
+ pub(crate) async fn set_wifi_backend(backend: WifiBackend, connection: &Connection) -> Result<()> {
+     let mut settings = get_nm_settings().await?;
++    if backend == WifiBackend::Iwd && !SystemdUnit::exists(connection, "iwd.service").await? {
++        bail!("iwd is not installed");
++    }
++    if settings.backend == backend {
++        return Ok(());
++    }
+     settings.backend = backend;
+     set_nm_settings(settings, true, connection).await
+ }
+@@ -903,6 +911,143 @@ mod test {
+         assert_eq!(network_manager.get().await.active, "active");
+     }
+ 
++    #[tokio::test]
++    async fn test_set_nm_settings_restart_no_iwd() {
++        let mut h = testing::start();
++
++        let mut iwd = MockUnit::default();
++        iwd.active = String::from("inactive");
++        iwd.unit_file = String::from("disabled");
++        iwd.not_found = true;
++
++        let connection = h.new_dbus().await.expect("dbus");
++        connection
++            .request_name("org.freedesktop.systemd1")
++            .await
++            .expect("request_name");
++        let object_server = connection.object_server();
++        object_server
++            .at("/org/freedesktop/systemd1", MockManager::default())
++            .await
++            .expect("at");
++        object_server
++            .at(
++                "/org/freedesktop/systemd1/unit/NetworkManager_2eservice",
++                MockUnit::default(),
++            )
++            .await
++            .expect("at");
++        let network_manager = object_server
++            .interface::<_, MockUnit>("/org/freedesktop/systemd1/unit/NetworkManager_2eservice")
++            .await
++            .unwrap();
++        object_server
++            .at("/org/freedesktop/systemd1/unit/iwd_2eservice", iwd)
++            .await
++            .expect("at");
++        let iwd = object_server
++            .interface::<_, MockUnit>("/org/freedesktop/systemd1/unit/iwd_2eservice")
++            .await
++            .unwrap();
++
++        fn process_output(executable: &OsStr, args: &[&OsStr]) -> Result<(i32, String)> {
++            ensure!(executable.to_string_lossy() == "/usr/bin/iw", "Not iw");
++            ensure!(args[0] == "dev", "Not dev");
++            Ok((0, String::from("Interface wlan0")))
++        }
++        h.test.set_process_cb(process_output).await;
++
++        create_dir_all(path(WIFI_BACKEND_PATHS.last().unwrap()))
++            .await
++            .expect("create_dir_all");
++
++        set_nm_settings(
++            NmWifiSettings {
++                backend: WifiBackend::WPASupplicant,
++                powersave: NmSettingWirelessPowersave::Disable,
++            },
++            true,
++            &connection,
++        )
++        .await
++        .unwrap();
++
++        assert_eq!(
++            read_to_string(path(WIFI_BACKEND_FILE)).await.unwrap(),
++            "[connection]\nwifi.powersave=2\n[device]\nwifi.backend=wpa_supplicant\n"
++        );
++        assert_eq!(network_manager.get().await.active, "active");
++        assert_eq!(iwd.get().await.active, "inactive");
++        assert_eq!(iwd.get().await.unit_file, "disabled");
++    }
++
++    #[tokio::test]
++    async fn test_set_wifi_backend_iwd_not_installed() {
++        let mut h = testing::start();
++
++        let mut iwd = MockUnit::default();
++        iwd.not_found = true;
++
++        let mut network_manager = MockUnit::default();
++        network_manager.active = String::from("active");
++
++        let connection = h.new_dbus().await.expect("dbus");
++        connection
++            .request_name("org.freedesktop.systemd1")
++            .await
++            .expect("request_name");
++        let object_server = connection.object_server();
++        object_server
++            .at("/org/freedesktop/systemd1", MockManager::default())
++            .await
++            .expect("at");
++        object_server
++            .at(
++                "/org/freedesktop/systemd1/unit/NetworkManager_2eservice",
++                network_manager,
++            )
++            .await
++            .expect("at");
++        let network_manager = object_server
++            .interface::<_, MockUnit>("/org/freedesktop/systemd1/unit/NetworkManager_2eservice")
++            .await
++            .unwrap();
++        object_server
++            .at("/org/freedesktop/systemd1/unit/iwd_2eservice", iwd)
++            .await
++            .expect("at");
++
++        for dir in WIFI_BACKEND_PATHS {
++            create_dir_all(path(dir)).await.expect("create_dir_all");
++        }
++
++        let err = set_wifi_backend(WifiBackend::Iwd, &connection)
++            .await
++            .unwrap_err();
++        assert_eq!(err.to_string(), "iwd is not installed");
++        assert!(!try_exists(path(WIFI_BACKEND_FILE)).await.unwrap());
++        assert_eq!(network_manager.get().await.active, "active");
++        assert_eq!(
++            get_wifi_backend().await.unwrap(),
++            WifiBackend::WPASupplicant
++        );
++    }
++
++    #[tokio::test]
++    async fn test_set_wifi_backend_unchanged() {
++        let mut h = testing::start();
++        let connection = h.new_dbus().await.expect("dbus");
++
++        for dir in WIFI_BACKEND_PATHS {
++            create_dir_all(path(dir)).await.expect("create_dir_all");
++        }
++
++        set_wifi_backend(WifiBackend::WPASupplicant, &connection)
++            .await
++            .unwrap();
++        assert!(!try_exists(path(WIFI_BACKEND_FILE)).await.unwrap());
++    }
++
+     #[tokio::test]
+     async fn test_get_wifi_backend() {
+         let _h = testing::start();
+-- 
+2.43.0
+

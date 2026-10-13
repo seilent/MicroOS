@@ -1,0 +1,177 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Tue, 13 Oct 2026 22:40:46 +0900
+Subject: [PATCH] remote: relay signals from the first registration
+
+The signal relay of a remote started only when its bus name appeared
+after startup, so a remote already running when steamos-manager started
+never had its property changes relayed. The relay now starts on every
+successful registration, and a running relay is stopped before a new one
+replaces it, so a remote that loses and takes its name again relays each
+change once.
+---
+ steamos-manager-macros/src/lib.rs   |   8 +-
+ steamos-manager/src/manager/user.rs | 114 ++++++++++++++++++++++++++++
+ 2 files changed, 119 insertions(+), 3 deletions(-)
+
+diff --git a/steamos-manager-macros/src/lib.rs b/steamos-manager-macros/src/lib.rs
+index 3fcac6c..9bd7abf 100644
+--- a/steamos-manager-macros/src/lib.rs
++++ b/steamos-manager-macros/src/lib.rs
+@@ -600,6 +600,9 @@ impl ToTokens for BaseInterface {
+         } else {
+             quote! {
+                 async fn start_signal_task(&mut self) -> Result<()> {
++                    if let Some(signal_task) = self.signal_task.take() {
++                        signal_task.abort();
++                    }
+                     let signal_task = Self::signal_task(
+                         self.destination.clone(),
+                         self.path.clone(),
+@@ -872,6 +875,7 @@ impl ToTokens for BaseInterface {
+                     #register
+ 
+                     self.registered = true;
++                    self.start_signal_task().await.map_err(to_zbus_fdo_error)?;
+                     Ok(true)
+                 }
+ 
+@@ -1132,9 +1136,7 @@ pub fn remote_manager(input: TokenStream) -> TokenStream {
+                             bail!("Interface {name} not registered!");
+                         };
+                         match iface.register().await {
+-                            Ok(_) => {
+-                                iface.start_signal_task().await?;
+-                            },
++                            Ok(_) => (),
+                             Err(fdo::Error::ServiceUnknown(_) | fdo::Error::NameHasNoOwner(_)) => (),
+                             Err(e) => return Err(e.into()),
+                         }
+diff --git a/steamos-manager/src/manager/user.rs b/steamos-manager/src/manager/user.rs
+index a6df69b..8c73e50 100644
+--- a/steamos-manager/src/manager/user.rs
++++ b/steamos-manager/src/manager/user.rs
+@@ -3678,6 +3678,120 @@ mod test {
+         assert_eq!(proxy.max_charge_level().await.unwrap(), 20);
+     }
+ 
++    async fn count_properties_changed(
++        stream: &mut fdo::PropertiesChangedStream,
++        interface: &str,
++    ) -> usize {
++        let mut count = 0;
++        while let Ok(Some(signal)) =
++            tokio::time::timeout(Duration::from_millis(200), stream.next()).await
++        {
++            if signal.args().unwrap().interface_name().as_str() == interface {
++                count += 1;
++            }
++        }
++        count
++    }
++
++    async fn own_remote_battery_charge_limit1(
++        handle: &testing::TestHandle,
++        limit: i32,
++    ) -> Connection {
++        let remote_conn = handle.new_connection().await.unwrap();
++        remote_conn
++            .object_server()
++            .at("/foo", MockBatteryChargeLimit1 { limit })
++            .await
++            .unwrap();
++        remote_conn
++            .request_name("com.steampowered.TestDaemon")
++            .await
++            .unwrap();
++        remote_conn
++    }
++
++    async fn change_remote_battery_charge_limit1(remote_conn: &Connection, limit: i32) {
++        let remote = remote_conn
++            .object_server()
++            .interface::<_, MockBatteryChargeLimit1>("/foo")
++            .await
++            .unwrap();
++        remote.get_mut().await.limit = limit;
++        remote
++            .get()
++            .await
++            .max_charge_level_changed(remote.signal_emitter())
++            .await
++            .unwrap();
++    }
++
++    struct OwnedRemoteSetup {
++        config: RemoteSetup,
++        remote: Option<Connection>,
++    }
++
++    #[async_trait]
++    impl TestSetup for OwnedRemoteSetup {
++        async fn setup(
++            &mut self,
++            handle: &testing::TestHandle,
++            connection: &Connection,
++        ) -> Result<()> {
++            self.config.setup(handle, connection).await?;
++            self.remote = Some(own_remote_battery_charge_limit1(handle, 50).await);
++            Ok(())
++        }
++    }
++
++    #[tokio::test]
++    async fn remote_battery_charge_limit1_relay_signals() {
++        let mut test = start(TestConfig::only_setup(OwnedRemoteSetup {
++            config: RemoteSetup::new("BatteryChargeLimit1", 1),
++            remote: None,
++        }))
++        .await
++        .unwrap();
++        let interface = BatteryChargeLimit1::name().to_string();
++
++        let remote_conn = test.setup.remote.take().unwrap();
++        let manager = test
++            .connection
++            .object_server()
++            .interface::<_, RemoteInterface1>(MANAGER_PATH)
++            .await
++            .unwrap();
++        {
++            let mut manager = manager.get_mut().await;
++            let remote = manager.remote_battery_charge_limit1.as_mut().unwrap();
++            remote.ping_success = true;
++            assert!(remote.register().await.unwrap());
++        }
++        sleep(Duration::from_millis(100)).await;
++
++        let client = test.handle.new_connection().await.unwrap();
++        let properties = fdo::PropertiesProxy::builder(&client)
++            .destination(test.connection.unique_name().unwrap())
++            .unwrap()
++            .path(MANAGER_PATH)
++            .unwrap()
++            .build()
++            .await
++            .unwrap();
++        let mut changed = properties.receive_properties_changed().await.unwrap();
++
++        change_remote_battery_charge_limit1(&remote_conn, 30).await;
++        assert_eq!(count_properties_changed(&mut changed, &interface).await, 1);
++
++        drop(remote_conn);
++        sleep(Duration::from_millis(100)).await;
++        let remote_conn = own_remote_battery_charge_limit1(&test.handle, 30).await;
++        sleep(Duration::from_millis(100)).await;
++        count_properties_changed(&mut changed, &interface).await;
++
++        change_remote_battery_charge_limit1(&remote_conn, 40).await;
++        assert_eq!(count_properties_changed(&mut changed, &interface).await, 1);
++    }
++
+     #[derive(Debug)]
+     struct MockTdpLimit1 {
+         limit: u32,
+-- 
+2.43.0
+

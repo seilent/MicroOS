@@ -1,0 +1,176 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Tue, 13 Oct 2026 22:39:27 +0900
+Subject: [PATCH] manager/user: take CpuScaling1 from a remote
+
+CpuScaling1 can be implemented by a remote like BatteryChargeLimit1. When
+the remote config has a CpuScaling1 section the local object is not
+registered, so the remote gets the governor writes. Without the section
+the local object is registered as before.
+---
+ README.md                           |  1 +
+ steamos-manager/src/manager/user.rs | 94 +++++++++++++++++++++++++++--
+ 2 files changed, 90 insertions(+), 5 deletions(-)
+
+diff --git a/README.md b/README.md
+index 6b3a986..fcf94bb 100644
+--- a/README.md
++++ b/README.md
+@@ -146,6 +146,7 @@ the future.
+ 
+ - BatteryChargeLimit1
+ - CpuBoost1
++- CpuScaling1
+ - FactoryReset1
+ - FanControl1
+ - GpuPerformanceLevel1
+diff --git a/steamos-manager/src/manager/user.rs b/steamos-manager/src/manager/user.rs
+index 8e5e30b..a6df69b 100644
+--- a/steamos-manager/src/manager/user.rs
++++ b/steamos-manager/src/manager/user.rs
+@@ -55,9 +55,9 @@ use crate::power::{
+     unregister_tdp_limit1,
+ };
+ use crate::proxy::{
+-    BatteryChargeLimit1Proxy, CpuBoost1Proxy, FactoryReset1Proxy, FanControl1Proxy,
+-    GpuPerformanceLevel1Proxy, GpuPowerProfile1Proxy, PerformanceProfile1Proxy, Storage1Proxy,
+-    TdpLimit1Proxy, UpdateBios1Proxy, UpdateDock1Proxy,
++    BatteryChargeLimit1Proxy, CpuBoost1Proxy, CpuScaling1Proxy, FactoryReset1Proxy,
++    FanControl1Proxy, GpuPerformanceLevel1Proxy, GpuPowerProfile1Proxy, PerformanceProfile1Proxy,
++    Storage1Proxy, TdpLimit1Proxy, UpdateBios1Proxy, UpdateDock1Proxy,
+ };
+ use crate::screenreader::{OrcaManager, ScreenReaderAction, ScreenReaderMode};
+ use crate::session::{
+@@ -215,6 +215,8 @@ struct RemoteInterface1 {
+     #[remote]
+     remote_cpu_boost1: Option<CpuBoost1RemoteOwner>,
+     #[remote]
++    remote_cpu_scaling1: Option<CpuScaling1RemoteOwner>,
++    #[remote]
+     remote_factory_reset1: Option<FactoryReset1RemoteOwner>,
+     #[remote]
+     remote_fan_control1: Option<FanControl1RemoteOwner>,
+@@ -386,7 +388,7 @@ impl CpuBoost1 {
+     }
+ }
+ 
+-#[interface(name = "com.steampowered.SteamOSManager1.CpuScaling1")]
++#[remote(name = "com.steampowered.SteamOSManager1.CpuScaling1")]
+ impl CpuScaling1 {
+     #[zbus(property(emits_changed_signal = "const"))]
+     async fn available_cpu_scaling_governors(&self) -> fdo::Result<Vec<String>> {
+@@ -933,6 +935,7 @@ impl RemoteInterface1 {
+             job_manager,
+             remote_battery_charge_limit1: None,
+             remote_cpu_boost1: None,
++            remote_cpu_scaling1: None,
+             remote_factory_reset1: None,
+             remote_fan_control1: None,
+             remote_gpu_performance_level1: None,
+@@ -1971,7 +1974,9 @@ pub(crate) async fn create_interfaces(
+         object_server.at(MANAGER_PATH, cpu_boost).await?;
+     }
+ 
+-    object_server.at(MANAGER_PATH, cpu_scaling).await?;
++    if remote_config.cpu_scaling1.is_none() {
++        object_server.at(MANAGER_PATH, cpu_scaling).await?;
++    }
+     if CpuSchedulerManager::is_supported().await? {
+         object_server.at(MANAGER_PATH, cpu_scheduler).await?;
+     }
+@@ -3325,6 +3330,10 @@ mod test {
+                     remote.ping_success = true;
+                     remote.register().await?;
+                 }
++                if let Some(remote) = manager.remote_cpu_scaling1.as_mut() {
++                    remote.ping_success = true;
++                    remote.register().await?;
++                }
+                 if let Some(remote) = manager.remote_tdp_limit1.as_mut() {
+                     remote.ping_success = true;
+                     remote.register().await?;
+@@ -3542,6 +3551,81 @@ mod test {
+         );
+     }
+ 
++    #[tokio::test]
++    async fn remote_cpu_scaling1_autoadd() {
++        let mut test = start(TestConfig::only_setup(RemoteSetup::new("CpuScaling1", 1)))
++            .await
++            .unwrap();
++
++        test.setup
++            .setup_remotes(&test.handle, &test.connection)
++            .await
++            .unwrap();
++
++        let new_conn = test.handle.new_connection().await.unwrap();
++        let proxy = RemoteInterface1Proxy::builder(&new_conn)
++            .destination(test.connection.unique_name().unwrap())
++            .unwrap()
++            .build()
++            .await
++            .unwrap();
++
++        assert!(
++            proxy
++                .remote_interfaces()
++                .await
++                .unwrap()
++                .contains(&CpuScaling1::name().to_string())
++        );
++        let object_server = test.connection.object_server();
++        assert!(
++            object_server
++                .interface::<_, CpuScaling1>(MANAGER_PATH)
++                .await
++                .is_err()
++        );
++        assert!(
++            object_server
++                .interface::<_, CpuScaling1Remote>(MANAGER_PATH)
++                .await
++                .is_ok()
++        );
++    }
++
++    #[tokio::test]
++    async fn remote_cpu_scaling1_local_without_config() {
++        let test = start(TestConfig::none()).await.unwrap();
++
++        let new_conn = test.handle.new_connection().await.unwrap();
++        let proxy = RemoteInterface1Proxy::builder(&new_conn)
++            .destination(test.connection.unique_name().unwrap())
++            .unwrap()
++            .build()
++            .await
++            .unwrap();
++
++        assert!(
++            !proxy
++                .remote_interfaces()
++                .await
++                .unwrap()
++                .contains(&CpuScaling1::name().to_string())
++        );
++        let object_server = test.connection.object_server();
++        assert!(
++            object_server
++                .interface::<_, CpuScaling1>(MANAGER_PATH)
++                .await
++                .is_ok()
++        );
++        assert!(
++            object_server
++                .interface::<_, CpuScaling1Remote>(MANAGER_PATH)
++                .await
++                .is_err()
++        );
++    }
++
+     #[derive(Debug)]
+     struct MockBatteryChargeLimit1 {
+         limit: i32,
+-- 
+2.43.0
+
