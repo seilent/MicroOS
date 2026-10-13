@@ -114,7 +114,7 @@ mktree() {
   echo 300000000 > "$sys/class/devfreq/1d84000.ufshc/max_freq"
   echo 0 > "$sys/class/hwmon/hwmon0/pwm1"
   echo enabled > "$sys/class/thermal/thermal_zone0/mode"
-  cp "$shipped" "$MICROOS_POWER_PROFILES"
+  awk '/^\[/ { skip = ($0 == "[tdp]") } !skip' "$shipped" > "$MICROOS_POWER_PROFILES"
 }
 snapshot() { (cd "$sys" && find . -type f | grep -Ev "$allowed" | sort | xargs sha256sum); }
 
@@ -342,6 +342,15 @@ set_ $P1 CpuGovernor s ondemand
 want "$pol/policy0/scaling_governor" ondemand "governor set"
 want "$pol/policy4/scaling_governor" ondemand "governor set"
 want "$pol/policy7/scaling_governor" schedutil "governor set on an inactive policy"
+stop
+
+mktree
+cp "$shipped" "$MICROOS_POWER_PROFILES"
+start
+[[ $(get $S.TdpLimit1 TdpLimitMin) == 3 && $(get $S.TdpLimit1 TdpLimitMax) == 10 ]] || fail "shipped TdpLimitMin/Max"
+set_ $S.TdpLimit1 TdpLimit u 3
+want "$pol/policy7/scaling_max_freq" 844800 "shipped 3 W row"
+want "$gpu/max_freq" 400000000 "shipped 3 W row"
 stop
 
 if (( rc == 0 )); then

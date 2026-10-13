@@ -9,3 +9,7 @@ object_path = "/net/seilent/MicroOs/Power"
 [CpuScaling1]
 bus_name = "net.seilent.MicroOs.Power"
 object_path = "/net/seilent/MicroOs/Power"
+
+[TdpLimit1]
+bus_name = "net.seilent.MicroOs.Power"
+object_path = "/net/seilent/MicroOs/Power"
