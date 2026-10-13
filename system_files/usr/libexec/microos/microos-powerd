@@ -1,0 +1,497 @@
+#!/usr/bin/env python3
+import grp
+import os
+import pwd
+import re
+import sys
+import tempfile
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+SYSFS = os.environ.get("MICROOS_SYSFS", "/sys")
+PROC = os.environ.get("MICROOS_PROC", "/proc")
+STATEDIR = os.environ.get("MICROOS_STATEDIR", "/var/lib/microos")
+PROFILES = os.environ.get("MICROOS_POWER_PROFILES", "/usr/lib/microos/power-profiles.conf")
+STATE = os.path.join(STATEDIR, "power.conf")
+
+BUS_NAME = "net.seilent.MicroOs.Power"
+PATH = "/net/seilent/MicroOs/Power"
+PROPS = "org.freedesktop.DBus.Properties"
+POWER = "net.seilent.MicroOs.Power1"
+PROFILE = "com.steampowered.SteamOSManager1.PerformanceProfile1"
+GPU = "com.steampowered.SteamOSManager1.GpuPerformanceLevel1"
+TDP = "com.steampowered.SteamOSManager1.TdpLimit1"
+CPU = "com.steampowered.SteamOSManager1.CpuScaling1"
+
+CPUS = "/devices/system/cpu"
+POLICIES = ("policy0", "policy4", "policy7")
+DEVFREQ = "/class/devfreq/3d00000.gpu"
+GPU_CAP = 587000000
+GPU_FLOOR = 305000000
+CLOCK_MIN = 305
+CLOCK_MAX = 587
+GPU_LEVELS = ["auto", "manual"]
+STOCK_PROFILES = ["low-power", "balanced", "performance"]
+WRITABLE = re.compile(
+    r"/devices/system/cpu/(cpufreq/policy[047]/scaling_(max_freq|min_freq|governor)|cpu[0-9]+/online)"
+    r"|/class/devfreq/3d00000\.gpu/(governor|min_freq|max_freq)"
+)
+
+SCHEMA = {
+    POWER: [
+        ("Profile", "s", "readwrite"),
+        ("AvailableProfiles", "as", "read"),
+        ("GpuLevel", "s", "readwrite"),
+        ("ManualGpuClock", "u", "readwrite"),
+        ("CpuGovernor", "s", "readwrite"),
+        ("AvailableCpuGovernors", "as", "read"),
+    ],
+    PROFILE: [
+        ("AvailablePerformanceProfiles", "as", "read"),
+        ("PerformanceProfile", "s", "readwrite"),
+        ("SuggestedDefaultPerformanceProfile", "s", "read"),
+    ],
+    GPU: [
+        ("AvailableGpuPerformanceLevels", "as", "read"),
+        ("GpuPerformanceLevel", "s", "readwrite"),
+        ("ManualGpuClock", "u", "readwrite"),
+        ("ManualGpuClockMin", "u", "read"),
+        ("ManualGpuClockMax", "u", "read"),
+    ],
+    TDP: [
+        ("TdpLimit", "u", "readwrite"),
+        ("TdpLimitMin", "u", "read"),
+        ("TdpLimitMax", "u", "read"),
+    ],
+    CPU: [
+        ("AvailableCpuScalingGovernors", "as", "read"),
+        ("CpuScalingGovernor", "s", "readwrite"),
+    ],
+}
+
+SETTERS = {
+    (POWER, "Profile"): "profile",
+    (PROFILE, "PerformanceProfile"): "profile",
+    (POWER, "GpuLevel"): "gpu_level",
+    (GPU, "GpuPerformanceLevel"): "gpu_level",
+    (POWER, "ManualGpuClock"): "gpu_clock",
+    (GPU, "ManualGpuClock"): "gpu_clock",
+    (POWER, "CpuGovernor"): "governor",
+    (CPU, "CpuScalingGovernor"): "governor",
+    (TDP, "TdpLimit"): "tdp",
+}
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def read(rel):
+    try:
+        with open(SYSFS + rel) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def read_int(rel):
+    try:
+        return int(read(rel))
+    except (TypeError, ValueError):
+        return None
+
+
+def write(rel, value):
+    if not WRITABLE.fullmatch(rel):
+        log(f"refused write {rel}")
+        return
+    try:
+        with open(SYSFS + rel, "w") as f:
+            f.write(str(value))
+    except OSError as e:
+        log(f"write {rel}={value}: {e.strerror}")
+
+
+def interface_xml(name, props, methods):
+    body = "".join(f'<property name="{p}" type="{t}" access="{a}"/>' for p, t, a in props)
+    body += "".join(f'<method name="{m}"/>' for m in methods)
+    return f'<node><interface name="{name}">{body}</interface></node>'
+
+
+def load_profiles():
+    names, profiles, tdp, default, section = [], {}, {}, None, None
+    try:
+        with open(PROFILES) as f:
+            for n, raw in enumerate(f, 1):
+                line = raw.strip()
+                if not line:
+                    continue
+                if line.startswith("[") and line.endswith("]"):
+                    section = line[1:-1].strip()
+                    if section == "tdp":
+                        continue
+                    if not section or section in profiles:
+                        raise ValueError(f"line {n}: bad section")
+                    names.append(section)
+                    profiles[section] = {}
+                    continue
+                key, sep, value = (s.strip() for s in line.partition("="))
+                if not sep:
+                    raise ValueError(f"line {n}: no '='")
+                if section is None and key == "default":
+                    default = value
+                elif section == "tdp":
+                    row = [int(v) for v in value.split(",")]
+                    if len(row) != 4:
+                        raise ValueError(f"line {n}: a tdp row needs 4 values")
+                    tdp[int(key)] = row
+                elif section is not None and key in POLICIES + ("gpu",):
+                    profiles[section][key] = int(value)
+                else:
+                    raise ValueError(f"line {n}: unknown key {key}")
+        if default not in profiles:
+            raise ValueError("no default profile")
+    except (OSError, ValueError) as e:
+        log(f"{PROFILES}: {e}, using stock clocks")
+        return list(STOCK_PROFILES), {p: {} for p in STOCK_PROFILES}, {}, "balanced"
+    return names, profiles, tdp, default
+
+
+class Power:
+    def __init__(self):
+        self.conn = None
+        self.registered = {}
+        self.last = {}
+        self.load()
+
+    def load(self):
+        self.names, self.profiles, self.tdp, self.default = load_profiles()
+        self.state = self.load_state()
+
+    def defaults(self):
+        return {"profile": self.default, "gpu_level": "auto", "gpu_clock": CLOCK_MAX, "governor": "schedutil", "tdp": None}
+
+    def governors(self):
+        return [g for g in (read(f"{CPUS}/cpufreq/policy0/scaling_available_governors") or "").split() if g != "userspace"]
+
+    def check(self, key, value):
+        if key == "profile" and value in self.names:
+            return value
+        if key == "gpu_level" and value in GPU_LEVELS:
+            return value
+        if key == "governor" and value in self.governors():
+            return value
+        if key in ("gpu_clock", "tdp") and isinstance(value, int) and value >= 0:
+            return value
+        raise ValueError(f"{value!r} is not a valid {key}")
+
+    def load_state(self):
+        state = self.defaults()
+        try:
+            with open(STATE) as f:
+                lines = f.read().splitlines()
+        except FileNotFoundError:
+            return state
+        except OSError as e:
+            log(f"{STATE}: {e.strerror}, using defaults")
+            return state
+        try:
+            for line in lines:
+                if not line.strip():
+                    continue
+                key, sep, value = (s.strip() for s in line.partition("="))
+                if not sep or key not in state:
+                    raise ValueError(f"bad line {line!r}")
+                if key == "tdp" and value == "":
+                    state[key] = None
+                elif key in ("gpu_clock", "tdp"):
+                    state[key] = self.check(key, int(value))
+                else:
+                    state[key] = self.check(key, value)
+        except ValueError as e:
+            log(f"{STATE}: {e}, using defaults")
+            return self.defaults()
+        return state
+
+    def save_state(self):
+        text = "".join(f"{k}={'' if v is None else v}\n" for k, v in self.state.items())
+        tmp = None
+        try:
+            os.makedirs(STATEDIR, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=STATEDIR, prefix=".power.conf.")
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, STATE)
+            tmp = None
+            dfd = os.open(STATEDIR, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dfd)
+            finally:
+                os.close(dfd)
+        except OSError as e:
+            log(f"{STATE}: {e.strerror}")
+            if tmp:
+                os.unlink(tmp)
+
+    def tdp_watts(self):
+        return max(self.tdp) if self.state["tdp"] is None else self.state["tdp"]
+
+    def tdp_row(self):
+        if not self.tdp:
+            return None
+        watts = self.tdp_watts()
+        fit = [w for w in sorted(self.tdp) if w <= watts]
+        return self.tdp[fit[-1] if fit else min(self.tdp)]
+
+    def online(self):
+        try:
+            cpus = os.listdir(SYSFS + CPUS)
+        except OSError as e:
+            log(f"{CPUS}: {e.strerror}")
+            return
+        for cpu in sorted(cpus):
+            if re.fullmatch(r"cpu[0-9]+", cpu) and read(f"{CPUS}/{cpu}/online") == "0":
+                write(f"{CPUS}/{cpu}/online", 1)
+
+    def policies(self):
+        for policy in POLICIES:
+            base = f"{CPUS}/cpufreq/{policy}"
+            lo, hi = read_int(f"{base}/cpuinfo_min_freq"), read_int(f"{base}/cpuinfo_max_freq")
+            if not read(f"{base}/affected_cpus") or lo is None or hi is None:
+                log(f"{policy} inactive, skipped")
+                continue
+            yield policy, base, lo, hi
+
+    def set_policy(self, base, governor, lo, top):
+        write(f"{base}/scaling_governor", governor)
+        write(f"{base}/scaling_min_freq", lo)
+        write(f"{base}/scaling_max_freq", top)
+        write(f"{base}/scaling_min_freq", lo)
+
+    def reset(self):
+        self.online()
+        for _, base, lo, hi in self.policies():
+            self.set_policy(base, "schedutil", lo, hi)
+
+    def apply(self):
+        self.online()
+        profile = self.profiles[self.state["profile"]]
+        row = self.tdp_row()
+        caps = []
+        for policy, base, lo, hi in self.policies():
+            top = min(hi, profile.get(policy, hi), row[POLICIES.index(policy)] if row else hi)
+            top = max(lo, top)
+            self.set_policy(base, self.state["governor"], lo, top)
+            caps.append(f"{policy}={top}")
+        freqs = [int(v) for v in (read(f"{DEVFREQ}/available_frequencies") or "").split() if v.isdigit()]
+        floor = min(freqs) if freqs else GPU_FLOOR
+        gpu_max = min(GPU_CAP, max(freqs) if freqs else GPU_CAP, profile.get("gpu", GPU_CAP), row[3] if row else GPU_CAP)
+        if self.state["gpu_level"] == "manual":
+            want = self.state["gpu_clock"] * 1000000
+            clock = max(floor, min(want, gpu_max))
+            opps = [f for f in freqs if floor <= f <= gpu_max]
+            if opps:
+                clock = min(opps, key=lambda f: abs(f - clock))
+            if abs(clock - want) >= 1000000:
+                log(f"manual GPU clock {want} clamped to {clock}")
+            write(f"{DEVFREQ}/governor", "userspace")
+            write(f"{DEVFREQ}/min_freq", floor)
+            write(f"{DEVFREQ}/max_freq", clock)
+            write(f"{DEVFREQ}/min_freq", clock)
+            caps.append(f"gpu={clock}")
+        else:
+            write(f"{DEVFREQ}/governor", "simple_ondemand")
+            write(f"{DEVFREQ}/min_freq", floor)
+            write(f"{DEVFREQ}/max_freq", gpu_max)
+            write(f"{DEVFREQ}/min_freq", floor)
+            caps.append(f"gpu={gpu_max}")
+        tdp = f" tdp={self.tdp_watts()}" if self.tdp else ""
+        log(f"applied profile={self.state['profile']} governor={self.state['governor']}{tdp} {' '.join(caps)}")
+
+    def values(self):
+        s = self.state
+        governor = read(f"{CPUS}/cpufreq/policy0/scaling_governor") or s["governor"]
+        governors = self.governors()
+        v = {
+            POWER: {
+                "Profile": ("s", s["profile"]),
+                "AvailableProfiles": ("as", self.names),
+                "GpuLevel": ("s", s["gpu_level"]),
+                "ManualGpuClock": ("u", s["gpu_clock"]),
+                "CpuGovernor": ("s", governor),
+                "AvailableCpuGovernors": ("as", governors),
+            },
+            PROFILE: {
+                "AvailablePerformanceProfiles": ("as", self.names),
+                "PerformanceProfile": ("s", s["profile"]),
+                "SuggestedDefaultPerformanceProfile": ("s", self.default),
+            },
+            GPU: {
+                "AvailableGpuPerformanceLevels": ("as", GPU_LEVELS),
+                "GpuPerformanceLevel": ("s", s["gpu_level"]),
+                "ManualGpuClock": ("u", s["gpu_clock"]),
+                "ManualGpuClockMin": ("u", CLOCK_MIN),
+                "ManualGpuClockMax": ("u", CLOCK_MAX),
+            },
+            CPU: {
+                "AvailableCpuScalingGovernors": ("as", governors),
+                "CpuScalingGovernor": ("s", governor),
+            },
+        }
+        if self.tdp:
+            v[TDP] = {
+                "TdpLimit": ("u", self.tdp_watts()),
+                "TdpLimitMin": ("u", min(self.tdp)),
+                "TdpLimitMax": ("u", max(self.tdp)),
+            }
+        return v
+
+    def publish(self, force=False):
+        current = self.values()
+        for iface, props in current.items():
+            old = {} if force else self.last.get(iface, {})
+            changed = {k: GLib.Variant(t, v) for k, (t, v) in props.items() if old.get(k) != (t, v)}
+            if changed and iface in self.registered:
+                self.conn.emit_signal(None, PATH, PROPS, "PropertiesChanged",
+                                      GLib.Variant("(sa{sv}as)", (iface, changed, [])))
+        self.last = current
+
+    def register(self):
+        for iface, props in SCHEMA.items():
+            want = iface != TDP or bool(self.tdp)
+            if want and iface not in self.registered:
+                info = Gio.DBusNodeInfo.new_for_xml(interface_xml(iface, props, ["Reload"] if iface == POWER else []))
+                self.registered[iface] = self.conn.register_object(PATH, info.interfaces[0], self.on_call, None, None)
+            elif not want and iface in self.registered:
+                self.conn.unregister_object(self.registered.pop(iface))
+                self.last.pop(iface, None)
+
+    def refusal(self, sender):
+        try:
+            reply = self.conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                        "GetConnectionCredentials", GLib.Variant("(s)", (sender,)),
+                                        GLib.VariantType("(a{sv})"), Gio.DBusCallFlags.NONE, 500, None)
+        except GLib.Error as e:
+            return None, f"no credentials: {e.message}"
+        creds = reply.unpack()[0]
+        uid, pid, groups = creds.get("UnixUserID"), creds.get("ProcessID"), creds.get("UnixGroupIDs")
+        if uid is None or pid is None:
+            return uid, "no uid or pid from the bus"
+        if groups is None:
+            try:
+                pw = pwd.getpwuid(uid)
+                groups = os.getgrouplist(pw.pw_name, pw.pw_gid)
+            except KeyError:
+                groups = []
+        try:
+            wheel = grp.getgrnam("wheel").gr_gid
+        except KeyError:
+            wheel = None
+        if uid != 0 and wheel not in groups:
+            return uid, "not in wheel"
+        try:
+            with open(f"{PROC}/{pid}/cgroup") as f:
+                cgroup = f.read()
+        except OSError:
+            return uid, f"cannot read the cgroup of pid {pid}"
+        if "/app-steam-app" in cgroup:
+            return uid, "called from a game"
+        return uid, None
+
+    def authorize(self, sender, what, inv):
+        uid, reason = self.refusal(sender)
+        if reason:
+            log(f"{what} by uid {uid} refused: {reason}")
+            inv.return_dbus_error("org.freedesktop.DBus.Error.AccessDenied", reason)
+            return False
+        log(f"{what} by uid {uid}")
+        return True
+
+    def changed(self):
+        self.save_state()
+        self.apply()
+        self.publish()
+
+    def on_call(self, conn, sender, path, iface, method, params, inv):
+        args = params.unpack()
+        if iface == PROPS:
+            props = self.values().get(args[0])
+            if props is None:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownInterface", f"no interface {args[0]}")
+                return
+            if method != "GetAll" and args[1] not in props:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownProperty", f"no property {args[1]}")
+                return
+        if iface == PROPS and method == "Get":
+            t, v = props[args[1]]
+            inv.return_value(GLib.Variant("(v)", (GLib.Variant(t, v),)))
+        elif iface == PROPS and method == "GetAll":
+            inv.return_value(GLib.Variant("(a{sv})", ({k: GLib.Variant(t, v) for k, (t, v) in props.items()},)))
+        elif iface == PROPS and method == "Set":
+            key = SETTERS.get((args[0], args[1]))
+            if key is None:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.PropertyReadOnly", f"{args[1]} is read only")
+                return
+            want, sent = props[args[1]][0], params.get_child_value(2).get_variant().get_type_string()
+            if sent != want:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs", f"{args[1]} is {want}, not {sent}")
+                return
+            if not self.authorize(sender, f"set {args[0]}.{args[1]}={args[2]!r}", inv):
+                return
+            try:
+                self.state[key] = self.check(key, args[2])
+            except ValueError as e:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs", str(e))
+                return
+            self.changed()
+            inv.return_value(None)
+        elif iface == POWER and method == "Reload":
+            if not self.authorize(sender, "Reload", inv):
+                return
+            self.load()
+            self.register()
+            self.apply()
+            self.publish()
+            inv.return_value(None)
+        else:
+            inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", f"{iface}.{method}")
+
+    def on_sleep(self, conn, sender, path, iface, signal, params):
+        if not params.unpack()[0]:
+            log("resumed")
+            self.apply()
+            self.publish()
+
+    def on_bus(self, conn, name):
+        self.conn = conn
+        self.register()
+        conn.signal_subscribe("org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep",
+                              "/org/freedesktop/login1", None, Gio.DBusSignalFlags.NONE, self.on_sleep)
+
+    def on_name(self, conn, name):
+        self.publish(force=True)
+
+
+def main():
+    power = Power()
+    power.reset()
+    power.apply()
+    loop = GLib.MainLoop()
+
+    def lost(conn, name):
+        log(f"lost the bus name {name}")
+        loop.quit()
+
+    Gio.bus_own_name(Gio.BusType.SYSTEM, BUS_NAME, Gio.BusNameOwnerFlags.NONE, power.on_bus, power.on_name, lost)
+    loop.run()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

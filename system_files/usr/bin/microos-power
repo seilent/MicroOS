@@ -1,0 +1,71 @@
+#!/usr/bin/env python3
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+NAME = "net.seilent.MicroOs.Power"
+PATH = "/net/seilent/MicroOs/Power"
+PROPS = "org.freedesktop.DBus.Properties"
+POWER = "net.seilent.MicroOs.Power1"
+TDP = "com.steampowered.SteamOSManager1.TdpLimit1"
+SETS = {
+    "set-profile": (POWER, "Profile", "s"),
+    "gpu-level": (POWER, "GpuLevel", "s"),
+    "gpu-clock": (POWER, "ManualGpuClock", "u"),
+    "governor": (POWER, "CpuGovernor", "s"),
+    "tdp": (TDP, "TdpLimit", "u"),
+}
+USAGE = ("usage: microos-power get | reload | set-profile <name> | gpu-level auto|manual | gpu-clock <MHz> | "
+         "governor <name> | tdp <W>")
+
+
+def call(bus, iface, method, args=None, reply=None):
+    return bus.call_sync(NAME, PATH, iface, method, args, GLib.VariantType(reply) if reply else None,
+                         Gio.DBusCallFlags.NONE, 5000, None)
+
+
+def get_all(bus, iface):
+    return call(bus, PROPS, "GetAll", GLib.Variant("(s)", (iface,)), "(a{sv})").unpack()[0]
+
+
+def main(argv):
+    cmd = argv[0] if argv else ""
+    if not ((cmd in ("get", "reload") and len(argv) == 1) or (cmd in SETS and len(argv) == 2)):
+        print(USAGE, file=sys.stderr)
+        return 2
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        if cmd == "get":
+            p = get_all(bus, POWER)
+            print(f"profile {p['Profile']}")
+            print(f"profiles {' '.join(p['AvailableProfiles'])}")
+            print(f"gpu-level {p['GpuLevel']}")
+            print(f"gpu-clock {p['ManualGpuClock']}")
+            print(f"governor {p['CpuGovernor']}")
+            print(f"governors {' '.join(p['AvailableCpuGovernors'])}")
+            try:
+                t = get_all(bus, TDP)
+                print(f"tdp {t['TdpLimit']} ({t['TdpLimitMin']} to {t['TdpLimitMax']})")
+            except GLib.Error:
+                print("tdp none")
+        elif cmd == "reload":
+            call(bus, POWER, "Reload")
+        else:
+            iface, prop, t = SETS[cmd]
+            try:
+                value = GLib.Variant(t, int(argv[1]) if t == "u" else argv[1])
+            except (ValueError, OverflowError, TypeError):
+                print(f"microos-power: {argv[1]} is not a number", file=sys.stderr)
+                return 2
+            call(bus, PROPS, "Set", GLib.Variant("(ssv)", (iface, prop, value)))
+    except GLib.Error as e:
+        print(f"microos-power: {e.message}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

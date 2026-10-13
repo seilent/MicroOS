@@ -1,0 +1,25 @@
+[Unit]
+Description=MicroOS power profiles and CPU and GPU limits
+Before=display-manager.service
+StartLimitIntervalSec=120
+StartLimitBurst=30
+
+[Service]
+Type=dbus
+BusName=net.seilent.MicroOs.Power
+ExecStart=/usr/libexec/microos/microos-powerd
+Restart=always
+RestartSec=1
+RestartSteps=3
+RestartMaxDelaySec=10
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ReadWritePaths=/var/lib/microos
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
