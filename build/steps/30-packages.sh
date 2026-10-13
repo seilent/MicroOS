@@ -9,6 +9,7 @@ own=(
   gamescope/gamescope
   gamescope-session/gamescope-session
   gamescope-session/gamescope-session-steam
+  steamos-manager/steamos-manager
 )
 
 rpms=()
@@ -80,4 +81,8 @@ dnf -y install \
   google-noto-sans-thai-vf-fonts \
   google-noto-sans-devanagari-vf-fonts \
   google-noto-sans-mono-vf-fonts \
+  python3-gobject \
+  python3-evdev \
+  upower \
+  rsync \
   "${rpms[@]}"

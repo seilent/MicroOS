@@ -46,10 +46,41 @@ rpm -q mesa-dri-drivers mesa-vulkan-drivers mesa-libgbm mesa-libEGL mesa-libGL v
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 [[ $(systemctl is-enabled inputplumber.service) == enabled ]] || fail "inputplumber.service is not enabled"
 
-for h in steamos-update steamos-select-branch jupiter-biosupdate jupiter-dock-updater steamos-set-timezone; do
+for h in steamos-update steamos-select-branch jupiter-biosupdate jupiter-dock-updater steamos-set-timezone \
+  steamos-priv-write steamos-devkit-mode; do
   [[ -x /usr/bin/steamos-polkit-helpers/$h ]] || fail "steamos-polkit-helpers/$h missing"
 done
+for h in steamos-mandatory-update jupiter-initial-firmware-update; do
+  [[ -x /usr/bin/$h ]] || fail "/usr/bin/$h missing"
+done
 [[ -f /usr/share/polkit-1/rules.d/50-microos-timezone.rules ]] || fail "timezone polkit rule missing"
+steamrules=/usr/share/polkit-1/rules.d/50-microos-steam.rules
+[[ -f $steamrules ]] || fail "$steamrules missing"
+for a in inhibit-handle-power-key inhibit-handle-suspend-key suspend reboot power-off; do
+  grep -qF "\"org.freedesktop.login1.$a\"" "$steamrules" || fail "$steamrules lacks org.freedesktop.login1.$a"
+done
+for r in 'RUN+="/usr/bin/chgrp wheel /sys%p/brightness"' 'RUN+="/usr/bin/chmod g+w /sys%p/brightness"'; do
+  grep -qF "$r" /usr/lib/udev/rules.d/60-microos-backlight.rules || fail "60-microos-backlight.rules lacks $r"
+done
+grep -qE 'session\.dont-restore-off-profile"? *[=:] *true' /usr/share/wireplumber/wireplumber.conf.d/52-microos-pm2.conf \
+  || fail "52-microos-pm2.conf does not set session.dont-restore-off-profile"
+
+rpm -q python3-gobject python3-evdev upower >/dev/null || fail "steam service rpms missing"
+[[ $(rpm -q --qf '%{VENDOR}' steamos-manager) == MicroOS ]] || fail "steamos-manager is not the MicroOS build"
+! rpm -q iwd >/dev/null 2>&1 || fail "iwd is installed"
+for u in steamos-manager.service upower.service microos-powerd.service; do
+  [[ $(systemctl is-enabled "$u") == enabled ]] || fail "$u is not enabled"
+done
+for u in steamos-manager.service microos-audio-sleep.service; do
+  [[ $(systemctl --global is-enabled "$u") == enabled ]] || fail "user $u is not enabled"
+done
+[[ $(systemctl --global is-enabled steamos-manager-session-cleanup.service) != enabled ]] \
+  || fail "user steamos-manager-session-cleanup.service is enabled"
+[[ -f /usr/share/steamos-manager/devices/microos-pm2.toml ]] || fail "microos-pm2.toml missing"
+[[ ! -e /usr/lib/hwsupport ]] || fail "/usr/lib/hwsupport exists"
+[[ -z $(find /usr -name 'steamos-format-*') ]] || fail "steamos-format helpers present: $(find /usr -name 'steamos-format-*')"
+[[ -x /usr/libexec/microos/microos-powerd ]] || fail "microos-powerd missing"
+! grep -qE 'pwm|hwmon|thermal' /usr/libexec/microos/microos-powerd || fail "microos-powerd names a pwm, hwmon or thermal path"
 rpm -q sddm sddm-wayland-generic steam-devices gtk2 openal-soft sdl2-compat libXcomposite libXdamage libXfixes libXi \
   libXinerama libXrandr libXrender libXtst libSM libICE at-spi2-atk cups-libs libssh2 libva libvdpau \
   google-noto-sans-cjk-vf-fonts google-noto-color-emoji-fonts google-noto-sans-arabic-vf-fonts \
@@ -82,12 +113,15 @@ while IFS='|' read -r path digest mode; do
 done < <(rpm -qp --qf '[%{FILENAMES}|%{FILEDIGESTS}|%{FILEMODES:octal}\n]' "${seedrpm[0]}")
 [[ $(find /usr/share/microos-seed -mindepth 1 | sort) == "$(rpm -qlp "${seedrpm[0]}" | grep '^/usr/share/microos-seed/' | sort)" ]] \
   || fail "/usr/share/microos-seed holds files outside the seed RPM"
-SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "${units[@]}" \
+SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "${units[@]}" /usr/lib/systemd/system/steamos-manager.service \
   /usr/lib/systemd/system/sshd.service /usr/lib/systemd/system/bootc-generic-growpart.service \
   /usr/lib/systemd/system/ostree-finalize-staged.service || fail "systemd-analyze verify"
 mkdir -p "$tmp/xdg"
 XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no \
-  /usr/lib/systemd/user/microos-steam-seed.service gamescope-session-plus@steam.service || fail "systemd-analyze verify --user"
+  /usr/lib/systemd/user/microos-*.service /usr/lib/systemd/user/steamos-manager.service gamescope-session-plus@steam.service \
+  || fail "systemd-analyze verify --user"
+[[ -f /usr/lib/systemd/user/microos-steam-seed.service ]] || fail "microos-steam-seed.service missing"
+[[ -f /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/20-microos-hotkeyd.conf ]] || fail "hotkeyd drop-in missing"
 [[ -f /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf ]] || fail "gamescope-session-plus@steam drop-in missing"
 
 [[ $(grep '^ExecStop=' /usr/lib/systemd/system/ostree-finalize-staged.service) == 'ExecStop=/usr/bin/ostree admin finalize-staged' ]] \
