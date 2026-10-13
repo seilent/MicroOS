@@ -65,10 +65,17 @@ if [[ $mode == full ]]; then
   while read -r f; do
     [[ $f =~ $nevra && $f != *..* ]] || fail "bad source rpm name $f"
     url=$koji/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}/data/signed/$key/src/$f
-    get+=(-o "$out/$f" "$url")
+    if [[ -n ${MICROOS_SOURCE_CACHE:-} && -s $MICROOS_SOURCE_CACHE/$f ]]; then
+      ln "$MICROOS_SOURCE_CACHE/$f" "$out/$f" 2> /dev/null || cp "$MICROOS_SOURCE_CACHE/$f" "$out/$f"
+    else
+      get+=(-o "$out/$f" "$url")
+    fi
     printf '%s %s\n' "$f" "$url" >> "$tmp/origins"
   done < "$tmp/srpms"
-  curl -fsSLg --retry 5 --retry-all-errors --parallel --parallel-max 8 "${get[@]}" || fail "source rpm download failed"
+  echo "source-artifact: $(( $(wc -l < "$tmp/srpms") - ${#get[@]} / 2 )) source rpms from the cache, $(( ${#get[@]} / 2 )) from koji"
+  if (( ${#get[@]} )); then
+    curl -fsSLg --retry 5 --retry-all-errors --parallel --parallel-max 8 "${get[@]}" || fail "source rpm download failed"
+  fi
   while read -r f; do
     [[ -s $out/$f ]] || fail "$f missing"
   done < "$tmp/srpms"
