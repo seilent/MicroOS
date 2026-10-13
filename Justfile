@@ -24,10 +24,26 @@ pkg name:
       mkdir -p "$PKG_CCACHE"
       cache=(-v "$PKG_CCACHE:/ccache:Z" -e CCACHE_DIR=/ccache)
     fi
-    podman run --rm "${cache[@]}" \
-      -v "$PWD/packages/$1:/src:ro,Z" \
-      -v "$PWD/$out:/out:Z" \
-      "$img" /src/build.sh /out
+    if [[ -f packages/$1/fetch.sh ]]; then
+      work=out/work/$1
+      rm -rf "$work"
+      mkdir -p "$work"
+      podman run --rm \
+        -v "$PWD/packages/$1:/src:ro,Z" \
+        -v "$PWD/$work:/work:Z" \
+        "$img" /src/fetch.sh /work
+      podman run --rm --network=none "${cache[@]}" \
+        -v "$PWD/packages/$1:/src:ro,Z" \
+        -v "$PWD/$work:/work:ro,Z" \
+        -v "$PWD/$out:/out:Z" \
+        "$img" /src/build.sh /out /work
+      rm -rf "$work"
+    else
+      podman run --rm "${cache[@]}" \
+        -v "$PWD/packages/$1:/src:ro,Z" \
+        -v "$PWD/$out:/out:Z" \
+        "$img" /src/build.sh /out
+    fi
     if [[ -f tests/pkg-$1.sh ]]; then
       podman run --rm \
         -v "$PWD/tests:/tests:ro,Z" \

@@ -6,6 +6,9 @@ printf '[main]\ninstall_weak_deps=False\n' > /etc/dnf/libdnf5.conf.d/10-microos.
 
 own=(
   inputplumber/inputplumber
+  gamescope/gamescope
+  gamescope-session/gamescope-session
+  gamescope-session/gamescope-session-steam
 )
 
 rpms=()
@@ -49,4 +52,32 @@ dnf -y install \
   alsa-ucm \
   alsa-ucm-utils \
   alsa-utils \
+  sddm \
+  sddm-wayland-generic \
+  steam-devices \
+  gtk2 \
+  openal-soft \
+  sdl2-compat \
+  libXcomposite \
+  libXdamage \
+  libXfixes \
+  libXi \
+  libXinerama \
+  libXrandr \
+  libXrender \
+  libXtst \
+  libSM \
+  libICE \
+  at-spi2-atk \
+  cups-libs \
+  libssh2 \
+  libva \
+  libvdpau \
+  google-noto-sans-cjk-vf-fonts \
+  google-noto-color-emoji-fonts \
+  google-noto-sans-arabic-vf-fonts \
+  google-noto-sans-hebrew-vf-fonts \
+  google-noto-sans-thai-vf-fonts \
+  google-noto-sans-devanagari-vf-fonts \
+  google-noto-sans-mono-vf-fonts \
   "${rpms[@]}"

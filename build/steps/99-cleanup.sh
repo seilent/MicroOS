@@ -2,4 +2,4 @@
 set -euo pipefail
 
 find /tmp -mindepth 1 -delete
-rm -rf /run/dnf /var/log/dnf5.log /var/cache/libdnf5 /var/lib/dnf/repos /var/cache/ldconfig/aux-cache
+rm -rf /run/dnf /run/sddm /var/log/dnf5.log /var/cache/libdnf5 /var/lib/dnf/repos /var/cache/ldconfig/aux-cache

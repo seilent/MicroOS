@@ -21,6 +21,7 @@ env:
   PUBKEY: system_files/usr/share/microos/keys/microos.pub
   BIB: quay.io/centos-bootc/bootc-image-builder@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b
   SOURCE_TYPE: application/vnd.microos.source.v1
+  FEDORA: registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
 
 jobs:
   packages:
@@ -35,6 +36,7 @@ jobs:
   image:
     needs: packages
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -98,6 +100,28 @@ jobs:
           done
           rm -rf "$RUNNER_TEMP/oci" "$RUNNER_TEMP/tree"
 
+      - name: Seed
+        id: seed
+        run: |
+          rpms=("$RUNNER_TEMP"/pkgs/steam-bootstrap/microos-steam-seed-*.aarch64.rpm)
+          [[ ${#rpms[@]} == 1 && -f ${rpms[0]} ]] || { echo "::error::expected one microos-steam-seed RPM, got ${rpms[*]}"; exit 1; }
+          sha=$(sha256sum < "${rpms[0]}" | cut -d' ' -f1)
+          mkdir -p "$RUNNER_TEMP/seed"
+          podman run --rm --network=none -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/rpms:ro" -v "$RUNNER_TEMP/seed:/seed" "$FEDORA" sh -c '
+            set -eu
+            cd /seed
+            rpm2archive -n - < "/rpms/$1" | tar -x --no-same-owner
+            t=$(rpm -qp --qf "%{BUILDTIME}" "/rpms/$1")
+            find . -type d -exec chmod 755 {} + -exec touch -d "@$t" {} +' sh "${rpms[0]##*/}"
+          want=$(printf '%s\n' 'usr d' 'usr/share d' 'usr/share/licenses d' 'usr/share/licenses/microos-steam-seed d' \
+            'usr/share/licenses/microos-steam-seed/steam_subscriber_agreement.txt f' 'usr/share/microos-seed d' \
+            'usr/share/microos-seed/steam-seed.tar.zst f' 'usr/share/microos-seed/steam-seed.version f')
+          got=$(cd "$RUNNER_TEMP/seed" && find . -mindepth 1 -printf '%P %y\n' | LC_ALL=C sort)
+          [[ $got == "$want" ]] || { echo "::error::seed RPM payload is not the allowed file list: $got"; exit 1; }
+          echo "rpm_sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "${rpms[0]##*/} $sha"
+          find "$RUNNER_TEMP/seed" -printf '%M %TY-%Tm-%Td %TT %s %P\n'
+
       - name: Version
         id: version
         run: |
@@ -121,32 +145,64 @@ jobs:
           echo "$push_tag $final_tag"
 
       - name: Build
+        id: build
         env:
           KERNEL_REF: ${{ steps.kernel.outputs.ref }}
           VERSION: ${{ steps.version.outputs.version }}
           TAG: ${{ steps.version.outputs.push_tag }}
+          SEED: ${{ steps.seed.outputs.rpm_sha256 }}
         run: |
           podman build \
             --build-arg "KERNEL_REF=$KERNEL_REF" \
             --build-arg "MICROOS_VERSION=$VERSION" \
+            --build-arg "MICROOS_SEED=$SEED" \
             --build-context "pkgs=$RUNNER_TEMP/pkgs" \
+            --build-context "seed=$RUNNER_TEMP/seed" \
             -t "$IMAGE:$TAG" .
+          base=$(sed -n 's/^FROM \(quay\.io\/fedora\/fedora-bootc[^ ]*\)$/\1/p' Containerfile)
+          mapfile -t want < <(podman image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$base" | sed '/^$/d')
+          mapfile -t got < <(podman image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$IMAGE:$TAG" | sed '/^$/d')
+          n=${#want[@]}
+          [[ $n -gt 0 && ${got[*]:0:n} == "${want[*]}" ]] || { echo "::error::image layers do not start with the $base layers"; exit 1; }
+          echo "seed_index=$n" >> "$GITHUB_OUTPUT"
+          echo "::notice::seed layer diff id ${got[n]}"
+          if cfg=$(skopeo inspect --no-creds --config "docker://$IMAGE:testing" 2> "$RUNNER_TEMP/err"); then
+            old=$(jq -r '.config.Labels["microos.seed"] // empty' <<< "$cfg")
+            if [[ $old == "$SEED" ]]; then
+              jq -e --arg d "${got[n]}" '.rootfs.diff_ids | index($d)' <<< "$cfg" > /dev/null \
+                || { echo "::error::seed RPM $SEED is the one in $IMAGE:testing, but seed layer ${got[n]} is not in it"; exit 1; }
+              echo "same_seed=true" >> "$GITHUB_OUTPUT"
+              echo "seed layer diff id matches $IMAGE:testing"
+            else
+              echo "::notice::seed RPM differs from $IMAGE:testing (${old:-none}), no layer comparison"
+            fi
+          elif grep -qiE 'manifest unknown|404' "$RUNNER_TEMP/err"; then
+            echo "::notice::no $IMAGE:testing, no layer comparison"
+          else
+            echo "::error::$(cat "$RUNNER_TEMP/err")"
+            exit 1
+          fi
+          podman image inspect --format '{{.Size}}' "$IMAGE:$TAG" | awk '{ printf "image %.2f GB\n", $1 / 1e9 }'
 
       - name: InputPlumber config
         run: |
           podman run --rm -v "$PWD:/repo:ro" -v "$RUNNER_TEMP/pkgs/inputplumber:/rpms:ro" \
-            quay.io/fedora/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d \
+            registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install cpio python3-jsonschema python3-pyyaml && /repo/tests/inputplumber-config.sh /rpms'
 
       - name: Test
         env:
           TAG: ${{ steps.version.outputs.push_tag }}
         run: |
-          podman run --rm -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/image.sh
+          podman run --rm -v "$PWD/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/seed-rpm:ro" "$IMAGE:$TAG" /tests/image.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootimg.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootok.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/update.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/audio.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/session.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-launcher.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-seed.sh
+          podman run --rm -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-libs.sh
 
       - name: Source RPMs
         env:
@@ -174,6 +230,23 @@ jobs:
           digest=$(cat "$RUNNER_TEMP/digest")
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "$IMAGE:$TAG $digest"
+
+      - name: Seed layer
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          N: ${{ steps.build.outputs.seed_index }}
+          SAME: ${{ steps.build.outputs.same_seed }}
+        run: |
+          layer=$(skopeo inspect --no-creds --raw "docker://$IMAGE@$DIGEST" | jq -r --argjson n "$N" '.layers[$n] | "\(.digest) \(.size)"')
+          [[ $layer =~ ^sha256:[0-9a-f]{64}\ [0-9]+$ ]] || { echo "::error::no seed layer at $N: $layer"; exit 1; }
+          echo "::notice::seed layer $layer"
+          if [[ $SAME == true ]]; then
+            if skopeo inspect --no-creds --raw "docker://$IMAGE:testing" | jq -e --arg d "${layer%% *}" '[.layers[].digest] | index($d)' > /dev/null; then
+              echo "seed layer blob matches $IMAGE:testing"
+            else
+              echo "::warning::seed layer diff id matches $IMAGE:testing but blob ${layer%% *} is not in it; updates download the seed again"
+            fi
+          fi
 
       - name: Unsigned check
         env:
@@ -430,6 +503,16 @@ jobs:
 
       - name: Test
         run: sudo tests/disk.sh "$RAW" "$IMAGE:$TAG"
+
+      - name: Root size
+        run: |
+          dev=$(sudo losetup -f -P -r --show "$RAW")
+          mnt=$(mktemp -d)
+          trap 'sudo umount "$mnt" 2>/dev/null || true; sudo losetup -d "$dev"' EXIT
+          sudo mount -o ro "${dev}p3" "$mnt"
+          read -r size used avail < <(df -B1M --output=size,used,avail "$mnt" | tail -n1)
+          echo "::notice::root ${size} MiB, used ${used} MiB, free ${avail} MiB"
+          (( avail >= 2048 )) || { echo "::error::root has ${avail} MiB free, under 2 GiB; raise minsize in build/disk.toml"; exit 1; }
 
       - name: Compress
         run: |

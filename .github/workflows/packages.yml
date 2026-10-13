@@ -35,12 +35,13 @@ jobs:
           echo "packages=$packages" >> "$GITHUB_OUTPUT"
           echo "$packages"
 
-  package:
+  build:
     needs: list
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: ${{ matrix.package == 'kernel' && 240 || matrix.package == 'steam-bootstrap' && 120 || matrix.package == 'gamescope' && 90 || 60 }}
     permissions:
       contents: read
-      packages: write
+      packages: read
     strategy:
       fail-fast: false
       matrix:
@@ -157,11 +158,111 @@ jobs:
           CACHE: ${{ matrix.package == 'kernel' && format('{0}/ccache', runner.temp) || '' }}
         run: PKG_CCACHE="$CACHE" just pkg "$PKG"
 
-      - name: Push, sign, verify
+      - name: Save
         if: (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && steps.local.outputs.skip != 'true'
         env:
           HASH: ${{ steps.hash.outputs.hash }}
-          REPLACE: ${{ steps.verify.outputs.build }}
+          STATE: ${{ steps.verify.outputs.build == 'true' && 'unsigned' || 'missing' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/save"
+          podman save --format oci-archive -o "$RUNNER_TEMP/save/$STATE.oci.tar" "localhost/microos-pkg/$PKG:$HASH"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && steps.local.outputs.skip != 'true'
+        with:
+          name: pkg-${{ matrix.package }}
+          path: ${{ runner.temp }}/save
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+
+  publish:
+    needs: [list, build]
+    if: ${{ !cancelled() && needs.list.result == 'success' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.list.outputs.packages) }}
+    env:
+      PKG: ${{ matrix.package }}
+      REPO: ghcr.io/seilent/microos/pkg/${{ matrix.package }}
+      PUBKEY: system_files/usr/share/microos/keys/microos.pub
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: pkg-${{ matrix.package }}
+          path: ${{ runner.temp }}/pkg
+          merge-multiple: true
+
+      - name: Built
+        id: built
+        run: |
+          shopt -s nullglob
+          files=("$RUNNER_TEMP"/pkg/*)
+          if (( ${#files[@]} == 0 )); then
+            echo "$PKG was not built in this run"
+            exit 0
+          fi
+          [[ ${#files[@]} == 1 && ${files[0]##*/} =~ ^(missing|unsigned)\.oci\.tar$ ]] || { echo "::error::unexpected artifact files: ${files[*]##*/}"; exit 1; }
+          replace=false
+          [[ ${files[0]##*/} != unsigned.oci.tar ]] || replace=true
+          {
+            echo "archive=${files[0]}"
+            echo "replace=$replace"
+            echo "hash=$(build/pkg-hash.sh "$PKG")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check archive
+        if: steps.built.outputs.archive != ''
+        env:
+          ARCHIVE: ${{ steps.built.outputs.archive }}
+          DISPATCH: ${{ github.event_name == 'workflow_dispatch' && github.workflow == 'packages' }}
+        run: |
+          [[ $PKG != kernel || $DISPATCH == true ]] || { echo "::error::kernel artifact outside a packages.yml dispatch"; exit 1; }
+          mapfile -t names < <(sed -n 's/^Name:[[:space:]]*\([A-Za-z0-9._+-]*\)[[:space:]]*$/\1/p' "packages/$PKG"/*.spec)
+          (( ${#names[@]} )) || { echo "::error::no spec Name in packages/$PKG"; exit 1; }
+          re="^rpms/($(printf '%s\n' "${names[@]}" | sed 's/[.+]/\\&/g' | paste -sd'|'))-[0-9][^/]*\.rpm$"
+          oci=$RUNNER_TEMP/oci
+          mkdir -p "$oci"
+          tar -xf "$ARCHIVE" -C "$oci" --no-same-owner --no-same-permissions
+          mapfile -t manifests < <(jq -r '.manifests[].digest' "$oci/index.json")
+          [[ ${#manifests[@]} == 1 && ${manifests[0]} =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::expected one manifest, got ${manifests[*]}"; exit 1; }
+          mapfile -t layers < <(jq -r '.layers[].digest' "$oci/blobs/sha256/${manifests[0]#sha256:}")
+          [[ ${#layers[@]} == 1 && ${layers[0]} =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::expected one layer, got ${#layers[@]}"; exit 1; }
+          listing=$(tar -tvf "$oci/blobs/sha256/${layers[0]#sha256:}")
+          bad=$(RE=$re awk '{ p = $NF; sub(/^\.\//, "", p) } !(($1 ~ /^d/ && p == "rpms/") || ($1 ~ /^-/ && p ~ ENVIRON["RE"])) { print }' <<< "$listing")
+          [[ -z $bad ]] || { echo "::error::entries other than rpms/ and ${names[*]} RPMs: $bad"; exit 1; }
+          grep -q '\.rpm$' <<< "$listing" || { echo "::error::no RPM in the archive"; exit 1; }
+          rm -rf "$oci"
+          echo "${names[*]}: $(grep -c '\.rpm$' <<< "$listing") RPMs"
+
+      - name: Install tools
+        if: steps.built.outputs.archive != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        if: steps.built.outputs.archive != ''
+        with:
+          cosign-release: v2.6.3
+
+      - name: Push, sign, verify
+        if: steps.built.outputs.archive != ''
+        env:
+          HASH: ${{ steps.built.outputs.hash }}
+          ARCHIVE: ${{ steps.built.outputs.archive }}
+          REPLACE: ${{ steps.built.outputs.replace }}
           GH_ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
@@ -181,7 +282,7 @@ jobs:
             echo "::error::cosign verify $1: $out" >&2
             return 1
           }
-          podman login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          skopeo login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
           if [[ $REPLACE == true ]]; then
             state=$(sig "$REPO:$HASH")
             if [[ $state == signed ]]; then
@@ -201,8 +302,7 @@ jobs:
             echo "::error::$err"
             exit 1
           fi
-          podman tag "localhost/microos-pkg/$PKG:$HASH" "$REPO:$HASH"
-          podman push --digestfile "$RUNNER_TEMP/digest" "$REPO:$HASH"
+          skopeo copy --digestfile "$RUNNER_TEMP/digest" "oci-archive:$ARCHIVE" "docker://$REPO:$HASH"
           digest=$(cat "$RUNNER_TEMP/digest")
           cosign login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
           cosign sign --yes --new-bundle-format=false --key env://COSIGN_PRIVATE_KEY "$REPO@$digest"

@@ -8,6 +8,8 @@ COPY system_files /system_files
 
 FROM quay.io/fedora/fedora-bootc:44@sha256:a2789aaa615504ac9dd039a6ac0cc75343ceca89416e38441d739dbffe6557c9
 
+COPY --from=seed / /
+
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=bind,from=kernel,source=/rpms,target=/rpms \
     /ctx/steps/10-kernel.sh
@@ -30,5 +32,8 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx /ctx/steps/99-cleanup.sh
 
 RUN bootc container lint --fatal-warnings
 
+ARG MICROOS_SEED
+
 LABEL org.opencontainers.image.source=https://github.com/seilent/MicroOS
+LABEL microos.seed=${MICROOS_SEED}
 LABEL org.opencontainers.image.version=${MICROOS_VERSION}

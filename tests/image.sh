@@ -45,9 +45,50 @@ rpm -q mesa-dri-drivers mesa-vulkan-drivers mesa-libgbm mesa-libEGL mesa-libGL v
 [[ $(rpm -q --qf '%{VENDOR}' inputplumber) == MicroOS ]] || fail "inputplumber is not the MicroOS build"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 [[ $(systemctl is-enabled inputplumber.service) == enabled ]] || fail "inputplumber.service is not enabled"
+
+for h in steamos-update steamos-select-branch jupiter-biosupdate jupiter-dock-updater steamos-set-timezone; do
+  [[ -x /usr/bin/steamos-polkit-helpers/$h ]] || fail "steamos-polkit-helpers/$h missing"
+done
+[[ -f /usr/share/polkit-1/rules.d/50-microos-timezone.rules ]] || fail "timezone polkit rule missing"
+rpm -q sddm sddm-wayland-generic steam-devices gtk2 openal-soft sdl2-compat libXcomposite libXdamage libXfixes libXi \
+  libXinerama libXrandr libXrender libXtst libSM libICE at-spi2-atk cups-libs libssh2 libva libvdpau \
+  google-noto-sans-cjk-vf-fonts google-noto-color-emoji-fonts google-noto-sans-arabic-vf-fonts \
+  google-noto-sans-hebrew-vf-fonts google-noto-sans-thai-vf-fonts google-noto-sans-devanagari-vf-fonts \
+  google-noto-sans-mono-vf-fonts >/dev/null \
+  || fail "game mode rpms missing"
+for p in gamescope gamescope-session gamescope-session-steam; do
+  [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
+done
+[[ -z $(rpm -qa 'kwin*' 'plasma*' xorg-x11-server-Xorg fedora-logos) ]] \
+  || fail "desktop rpms installed: $(rpm -qa 'kwin*' 'plasma*' xorg-x11-server-Xorg fedora-logos | tr '\n' ' ')"
+[[ $(readlink /etc/systemd/system/display-manager.service) == */sddm.service ]] || fail "display-manager.service is not sddm"
+for f in /etc/subuid /etc/subgid; do
+  [[ $(< "$f") == micro:524288:65536 ]] || fail "$f is not micro:524288:65536"
+  [[ $(stat -c '%a %U %G' "$f") == '644 root root' ]] || fail "$f mode or owner"
+done
+
+seedrpm=(/seed-rpm/microos-steam-seed-*.aarch64.rpm)
+[[ ${#seedrpm[@]} -eq 1 && -f ${seedrpm[0]} ]] || fail "expected one microos-steam-seed RPM in /seed-rpm"
+! rpm -q microos-steam-seed >/dev/null 2>&1 || fail "microos-steam-seed is installed as an RPM"
+[[ $(rpm -qp --qf '%{FILEDIGESTALGO}' "${seedrpm[0]}") == 8 ]] || fail "seed RPM file digests are not sha256"
+[[ -f /usr/share/microos-seed/steam-seed.tar.zst ]] || fail "seed tar missing"
+while IFS='|' read -r path digest mode; do
+  if [[ $mode == 100* ]]; then
+    [[ $(sha256sum < "$path" | cut -d' ' -f1) == "$digest" ]] || fail "$path differs from the seed RPM"
+    [[ $(stat -c '%a' "$path") == "${mode: -3}" ]] || fail "$path mode differs from the seed RPM"
+  else
+    [[ -d $path ]] || fail "$path missing"
+  fi
+done < <(rpm -qp --qf '[%{FILENAMES}|%{FILEDIGESTS}|%{FILEMODES:octal}\n]' "${seedrpm[0]}")
+[[ $(find /usr/share/microos-seed -mindepth 1 | sort) == "$(rpm -qlp "${seedrpm[0]}" | grep '^/usr/share/microos-seed/' | sort)" ]] \
+  || fail "/usr/share/microos-seed holds files outside the seed RPM"
 SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "${units[@]}" \
   /usr/lib/systemd/system/sshd.service /usr/lib/systemd/system/bootc-generic-growpart.service \
   /usr/lib/systemd/system/ostree-finalize-staged.service || fail "systemd-analyze verify"
+mkdir -p "$tmp/xdg"
+XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no \
+  /usr/lib/systemd/user/microos-steam-seed.service gamescope-session-plus@steam.service || fail "systemd-analyze verify --user"
+[[ -f /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf ]] || fail "gamescope-session-plus@steam drop-in missing"
 
 [[ $(grep '^ExecStop=' /usr/lib/systemd/system/ostree-finalize-staged.service) == 'ExecStop=/usr/bin/ostree admin finalize-staged' ]] \
   || fail "ostree-finalize-staged.service ExecStop changed"
