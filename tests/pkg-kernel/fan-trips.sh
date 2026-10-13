@@ -15,6 +15,7 @@ fanph=$(fdtget -t u "$dtb" "$fan" phandle)
 
 for z in "${zones[@]}"; do
   n=/thermal-zones/$z
+  [[ $(fdtget -t u "$dtb" "$n" polling-delay) == 1000 ]] || { echo "fan-trips: $n polling-delay" >&2; exit 1; }
   for k in "${!temps[@]}"; do
     t=$n/trips/fan-$k
     [[ $(fdtget -t u "$dtb" "$t" temperature) == "${temps[k]}" ]] || { echo "fan-trips: $t temperature" >&2; exit 1; }

@@ -263,6 +263,8 @@
 
 	thermal-zones {
 		cluster0-thermal {
+			polling-delay = <1000>;
+
 			trips {
 				c0_fan0: fan-0 {
 					temperature = <65000>;
@@ -335,6 +337,8 @@
 		};
 
 		cluster1-thermal {
+			polling-delay = <1000>;
+
 			trips {
 				c1_fan0: fan-0 {
 					temperature = <65000>;
@@ -407,6 +411,8 @@
 		};
 
 		gpu-top-thermal {
+			polling-delay = <1000>;
+
 			trips {
 				gt_fan0: fan-0 {
 					temperature = <65000>;
@@ -479,6 +485,8 @@
 		};
 
 		gpu-bottom-thermal {
+			polling-delay = <1000>;
+
 			trips {
 				gb_fan0: fan-0 {
 					temperature = <65000>;
