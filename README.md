@@ -1,6 +1,6 @@
 # MicroOS
 
-A bootc image for the AYANEO Pocket MICRO 2, built on Fedora (`quay.io/fedora/fedora-bootc:44`).
+A bootc image for the AYANEO Pocket MICRO 2, built on Fedora (`registry.fedoraproject.org/fedora-bootc:44`).
 
 Sessions: Steam game mode, ES-DE, MicroDAP and a niri desktop. Pocket MICRO 2 only.
 
