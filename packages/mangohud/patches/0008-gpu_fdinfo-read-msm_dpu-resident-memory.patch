@@ -1,0 +1,27 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: 17314642 <48242771@protonmail.ch>
+Date: Sun, 21 Jun 2026 13:11:43 +0000
+Subject: [PATCH] next: add process vram for msm_dpu
+
+Backport of f7d778a5e70275d24fcf4713ab53d809a9c7db43 to GPU_fdinfo in
+v0.8.4, reading drm-resident-memory from the msm fdinfo.
+
+Backported-by: seilent <github@seilent.net>
+---
+ src/gpu_fdinfo.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/gpu_fdinfo.h b/src/gpu_fdinfo.h
+index 5d95063..23159ff 100644
+--- a/src/gpu_fdinfo.h
++++ b/src/gpu_fdinfo.h
+@@ -145,8 +145,8 @@ public:
+             drm_engine_type = "drm-engine-gfx";
+             drm_memory_type = "drm-memory-vram";
+         } else if (module == "msm_dpu") {
+-            // msm driver does not report vram usage
+             drm_engine_type = "drm-engine-gpu";
++            drm_memory_type = "drm-resident-memory";
+             open_core_clock();
+         } else if (module == "msm_drm") {
+             init_kgsl();

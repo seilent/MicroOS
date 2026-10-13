@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Victoria Brekenfeld <github@drakulix.de>
+Date: Sun, 14 Jun 2026 22:28:23 +0200
+Subject: [PATCH] gpu_fdinfo: fixup driver mismatch for msm_dpu
+
+---
+ src/gpu_fdinfo.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/gpu_fdinfo.cpp b/src/gpu_fdinfo.cpp
+index 229cd9b..b54ae3b 100644
+--- a/src/gpu_fdinfo.cpp
++++ b/src/gpu_fdinfo.cpp
+@@ -55,6 +55,11 @@ void GPU_fdinfo::find_fd()
+                 client_id = val;
+         }
+ 
++        // fixup mismatch between display engine and render engine drivers
++        if (module == "msm_dpu" && driver == "msm") {
++            driver = "msm_dpu";
++        }
++
+         if (!driver.empty() && driver == module) {
+             total++;
+             SPDLOG_TRACE(

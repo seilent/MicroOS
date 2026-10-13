@@ -12,10 +12,21 @@ Projects MicroOS builds, with their authors and license.
 | `gamescope` RPM spec and packaging patches | Fedora [rpms/gamescope](https://src.fedoraproject.org/rpms/gamescope) `a846be4c` | František Zatloukal, Neal Gompa and Fedora packagers | MIT |
 | `inputplumber` | [ShadowBlip/InputPlumber](https://github.com/ShadowBlip/InputPlumber) `v0.82.0` `d951ef9` | William Edwards, Derek J. Clark and InputPlumber contributors | GPL-3.0-or-later |
 | `steamos-manager` | [holo/steamos-manager](https://gitlab.steamos.cloud/holo/steamos-manager) `8e2883d0d7` | Valve Software, Collabora, Igalia and steamos-manager contributors | MIT |
+| `mangohud` | [flightlessmango/MangoHud](https://github.com/flightlessmango/MangoHud) `v0.8.4` `992103e4fb` | flightlessmango and MangoHud contributors | MIT |
+| `mangohud` RPM spec | Fedora [rpms/mangohud](https://src.fedoraproject.org/rpms/mangohud) `83471e05` | Fedora packagers | MIT |
+| `mangohud` msm_dpu GPU temp and load | MangoHud PR 2073 `0be0cacafb86`, `0b2badb56f87` | Victoria Brekenfeld | MIT |
+| `mangohud` devfreq GPU clock, `/proc` walk fixes | MangoHud `eb72a0048f43`, `e2d0db030ef0`, `16d783b5d29a` | flightlessmango | MIT |
+| `mangohud` devfreq GPU clock | MangoHud `eb72a0048f43` (co-author) | Antonino Maniscalco | MIT |
+| `mangohud` `lib_loaded` fix | MangoHud `e2d0db030ef0` (co-author) | Gabe Rowe (Valve) | MIT |
+| `mangohud` battery by sysfs type | MangoHud PR 2166 `e5d31119b521` | fromdisposition | MIT |
+| `mangohud` mangoapp render per game frame | MangoHud `2c1dc5283c04` | Matthew Schwartz | MIT |
+| `mangohud` msm_dpu GPU memory | MangoHud `f7d778a5e702` | 17314642 | MIT |
+| `mangohud` msm_dpu GPU rows | MangoHud `7c95b67656d6`, `e57fa15`, `abc561d` | flightlessmango, Matthew Schwartz | MIT |
 
-`gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches and `gamescope`
-carries Fedora's packaging patches (`PATCHES.md` in each package); the others are built as is. License texts in
-`packages/gamescope/`, `packages/gamescope-session/`, `packages/inputplumber/` and `packages/steamos-manager/`.
+`gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
+carries Fedora's packaging patches and `mangohud` carries nine upstream MangoHud patches, five of them backported by
+me, and three of mine (`PATCHES.md` in each package); the others are built as is. License texts in `packages/gamescope/`,
+`packages/gamescope-session/`, `packages/inputplumber/`, `packages/mangohud/` and `packages/steamos-manager/`.
 
 ## Kernel
 

@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Wed, 14 Oct 2026 06:53:46 +0900
+Subject: [PATCH] params: drop the frame timing graph from preset 2
+
+The horizontal bar is wider than the Pocket MICRO 2 screen with the
+graph in it.
+---
+ src/overlay_params.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/overlay_params.cpp b/src/overlay_params.cpp
+index b10a0ce..293772c 100644
+--- a/src/overlay_params.cpp
++++ b/src/overlay_params.cpp
+@@ -1318,7 +1318,7 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
+          add_to_options(params, "legacy_layout", "0");
+          add_to_options(params, "fps", "1");
+          add_to_options(params, "table_columns", "20");
+-         add_to_options(params, "frame_timing", "1");
++         add_to_options(params, "frame_timing", "0");
+          add_to_options(params, "frametime", "0");
+          add_to_options(params, "cpu_stats", "1");
+          add_to_options(params, "gpu_stats", "1");

@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Wed, 14 Oct 2026 06:24:35 +0900
+Subject: [PATCH] gpu_fdinfo: show msm_dpu game memory as vram
+
+msm has no device wide GPU memory counter a user can read, so the VRAM
+row shows the drm-resident-memory of the game.
+---
+ src/gpu_fdinfo.cpp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/gpu_fdinfo.cpp b/src/gpu_fdinfo.cpp
+index ef7a62f..b91efe8 100644
+--- a/src/gpu_fdinfo.cpp
++++ b/src/gpu_fdinfo.cpp
+@@ -761,6 +761,8 @@ void GPU_fdinfo::main_thread()
+ 
+         metrics.load = get_gpu_load();
+         metrics.proc_vram_used = get_memory_used();
++        if (module == "msm_dpu")
++            metrics.sys_vram_used = metrics.proc_vram_used;
+ 
+         metrics.powerUsage = get_power_usage();
+         metrics.powerLimit = static_cast<float>(hwmon_sensors["power_limit"].val) / 1'000'000;

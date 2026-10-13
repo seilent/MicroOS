@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: fromdisposition <287830405+fromdisposition@users.noreply.github.com>
+Date: Fri, 9 Oct 2026 18:38:33 +0300
+Subject: [PATCH] battery: find batteries by their sysfs type
+
+Backport of e5d31119b521775de01ec41154c3ddb0a4c8c0cb to v0.8.4, which
+has no /run/deckardcharger lookup and no battery_count_max; the count
+is bounded by the two entries of battPath.
+
+Backported-by: seilent <github@seilent.net>
+---
+ src/battery.cpp | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/battery.cpp b/src/battery.cpp
+index 1612bff..c360d9b 100644
+--- a/src/battery.cpp
++++ b/src/battery.cpp
+@@ -1,10 +1,17 @@
+ #include <spdlog/spdlog.h>
+ #include <filesystem.h>
+ #include "battery.h"
++#include "file_utils.h"
+ 
+ namespace fs = ghc::filesystem;
+ using namespace std;
+ 
++// A peripheral's battery (a gamepad, a mouse) has the scope "Device"
++static bool is_system_battery(const fs::path& path) {
++    return read_line((path / "type").string()) == "Battery" &&
++           read_line((path / "scope").string()) != "Device";
++}
++
+ void BatteryStats::numBattery() {
+     int batteryCount = 0;
+     if (!fs::exists("/sys/class/power_supply/")) {
+@@ -12,8 +19,7 @@ void BatteryStats::numBattery() {
+     }
+     fs::path path("/sys/class/power_supply/");
+     for (auto& p : fs::directory_iterator(path)) {
+-        string fileName = p.path().filename();
+-        if (fileName.find("BAT") != std::string::npos) {
++        if (batteryCount < 2 && is_system_battery(p.path())) {
+             battPath[batteryCount] = p.path();
+             batteryCount += 1;
+         }

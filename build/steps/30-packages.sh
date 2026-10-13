@@ -10,6 +10,7 @@ own=(
   gamescope-session/gamescope-session
   gamescope-session/gamescope-session-steam
   steamos-manager/steamos-manager
+  mangohud/mangohud
 )
 
 rpms=()

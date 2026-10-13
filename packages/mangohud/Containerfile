@@ -1,0 +1,8 @@
+FROM localhost/microos-pkg-builder
+
+COPY mangohud.spec SOURCE.env /tmp/mangohud/
+RUN . /tmp/mangohud/SOURCE.env \
+ && dnf -y --setopt=install_weak_deps=False builddep --define "commit $MANGOHUD_REF" /tmp/mangohud/mangohud.spec \
+ && dnf -y --setopt=install_weak_deps=False install util-linux \
+ && dnf clean all \
+ && rm -rf /tmp/mangohud

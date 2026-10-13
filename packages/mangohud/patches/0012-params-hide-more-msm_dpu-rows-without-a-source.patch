@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Wed, 14 Oct 2026 06:53:46 +0900
+Subject: [PATCH] params: hide more msm_dpu rows without a source
+
+msm_dpu has no CPU power, GPU memory clock, junction or memory
+temperature readings, so those rows are hidden too and the battery draw
+is shown instead.
+---
+ src/overlay_params.cpp | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/overlay_params.cpp b/src/overlay_params.cpp
+index 2b13a2c..4dd813d 100644
+--- a/src/overlay_params.cpp
++++ b/src/overlay_params.cpp
+@@ -1413,6 +1413,12 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
+       add_to_options(params, "gpu_efficiency", "0");
+       add_to_options(params, "gpu_fan", "0");
+       add_to_options(params, "gpu_power", "0");
++      add_to_options(params, "gpu_mem_clock", "0");
++      add_to_options(params, "gpu_junction_temp", "0");
++      add_to_options(params, "gpu_mem_temp", "0");
++      add_to_options(params, "cpu_power", "0");
++      add_to_options(params, "cpu_efficiency", "0");
++      add_to_options(params, "battery_watt", "1");
+       if (preset == 4)
+          add_to_options(params, "ram_temp", "0");
+       break;

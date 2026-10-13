@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: flightlessmango <flightlessmangoyt@gmail.com>
+Date: Fri, 18 Sep 2026 01:44:53 +0200
+Subject: [PATCH] params: hide steam frame unavailable GPU stats
+
+Backport of 7c95b67656d6, with the gpu_fan row of e57fa15 and the preset 4
+ram_temp row of abc561d, to v0.8.4. The block matches the msm_dpu driver
+instead of the Steam Frame modalias, so it applies to the Pocket MICRO 2.
+
+Co-authored-by: Matthew Schwartz <matthew.schwartz@linux.dev>
+Backported-by: seilent <github@seilent.net>
+---
+ src/overlay_params.cpp | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/src/overlay_params.cpp b/src/overlay_params.cpp
+index 293772c..2b13a2c 100644
+--- a/src/overlay_params.cpp
++++ b/src/overlay_params.cpp
+@@ -1400,4 +1400,21 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
+          break;
+ 
+    }
++
++   if (!gpus)
++      gpus = std::make_unique<GPUS>(params);
++
++   for (const auto& gpu : gpus->available_gpus) {
++      if (!gpu || gpu->driver != "msm_dpu")
++         continue;
++
++      add_to_options(params, "gpu_voltage", "0");
++      add_to_options(params, "gpu_power_limit", "0");
++      add_to_options(params, "gpu_efficiency", "0");
++      add_to_options(params, "gpu_fan", "0");
++      add_to_options(params, "gpu_power", "0");
++      if (preset == 4)
++         add_to_options(params, "ram_temp", "0");
++      break;
++   }
+ }

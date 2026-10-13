@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: flightlessmango <flightlessmangoyt@gmail.com>
+Date: Wed, 23 Sep 2026 03:03:21 +0200
+Subject: [PATCH] msm: read dpu core clock
+
+Backport of eb72a0048f439586700b499b4af9ef097403222b to GPU_fdinfo in
+v0.8.4.
+
+Co-authored-by: Antonino Maniscalco <antomani103@gmail.com>
+Backported-by: seilent <github@seilent.net>
+---
+ src/gpu_fdinfo.cpp | 22 ++++++++++++++++++++++
+ src/gpu_fdinfo.h   |  2 ++
+ 2 files changed, 24 insertions(+)
+
+diff --git a/src/gpu_fdinfo.cpp b/src/gpu_fdinfo.cpp
+index b54ae3b..b863473 100644
+--- a/src/gpu_fdinfo.cpp
++++ b/src/gpu_fdinfo.cpp
+@@ -556,6 +556,9 @@ int GPU_fdinfo::get_gpu_clock()
+     if (clock_str.empty())
+         return 0;
+ 
++    if (module == "msm_dpu")
++        return std::stoi(clock_str) / 1000000;
++
+     return std::stoi(clock_str);
+ }
+ 
+@@ -641,6 +644,25 @@ float GPU_fdinfo::amdgpu_helper_get_proc_vram() {
+     return get_memory_used();
+ }
+ 
++void GPU_fdinfo::open_core_clock() {
++    const fs::path sysfs_devfreq = "/sys/class/devfreq";
++
++    if (!fs::exists(sysfs_devfreq))
++        return;
++
++    for (auto& entry : fs::directory_iterator(sysfs_devfreq)) {
++        std::string name = entry.path().filename().string();
++        if (name.size() < 4 || name.compare(name.size() - 4, 4, ".gpu") != 0)
++            continue;
++
++        fs::path cur_freq = entry.path() / "cur_freq";
++        gpu_clock_stream.open(cur_freq.string());
++        if (gpu_clock_stream.is_open())
++            SPDLOG_INFO("devfreq: using gpu clock input: {}", cur_freq.string());
++        return;
++    }
++}
++
+ void GPU_fdinfo::init_kgsl() {
+     const std::string sys_path = "/sys/class/kgsl/kgsl-3d0";
+ 
+diff --git a/src/gpu_fdinfo.h b/src/gpu_fdinfo.h
+index 97e62e5..5d95063 100644
+--- a/src/gpu_fdinfo.h
++++ b/src/gpu_fdinfo.h
+@@ -92,6 +92,7 @@ private:
+     float last_power = 0;
+ 
+     std::ifstream gpu_clock_stream;
++    void open_core_clock();
+     void find_i915_gt_dir();
+     void find_xe_gt_dir();
+     int get_gpu_clock();
+@@ -146,6 +147,7 @@ public:
+         } else if (module == "msm_dpu") {
+             // msm driver does not report vram usage
+             drm_engine_type = "drm-engine-gpu";
++            open_core_clock();
+         } else if (module == "msm_drm") {
+             init_kgsl();
+         } else if (module == "panfrost") {

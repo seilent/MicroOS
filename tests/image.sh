@@ -87,6 +87,9 @@ rpm -q sddm sddm-wayland-generic steam-devices gtk2 openal-soft sdl2-compat libX
   google-noto-sans-hebrew-vf-fonts google-noto-sans-thai-vf-fonts google-noto-sans-devanagari-vf-fonts \
   google-noto-sans-mono-vf-fonts >/dev/null \
   || fail "game mode rpms missing"
+[[ $(rpm -q --qf '%{VENDOR}' mangohud) == MicroOS ]] || fail "mangohud is not the MicroOS build"
+command -v mangoapp >/dev/null || fail "mangoapp is not on PATH"
+! rpm -q mangohud-mangoplot >/dev/null 2>&1 || fail "mangohud-mangoplot is installed"
 for p in gamescope gamescope-session gamescope-session-steam; do
   [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
 done

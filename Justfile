@@ -45,7 +45,7 @@ pkg name:
         "$img" /src/build.sh /out
     fi
     if [[ -f tests/pkg-$1.sh ]]; then
-      podman run --rm \
+      podman run --rm --security-opt apparmor=unconfined \
         -v "$PWD/tests:/tests:ro,Z" \
         -v "$PWD/$out:/out:ro,Z" \
         "$img" "/tests/pkg-$1.sh" /out
