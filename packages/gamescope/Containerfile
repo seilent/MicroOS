@@ -1,0 +1,11 @@
+FROM localhost/microos-pkg-builder
+
+COPY gamescope.spec SOURCE.env /tmp/gamescope/
+RUN . /tmp/gamescope/SOURCE.env \
+ && dnf -y --setopt=install_weak_deps=False builddep \
+      --define "commit $GAMESCOPE_REF" \
+      --define "reshade_commit $RESHADE_REF" \
+      --define "vkroots_commit $VKROOTS_REF" \
+      /tmp/gamescope/gamescope.spec \
+ && dnf clean all \
+ && rm -rf /tmp/gamescope
