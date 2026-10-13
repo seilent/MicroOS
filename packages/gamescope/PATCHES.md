@@ -8,8 +8,13 @@ commits come from `SOURCE.env` (same commits as the OGC tag's submodules and Fed
 |---|---|---|
 | `Allow-to-use-system-wlroots.patch` | Fedora `rpms/gamescope` `e1f0954` | František Zatloukal |
 | `Use-system-stb-glm.patch` | Fedora `rpms/gamescope` `b5a75d5` | František Zatloukal |
+| `0003-pace-the-non-vrr-fps-limit-on-time.patch` | mine | seilent |
 
-Both are Fedora packaging patches, not sent upstream. `stb.pc` is from Fedora `rpms/gamescope` `e2cc884` (Neal Gompa).
+The first two are Fedora packaging patches, not sent upstream. `stb.pc` is from Fedora `rpms/gamescope` `e2cc884` (Neal Gompa).
+
+`0003` paces the FPS limit without VRR on time instead of every Nth vblank: a frame goes out at the vblank nearest
+its target, 1/limit after the last one. Limits that do not divide the refresh are capped too (1,2 or 2,3 vblank
+alternation). VRR is unchanged. `%check` runs `tests/test_utils_frame_limit.cpp`.
 
 Fedora's `0001-cstdint.patch` is not carried: reshade `696b14cd` already includes `<cstdint>` in
 `source/effect_token.hpp` (reshade `5c8b8f09`).

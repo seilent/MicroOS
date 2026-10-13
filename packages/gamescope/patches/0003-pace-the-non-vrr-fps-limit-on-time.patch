@@ -1,0 +1,392 @@
+From e31392de54b09fb40fc5370bef58eb8c768115b9 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Wed, 14 Oct 2026 06:47:15 +0900
+Subject: [PATCH] Pace the non VRR FPS limit on time
+
+---
+ src/Utils/FrameLimit.h           | 28 +++++++++++
+ src/steamcompmgr.cpp             | 76 +++++++++++++++++------------
+ src/steamcompmgr_shared.hpp      |  1 +
+ tests/meson.build                |  3 +-
+ tests/test_utils_frame_limit.cpp | 84 ++++++++++++++++++++++++++++++++
+ 5 files changed, 160 insertions(+), 32 deletions(-)
+ create mode 100644 src/Utils/FrameLimit.h
+ create mode 100644 tests/test_utils_frame_limit.cpp
+
+diff --git a/src/Utils/FrameLimit.h b/src/Utils/FrameLimit.h
+new file mode 100644
+index 0000000..5bb6d84
+--- /dev/null
++++ b/src/Utils/FrameLimit.h
+@@ -0,0 +1,28 @@
++#pragma once
++
++#include <algorithm>
++#include <cstdint>
++
++namespace gamescope
++{
++    inline uint64_t ClampFrameLimitTarget( uint64_t ulTarget, uint64_t ulVBlank, uint64_t ulInterval )
++    {
++        return std::min( ulTarget, ulVBlank + ulInterval );
++    }
++
++    inline bool IsFrameLimitDue( uint64_t ulTarget, uint64_t ulVBlank, uint64_t ulCycle )
++    {
++        return ulVBlank + ulCycle / 2 >= ulTarget;
++    }
++
++    inline uint64_t GetNextFrameLimitTarget( uint64_t ulTarget, uint64_t ulVBlank, uint64_t ulInterval, uint64_t ulCycle, bool bOnGrid )
++    {
++        if ( ulTarget + ulInterval < ulVBlank )
++            return ulVBlank + ulInterval;
++
++        if ( bOnGrid && ulVBlank <= ulTarget + ulCycle / 2 )
++            return ulVBlank + ulInterval;
++
++        return ulTarget + ulInterval;
++    }
++}
+diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
+index 2ff296b..0a009a9 100644
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -88,6 +88,7 @@
+ #include "vblankmanager.hpp"
+ #include "log.hpp"
+ #include "Utils/Defer.h"
++#include "Utils/FrameLimit.h"
+ #include "win32_styles.h"
+ #include "edid.h"
+ #include "hdmi.h"
+@@ -6759,6 +6760,22 @@ init_runtime_info()
+ 	update_runtime_info();
+ }
+ 
++static uint64_t steamcompmgr_vblank_paced_fps_interval( bool bShouldLimitFPS, bool *pbOnGrid = nullptr )
++{
++	if ( GetBackend()->GetCurrentConnector() && GetBackend()->GetCurrentConnector()->IsVRRActive() )
++		return 0;
++
++	int nRefreshHz = gamescope::ConvertmHzToHz( g_nNestedRefresh ? g_nNestedRefresh : g_nOutputRefresh );
++	int nTargetFPS = g_nSteamCompMgrTargetFPS;
++	if ( !nTargetFPS || !bShouldLimitFPS || nRefreshHz <= nTargetFPS )
++		return 0;
++
++	if ( pbOnGrid )
++		*pbOnGrid = nRefreshHz % nTargetFPS == 0;
++
++	return 1'000'000'000ul / nTargetFPS;
++}
++
+ static void
+ steamcompmgr_flush_frame_done( steamcompmgr_win_t *w )
+ {
+@@ -6777,6 +6794,13 @@ steamcompmgr_flush_frame_done( steamcompmgr_win_t *w )
+ 
+ 		w->last_commit_first_latch_time = timespec_to_nanos(now);
+ 
++		bool bOnGrid = false;
++		if ( uint64_t ulInterval = steamcompmgr_vblank_paced_fps_interval( steamcompmgr_window_should_limit_fps( w ), &bOnGrid ) )
++		{
++			w->ulFrameLimitTarget = gamescope::GetNextFrameLimitTarget( w->ulFrameLimitTarget,
++				g_SteamCompMgrVBlankTime.schedule.ulTargetVBlank, ulInterval, g_SteamCompMgrAppRefreshCycle, bOnGrid );
++		}
++
+ 		// Acknowledge commit once.
+ 		wlserver_lock();
+ 
+@@ -6796,12 +6820,11 @@ steamcompmgr_flush_frame_done( steamcompmgr_win_t *w )
+ 
+ static std::optional<uint64_t> s_oLowestFPSLimitScheduleVRR;
+ 
+-static bool steamcompmgr_should_vblank_window( bool bShouldLimitFPS, uint64_t vblank_idx, steamcompmgr_win_t *w = nullptr, uint64_t now = 0 )
++static bool steamcompmgr_should_vblank_window( bool bShouldLimitFPS, steamcompmgr_win_t *w = nullptr, uint64_t now = 0 )
+ {
+ 	bool bSendCallback = true;
+ 
+ 	int nRefreshHz = gamescope::ConvertmHzToHz( g_nNestedRefresh ? g_nNestedRefresh : g_nOutputRefresh );
+-	int nTargetFPS = g_nSteamCompMgrTargetFPS;
+ 
+ 	if ( GetBackend()->GetCurrentConnector() && GetBackend()->GetCurrentConnector()->IsVRRActive() )
+ 	{
+@@ -6823,29 +6846,25 @@ static bool steamcompmgr_should_vblank_window( bool bShouldLimitFPS, uint64_t vb
+ 			}
+ 		}
+ 	}
+-	else
++	else if ( uint64_t ulInterval = w ? steamcompmgr_vblank_paced_fps_interval( bShouldLimitFPS ) : 0 )
+ 	{
+-		if ( g_nSteamCompMgrTargetFPS && bShouldLimitFPS && nRefreshHz > nTargetFPS )
+-		{
+-			int nVblankDivisor = nRefreshHz / nTargetFPS;
+-
+-			if ( vblank_idx % nVblankDivisor != 0 )
+-				bSendCallback = false;
+-		}
++		uint64_t ulVBlank = g_SteamCompMgrVBlankTime.schedule.ulTargetVBlank;
++		w->ulFrameLimitTarget = gamescope::ClampFrameLimitTarget( w->ulFrameLimitTarget, ulVBlank, ulInterval );
++		bSendCallback = gamescope::IsFrameLimitDue( w->ulFrameLimitTarget, ulVBlank, g_SteamCompMgrAppRefreshCycle );
+ 	}
+ 
+ 	return bSendCallback;
+ }
+ 
+-static bool steamcompmgr_should_vblank_window( steamcompmgr_win_t *w, uint64_t vblank_idx, uint64_t now )
++static bool steamcompmgr_should_vblank_window( steamcompmgr_win_t *w, uint64_t now )
+ {
+-	return steamcompmgr_should_vblank_window( steamcompmgr_window_should_limit_fps( w ), vblank_idx, w, now );
++	return steamcompmgr_should_vblank_window( steamcompmgr_window_should_limit_fps( w ), w, now );
+ }
+ 
+ static void
+-steamcompmgr_latch_frame_done( steamcompmgr_win_t *w, uint64_t vblank_idx, uint64_t now )
++steamcompmgr_latch_frame_done( steamcompmgr_win_t *w, uint64_t now )
+ {
+-	if ( steamcompmgr_should_vblank_window( w, vblank_idx, now ) )
++	if ( steamcompmgr_should_vblank_window( w, now ) )
+ 	{
+ 		w->unlockedForFrameCallback = true;
+ 	}
+@@ -7991,7 +8010,7 @@ bool handle_done_commit( steamcompmgr_win_t *w, xwayland_ctx_t *ctx, uint64_t co
+ }
+ 
+ // TODO: Merge these two functions.
+-void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank, uint64_t vblank_idx )
++void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank )
+ {
+ 	std::lock_guard<std::mutex> lock( ctx->doneCommits.listCommitsDoneLock );
+ 
+@@ -8023,7 +8042,7 @@ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank, uint64_t vb
+ 		}
+ 
+ 		// Only pace windows the FPS limiter covers.
+-		const bool entry_vblank = vblank && steamcompmgr_should_vblank_window( entry_win, vblank_idx, now );
++		const bool entry_vblank = vblank && steamcompmgr_should_vblank_window( entry_win, now );
+ 
+ 		if (entry.fifo && (!entry_vblank || fifo_win_seqs.count(entry.winSeq) > 0))
+ 		{
+@@ -8053,7 +8072,7 @@ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank, uint64_t vb
+ 	ctx->doneCommits.listCommitsDone.swap( commits_before_their_time );
+ }
+ 
+-void handle_done_commits_xdg( bool vblank, uint64_t vblank_idx )
++void handle_done_commits_xdg( bool vblank )
+ {
+ 	std::lock_guard<std::mutex> lock( g_steamcompmgr_xdg_done_commits.listCommitsDoneLock );
+ 
+@@ -8085,7 +8104,7 @@ void handle_done_commits_xdg( bool vblank, uint64_t vblank_idx )
+ 		}
+ 
+ 		// Only pace windows the FPS limiter covers.
+-		const bool entry_vblank = vblank && steamcompmgr_should_vblank_window( entry_win, vblank_idx, now );
++		const bool entry_vblank = vblank && steamcompmgr_should_vblank_window( entry_win, now );
+ 
+ 		if (entry.fifo && (!entry_vblank || fifo_win_seqs.count(entry.winSeq) > 0))
+ 		{
+@@ -9267,7 +9286,7 @@ static bool g_bWasFSRActive = false;
+ 
+ bool g_bAppWantsHDRCached = false;
+ 
+-void steamcompmgr_check_xdg(bool vblank, uint64_t vblank_idx)
++void steamcompmgr_check_xdg(bool vblank)
+ {
+ 	if (wlserver_xdg_dirty())
+ 	{
+@@ -9298,7 +9317,7 @@ void steamcompmgr_check_xdg(bool vblank, uint64_t vblank_idx)
+ 		MakeFocusDirty();
+ 	}
+ 
+-	handle_done_commits_xdg( vblank, vblank_idx );
++	handle_done_commits_xdg( vblank );
+ 
+ 	// When we have observed both a complete commit and a VBlank, we should request a new frame.
+ 	if (vblank)
+@@ -10325,7 +10344,6 @@ steamcompmgr_main(int argc, char **argv)
+ 		// This ensures that FIFO works properly, since otherwise we might ask for a new frame
+ 		// application can commit a new frame that completes before we ever displayed
+ 		// the current pending commit.
+-		static uint64_t vblank_idx = 0;
+ 		if ( vblank )
+ 		{
+ 			{
+@@ -10338,13 +10356,13 @@ steamcompmgr_main(int argc, char **argv)
+ 				{
+ 					for (steamcompmgr_win_t *w = server->ctx->list; w; w = w->xwayland().next)
+ 					{
+-						steamcompmgr_latch_frame_done( w, vblank_idx, now );
++						steamcompmgr_latch_frame_done( w, now );
+ 					}
+ 				}
+ 
+ 				for ( const auto& xdg_win : g_steamcompmgr_xdg_wins )
+ 				{
+-					steamcompmgr_latch_frame_done( xdg_win.get(), vblank_idx, now );
++					steamcompmgr_latch_frame_done( xdg_win.get(), now );
+ 				}
+ 			}
+ 		}
+@@ -10353,7 +10371,7 @@ steamcompmgr_main(int argc, char **argv)
+ 			gamescope_xwayland_server_t *server = NULL;
+ 			for (size_t i = 0; (server = wlserver_get_xwayland_server(i)); i++)
+ 			{
+-				handle_done_commits_xwayland(server->ctx.get(), vblank, vblank_idx);
++				handle_done_commits_xwayland(server->ctx.get(), vblank);
+ 
+ 				// When we have observed both a complete commit and a VBlank, we should request a new frame.
+ 				if (vblank)
+@@ -10366,7 +10384,7 @@ steamcompmgr_main(int argc, char **argv)
+ 			}
+ 		}
+ 
+-		steamcompmgr_check_xdg(vblank, vblank_idx);
++		steamcompmgr_check_xdg(vblank);
+ 
+ 		if ( s_oLowestFPSLimitScheduleVRR )
+ 		{
+@@ -10376,8 +10394,6 @@ steamcompmgr_main(int argc, char **argv)
+ 
+ 		if ( vblank )
+ 		{
+-			vblank_idx++;
+-
+ 			int nRealRefreshmHz = g_nNestedRefresh ? g_nNestedRefresh : g_nOutputRefresh;
+ 			g_SteamCompMgrAppRefreshCycle = gamescope::mHzToRefreshCycle( nRealRefreshmHz );
+ 			g_SteamCompMgrLimitedAppRefreshCycle = g_SteamCompMgrAppRefreshCycle;
+@@ -10391,11 +10407,9 @@ steamcompmgr_main(int argc, char **argv)
+ 				{
+ 					g_SteamCompMgrLimitedAppRefreshCycle = gamescope::mHzToRefreshCycle( gamescope::ConvertHztomHz( nTargetFPS ) );
+ 				}
+-				else
++				else if ( nTargetFPS < nRealRefreshHz )
+ 				{
+-					int nVblankDivisor = nRealRefreshHz / nTargetFPS;
+-
+-					g_SteamCompMgrLimitedAppRefreshCycle = g_SteamCompMgrAppRefreshCycle * nVblankDivisor;
++					g_SteamCompMgrLimitedAppRefreshCycle = gamescope::mHzToRefreshCycle( gamescope::ConvertHztomHz( nTargetFPS ) );
+ 				}
+ 			}
+ 		}
+diff --git a/src/steamcompmgr_shared.hpp b/src/steamcompmgr_shared.hpp
+index c344d10..9c3f400 100644
+--- a/src/steamcompmgr_shared.hpp
++++ b/src/steamcompmgr_shared.hpp
+@@ -147,6 +147,7 @@ struct steamcompmgr_win_t {
+ 
+ 	uint64_t last_commit_first_latch_time = 0;
+ 	uint64_t last_commit_present_time = 0;
++	uint64_t ulFrameLimitTarget = 0;
+ 
+ 	bool hasHwndStyle = false;
+ 	uint32_t hwndStyle = 0;
+diff --git a/tests/meson.build b/tests/meson.build
+index 0be6af8..90a934e 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -8,7 +8,7 @@ endforeach
+ 
+ gamescope_tests = executable(
+ 	'gamescope_tests',
+-	unittest_src + ['test_convar.cpp', 'test_focus_placement.cpp', 'test_mangoapp_config.cpp', 'test_mangoapp_control.cpp', 'test_mode_list.cpp', 'test_process.cpp', 'test_upscale.cpp', 'test_utils_parsers.cpp', 'test_utils_string.cpp', 'test_utils_vblank_schedule.cpp', 'test_vrclient_detect.cpp', 'test_waitable.cpp'],
++	unittest_src + ['test_convar.cpp', 'test_focus_placement.cpp', 'test_mangoapp_config.cpp', 'test_mangoapp_control.cpp', 'test_mode_list.cpp', 'test_process.cpp', 'test_upscale.cpp', 'test_utils_parsers.cpp', 'test_utils_frame_limit.cpp', 'test_utils_string.cpp', 'test_utils_vblank_schedule.cpp', 'test_vrclient_detect.cpp', 'test_waitable.cpp'],
+ 	include_directories: [srcdir, sol2_include],
+ 	dependencies: [catch2_dep, luajit_dep, cap_dep, drm_dep, glm_dep, wlroots_dep],
+ 	cpp_args: gamescope_cpp_args,
+@@ -22,6 +22,7 @@ test('mangoapp_config', gamescope_tests, args: ['[mangoapp_config]'])
+ test('mangoapp_control', gamescope_tests, args: ['[mangoapp_control]'])
+ test('mode_list', gamescope_tests, args: ['[mode_list]'])
+ test('upscale', gamescope_tests, args: ['[upscale]'])
++test('utils/frame_limit', gamescope_tests, args: ['[frame_limit]'])
+ test('utils/parsers', gamescope_tests, args: ['[parsers]'])
+ test('utils/process', gamescope_tests, args: ['[process]'], depends: [reaper_test_helper])
+ test('utils/string', gamescope_tests, args: ['[string]'])
+diff --git a/tests/test_utils_frame_limit.cpp b/tests/test_utils_frame_limit.cpp
+new file mode 100644
+index 0000000..603f71e
+--- /dev/null
++++ b/tests/test_utils_frame_limit.cpp
+@@ -0,0 +1,84 @@
++#include <catch2/catch_test_macros.hpp>
++#include "Utils/FrameLimit.h"
++
++#include <vector>
++
++using namespace gamescope;
++
++namespace
++{
++
++constexpr uint64_t k_ulCycle60 = 16'666'667;
++constexpr uint64_t k_ulInterval30 = 33'333'333;
++constexpr uint64_t k_ulInterval45 = 22'222'222;
++
++std::vector<int> Releases( uint64_t ulInterval, bool bOnGrid, int nVBlanks, int nLateVBlank = -1, int64_t nJitter = 0 )
++{
++	uint64_t ulTarget = 0;
++	std::vector<int> releases;
++	for ( int i = 1; i <= nVBlanks; i++ )
++	{
++		int64_t nOffset = ( i % 3 - 1 ) * nJitter;
++		uint64_t ulVBlank = 1'000'000'000 + i * k_ulCycle60 + nOffset;
++		ulTarget = ClampFrameLimitTarget( ulTarget, ulVBlank, ulInterval );
++		if ( !IsFrameLimitDue( ulTarget, ulVBlank, k_ulCycle60 ) || i == nLateVBlank )
++			continue;
++
++		ulTarget = GetNextFrameLimitTarget( ulTarget, ulVBlank, ulInterval, k_ulCycle60, bOnGrid );
++		releases.push_back( i );
++	}
++	return releases;
++}
++
++}
++
++TEST_CASE("A frame is due at the vblank nearest its target", "[frame_limit]") {
++	REQUIRE_FALSE(IsFrameLimitDue( 1'033'333'433, 1'016'666'767, k_ulCycle60 ));
++	REQUIRE(IsFrameLimitDue( 1'033'333'433, 1'033'000'000, k_ulCycle60 ));
++	REQUIRE(IsFrameLimitDue( 1'033'333'433, 1'033'333'434, k_ulCycle60 ));
++}
++
++TEST_CASE("An on time release on the refresh grid anchors to its vblank", "[frame_limit]") {
++	REQUIRE(GetNextFrameLimitTarget( 1'000'000'000, 1'000'000'100, k_ulInterval30, k_ulCycle60, true ) == 1'033'333'433);
++	REQUIRE(GetNextFrameLimitTarget( 1'000'000'000, 999'999'900, k_ulInterval30, k_ulCycle60, true ) == 1'033'333'233);
++}
++
++TEST_CASE("A late release keeps the anchor so the next frame is not delayed", "[frame_limit]") {
++	uint64_t ulTarget = GetNextFrameLimitTarget( 1'000'000'000, 1'016'666'667, k_ulInterval30, k_ulCycle60, true );
++	REQUIRE(ulTarget == 1'033'333'333);
++	REQUIRE(IsFrameLimitDue( ulTarget, 1'033'333'334, k_ulCycle60 ));
++}
++
++TEST_CASE("A target behind by more than one interval resyncs", "[frame_limit]") {
++	REQUIRE(GetNextFrameLimitTarget( 1'000'000'000, 1'050'000'000, k_ulInterval30, k_ulCycle60, true ) == 1'083'333'333);
++	REQUIRE(GetNextFrameLimitTarget( 0, 5'000'000'000, k_ulInterval30, k_ulCycle60, true ) == 5'033'333'333);
++}
++
++TEST_CASE("Off the refresh grid the target advances by the interval", "[frame_limit]") {
++	REQUIRE(GetNextFrameLimitTarget( 1'000'000'000, 994'444'445, k_ulInterval45, k_ulCycle60, false ) == 1'022'222'222);
++}
++
++TEST_CASE("One second at 60 Hz releases the limit", "[frame_limit]") {
++	REQUIRE(Releases( k_ulInterval30, true, 60 ).size() == 30);
++	REQUIRE(Releases( k_ulInterval45, false, 60 ).size() == 45);
++}
++
++TEST_CASE("A frame missing its vblank costs one vblank", "[frame_limit]") {
++	REQUIRE(Releases( k_ulInterval30, true, 60, 11 ).size() == 30);
++}
++
++TEST_CASE("30 on 60 with vblank jitter releases every second vblank", "[frame_limit]") {
++	std::vector<int> releases = Releases( k_ulInterval30, true, 600, -1, 500'000 );
++	REQUIRE(releases.size() == 300);
++	for ( size_t i = 1; i < releases.size(); i++ )
++		REQUIRE(releases[i] - releases[i - 1] == 2);
++}
++
++TEST_CASE("A lower limit does not delay the next frame after the limit rises", "[frame_limit]") {
++	constexpr uint64_t ulInterval10 = 100'000'000;
++	uint64_t ulTarget = GetNextFrameLimitTarget( 0, 1'000'000'000, ulInterval10, k_ulCycle60, true );
++	REQUIRE(ulTarget == 1'100'000'000);
++	ulTarget = ClampFrameLimitTarget( ulTarget, 1'016'666'667, k_ulInterval30 );
++	REQUIRE(ulTarget == 1'050'000'000);
++	REQUIRE(IsFrameLimitDue( ulTarget, 1'050'000'001, k_ulCycle60 ));
++}
