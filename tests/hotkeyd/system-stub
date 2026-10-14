@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ROOT = "/org/shadowblip/InputPlumber"
+COMPOSITE = "org.shadowblip.Input.CompositeDevice"
+FF = "org.shadowblip.Output.ForceFeedback"
+OM = "org.freedesktop.DBus.ObjectManager"
+PROPS = "org.freedesktop.DBus.Properties"
+XML = f"""
+<node>
+  <interface name="{OM}">
+    <method name="GetManagedObjects"><arg type="a{{oa{{sa{{sv}}}}}}" direction="out"/></method>
+    <signal name="InterfacesAdded"><arg type="o"/><arg type="a{{sa{{sv}}}}"/></signal>
+    <signal name="InterfacesRemoved"><arg type="o"/><arg type="as"/></signal>
+  </interface>
+  <interface name="{COMPOSITE}">
+    <property name="InterceptMode" type="u" access="readwrite"/>
+  </interface>
+  <interface name="{FF}">
+    <method name="Rumble"><arg type="d" direction="in"/></method>
+  </interface>
+  <interface name="test.Stub">
+    <method name="AddDevice"/>
+    <method name="RemoveDevice"/>
+    <method name="SetDelay"><arg type="u" direction="in"/></method>
+    <method name="SetStep"><arg type="u" direction="in"/></method>
+  </interface>
+  <interface name="net.seilent.MicroSet1">
+    <method name="Get"><arg type="s" direction="in"/><arg type="v" direction="out"/></method>
+  </interface>
+</node>
+"""
+LOG = sys.argv[1]
+INFO = {i.name: i for i in Gio.DBusNodeInfo.new_for_xml(XML).interfaces}
+modes = {}
+regs = {}
+step = [0]
+delay = [0]
+owned = []
+
+
+def record(line):
+    with open(LOG, "a") as f:
+        f.write(line + "\n")
+
+
+def ifaces(path):
+    return {COMPOSITE: {"InterceptMode": GLib.Variant("u", modes[path])}, FF: {}}
+
+
+def method(conn, _sender, path, _iface, name, params, invocation):
+    if name == "GetManagedObjects":
+        objs = {p: ifaces(p) for p in modes}
+        objs[f"{ROOT}/devices/target/keyboard0"] = {"org.shadowblip.Input.Keyboard": {}}
+        invocation.return_value(GLib.Variant("(a{oa{sa{sv}}})", (objs,)))
+    elif name == "Rumble":
+        record(f"rumble {path} {params.unpack()[0]}")
+        invocation.return_value(None)
+    elif name == "AddDevice":
+        p = add(conn)
+        conn.emit_signal(None, ROOT, OM, "InterfacesAdded", GLib.Variant("(oa{sa{sv}})", (p, ifaces(p))))
+        invocation.return_value(None)
+    elif name == "RemoveDevice":
+        p = max(modes)
+        for i in regs.pop(p):
+            conn.unregister_object(i)
+        del modes[p]
+        conn.emit_signal(None, ROOT, OM, "InterfacesRemoved", GLib.Variant("(oas)", (p, [COMPOSITE, FF])))
+        invocation.return_value(None)
+    elif name == "SetDelay":
+        delay[0] = params.unpack()[0]
+        invocation.return_value(None)
+    elif name == "SetStep":
+        step[0] = params.unpack()[0]
+        invocation.return_value(None)
+    elif name == "Get":
+        key = params.unpack()[0]
+        record(f"get {key}")
+        if key == "audio.volume_step" and step[0]:
+            invocation.return_value(GLib.Variant("(v)", (GLib.Variant("u", step[0]),)))
+        else:
+            invocation.return_dbus_error("net.seilent.MicroSet1.Error.UnknownKey", key)
+
+
+def get_property(_conn, _sender, path, _iface, _name):
+    return GLib.Variant("u", modes[path])
+
+
+def apply(conn, msg, path, value):
+    modes[path] = value
+    record(f"mode {path} {value}")
+    conn.send_message(Gio.DBusMessage.new_method_reply(msg), Gio.DBusSendMessageFlags.NONE)
+    return GLib.SOURCE_REMOVE
+
+
+def setter(conn, msg, incoming, *_):
+    if (incoming and msg.get_message_type() == Gio.DBusMessageType.METHOD_CALL and msg.get_interface() == PROPS
+            and msg.get_member() == "Set" and msg.get_path() in modes):
+        value = msg.get_body().unpack()[2]
+        GLib.timeout_add(delay[0] if value == 3 else 0, apply, conn, msg, msg.get_path(), value)
+        return None
+    return msg
+
+
+def add(conn):
+    path = f"{ROOT}/CompositeDevice{len(modes)}"
+    modes[path] = 0
+    regs[path] = [conn.register_object_with_closures2(path, INFO[i], method, get_property, None) for i in (COMPOSITE, FF)]
+    return path
+
+
+def acquired(_conn, name):
+    owned.append(name)
+    if len(owned) == 2:
+        record("ready")
+
+
+bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+bus.add_filter(setter)
+bus.register_object_with_closures2(ROOT, INFO[OM], method, None, None)
+bus.register_object_with_closures2("/test", INFO["test.Stub"], method, None, None)
+bus.register_object_with_closures2("/net/seilent/MicroSet", INFO["net.seilent.MicroSet1"], method, None, None)
+add(bus)
+add(bus)
+for n in ("org.shadowblip.InputPlumber", "net.seilent.MicroSet"):
+    Gio.bus_own_name_on_connection(bus, n, Gio.BusNameOwnerFlags.NONE, acquired, None)
+GLib.MainLoop().run()

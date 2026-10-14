@@ -168,7 +168,14 @@ XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user
   /usr/lib/systemd/user/microos-*.service /usr/lib/systemd/user/steamos-manager.service gamescope-session-plus@steam.service \
   || fail "systemd-analyze verify --user"
 [[ -f /usr/lib/systemd/user/microos-steam-seed.service ]] || fail "microos-steam-seed.service missing"
-[[ -f /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/20-microos-hotkeyd.conf ]] || fail "hotkeyd drop-in missing"
+[[ $(< /usr/lib/systemd/user/gamescope-session-plus@.service.d/20-microos-hotkeyd.conf) == $'[Unit]\nWants=microos-hotkeyd@%i.service' ]] \
+  || fail "hotkeyd drop-in"
+[[ -e /usr/lib/systemd/user/microos-hotkeyd.service || -e /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/20-microos-hotkeyd.conf ]] \
+  && fail "Steam only hotkeyd unit or drop-in present"
+grep -qx 'ExecStart=/usr/libexec/microos/microos-hotkeyd %i' /usr/lib/systemd/user/microos-hotkeyd@.service || fail "hotkeyd unit ExecStart"
+grep -qx 'BindsTo=gamescope-session-plus@%i.service' /usr/lib/systemd/user/microos-hotkeyd@.service || fail "hotkeyd unit BindsTo"
+grep -qx 'After=gamescope-session-plus@%i.service' /usr/lib/systemd/user/microos-hotkeyd@.service || fail "hotkeyd unit After"
+[[ -f /usr/lib/microos/hotkeys.d/steam.conf && -f /usr/lib/microos/hotkeys.d/recovery.conf ]] || fail "hotkeys.d tables missing"
 [[ -f /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf ]] || fail "gamescope-session-plus@steam drop-in missing"
 
 [[ $(grep '^ExecStop=' /usr/lib/systemd/system/ostree-finalize-staged.service) == 'ExecStop=/usr/bin/ostree admin finalize-staged' ]] \

@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+INTERCEPT = ("net.seilent.MicroOs.Intercept", "/net/seilent/MicroOs/Intercept", "net.seilent.MicroOs.Intercept1")
+XML = """
+<node>
+  <interface name="test.Hotkeyd">
+    <method name="Poke"/>
+  </interface>
+</node>
+"""
+LOG = sys.argv[1]
+
+
+def record(line):
+    with open(LOG, "a") as f:
+        f.write(line + "\n")
+
+
+def poke(_conn, _sender, _path, _iface, _name, _params, invocation):
+    record("poke")
+    invocation.return_value(None)
+
+
+def changed(_conn, _sender, _path, _iface, _signal, params):
+    _iface, props, _gone = params.unpack()
+    if "Holder" in props:
+        record(f"holder {props['Holder']}")
+
+
+def main(cmds):
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    for cmd in cmds:
+        if cmd in ("acquire", "release"):
+            bus.call_sync(*INTERCEPT, cmd.capitalize(), None, None, Gio.DBusCallFlags.NONE, 5000, None)
+        elif cmd == "get":
+            print(bus.call_sync(
+                INTERCEPT[0], INTERCEPT[1], "org.freedesktop.DBus.Properties", "Get",
+                GLib.Variant("(ss)", (INTERCEPT[2], "Holder")), None, Gio.DBusCallFlags.NONE, 5000, None,
+            ).unpack()[0])
+            return 0
+        elif cmd == "gone":
+            msg = Gio.DBusMessage.new_method_call(*INTERCEPT, "Acquire")
+            msg.set_flags(Gio.DBusMessageFlags.NO_REPLY_EXPECTED)
+            bus.send_message(msg, Gio.DBusSendMessageFlags.NONE)
+            bus.flush_sync(None)
+            record(f"gone {bus.get_unique_name()}")
+            return 0
+        elif cmd == "watch":
+            bus.signal_subscribe(
+                INTERCEPT[0], "org.freedesktop.DBus.Properties", "PropertiesChanged", INTERCEPT[1], None,
+                Gio.DBusSignalFlags.NONE, changed,
+            )
+        elif cmd == "serve":
+            bus.register_object_with_closures2(
+                "/test", Gio.DBusNodeInfo.new_for_xml(XML).interfaces[0], poke, None, None
+            )
+            bus.call_sync(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName",
+                GLib.Variant("(su)", ("test.Hotkeyd", 4)), None, Gio.DBusCallFlags.NONE, 5000, None,
+            )
+    record(f"ready {bus.get_unique_name()}")
+    GLib.MainLoop().run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[2:]))

@@ -20,6 +20,7 @@ XML = f"""
     </method>
     <method name="Suspend"><arg type="b" direction="in"/></method>
     <method name="EmitPrepareForSleep"><arg type="b" direction="in"/></method>
+    <method name="SetDeny"><arg type="s" direction="in"/></method>
     <signal name="PrepareForSleep"><arg type="b"/></signal>
   </interface>
 </node>
@@ -63,6 +64,10 @@ def method(conn, _sender, _path, _iface, name, params, invocation):
         value = params.unpack()[0]
         conn.emit_signal(None, PATH, IFACE, "PrepareForSleep", GLib.Variant("(b)", (value,)))
         record(f"sleep {str(value).lower()}")
+        invocation.return_value(None)
+    elif name == "SetDeny":
+        DENY.clear()
+        DENY.update(filter(None, params.unpack()[0].split(",")))
         invocation.return_value(None)
 
 

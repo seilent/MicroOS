@@ -1,0 +1,13 @@
+[Unit]
+Description=Hotkeys for the %i session
+BindsTo=gamescope-session-plus@%i.service
+After=gamescope-session-plus@%i.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/libexec/microos/microos-hotkeyd %i
+ExecStopPost=/usr/libexec/microos/microos-hotkeyd --reset-intercept
+Restart=always
+RestartSec=2
+RestartSteps=3
+RestartMaxDelaySec=10
