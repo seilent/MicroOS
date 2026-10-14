@@ -16,30 +16,50 @@ skip=$statedir/boot-ok-skip
 [[ -r $conf ]] || die "missing $conf"
 . "$conf"
 
-declare -A inv=()
+declare -A inv=() refused=()
 user_unit() {
-  local out uid gid
+  local out uid gid frag drop p
+  us="" uinv=""
   uid=$(id -u "$MICROOS_BOOT_OK_USER" 2> /dev/null) || return 0
   gid=$(id -g "$MICROOS_BOOT_OK_USER" 2> /dev/null) || return 0
   out=$(setpriv --reuid="$uid" --regid="$gid" --init-groups --no-new-privs env -i XDG_RUNTIME_DIR="/run/user/$uid" \
-    systemctl --user show -p ActiveState,InvocationID "$1" < /dev/null 2> /dev/null) || return 0
-  echo "$(sed -n 's/^ActiveState=//p' <<< "$out") $(sed -n 's/^InvocationID=//p' <<< "$out")"
+    systemctl --user show -p ActiveState,InvocationID,FragmentPath,DropInPaths "$1" < /dev/null 2> /dev/null) || return 0
+  frag=$(sed -n 's/^FragmentPath=//p' <<< "$out")
+  drop=$(sed -n 's/^DropInPaths=//p' <<< "$out")
+  us=$(sed -n 's/^ActiveState=//p' <<< "$out")
+  uinv=$(sed -n 's/^InvocationID=//p' <<< "$out")
+  [[ $frag == /usr/lib/systemd/user/* ]] || us=refused
+  for p in $drop; do
+    [[ $p == /usr/lib/* || $p == /etc/* ]] || us=refused
+  done
+  if [[ $us == refused && -z ${refused[$1]:-} ]]; then
+    refused[$1]=1
+    echo "$me: $1 refused: FragmentPath '$frag', DropInPaths '$drop' not under /usr/lib or /etc" >&2
+  fi
+}
+
+unit_why() {
+  if [[ $us == refused ]]; then
+    why="$1 refused, unit not from /usr/lib or /etc"
+  else
+    why="$1 not active"
+  fi
 }
 
 users_up() {
-  local u s id
+  local u
   for u in ${MICROOS_BOOT_OK_USER_ACTIVE:-}; do
-    read -r s id <<< "$(user_unit "$u")"
-    if [[ $s != active || -z $id ]]; then
-      down=$u
+    user_unit "$u"
+    if [[ $us != active || -z $uinv ]]; then
+      unit_why "$u"
       return 1
     fi
-    inv[$u]=$id
+    inv[$u]=$uinv
   done
 }
 
 units_ok() {
-  local u s id
+  local u
   for u in $MICROOS_BOOT_OK_FAILED; do
     if systemctl is-failed --quiet "$u"; then
       echo "$me: not confirmed: $u failed" >&2
@@ -53,12 +73,12 @@ units_ok() {
     fi
   done
   for u in ${MICROOS_BOOT_OK_USER_ACTIVE:-}; do
-    read -r s id <<< "$(user_unit "$u")"
-    if [[ $s != active ]]; then
+    user_unit "$u"
+    if [[ $us != active ]]; then
       echo "$me: not confirmed: $u is not active" >&2
       return 1
     fi
-    if [[ $id != "${inv[$u]}" ]]; then
+    if [[ $uinv != "${inv[$u]}" ]]; then
       echo "$me: not confirmed: $u restarted" >&2
       return 1
     fi
@@ -66,15 +86,15 @@ units_ok() {
 }
 
 write() {
-  local f=$1
+  local f=$1 t
   shift
+  t=$(mktemp "$f.XXXXXX")
   if (( $# )); then
-    printf '%s\n' "$@" > "$f.tmp"
-  else
-    : > "$f.tmp"
+    printf '%s\n' "$@" > "$t"
   fi
-  sync "$f.tmp"
-  mv -f "$f.tmp" "$f"
+  chmod 0644 "$t"
+  sync "$t"
+  mv -fT "$t" "$f"
   sync -f "$f"
 }
 
@@ -107,20 +127,67 @@ if [[ -e $skip ]]; then
   echo "$me: boot-ok-skip names '$want', booted $booted, not skipped" >&2
 fi
 
+read_current() {
+  local line
+  [[ -f $rundir/session-current ]] || return 1
+  line=$(dd if="$rundir/session-current" iflag=nofollow bs=4096 count=1 status=none 2> /dev/null) || return 1
+  [[ $line =~ ^[a-z0-9-]+\ [A-Za-z0-9@._-]+\.service\ [0-9]+$ ]] || return 1
+  session=$line
+}
+
+session_up() {
+  why="display-manager.service not active"
+  systemctl is-active --quiet display-manager.service || return 1
+  why="no session-current"
+  read_current || return 1
+  read -r name unit _ <<< "$session"
+  why="recovery is the current session"
+  [[ $name != recovery ]] || return 1
+  user_unit "$unit"
+  id=$uinv
+  unit_why "$unit"
+  [[ $us == active && -n $id ]]
+}
+
+session_held() {
+  [[ -z ${MICROOS_BOOT_OK_USER_ACTIVE:-} ]] || return 0
+  session_up || return 1
+  why="current session changed to $name"
+  [[ $session == "$held_session" ]] || return 1
+  why="$unit restarted"
+  [[ $id == "$held_id" ]]
+}
+
 ready() {
-  down=$MICROOS_BOOT_OK_TARGET
-  systemctl is-active --quiet "$MICROOS_BOOT_OK_TARGET" && users_up
+  why="$MICROOS_BOOT_OK_TARGET not active"
+  systemctl is-active --quiet "$MICROOS_BOOT_OK_TARGET" || return 1
+  if [[ -n ${MICROOS_BOOT_OK_USER_ACTIVE:-} ]]; then
+    users_up
+    return
+  fi
+  session_up || return 1
+  held_session=$session held_id=$id
 }
 
 waited=0
-until ready; do
-  (( waited < MICROOS_BOOT_OK_WAIT )) || die "not confirmed: $down not active after $MICROOS_BOOT_OK_WAIT s"
-  sleep "$MICROOS_BOOT_OK_STEP"
-  waited=$(( waited + MICROOS_BOOT_OK_STEP ))
-done
+wait_ready() {
+  until ready; do
+    (( waited < MICROOS_BOOT_OK_WAIT )) || die "not confirmed: $why after $MICROOS_BOOT_OK_WAIT s"
+    sleep "$MICROOS_BOOT_OK_STEP"
+    waited=$(( waited + MICROOS_BOOT_OK_STEP ))
+  done
+}
+
+wait_ready
 held=0
 while :; do
   units_ok || exit 1
+  if ! session_held; then
+    echo "$me: hold restarted: $why" >&2
+    wait_ready
+    held=0
+    continue
+  fi
   (( held < MICROOS_BOOT_OK_HOLD )) || break
   sleep "$MICROOS_BOOT_OK_STEP"
   held=$(( held + MICROOS_BOOT_OK_STEP ))
@@ -165,6 +232,9 @@ read_status
 pinned "$booted" || die "$booted is not pinned"
 
 write "$statedir/confirmed" "$booted"
+rollback=no
+! jq -e 'any(.deployments[]; (.booted or .staged) | not)' <<< "$status" > /dev/null || rollback=yes
+write "$rundir/deployments" "booted=$booted" confirmed=yes "rollback=$rollback"
 
 out=$("$bootimg" --bak "$booted") || die "KERNEL.BAK not baked from $booted, pins kept"
 read -r word deploy bake <<< "$(tail -n 1 <<< "$out")"

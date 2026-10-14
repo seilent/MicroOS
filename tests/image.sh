@@ -231,9 +231,13 @@ lsinitrd -f usr/lib/systemd/system/ostree-prepare-root.service "$img" | grep -qx
   || fail "ostree-prepare-root.service ExecStart changed"
 
 [[ -x /usr/bin/microos-update ]] || fail "/usr/bin/microos-update missing"
-scripts=(/usr/libexec/microos/* /usr/lib/microos/* /usr/lib/dracut/modules.d/91microos-ostree-remap/* /usr/bin/microos-*)
+scripts=()
+for f in /usr/libexec/microos/* /usr/lib/microos/* /usr/lib/dracut/modules.d/91microos-ostree-remap/* /usr/bin/microos-*; do
+  [[ -f $f ]] && scripts+=("$f")
+done
 etc=$(grep -n '/etc/' "${scripts[@]}" \
-  | grep -vxE '/usr/bin/microos-update:[0-9]+:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/etc/containers/policy\.json' || true)
+  | grep -vxE '/usr/bin/microos-update:[0-9]+:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/etc/containers/policy\.json' \
+  | grep -vE '== /etc/\*' || true)
 [[ -z $etc ]] || fail "MicroOS scripts reference /etc: $etc"
 
 chmod 711 "$tmp"

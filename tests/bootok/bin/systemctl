@@ -5,10 +5,18 @@ if [[ $1 == --user ]]; then
   n=$(( $(cat "$FAKE_STATE/user-reads" 2> /dev/null || echo 0) + 1 ))
   echo "$n" > "$FAKE_STATE/user-reads"
   [[ $2 == show && $XDG_RUNTIME_DIR == /run/user/1000 ]] || exit 1
+  if [[ -n ${FAKE_SWITCH_AT:-} ]] && (( n == FAKE_SWITCH_AT )); then
+    echo "${FAKE_SWITCH_TO:?}" > "$MICROOS_RUNDIR/session-current"
+  fi
   if (( n <= ${FAKE_USER_DOWN:-0} )); then
     echo "Failed to connect to user scope bus via local transport: No such file or directory" >&2
     exit 1
   fi
+  if (( n <= ${FAKE_USER_HOME_READS:-0} )); then
+    FAKE_USER_FRAGMENT=/home/micro/.config/systemd/user/$u
+  fi
+  printf 'FragmentPath=%s\nDropInPaths=%s\n' "${FAKE_USER_FRAGMENT-/usr/lib/systemd/user/${u%%@*}@.service}" \
+    "${FAKE_USER_DROPINS-/usr/lib/systemd/user/${u%%@*}@.service.d/10-microos-track.conf}"
   if [[ " ${FAKE_USER_INACTIVE:-} " == *" $u "* ]] || (( n <= ${FAKE_USER_ACTIVE_AFTER:-0} )); then
     printf 'ActiveState=inactive\nInvocationID=\n'
   elif [[ -n ${FAKE_USER_RESTART_AFTER:-} ]] && (( n > FAKE_USER_RESTART_AFTER )); then
