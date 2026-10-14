@@ -4,7 +4,6 @@ import os
 import pwd
 import re
 import sys
-import tempfile
 
 import gi
 
@@ -13,9 +12,7 @@ from gi.repository import Gio, GLib
 
 SYSFS = os.environ.get("MICROOS_SYSFS", "/sys")
 PROC = os.environ.get("MICROOS_PROC", "/proc")
-STATEDIR = os.environ.get("MICROOS_STATEDIR", "/var/lib/microos")
 PROFILES = os.environ.get("MICROOS_POWER_PROFILES", "/usr/lib/microos/power-profiles.conf")
-STATE = os.path.join(STATEDIR, "power.conf")
 
 BUS_NAME = "net.seilent.MicroOs.Power"
 PATH = "/net/seilent/MicroOs/Power"
@@ -35,6 +32,11 @@ CLOCK_MIN = 305
 CLOCK_MAX = 587
 GPU_LEVELS = ["auto", "manual"]
 STOCK_PROFILES = ["low-power", "balanced", "performance"]
+HOLD_MODES = ("dap",)
+HOLD_MAX = 4
+DAP_CPUS = range(4, 8)
+DAP_CPU_MAX = 787200
+DAP_GPU_MAX = 305000000
 WRITABLE = re.compile(
     r"/devices/system/cpu/(cpufreq/policy[047]/scaling_(max_freq|min_freq|governor)|cpu[0-9]+/online)"
     r"|/class/devfreq/3d00000\.gpu/(governor|min_freq|max_freq)"
@@ -48,6 +50,7 @@ SCHEMA = {
         ("ManualGpuClock", "u", "readwrite"),
         ("CpuGovernor", "s", "readwrite"),
         ("AvailableCpuGovernors", "as", "read"),
+        ("Holds", "as", "read"),
     ],
     PROFILE: [
         ("AvailablePerformanceProfiles", "as", "read"),
@@ -84,6 +87,10 @@ SETTERS = {
     (TDP, "TdpLimit"): "tdp",
 }
 
+METHODS = {
+    POWER: [("Reload", ()), ("Hold", (("mode", "s"),)), ("Release", (("mode", "s"),))],
+}
+
 
 def log(msg):
     print(msg, file=sys.stderr, flush=True)
@@ -115,9 +122,17 @@ def write(rel, value):
         log(f"write {rel}={value}: {e.strerror}")
 
 
+def clamp(key, value, lo, hi):
+    fit = max(lo, min(value, hi))
+    if fit != value:
+        log(f"{key} {value} clamped to {fit}")
+    return fit
+
+
 def interface_xml(name, props, methods):
     body = "".join(f'<property name="{p}" type="{t}" access="{a}"/>' for p, t, a in props)
-    body += "".join(f'<method name="{m}"/>' for m in methods)
+    body += "".join(f'<method name="{m}">' + "".join(f'<arg name="{a}" type="{t}" direction="in"/>' for a, t in args)
+                    + "</method>" for m, args in methods)
     return f'<node><interface name="{name}">{body}</interface></node>'
 
 
@@ -165,11 +180,25 @@ class Power:
         self.conn = None
         self.registered = {}
         self.last = {}
+        self.holds = {}
+        self.state = {}
+        try:
+            self.microset = pwd.getpwnam("microset").pw_uid
+        except KeyError:
+            self.microset = None
         self.load()
 
     def load(self):
         self.names, self.profiles, self.tdp, self.default = load_profiles()
-        self.state = self.load_state()
+        state = self.defaults()
+        for key, value in self.state.items():
+            if value is None:
+                continue
+            try:
+                state[key] = self.check(key, value)
+            except ValueError as e:
+                log(f"{e}, using the default")
+        self.state = state
 
     def defaults(self):
         return {"profile": self.default, "gpu_level": "auto", "gpu_clock": CLOCK_MAX, "governor": "schedutil", "tdp": None}
@@ -184,60 +213,11 @@ class Power:
             return value
         if key == "governor" and value in self.governors():
             return value
-        if key in ("gpu_clock", "tdp") and isinstance(value, int) and value >= 0:
-            return value
+        if key == "gpu_clock" and isinstance(value, int):
+            return clamp(key, value, CLOCK_MIN, CLOCK_MAX)
+        if key == "tdp" and isinstance(value, int):
+            return clamp(key, value, min(self.tdp), max(self.tdp)) if self.tdp else value
         raise ValueError(f"{value!r} is not a valid {key}")
-
-    def load_state(self):
-        state = self.defaults()
-        try:
-            with open(STATE) as f:
-                lines = f.read().splitlines()
-        except FileNotFoundError:
-            return state
-        except OSError as e:
-            log(f"{STATE}: {e.strerror}, using defaults")
-            return state
-        try:
-            for line in lines:
-                if not line.strip():
-                    continue
-                key, sep, value = (s.strip() for s in line.partition("="))
-                if not sep or key not in state:
-                    raise ValueError(f"bad line {line!r}")
-                if key == "tdp" and value == "":
-                    state[key] = None
-                elif key in ("gpu_clock", "tdp"):
-                    state[key] = self.check(key, int(value))
-                else:
-                    state[key] = self.check(key, value)
-        except ValueError as e:
-            log(f"{STATE}: {e}, using defaults")
-            return self.defaults()
-        return state
-
-    def save_state(self):
-        text = "".join(f"{k}={'' if v is None else v}\n" for k, v in self.state.items())
-        tmp = None
-        try:
-            os.makedirs(STATEDIR, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(dir=STATEDIR, prefix=".power.conf.")
-            with os.fdopen(fd, "w") as f:
-                f.write(text)
-                f.flush()
-                os.fsync(f.fileno())
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, STATE)
-            tmp = None
-            dfd = os.open(STATEDIR, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(dfd)
-            finally:
-                os.close(dfd)
-        except OSError as e:
-            log(f"{STATE}: {e.strerror}")
-            if tmp:
-                os.unlink(tmp)
 
     def tdp_watts(self):
         return max(self.tdp) if self.state["tdp"] is None else self.state["tdp"]
@@ -256,8 +236,11 @@ class Power:
             log(f"{CPUS}: {e.strerror}")
             return
         for cpu in sorted(cpus):
-            if re.fullmatch(r"cpu[0-9]+", cpu) and read(f"{CPUS}/{cpu}/online") == "0":
-                write(f"{CPUS}/{cpu}/online", 1)
+            if not re.fullmatch(r"cpu[0-9]+", cpu):
+                continue
+            want = "0" if self.holds and int(cpu[3:]) in DAP_CPUS else "1"
+            if read(f"{CPUS}/{cpu}/online") not in (None, want):
+                write(f"{CPUS}/{cpu}/online", want)
 
     def policies(self):
         for policy in POLICIES:
@@ -286,13 +269,17 @@ class Power:
         caps = []
         for policy, base, lo, hi in self.policies():
             top = min(hi, profile.get(policy, hi), row[POLICIES.index(policy)] if row else hi)
+            if self.holds and policy == "policy0":
+                top = min(top, DAP_CPU_MAX)
             top = max(lo, top)
             self.set_policy(base, self.state["governor"], lo, top)
             caps.append(f"{policy}={top}")
         freqs = [int(v) for v in (read(f"{DEVFREQ}/available_frequencies") or "").split() if v.isdigit()]
         floor = min(freqs) if freqs else GPU_FLOOR
         gpu_max = min(GPU_CAP, max(freqs) if freqs else GPU_CAP, profile.get("gpu", GPU_CAP), row[3] if row else GPU_CAP)
-        if self.state["gpu_level"] == "manual":
+        if self.holds:
+            gpu_max = min(gpu_max, DAP_GPU_MAX)
+        if self.state["gpu_level"] == "manual" and not self.holds:
             want = self.state["gpu_clock"] * 1000000
             clock = max(floor, min(want, gpu_max))
             opps = [f for f in freqs if floor <= f <= gpu_max]
@@ -312,7 +299,8 @@ class Power:
             write(f"{DEVFREQ}/min_freq", floor)
             caps.append(f"gpu={gpu_max}")
         tdp = f" tdp={self.tdp_watts()}" if self.tdp else ""
-        log(f"applied profile={self.state['profile']} governor={self.state['governor']}{tdp} {' '.join(caps)}")
+        hold = " hold=dap" if self.holds else ""
+        log(f"applied profile={self.state['profile']} governor={self.state['governor']}{tdp}{hold} {' '.join(caps)}")
 
     def values(self):
         s = self.state
@@ -326,6 +314,7 @@ class Power:
                 "ManualGpuClock": ("u", s["gpu_clock"]),
                 "CpuGovernor": ("s", governor),
                 "AvailableCpuGovernors": ("as", governors),
+                "Holds": ("as", list(HOLD_MODES) if self.holds else []),
             },
             PROFILE: {
                 "AvailablePerformanceProfiles": ("as", self.names),
@@ -366,13 +355,13 @@ class Power:
         for iface, props in SCHEMA.items():
             want = iface != TDP or bool(self.tdp)
             if want and iface not in self.registered:
-                info = Gio.DBusNodeInfo.new_for_xml(interface_xml(iface, props, ["Reload"] if iface == POWER else []))
+                info = Gio.DBusNodeInfo.new_for_xml(interface_xml(iface, props, METHODS.get(iface, [])))
                 self.registered[iface] = self.conn.register_object(PATH, info.interfaces[0], self.on_call, None, None)
             elif not want and iface in self.registered:
                 self.conn.unregister_object(self.registered.pop(iface))
                 self.last.pop(iface, None)
 
-    def refusal(self, sender):
+    def refusal(self, sender, setter):
         try:
             reply = self.conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
                                         "GetConnectionCredentials", GLib.Variant("(s)", (sender,)),
@@ -393,7 +382,7 @@ class Power:
             wheel = grp.getgrnam("wheel").gr_gid
         except KeyError:
             wheel = None
-        if uid != 0 and wheel not in groups:
+        if uid != 0 and not (setter and uid == self.microset) and wheel not in groups:
             return uid, "not in wheel"
         try:
             with open(f"{PROC}/{pid}/cgroup") as f:
@@ -404,19 +393,54 @@ class Power:
             return uid, "called from a game"
         return uid, None
 
-    def authorize(self, sender, what, inv):
-        uid, reason = self.refusal(sender)
+    def authorize(self, sender, what, inv, setter=False, value=""):
+        uid, reason = self.refusal(sender, setter)
         if reason:
             log(f"{what} by uid {uid} refused: {reason}")
             inv.return_dbus_error("org.freedesktop.DBus.Error.AccessDenied", reason)
             return False
-        log(f"{what} by uid {uid}")
+        log(f"{what}{value} by uid {uid}")
         return True
 
     def changed(self):
-        self.save_state()
         self.apply()
         self.publish()
+
+    def hold(self, name):
+        if name in self.holds:
+            return
+        self.holds[name] = self.conn.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+                                                      "/org/freedesktop/DBus", name, Gio.DBusSignalFlags.NONE,
+                                                      self.on_owner)
+        try:
+            reply = self.conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                        "NameHasOwner", GLib.Variant("(s)", (name,)), GLib.VariantType("(b)"),
+                                        Gio.DBusCallFlags.NONE, 500, None)
+            present = reply.unpack()[0]
+        except GLib.Error as e:
+            log(f"NameHasOwner {name}: {e.message}")
+            present = False
+        if not present:
+            self.conn.signal_unsubscribe(self.holds.pop(name))
+            log(f"Hold by {name} dropped: name gone")
+            return
+        log(f"dap hold by {name}")
+        if len(self.holds) == 1:
+            self.changed()
+
+    def release(self, name):
+        sub = self.holds.pop(name, None)
+        if sub is None:
+            return
+        self.conn.signal_unsubscribe(sub)
+        log(f"dap hold of {name} released")
+        if not self.holds:
+            self.changed()
+
+    def on_owner(self, conn, sender, path, iface, signal, params):
+        name, _, new = params.unpack()
+        if not new:
+            self.release(name)
 
     def on_call(self, conn, sender, path, iface, method, params, inv):
         args = params.unpack()
@@ -442,7 +466,7 @@ class Power:
             if sent != want:
                 inv.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs", f"{args[1]} is {want}, not {sent}")
                 return
-            if not self.authorize(sender, f"set {args[0]}.{args[1]}={args[2]!r}", inv):
+            if not self.authorize(sender, f"set {args[0]}.{args[1]}", inv, args[0] in (POWER, TDP), f"={repr(args[2])[:64]}"):
                 return
             try:
                 self.state[key] = self.check(key, args[2])
@@ -458,6 +482,21 @@ class Power:
             self.register()
             self.apply()
             self.publish()
+            inv.return_value(None)
+        elif iface == POWER and method in ("Hold", "Release"):
+            if not self.authorize(sender, method, inv, value=f" {repr(args[0])[:64]}"):
+                return
+            if args[0] not in HOLD_MODES:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs", f"{args[0]!r} is not a hold mode")
+                return
+            if method == "Hold" and sender not in self.holds and len(self.holds) >= HOLD_MAX:
+                log(f"Hold by {sender} refused: {HOLD_MAX} holders")
+                inv.return_dbus_error("org.freedesktop.DBus.Error.LimitsExceeded", f"{HOLD_MAX} holders already")
+                return
+            if method == "Hold":
+                self.hold(sender)
+            else:
+                self.release(sender)
             inv.return_value(None)
         else:
             inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", f"{iface}.{method}")

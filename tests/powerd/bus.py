@@ -10,6 +10,7 @@ from gi.repository import Gio, GLib
 NAME = "net.seilent.MicroOs.Power"
 PATH = "/net/seilent/MicroOs/Power"
 PROPS = "org.freedesktop.DBus.Properties"
+POWER = "net.seilent.MicroOs.Power1"
 
 
 def call(bus, iface, method, args, reply=None):
@@ -44,6 +45,26 @@ def main(cmd, *args):
         except GLib.Error as e:
             print(Gio.dbus_error_get_remote_error(e))
             return 1
+        return 0
+    if cmd == "calls":
+        for a in args:
+            if a == "holds":
+                print(call(bus, PROPS, "Get", GLib.Variant("(ss)", (POWER, "Holds")), "(v)").unpack()[0])
+                continue
+            method, _, mode = a.partition(":")
+            try:
+                call(bus, POWER, method, GLib.Variant("(s)", (mode,)))
+                print("ok")
+            except GLib.Error as e:
+                print(Gio.dbus_error_get_remote_error(e))
+        return 0
+    if cmd == "hold-gone":
+        msg = Gio.DBusMessage.new_method_call(NAME, PATH, POWER, "Hold")
+        msg.set_body(GLib.Variant("(s)", (args[0],)))
+        msg.set_flags(Gio.DBusMessageFlags.NO_REPLY_EXPECTED)
+        bus.send_message(msg, Gio.DBusSendMessageFlags.NONE)
+        bus.flush_sync(None)
+        bus.close_sync(None)
         return 0
     if cmd == "interfaces":
         xml = call(bus, "org.freedesktop.DBus.Introspectable", "Introspect", None, "(s)").unpack()[0]

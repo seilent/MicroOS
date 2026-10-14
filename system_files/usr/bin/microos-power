@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import signal
 import sys
 
 import gi
 
 gi.require_version("Gio", "2.0")
-from gi.repository import Gio, GLib
+gi.require_version("GLibUnix", "2.0")
+from gi.repository import Gio, GLib, GLibUnix
 
 NAME = "net.seilent.MicroOs.Power"
 PATH = "/net/seilent/MicroOs/Power"
@@ -19,7 +21,7 @@ SETS = {
     "tdp": (TDP, "TdpLimit", "u"),
 }
 USAGE = ("usage: microos-power get | reload | set-profile <name> | gpu-level auto|manual | gpu-clock <MHz> | "
-         "governor <name> | tdp <W>")
+         "governor <name> | tdp <W> | hold dap")
 
 
 def call(bus, iface, method, args=None, reply=None):
@@ -33,7 +35,7 @@ def get_all(bus, iface):
 
 def main(argv):
     cmd = argv[0] if argv else ""
-    if not ((cmd in ("get", "reload") and len(argv) == 1) or (cmd in SETS and len(argv) == 2)):
+    if not ((cmd in ("get", "reload") and len(argv) == 1) or ((cmd in SETS or cmd == "hold") and len(argv) == 2)):
         print(USAGE, file=sys.stderr)
         return 2
     try:
@@ -53,6 +55,12 @@ def main(argv):
                 print("tdp none")
         elif cmd == "reload":
             call(bus, POWER, "Reload")
+        elif cmd == "hold":
+            loop = GLib.MainLoop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, sig, loop.quit)
+            call(bus, POWER, "Hold", GLib.Variant("(s)", (argv[1],)))
+            loop.run()
         else:
             iface, prop, t = SETS[cmd]
             try:

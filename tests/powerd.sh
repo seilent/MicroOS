@@ -9,10 +9,10 @@ shipped=$tree/usr/lib/microos/power-profiles.conf
 bus=$here/powerd/bus.py
 tmp=$(mktemp -d)
 chmod 755 "$tmp"
-pd="" daemon="" mon=""
+pd="" daemon="" mon="" h1="" h2="" hs=""
 cleanup() {
   local p
-  for p in $pd $mon $daemon; do kill "$p" 2> /dev/null || true; done
+  for p in $pd $mon $h1 $h2 $hs $daemon; do kill "$p" 2> /dev/null || true; done
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -28,6 +28,8 @@ export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$tmp/bus/socket
 allowed='/devices/system/cpu/(cpufreq/policy[047]/scaling_(max_freq|min_freq|governor)|cpu[0-9]+/online)$|/class/devfreq/3d00000\.gpu/(governor|min_freq|max_freq)$'
 
 if grep -nE 'hwmon|thermal|pwm' "$powerd"; then fail "powerd names a hwmon, thermal or pwm path"; fi
+if grep -nE '/var/lib|power\.conf|STATEDIR' "$powerd"; then fail "powerd names a state file"; fi
+if grep -n ReadWritePaths "$tree/usr/lib/systemd/system/microos-powerd.service"; then fail "powerd unit has ReadWritePaths"; fi
 
 getent passwd 1000 > /dev/null || useradd -u 1000 -M micro
 mkdir -p "$tmp/bus" "$tmp/proc"
@@ -64,14 +66,16 @@ daemon=$!
 for _ in $(seq 100); do [[ -S $tmp/bus/socket ]] && break; sleep 0.05; done
 [[ -S $tmp/bus/socket ]] || { echo "FAIL: dbus-daemon: $(cat "$tmp/dbus.log")" >&2; exit 1; }
 
+enter='mkdir -p "$MICROOS_PROC/$$" && printf "%s\n" "$0" > "$MICROOS_PROC/$$/cgroup" && exec "$@"'
 as() {
   local cg=$1
   shift
-  sh -c 'mkdir -p "$MICROOS_PROC/$$" && printf "%s\n" "$0" > "$MICROOS_PROC/$$/cgroup" && exec "$@"' "$cg" "$@"
+  sh -c "$enter" "$cg" "$@"
 }
 user_cg=0::/user.slice/user-1000.slice/user@1000.service/app.slice/steamos-manager.service
 game_cg=0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-steam-app1145360-1.scope
 root() { as 0::/system.slice/sshd.service "$@"; }
+spawn() { exec sh -c "$enter" 0::/system.slice/sshd.service "$@"; }
 wheel() { as "$user_cg" setpriv --reuid 1000 --regid 1000 --groups 10 "$@"; }
 nowheel() { as "$user_cg" setpriv --reuid 1000 --regid 1000 --clear-groups "$@"; }
 game() { as "$game_cg" setpriv --reuid 1000 --regid 1000 --groups 10 "$@"; }
@@ -177,12 +181,8 @@ want "$pol/policy4/scaling_max_freq" 1862400 "low-power"
 want "$pol/policy7/scaling_max_freq" 2073600 "low-power"
 want "$gpu/max_freq" 441600000 "low-power"
 
-ino=$(stat -c %i "$MICROOS_STATEDIR/power.conf")
 set_ $S.PerformanceProfile1 PerformanceProfile s performance
-[[ $(stat -c %i "$MICROOS_STATEDIR/power.conf") != "$ino" ]] || fail "state file written in place"
-[[ $(cat "$MICROOS_STATEDIR/power.conf") == $'profile=performance\ngpu_level=auto\ngpu_clock=587\ngovernor=schedutil\ntdp=' ]] ||
-  fail "state file: $(cat "$MICROOS_STATEDIR/power.conf")"
-[[ -z $(find "$MICROOS_STATEDIR" -name '.power.conf.*') ]] || fail "temp state file left behind"
+[[ -z $(ls -A "$MICROOS_STATEDIR" 2> /dev/null) ]] || fail "state written: $(ls -A "$MICROOS_STATEDIR")"
 want "$pol/policy7/scaling_max_freq" 2841600 "performance"
 
 set_ $S.GpuPerformanceLevel1 GpuPerformanceLevel s manual
@@ -198,8 +198,13 @@ set_ $P1 GpuLevel s manual
 set_ $P1 ManualGpuClock u 900
 want "$gpu/max_freq" 587000000 "manual 900"
 want "$gpu/min_freq" 587000000 "manual 900"
-grep -q "manual GPU clock 900000000 clamped to 587000000" "$tmp/log" || fail "clamp not logged"
-[[ $(get $P1 ManualGpuClock) == 900 ]] || fail "ManualGpuClock does not return the request"
+grep -q "gpu_clock 900 clamped to 587" "$tmp/log" || fail "clamp not logged"
+[[ $(get $P1 ManualGpuClock) == 587 ]] || fail "ManualGpuClock 900 published as $(get $P1 ManualGpuClock)"
+grep -qx "$P1 ManualGpuClock=900" "$tmp/mon" && fail "ManualGpuClock 900 published unclamped"
+set_ $P1 ManualGpuClock u 0
+[[ $(get $S.GpuPerformanceLevel1 ManualGpuClock) == 305 ]] || fail "ManualGpuClock 0 published as $(get $P1 ManualGpuClock)"
+grep -qx "$S.GpuPerformanceLevel1 ManualGpuClock=305" "$tmp/mon" || fail "no PropertiesChanged with the clamped clock"
+want "$gpu/max_freq" 305000000 "manual 0"
 set_ $P1 ManualGpuClock u 441
 want "$gpu/max_freq" 441600000 "manual 441 snaps to the OPP"
 want "$gpu/min_freq" 441600000 "manual 441 snaps to the OPP"
@@ -220,6 +225,13 @@ want "$pol/policy7/scaling_max_freq" 2073600 "wheel set"
   fail "a game cgroup allowed"
 [[ $(get $P1 Profile) == balanced ]] || fail "a refused set changed the profile"
 grep -q "refused: not in wheel" "$tmp/log" || fail "no wheel refusal line"
+long=$(printf 'x%.0s' $(seq 5000))
+[[ $(nowheel python3 "$bus" set $P1 Profile s "$long") == org.freedesktop.DBus.Error.AccessDenied ]] || fail "a long value without wheel allowed"
+[[ $(nowheel python3 "$bus" calls "Hold:$long") == org.freedesktop.DBus.Error.AccessDenied ]] || fail "a long mode without wheel allowed"
+grep -q xxxx "$tmp/log" && fail "a refused value logged"
+grep -qx "set $P1.Profile by uid 1000 refused: not in wheel" "$tmp/log" || fail "no refusal line without the value"
+[[ $(root python3 "$bus" set $P1 Profile s "$long") == org.freedesktop.DBus.Error.InvalidArgs ]] || fail "a long profile accepted"
+grep -qx "set $P1.Profile='x\{63\} by uid 0" "$tmp/log" || fail "accepted value not cut to 64: $(grep -o "Profile='x*" "$tmp/log" | tail -n 1 | wc -c)"
 grep -q "refused: called from a game" "$tmp/log" || fail "no game refusal line"
 clock=$(get $P1 ManualGpuClock)
 [[ $(root python3 "$bus" set $P1 ManualGpuClock t 5000000000) == org.freedesktop.DBus.Error.InvalidArgs ]] ||
@@ -245,7 +257,9 @@ stop
 start
 for _ in $(seq 100); do grep -q "PerformanceProfile=" "$tmp/mon" && break; sleep 0.05; done
 grep -qx "$S.PerformanceProfile1 PerformanceProfile=balanced" "$tmp/mon" || fail "no PropertiesChanged after a restart"
-want "$pol/policy4/scaling_governor" performance "governor after a restart"
+want "$pol/policy4/scaling_governor" schedutil "governor default after a restart"
+[[ $(get $P1 CpuGovernor) == schedutil && $(get $P1 GpuLevel) == auto ]] || fail "restart kept a value"
+[[ -z $(ls -A "$MICROOS_STATEDIR" 2> /dev/null) ]] || fail "state written: $(ls -A "$MICROOS_STATEDIR")"
 stop
 kill "$mon"
 mon=""
@@ -259,13 +273,10 @@ want "$pol/policy7/scaling_max_freq" 2841600 "profile fallback"
 stop
 
 mktree
-mkdir -p "$MICROOS_STATEDIR"
-printf 'profile=balanced\ngpu_level=fast\n' > "$MICROOS_STATEDIR/power.conf"
 printf 'default=balanced\n[balanced]\npolicy7=2073600\n[performance]\ngpu=670000000\n' > "$MICROOS_POWER_PROFILES"
 echo "305000000 400000000 441600000 490000000 525000000 587000000 670000000" > "$gpu/available_frequencies"
 echo 670000000 > "$gpu/max_freq"
 start
-grep -q "using defaults" "$tmp/log" || fail "no state parse fallback line"
 want "$gpu/max_freq" 587000000 "GPU cap at start"
 set_ $P1 Profile s performance
 want "$gpu/max_freq" 587000000 "GPU cap with a 670 MHz profile"
@@ -292,12 +303,16 @@ want "$pol/policy7/scaling_max_freq" 2073600 "min(low-power, 6 W row)"
 want "$gpu/max_freq" 441600000 "min(low-power, 6 W row)"
 set_ $S.TdpLimit1 TdpLimit u 1
 want "$pol/policy7/scaling_max_freq" 1516800 "below the lowest row"
+[[ $(get $S.TdpLimit1 TdpLimit) == 3 ]] || fail "TdpLimit 1 published as $(get $S.TdpLimit1 TdpLimit)"
+set_ $S.TdpLimit1 TdpLimit u 4294967295
+[[ $(get $S.TdpLimit1 TdpLimit) == 9 ]] || fail "TdpLimit 4294967295 published as $(get $S.TdpLimit1 TdpLimit)"
+set_ $S.TdpLimit1 TdpLimit u 1
 set_ $P1 Profile s balanced
 set_ $P1 GpuLevel s manual
 set_ $P1 ManualGpuClock u 587
 want "$gpu/max_freq" 400000000 "manual clock under the 3 W row"
 want "$gpu/min_freq" 400000000 "manual clock under the 3 W row"
-[[ $(root "$cli" get | tail -n 1) == "tdp 1 (3 to 9)" ]] || fail "cli tdp: $(root "$cli" get | tail -n 1)"
+[[ $(root "$cli" get | tail -n 1) == "tdp 3 (3 to 9)" ]] || fail "cli tdp: $(root "$cli" get | tail -n 1)"
 stop
 
 mktree
@@ -352,6 +367,170 @@ set_ $S.TdpLimit1 TdpLimit u 3
 want "$pol/policy7/scaling_max_freq" 844800 "shipped 3 W row"
 want "$gpu/max_freq" 400000000 "shipped 3 W row"
 stop
+
+mktree
+made=""
+getent passwd microset > /dev/null || { useradd -r -M microset; made=1; }
+ms=$(id -u microset)
+microset() { as 0::/system.slice/microsetd.service setpriv --reuid "$ms" --regid "$ms" --clear-groups "$@"; }
+start
+[[ $(microset python3 "$bus" set $P1 Profile s low-power) == "" ]] || fail "uid of microset refused"
+[[ $(get $P1 Profile) == low-power ]] || fail "set by microset not applied"
+[[ $(microset python3 "$bus" set $S.PerformanceProfile1 PerformanceProfile s balanced) == org.freedesktop.DBus.Error.AccessDenied ]] ||
+  fail "microset allowed on PerformanceProfile1"
+[[ $(microset python3 "$bus" calls Hold:dap Release:dap | paste -sd ' ') == "org.freedesktop.DBus.Error.AccessDenied org.freedesktop.DBus.Error.AccessDenied" ]] ||
+  fail "Hold or Release by microset allowed"
+[[ $(get $P1 Holds) == "[]" ]] || fail "Hold by microset held"
+stop
+if [[ -n $made ]]; then
+  userdel microset
+  start
+  [[ $(microset python3 "$bus" set $P1 Profile s low-power) == org.freedesktop.DBus.Error.AccessDenied ]] ||
+    fail "uid of a removed microset user allowed"
+  stop
+fi
+
+holds() { get $P1 Holds; }
+taken() { grep -c "dap hold by" "$tmp/log" || true; }
+held() {
+  local _
+  for _ in $(seq 100); do (( $(taken) > $1 )) && break; sleep 0.05; done
+  (( $(taken) > $1 )) || fail "no hold after $1"
+  [[ $(holds) == "['dap']" ]] || fail "hold after $1 not taken: $(holds)"
+}
+released() {
+  local _
+  for _ in $(seq 100); do [[ $(holds) == "[]" ]] && break; sleep 0.05; done
+  [[ $(holds) == "[]" ]] || fail "$1: holds $(holds)"
+}
+dap() {
+  local c
+  for c in 1 2 3; do want "$cpu/cpu$c/online" 1 "$1"; done
+  for c in 4 5 6 7; do want "$cpu/cpu$c/online" 0 "$1"; done
+  want "$pol/policy0/scaling_max_freq" 787200 "$1"
+  want "$gpu/governor" simple_ondemand "$1"
+  want "$gpu/min_freq" 305000000 "$1"
+  want "$gpu/max_freq" 305000000 "$1"
+}
+online() {
+  local c
+  for c in 1 2 3 4 5 6 7; do want "$cpu/cpu$c/online" 1 "$1"; done
+}
+exited() {
+  local code=0
+  kill "$1"
+  wait "$1" || code=$?
+  (( code == 0 )) || fail "$2 exited $code"
+}
+
+mktree
+start
+python3 "$bus" monitor "$tmp/mon" &
+mon=$!
+for _ in $(seq 100); do grep -q ready "$tmp/mon" 2> /dev/null && break; sleep 0.05; done
+[[ $(holds) == "[]" ]] || fail "holds at start: $(holds)"
+n=$(taken)
+spawn "$cli" hold dap &
+h1=$!
+held "$n"
+dap "hold"
+for _ in $(seq 100); do grep -q "Holds=" "$tmp/mon" && break; sleep 0.05; done
+grep -qx "$P1 Holds=\['dap'\]" "$tmp/mon" || fail "no PropertiesChanged for Holds: $(cat "$tmp/mon")"
+set_ $S.PerformanceProfile1 PerformanceProfile s performance
+set_ $P1 GpuLevel s manual
+set_ $P1 ManualGpuClock u 587
+dap "setters under a hold"
+[[ $(get $P1 Profile) == performance && $(get $P1 GpuLevel) == manual && $(get $P1 ManualGpuClock) == 587 ]] ||
+  fail "setters under a hold not stored"
+n=$(taken)
+spawn "$cli" hold dap &
+h2=$!
+held "$n"
+exited "$h1" "hold 1"
+h1=""
+[[ $(holds) == "['dap']" ]] || fail "hold 2 lost with hold 1"
+dap "second holder"
+exited "$h2" "hold 2"
+h2=""
+released "name loss"
+grep -qx "$P1 Holds=\[\]" "$tmp/mon" || fail "no PropertiesChanged for the release: $(cat "$tmp/mon")"
+online "name loss"
+want "$pol/policy0/scaling_max_freq" 1804800 "performance after the release"
+want "$pol/policy7/scaling_max_freq" 2841600 "performance after the release"
+want "$gpu/governor" userspace "manual after the release"
+want "$gpu/min_freq" 587000000 "manual after the release"
+want "$gpu/max_freq" 587000000 "manual after the release"
+
+out=$(root python3 "$bus" calls Hold:dap holds Hold:dap holds Release:dap holds Release:dap holds | paste -sd ' ')
+[[ $out == "ok ['dap'] ok ['dap'] ok [] ok []" ]] || fail "Hold, Hold, Release, Release: $out"
+online "Release"
+want "$gpu/governor" userspace "manual after Release"
+[[ $(root python3 "$bus" calls Hold:x Release:x | paste -sd ' ') == "org.freedesktop.DBus.Error.InvalidArgs org.freedesktop.DBus.Error.InvalidArgs" ]] ||
+  fail "a mode other than dap accepted"
+[[ $(nowheel python3 "$bus" calls Hold:dap) == org.freedesktop.DBus.Error.AccessDenied ]] || fail "Hold without wheel allowed"
+[[ $(game python3 "$bus" calls Hold:dap) == org.freedesktop.DBus.Error.AccessDenied ]] || fail "Hold from a game allowed"
+[[ $(holds) == "[]" ]] || fail "a refused Hold held: $(holds)"
+code=0
+root "$cli" hold x 2> /dev/null || code=$?
+(( code == 1 )) || fail "cli hold x exited $code"
+kill -STOP "$pd"
+root python3 "$bus" hold-gone dap
+kill -CONT "$pd"
+for _ in $(seq 100); do grep -q "Hold by uid None refused: no credentials" "$tmp/log" && break; sleep 0.05; done
+grep -q "Hold by uid None refused: no credentials" "$tmp/log" || fail "a name gone at Hold not refused: $(tail -n 3 "$tmp/log")"
+released "a name gone at Hold"
+online "a name gone at Hold"
+outcomes() { grep -cE "Hold by uid None refused: no credentials|Hold by :[0-9.]+ dropped: name gone|dap hold of .* released" "$tmp/log" || true; }
+o=$(outcomes)
+root python3 "$bus" hold-gone dap
+for _ in $(seq 100); do (( $(outcomes) > o )) && break; sleep 0.05; done
+(( $(outcomes) > o )) || fail "a name gone during Hold left no line: $(tail -n 3 "$tmp/log")"
+released "a name gone during Hold"
+online "a name gone during Hold"
+
+applies() { grep -c "^applied" "$tmp/log" || true; }
+gone() { grep -c "dap hold of .* released" "$tmp/log" || true; }
+changes() { grep -c "Holds=" "$tmp/mon" || true; }
+a=$(applies) m=$(changes)
+for _ in 1 2 3 4; do
+  n=$(taken)
+  spawn "$cli" hold dap &
+  hs="$hs $!"
+  held "$n"
+done
+(( $(applies) == a + 1 )) || fail "four holders applied $(( $(applies) - a )) times"
+dap "four holders"
+[[ $(root python3 "$bus" calls Hold:dap) == org.freedesktop.DBus.Error.LimitsExceeded ]] || fail "a fifth holder accepted"
+read -ra holders <<< "$hs"
+g=$(gone)
+for p in "${holders[@]:0:3}"; do exited "$p" "holder $p"; done
+for _ in $(seq 100); do (( $(gone) == g + 3 )) && break; sleep 0.05; done
+(( $(gone) == g + 3 )) || fail "three holders not released"
+(( $(applies) == a + 1 )) || fail "releases that left a holder applied $(( $(applies) - a - 1 )) times"
+dap "one of four holders left"
+exited "${holders[3]}" "holder ${holders[3]}"
+hs=""
+released "last of four holders"
+(( $(applies) == a + 2 )) || fail "four holders and their release applied $(( $(applies) - a )) times"
+online "last of four holders"
+for _ in $(seq 100); do (( $(changes) == m + 2 )) && break; sleep 0.05; done
+(( $(changes) == m + 2 )) || fail "Holds changed $(( $(changes) - m )) times for four holders"
+
+n=$(taken)
+spawn "$cli" hold dap &
+h1=$!
+held "$n"
+dap "hold before a restart"
+stop
+start
+[[ $(holds) == "[]" ]] || fail "holds after a restart: $(holds)"
+online "restart"
+want "$pol/policy0/scaling_max_freq" 1804800 "restart"
+exited "$h1" "hold over a restart"
+h1=""
+stop
+kill "$mon"
+mon=""
 
 if (( rc == 0 )); then
   echo "powerd: ok"

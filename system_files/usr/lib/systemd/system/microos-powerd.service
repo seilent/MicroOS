@@ -17,7 +17,6 @@ CapabilityBoundingSet=
 PrivateNetwork=yes
 RestrictAddressFamilies=AF_UNIX
 ProtectSystem=strict
-ReadWritePaths=/var/lib/microos
 ProtectHome=yes
 PrivateTmp=yes
 
