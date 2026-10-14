@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+F=$FAKE
+U=$TREE/usr/lib/systemd
+mkdir -p "$F/units" "$F/enter" "$F/scopes" "$F/timers"
+rec() { echo "$*" >> "$F/calls"; }
+state() { cat "$F/units/$1" 2> /dev/null || echo inactive; }
+mono() { python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000)'; }
+
+directives() {
+  local file=$1 key=$2 inst=$3
+  [[ -f $file ]] || return 0
+  sed -n "s/^$key=//p" "$file" | sed "s/%i/$inst/g"
+}
+
+host_path() {
+  sed -e "s|^/usr/libexec/microos/|$TREE/usr/libexec/microos/|" -e "s|^/usr/bin/systemctl |systemctl |" \
+    -e "s|/var/lib/microos|$MICROOS_STATEDIR|g" -e "s|/run/microos|$MICROOS_RUNDIR|g" <<< "$1"
+}
+
+seat() {
+  local u
+  for u in "$F"/units/gamescope-session-plus@*; do
+    [[ -e $u && $(< "$u") =~ ^(active|activating)$ ]] && return 0
+  done
+  return 1
+}
+
+ustart() {
+  local u=$1 i w
+  echo active > "$F/units/$u"
+  mono > "$F/enter/$u"
+  [[ $u =~ ^gamescope-session-plus@(.+)\.service$ ]] || return 0
+  i=${BASH_REMATCH[1]}
+  for w in $(directives "$U/user/gamescope-session-plus@.service.d/10-microos-track.conf" Wants "$i"); do
+    [[ $w == *.timer && $(state "$w") != active ]] || continue
+    echo active > "$F/units/$w"
+    echo armed > "$F/timers/$w"
+  done
+}
+
+ended() {
+  local u=$1 explicit=$2 i c t tf
+  echo inactive > "$F/units/$u"
+  [[ $u =~ ^gamescope-session-plus@(.+)\.service$ ]] || return 0
+  i=${BASH_REMATCH[1]}
+  while IFS= read -r c; do
+    [[ -n $c ]] || continue
+    eval "$(host_path "$c")" 2>> "$F/track.log"
+  done < <(directives "$U/user/gamescope-session-plus@.service.d/10-microos-track.conf" ExecStopPost "$i")
+  for t in "$F"/timers/*; do
+    [[ -e $t ]] || continue
+    t=${t##*/}
+    tf=$U/user/${t%%@*}@.timer
+    if [[ $(directives "$tf" BindsTo "$i") == "$u" ]] || { (( explicit )) && [[ $(directives "$tf" PartOf "$i") == "$u" ]]; }; then
+      rm -f "$F/timers/$t" "$F/units/$t"
+    fi
+  done
+}
+
+fire() {
+  local t i c
+  for t in "$F"/timers/*; do
+    [[ -e $t && $(< "$t") == armed ]] || continue
+    echo elapsed > "$t"
+    t=${t##*/}
+    i=${t#*@}
+    i=${i%.timer}
+    while IFS= read -r c; do
+      [[ -n $c ]] && eval "$(host_path "$c")"
+    done < <(directives "$U/user/${t%%@*}@.service" ExecStart "$i")
+  done
+}
+
+sim() {
+  local d u n
+  [[ -e $F/sddm-up ]] || return 0
+  seat && return 0
+  if [[ ! -e $F/stale ]]; then
+    d=$(sed -n 's/^Session=//p' "$MICROOS_RUNDIR/sddm-autologin.conf" 2> /dev/null)
+    [[ -z $d ]] || echo "$d" > "$F/sddm-loaded"
+  fi
+  d=$(cat "$F/sddm-loaded" 2> /dev/null) || return 0
+  u=$(cat "$F/desktops/$d" 2> /dev/null) || return 0
+  [[ ! -e $F/never/$u ]] || return 0
+  echo "relogin $d" >> "$F/relogins"
+  ustart "$u"
+  n=$(( $(cat "$F/seat-id" 2> /dev/null || echo 0) + 1 ))
+  echo "$n" > "$F/seat-id"
+}
+
+worker() {
+  (
+    flock 7
+    while [[ -e $MICROOS_RUNDIR/session-pending ]]; do
+      "$MICROOS_SESSION_BIN" switcher 2>> "$F/switch.log"
+    done
+  ) 7> "$F/worker.lock"
+}
+
+shutdown_unit() {
+  local f=$U/system/$1 c
+  grep -qx 'Conflicts=shutdown.target' "$f" || return 0
+  for c in ExecStop ExecStopPost; do
+    while IFS= read -r l; do
+      [[ -n $l ]] && eval "$(host_path "${l#-}")"
+    done < <(directives "$f" "$c" "")
+  done
+}
+
+stop_unit() {
+  local f=$U/system/$1 l
+  while IFS= read -r l; do
+    [[ -n $l ]] && eval "$(host_path "${l#-}")"
+  done < <(directives "$f" ExecStopPost "")
+}
+
+if [[ $1 == --user ]]; then
+  shift
+  case $1 in
+    show)
+      sim
+      u=${!#}
+      if [[ $* == *FragmentPath* ]]; then
+        printf 'FragmentPath=%s\nDropInPaths=%s\n' "$(cat "$F/fragment" 2> /dev/null || echo /usr/lib/systemd/user/gamescope-session-plus@.service)" \
+          "$(cat "$F/dropins" 2> /dev/null || echo /usr/lib/systemd/user/gamescope-session-plus@.service.d/10-microos-track.conf)"
+      elif [[ $* == *ActiveEnterTimestampMonotonic* ]]; then
+        printf 'ActiveState=%s\nActiveEnterTimestampMonotonic=%s\nInvocationID=%s\n' "$(state "$u")" \
+          "$(cat "$F/enter/$u" 2> /dev/null || echo 0)" 0123456789abcdef0123456789abcdef
+      else
+        state "$u"
+      fi
+      ;;
+    list-jobs) cat "$F/jobs" 2> /dev/null ;;
+    list-units)
+      for s in "$F"/scopes/*; do
+        [[ -e $s ]] && echo "${s##*/} loaded active running Steam game"
+      done
+      ;;
+    stop)
+      shift
+      if [[ $1 == --no-block ]]; then
+        shift
+        rec "user stop --no-block $*"
+        [[ -e $F/stubborn ]] || for s; do rm -f "$F/scopes/$s"; done
+      else
+        rec "user stop $*"
+        sleep "${FAKE_STOP_DELAY:-0}"
+        for u; do ended "$u" 1; done
+      fi
+      ;;
+    kill)
+      shift 2
+      rec "user kill $*"
+      for s; do rm -f "$F/scopes/$s"; done
+      ;;
+    _exit) ended "$2" 0 ;;
+    _start) ustart "$2" ;;
+    _fire) fire ;;
+    *) rec "user $*"; exit 1 ;;
+  esac
+  exit 0
+fi
+
+case $1 in
+  start)
+    if [[ $2 == --no-block ]]; then
+      u=$3
+      rec "start --no-block $u"
+      if [[ $u == microos-session-switcher.service ]]; then
+        worker 6>&- &
+      elif [[ -n ${FAKE_RUN_SWITCH:-} && $u =~ ^microos-session-(switch|fallback)@(.+)\.service$ ]]; then
+        why=requested
+        [[ ${BASH_REMATCH[1]} == switch ]] || why=fallback
+        n=${BASH_REMATCH[2]}
+        (
+          flock -n 6 || { rec "merged $u"; exit 0; }
+          sleep "${FAKE_REQUEST_DELAY:-0}"
+          "$MICROOS_SESSION_BIN" request "$n" "$why" 2>> "$F/switch.log"
+        ) 6> "$F/request-$n.lock" &
+      fi
+    else
+      rec "start $2"
+      [[ ! -e $F/fail-blocking ]] || exit 1
+      [[ $2 != microos-session-switcher.service ]] || worker
+    fi
+    ;;
+  show)
+    [[ $* == "show -p MainPID --value user@1000.service" && ! -e $F/no-manager ]] || exit 1
+    echo 4242
+    ;;
+  is-system-running) cat "$F/system-state" 2> /dev/null || echo running ;;
+  restart)
+    rec "restart $2"
+    rm -f "$F/stale"
+    d=$(sed -n 's/^Session=//p' "$MICROOS_RUNDIR/sddm-autologin.conf" 2> /dev/null)
+    echo "$d" > "$F/sddm-loaded"
+    touch "$F/sddm-up"
+    ;;
+  _shutdown) shutdown_unit "$2" ;;
+  _stop) stop_unit "$2" ;;
+  reset-failed | stop | reboot) rec "$*" ;;
+  *) rec "unknown $*"; exit 1 ;;
+esac

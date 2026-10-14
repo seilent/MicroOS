@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+. "${MICROOS_SESSION_BIN:-/usr/bin/microos-session}"
+me=microos-session-giveup
+t_update=${MICROOS_SESSION_UPDATE_WAIT:-60}
+started_id=39f53479d3a045ac8e11786248231fbf
+mode=${1:-}
+
+[[ $# == 1 && ($mode == giveup || $mode == rollback) ]] || { echo "usage: $me giveup | rollback" >&2; exit 2; }
+
+a_held() {
+  local nodes k i ok=1 p
+  mapfile -t nodes < <(pad_node)
+  if (( ! ${#nodes[@]} )); then
+    log "rollback refused: no $pad"
+    return 1
+  fi
+  exec 5< <(pad_poll 0.25 "${nodes[@]}")
+  p=$!
+  for i in 1 2 3 4 5; do
+    k=""
+    read -r -t 2 k <&5 || ok=0
+    [[ " $k " == *" BTN_SOUTH "* ]] || ok=0
+    (( ok )) || break
+  done
+  kill "$p" 2> /dev/null
+  exec 5<&-
+  if (( ! ok )); then
+    log "rollback refused: A not held for 1 s"
+    return 1
+  fi
+}
+
+rollback() {
+  lockfile "$rundir/update.lock" || { log "cannot create update.lock"; return 1; }
+  exec 8< "$rundir/update.lock"
+  flock -w "$t_update" 8 || { log "$mode: update.lock busy"; return 1; }
+  log "$1: bootc rollback and reboot"
+  bootc rollback || { log "bootc rollback failed"; return 1; }
+}
+
+read_current
+if [[ $cur_name != recovery ]]; then
+  log "$mode refused: the current session is ${cur_name:-none}, not recovery"
+  exit 1
+fi
+ids || { log "no user $user"; exit 1; }
+if [[ $mode == giveup ]] && ! unit_trusted gamescope-session-plus@recovery.service; then
+  log "giveup refused: the recovery unit is not the image's"
+  exit 1
+fi
+st=$(ostree admin status --json 2> /dev/null) || st=""
+booted=$(jq -r '[.deployments[] | select(.booted) | "\(.checksum).\(.serial)"] | first // empty' <<< "$st" 2> /dev/null) ||
+  booted=""
+rollback=no
+if jq -e 'any(.deployments[]; (.booted | not) and (.staged | not))' <<< "$st" > /dev/null 2>&1; then
+  rollback=yes
+fi
+
+if [[ $mode == rollback ]]; then
+  [[ $rollback == yes ]] || { log "rollback refused: no rollback deployment"; exit 1; }
+  a_held || exit 1
+  rollback "rollback from recovery" || exit 1
+  systemctl reboot
+  exit 0
+fi
+
+failed=""
+if [[ -f $rundir/session-failed ]]; then
+  failed=$(< "$rundir/session-failed")
+fi
+if [[ $failed != "recovery $cur_serial" ]]; then
+  n=$(recovery_starts)
+  if (( n < 3 )); then
+    log "giveup refused: recovery started $n times in $window s"
+    exit 1
+  fi
+fi
+confirmed="" marker=""
+if [[ -f $statedir/confirmed ]]; then
+  confirmed=$(tr -d '[:space:]' < "$statedir/confirmed")
+fi
+if [[ -f $statedir/session/rollback-done ]]; then
+  marker=$(tr -d '[:space:]' < "$statedir/session/rollback-done")
+fi
+if [[ -n $booted && $booted != "$confirmed" && $rollback == yes && $marker != "$booted" ]]; then
+  if rollback "recovery failed on the unconfirmed $booted"; then
+    install -d -m 0755 "$statedir/session"
+    put "$statedir/session/rollback-done" "$booted" || log "cannot write rollback-done"
+    systemctl reboot
+    exit 0
+  fi
+fi
+if [[ -e $rundir/giveup-stopped ]]; then
+  log "recovery failed, the display manager was already stopped this boot"
+  exit 0
+fi
+put "$rundir/giveup-stopped" "$(boottime_us)" || log "cannot write giveup-stopped"
+log "recovery failed, stopping the display manager"
+systemctl stop display-manager.service

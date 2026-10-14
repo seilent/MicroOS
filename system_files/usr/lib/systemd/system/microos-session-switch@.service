@@ -1,0 +1,16 @@
+[Unit]
+Description=Request the %i session
+After=microos-session-boot.service
+CollectMode=inactive-or-failed
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30
+ExecStart=/usr/bin/microos-session request %i requested
+ProtectSystem=strict
+ReadWritePaths=/run/microos /var/lib/microos/session
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=

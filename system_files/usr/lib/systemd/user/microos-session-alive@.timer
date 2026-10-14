@@ -1,0 +1,9 @@
+[Unit]
+Description=The %i session up for 60 s
+DefaultDependencies=no
+BindsTo=gamescope-session-plus@%i.service
+After=gamescope-session-plus@%i.service
+
+[Timer]
+OnActiveSec=60
+AccuracySec=1s

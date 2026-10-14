@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+r=$MICROOS_RUNDIR
+echo "steam $* current=$(cut -d' ' -f1 "$r/session-current") login=$(sed -n 's/^Session=//p' "$r/sddm-autologin.conf") switching=$([[ -e $r/switching ]] && echo yes || echo no) attempt=$([[ -e $MICROOS_STATEDIR/session/attempt ]] && echo yes || echo no)" >> "$FAKE/calls"
+sleep "${FAKE_SHUTDOWN_DELAY:-0}"
+[[ $1 != -shutdown ]] || systemctl --user _exit gamescope-session-plus@steam.service

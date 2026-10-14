@@ -213,6 +213,7 @@ jobs:
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/update.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/audio.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/session.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/microos-session.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-launcher.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-seed.sh
           podman run --rm -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-libs.sh

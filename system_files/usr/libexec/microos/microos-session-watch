@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+. "${MICROOS_SESSION_BIN:-/usr/bin/microos-session}"
+me=microos-session-watch
+wait=${MICROOS_SESSION_WATCH_WAIT:-60}
+
+current_started() {
+  read_current
+  [[ -n $cur_unit ]] && started "$cur_unit"
+}
+
+ids || { log "no user $user"; exit 1; }
+within "$wait" current_started && exit 0
+if [[ $cur_name != recovery ]]; then
+  log "${cur_name:-no session} did not start within $wait s, switching to recovery"
+  want_put recovery fallback root || log "cannot write session-wanted"
+  systemctl start microos-session-switcher.service || log "the switch to recovery failed"
+  exit 0
+fi
+put "$rundir/session-failed" "recovery $cur_serial" || log "cannot write session-failed"
+log "recovery did not start within $wait s, giving up"
+systemctl start --no-block microos-session-giveup.service || log "start of microos-session-giveup.service failed"
+exit 0

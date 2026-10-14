@@ -1,0 +1,542 @@
+#!/usr/bin/env bash
+
+me=microos-session
+root=${MICROOS_ROOT:-}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+statedir=${MICROOS_STATEDIR:-/var/lib/microos}
+user=${MICROOS_SESSION_USER:-micro}
+step=${MICROOS_SESSION_STEP:-0.5}
+t_lock=${MICROOS_SESSION_LOCK_WAIT:-20}
+t_shutdown=${MICROOS_SESSION_SHUTDOWN_WAIT:-15}
+t_stop=${MICROOS_SESSION_STOP_WAIT:-20}
+t_games=${MICROOS_SESSION_GAMES_WAIT:-10}
+t_seat=${MICROOS_SESSION_SEAT_WAIT:-10}
+t_start=${MICROOS_SESSION_START_WAIT:-20}
+t_restart=${MICROOS_SESSION_RESTART_WAIT:-20}
+t_up=${MICROOS_SESSION_UP_HOLD:-60}
+window=${MICROOS_SESSION_WINDOW:-600}
+rate=${MICROOS_SESSION_RATE_MS:-5000}
+uptime=${MICROOS_UPTIME:-/proc/uptime}
+sysfs=${MICROOS_SYSFS:-/sys}
+devroot=${MICROOS_DEV:-/dev}
+padstate=${MICROOS_PAD_STATE:-}
+pad="AYANEO Controller"
+sessions=$root/usr/lib/microos/sessions.d
+namere='^[a-z0-9][a-z0-9-]*$'
+
+log() { echo "$me: $*" >&2; }
+
+ms() { echo $(( $(date +%s%N) / 1000000 )); }
+
+boottime_us() {
+  local up=0
+  read -r up _ < "$uptime" 2> /dev/null || up=0
+  [[ $up =~ ^[0-9]+\.[0-9]{2}$ ]] || up=0.00
+  echo $(( 10#${up/./} * 10000 ))
+}
+
+pad_node() {
+  local e d real
+  for e in "$sysfs"/class/input/event*; do
+    d=$e/device
+    [[ -f $d/name && $(< "$d/name") == "$pad" ]] || continue
+    [[ $(cat "$d/id/bustype" 2> /dev/null) == 0003 && $(cat "$d/id/vendor" 2> /dev/null) == 4001 &&
+      $(cat "$d/id/product" 2> /dev/null) == 0428 ]] || continue
+    real=$(readlink -f "$e") || continue
+    [[ $real == "$sysfs"/devices/* && $real != "$sysfs"/devices/virtual/* ]] || continue
+    echo "$devroot/input/${e##*/}"
+  done
+}
+
+pad_poll() {
+  local interval=$1 n line all
+  shift
+  if [[ -n $padstate ]]; then
+    while :; do
+      all=""
+      for n; do
+        line=$(cat "$padstate/${n##*/}" 2> /dev/null) || line=""
+        line=" $(grep -oE 'BTN_(START|SELECT|SOUTH)' <<< "$line" | paste -sd' ') "
+        if [[ $n == "$1" ]]; then
+          all=$line
+        else
+          all=$(for k in $all; do [[ $line != *" $k "* ]] || printf ' %s' "$k"; done)" "
+        fi
+      done
+      echo $all
+      sleep "$interval"
+    done
+    return
+  fi
+  python3 - "$interval" "$@" << 'EOF'
+import fcntl
+import os
+import sys
+import time
+
+fds = [os.open(p, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC) for p in sys.argv[2:]]
+keys = ((315, "BTN_START"), (314, "BTN_SELECT"), (304, "BTN_SOUTH"))
+while True:
+    held = None
+    for fd in fds:
+        bits = bytearray(96)
+        fcntl.ioctl(fd, 0x80000000 | (len(bits) << 16) | (ord("E") << 8) | 0x18, bits)
+        now = {n for c, n in keys if bits[c // 8] >> (c % 8) & 1}
+        held = now if held is None else held & now
+    print(" ".join(n for _, n in keys if n in held), flush=True)
+    time.sleep(float(sys.argv[1]))
+EOF
+}
+
+unit_trusted() {
+  local out frag drop p
+  out=$(as_user systemctl --user show -p FragmentPath -p DropInPaths "$1" 2> /dev/null) || return 1
+  frag=$(sed -n 's/^FragmentPath=//p' <<< "$out")
+  drop=$(sed -n 's/^DropInPaths=//p' <<< "$out")
+  [[ $frag == /usr/lib/systemd/user/* ]] || { log "$1 is not from /usr/lib/systemd/user: '$frag'"; return 1; }
+  for p in $drop; do
+    [[ $p == /usr/lib/* || $p == /etc/* ]] || { log "$1 has a drop-in outside /usr/lib and /etc: $p"; return 1; }
+  done
+}
+
+recovery_starts() {
+  local now since t n=0 mgr
+  mgr=$(systemctl show -p MainPID --value "user@$uid.service" 2> /dev/null)
+  if [[ ! $mgr =~ ^[1-9][0-9]*$ ]]; then
+    echo 0
+    return
+  fi
+  read_current
+  now=$(date +%s)
+  since=$(( now - ($(boottime_us) - cur_serial) / 1000000 ))
+  (( since > now - window )) || since=$(( now - window ))
+  while read -r t _; do
+    t=${t%%.*}
+    if [[ $t =~ ^[0-9]+$ ]] && (( t >= since )); then
+      n=$(( n + 1 ))
+    fi
+  done < <(journalctl -q -o short-unix --since "@$since" _PID="$mgr" _UID="$uid" USER_UNIT=gamescope-session-plus@recovery.service \
+    MESSAGE_ID=39f53479d3a045ac8e11786248231fbf 2> /dev/null)
+  echo "$n"
+}
+
+usage() {
+  echo "usage: $me list | current | get-default | set-default <name> | switch <name> [requested|fallback] | request <name> requested|fallback | switcher | up <name> | back" >&2
+  exit 2
+}
+
+trim() {
+  local s=$1
+  s=${s#"${s%%[![:space:]]*}"}
+  printf '%s' "${s%"${s##*[![:space:]]}"}"
+}
+
+plain() { [[ $1 == ?*"$2" && $1 != */* && $1 != .* ]]; }
+
+load() {
+  local f=$sessions/$1.conf line k v dir=$root/usr/lib/systemd/user
+  LABEL="" DESKTOP="" UNIT="" STOP="" DEFAULT="" INPUT_PROFILE=""
+  [[ $1 =~ $namere && -f $f ]] || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=$(trim "$line")
+    [[ $line == \#* || $line != ?*=* ]] && continue
+    k=$(trim "${line%%=*}")
+    v=$(trim "${line#*=}")
+    if (( ${#v} >= 2 )) && [[ ${v:0:1} == [\"\'] && ${v: -1} == "${v:0:1}" ]]; then
+      v=${v:1:-1}
+    fi
+    case $k in
+      LABEL | DESKTOP | UNIT | STOP | DEFAULT | INPUT_PROFILE) printf -v "$k" '%s' "$v" ;;
+    esac
+  done < "$f"
+  plain "$DESKTOP" .desktop && [[ -f $root/usr/share/wayland-sessions/$DESKTOP ]] || return 1
+  plain "$UNIT" .service || return 1
+  if [[ ! -f $dir/$UNIT ]]; then
+    [[ $UNIT == ?*@?*.service && -f $dir/${UNIT%%@*}@.service ]] || return 1
+  fi
+  [[ $UNIT != gamescope-session-plus@* || $UNIT == "gamescope-session-plus@$1.service" ]] || return 1
+  [[ $STOP == steam || $STOP == unit ]] || return 1
+  [[ -z $INPUT_PROFILE || $INPUT_PROFILE == /* ]]
+}
+
+list() {
+  local f n
+  for f in "$sessions"/*.conf; do
+    n=${f##*/}
+    n=${n%.conf}
+    load "$n" || continue
+    printf '%s\t%s\t%s\n' "$n" "${LABEL:-$n}" "$([[ $DEFAULT == yes ]] && echo yes || echo no)"
+  done
+}
+
+get_default() {
+  local d
+  d=$(timeout 5 microset get session.default 2> /dev/null) || d=""
+  if load "$d" && [[ $DEFAULT == yes ]]; then
+    echo "$d"
+  else
+    echo steam
+  fi
+}
+
+read_current() {
+  cur_name="" cur_unit="" cur_serial=""
+  if [[ -f $rundir/session-current ]]; then
+    read -r cur_name cur_unit cur_serial < "$rundir/session-current" || true
+  fi
+  [[ $cur_serial =~ ^[0-9]+$ ]] || cur_serial=0
+}
+
+new_serial() {
+  local s c=0
+  s=$(boottime_us)
+  if [[ -f $rundir/session-current ]]; then
+    read -r _ _ c < "$rundir/session-current" || true
+  fi
+  if [[ $c =~ ^[0-9]+$ ]] && (( s <= c )); then
+    s=$(( c + 1 ))
+  fi
+  echo "$s"
+}
+
+put() {
+  local f=$1 t
+  shift
+  t=$(mktemp "${f%/*}/.${f##*/}.XXXXXX") || return 1
+  if ! { printf '%s\n' "$@" > "$t" && chmod 0644 "$t" && mv -fT "$t" "$f"; }; then
+    rm -f "$t"
+    return 1
+  fi
+}
+
+lockfile() {
+  [[ -e $1 || -L $1 ]] || put "$1"
+}
+
+ids() {
+  uid=$(id -u "$user") && gid=$(id -g "$user") || return 1
+  home=$(getent passwd "$user" | cut -d: -f6)
+}
+
+as_user() {
+  if [[ $(id -u) == "$uid" ]]; then
+    env XDG_RUNTIME_DIR="/run/user/$uid" "$@" < /dev/null
+  else
+    setpriv --reuid="$uid" --regid="$gid" --init-groups --no-new-privs env -i PATH="$PATH" HOME="$home" \
+      XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$@" < /dev/null
+  fi
+}
+
+unit_state() { as_user systemctl --user show -p ActiveState --value "$1" 2> /dev/null; }
+
+active() { [[ $(unit_state "$1") =~ ^(active|reloading)$ ]]; }
+
+inactive() { [[ $(unit_state "$1") =~ ^(inactive|failed)$ ]]; }
+
+started() {
+  [[ $(unit_state "$1") =~ ^(active|activating|reloading)$ ]] && return 0
+  as_user systemctl --user list-jobs --no-legend 2> /dev/null | awk -v u="$1" '$2 == u { f = 1 } END { exit !f }'
+}
+
+within() {
+  local end
+  end=$(( $(date +%s%N) + $1 * 1000000000 ))
+  shift
+  until "$@"; do
+    (( $(date +%s%N) < end )) || return 1
+    sleep "$step"
+  done
+}
+
+pipe_reader() {
+  as_user python3 -c 'import os, stat, sys
+try:
+    fd = os.open(sys.argv[1], os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+except OSError:
+    sys.exit(1)
+ok = stat.S_ISFIFO(os.fstat(fd).st_mode)
+os.close(fd)
+sys.exit(0 if ok else 1)' "$home/.steam/steam.pipe"
+}
+
+stop_source() {
+  local unit=$1 how=$2
+  if [[ $how == steam ]] && pipe_reader; then
+    log "steam -shutdown"
+    as_user timeout $(( t_shutdown + 5 )) systemd-run --user --wait --quiet --collect -p RuntimeMaxSec="$t_shutdown" \
+      /usr/bin/steam -shutdown > /dev/null 2>&1 || log "steam -shutdown failed"
+    within "$t_stop" inactive "$unit" || log "$unit still running after steam -shutdown"
+  fi
+  if ! inactive "$unit"; then
+    as_user systemctl --user stop "$unit" || log "stop of $unit failed"
+  fi
+}
+
+scopes() {
+  as_user systemctl --user list-units --plain --no-legend --type=scope --state=active,activating,deactivating \
+    'app-steam-app*' 2> /dev/null | awk '{ print $1 }'
+}
+
+no_scopes() { [[ -z $(scopes) ]]; }
+
+stop_games() {
+  local s
+  mapfile -t s < <(scopes)
+  (( ${#s[@]} )) || return 0
+  log "stopping ${s[*]}"
+  as_user systemctl --user stop --no-block "${s[@]}" || true
+  if ! within "$t_games" no_scopes; then
+    mapfile -t s < <(scopes)
+    log "killing ${s[*]}"
+    as_user systemctl --user kill --signal=KILL "${s[@]}" || true
+  fi
+}
+
+seat_session() {
+  local s out
+  for s in $(loginctl list-sessions --no-legend 2> /dev/null | awk '{ print $1 }'); do
+    out=$(loginctl show-session "$s" -p Name -p Seat -p State 2> /dev/null) || continue
+    if grep -qx "Name=$user" <<< "$out" && grep -qx Seat=seat0 <<< "$out" && ! grep -qx State=closing <<< "$out"; then
+      echo "$s"
+      return
+    fi
+  done
+}
+
+seat_closed() {
+  local st
+  st=$(loginctl show-session "$1" -p State --value 2> /dev/null) || return 0
+  [[ -z $st || $st == closing ]]
+}
+
+pads() {
+  busctl tree --list org.shadowblip.InputPlumber 2> /dev/null | grep -E '^/org/shadowblip/InputPlumber/CompositeDevice[0-9]+$'
+}
+
+intercept_off() {
+  local p
+  for p in $(pads); do
+    busctl set-property org.shadowblip.InputPlumber "$p" org.shadowblip.Input.CompositeDevice InterceptMode u 0 ||
+      log "InterceptMode 0 on $p failed"
+  done
+}
+
+load_profile() {
+  local p
+  for p in $(pads); do
+    busctl call org.shadowblip.InputPlumber "$p" org.shadowblip.Input.CompositeDevice LoadProfilePath s "$1" ||
+      log "profile $1 on $p failed"
+  done
+}
+
+source_back() { [[ -n $src_unit && $src_unit != "$target_unit" ]] && started "$src_unit"; }
+
+settled() { started "$target_unit" || source_back; }
+
+want_put() {
+  put "$rundir/session-wanted" "$1 $2 $3" && put "$rundir/session-pending" "$(boottime_us)"
+}
+
+request() {
+  local name=$1 why=${2:-requested}
+  [[ $why == requested || $why == fallback ]] || usage
+  [[ $(id -u) == 0 ]] || { log "request runs as root, start microos-session-switch@$name.service"; exit 2; }
+  load "$name" || { log "request: $(printf %q "$name") is not a listed session"; exit 2; }
+  install -d -m 0755 "$rundir"
+  want_put "$name" "$why" unit || { log "cannot write session-wanted"; exit 1; }
+  systemctl start --no-block microos-session-switcher.service || log "start of microos-session-switcher.service failed"
+}
+
+switch() {
+  local name=$1 why=${2:-requested}
+  [[ $why == requested || $why == fallback ]] || usage
+  [[ $(id -u) == 0 ]] || { log "switch runs as root, start microos-session-switch@$name.service"; exit 2; }
+  load "$name" || { log "switch: $(printf %q "$name") is not a listed session"; exit 2; }
+  install -d -m 0755 "$rundir"
+  want_put "$name" "$why" root || { log "cannot write session-wanted"; exit 1; }
+  systemctl start microos-session-switcher.service
+}
+
+pace() {
+  local last=0 left
+  if [[ -f $rundir/switch-last ]]; then
+    read -r last < "$rundir/switch-last" || true
+  fi
+  [[ $last =~ ^[0-9]+$ ]] || last=0
+  left=$(( (last + rate * 1000 - $(boottime_us)) / 1000 ))
+  if (( left > 0 )); then
+    log "switch to $1 within $rate ms of the last, held $left ms"
+    sleep "$(( left / 1000 )).$(printf %03d $(( left % 1000 )))"
+  fi
+}
+
+switch_once() {
+  local want=$1 wwhy=$2 src=$3 serial seat target_desktop profile src_name src_stop
+  load "$want"
+  read_current
+  if [[ $wwhy == fallback && $want == recovery && $cur_name == recovery ]]; then
+    if [[ $src == root ]] || { unit_trusted "$UNIT" && (( $(recovery_starts) >= 3 )); }; then
+      log "recovery failed as the fallback, starting the giveup"
+      systemctl start --no-block microos-session-giveup.service || log "start of microos-session-giveup.service failed"
+      return
+    fi
+    log "fallback to the current recovery without 3 recovery starts in the journal, nothing to do"
+    load "$want"
+  fi
+  if [[ $cur_name == "$want" && $(unit_state "$UNIT") =~ ^(active|activating|reloading)$ ]]; then
+    log "$want is current"
+    return
+  fi
+  target_unit=$UNIT target_desktop=$DESKTOP profile=$INPUT_PROFILE
+  src_name=$cur_name src_unit=$cur_unit src_stop=unit
+  if load "$src_name"; then
+    src_unit=$UNIT src_stop=$STOP
+  fi
+  plain "$src_unit" .service || src_unit=""
+  serial=$(new_serial)
+  put "$rundir/sddm-autologin.conf" "[Autologin]" "Session=$target_desktop" || log "cannot write sddm-autologin.conf"
+  if [[ -n $cur_name ]]; then
+    put "$rundir/session-previous" "$cur_name $cur_unit $cur_serial $wwhy" || log "cannot write session-previous"
+  fi
+  put "$rundir/session-current" "$want $target_unit $serial" || log "cannot write session-current"
+  if ! grep -qx "target=$want" "$statedir/session/attempt" 2> /dev/null; then
+    rm -f "$statedir/session/attempt"
+  fi
+  seat=$(seat_session)
+  log "switch from ${src_name:-none} to $want"
+  if [[ -n $src_unit && $src_unit != "$target_unit" ]]; then
+    stop_source "$src_unit" "$src_stop"
+  fi
+  stop_games
+  if [[ -n $seat ]] && ! within "$t_seat" seat_closed "$seat"; then
+    log "seat0 session $seat still open"
+  fi
+  intercept_off
+  within "$t_start" settled || true
+  if source_back || ! started "$target_unit"; then
+    log "SDDM did not start $want, restarting sddm"
+    if source_back; then
+      as_user systemctl --user stop "$src_unit" || log "stop of $src_unit failed"
+    fi
+    systemctl reset-failed sddm.service || true
+    systemctl restart sddm.service || log "sddm restart failed"
+    within "$t_restart" started "$target_unit" || true
+  fi
+  if [[ -n $profile ]]; then
+    load_profile "$profile"
+  fi
+  if started "$target_unit"; then
+    log "$want is up"
+  elif [[ -e $rundir/session-pending ]]; then
+    log "$want did not start, a newer request waits"
+  elif [[ $want != recovery ]]; then
+    log "$want did not start, recovery next"
+    want_put recovery fallback root || log "cannot write session-wanted"
+  else
+    log "recovery did not start, giving up"
+    put "$rundir/session-failed" "recovery $serial" || log "cannot write session-failed"
+    systemctl start --no-block microos-session-giveup.service || log "start of microos-session-giveup.service failed"
+  fi
+}
+
+switcher() {
+  local i=0 want wwhy src
+  [[ $(id -u) == 0 ]] || { log "switcher runs as root"; exit 2; }
+  ids || { log "no user $user"; exit 1; }
+  install -d -m 0755 "$rundir" "$statedir/session"
+  install -d -m 0700 "$rundir/lock"
+  lockfile "$rundir/lock/session.lock"
+  exec 9< "$rundir/lock/session.lock"
+  flock -w "$t_lock" 9 || { log "session lock busy"; exit 75; }
+  trap 'rm -f "$rundir/switching"' EXIT
+  put "$rundir/switching" "$(new_serial)"
+  while [[ -e $rundir/session-pending ]]; do
+    if (( i >= 3 )); then
+      log "3 switches in this run, the next run takes the rest"
+      break
+    fi
+    i=$(( i + 1 ))
+    rm -f "$rundir/session-pending"
+    want="" wwhy="" src=""
+    read -r want wwhy src < "$rundir/session-wanted" || true
+    [[ $wwhy == fallback ]] || wwhy=requested
+    if ! load "$want"; then
+      log "wanted $(printf %q "$want") is not a listed session"
+      continue
+    fi
+    if [[ $src != root ]]; then
+      pace "$want"
+      [[ ! -e $rundir/session-pending ]] || continue
+      put "$rundir/switch-last" "$(boottime_us)" || log "cannot write switch-last"
+    fi
+    switch_once "$want" "$wwhy" "$src"
+  done
+}
+
+mono() { python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000)'; }
+
+up() {
+  local name=$1 out st enter inv now k v mine=0
+  [[ $(id -u) == 0 ]] || { log "up runs as root, start microos-session-up@$name.service"; exit 2; }
+  [[ $name =~ $namere ]] || exit 2
+  ids || exit 1
+  read_current
+  if [[ $cur_name != "$name" || $cur_unit != "gamescope-session-plus@$name.service" ]]; then
+    log "up: $name is not the current session"
+    exit 1
+  fi
+  out=$(as_user systemctl --user show -p ActiveState -p ActiveEnterTimestampMonotonic -p InvocationID "$cur_unit" \
+    2> /dev/null) || out=""
+  st=$(sed -n 's/^ActiveState=//p' <<< "$out")
+  enter=$(sed -n 's/^ActiveEnterTimestampMonotonic=//p' <<< "$out")
+  inv=$(sed -n 's/^InvocationID=//p' <<< "$out")
+  now=$(mono)
+  if [[ $st != active || ! $enter =~ ^[1-9][0-9]*$ || ! $inv =~ ^[0-9a-f]{32}$ ]] || (( now - enter < t_up * 1000000 )); then
+    log "up: $name is not up for $t_up s"
+    exit 1
+  fi
+  put "$rundir/session-up" "$name $cur_serial $inv" || { log "cannot write session-up"; exit 1; }
+  if [[ -f $statedir/session/attempt ]]; then
+    while IFS='=' read -r k v; do
+      [[ $k != target || $v != "$name" ]] || mine=1
+    done < "$statedir/session/attempt"
+  fi
+  (( ! mine )) || rm -f "$statedir/session/attempt"
+  log "$name is up"
+}
+
+back() {
+  local t
+  t=$(get_default)
+  read_current
+  [[ $t != "$cur_name" ]] || t=steam
+  if [[ $t == "$cur_name" ]] && load "$t" && ids && active "$UNIT"; then
+    exit 0
+  fi
+  exec systemctl start --no-block "microos-session-switch@$t.service"
+}
+
+main() {
+  case ${1:-} in
+    list) (( $# == 1 )) || usage; list ;;
+    current)
+      (( $# == 1 )) || usage
+      read_current
+      [[ -n $cur_name ]] || exit 1
+      echo "$cur_name"
+      ;;
+    get-default) (( $# == 1 )) || usage; get_default ;;
+    set-default) (( $# == 2 )) || usage; exec microset set session.default "$2" ;;
+    switch) (( $# == 2 || $# == 3 )) || usage; switch "$2" "${3:-}" ;;
+    request) (( $# == 3 )) || usage; request "$2" "$3" ;;
+    switcher) (( $# == 1 )) || usage; switcher ;;
+    up) (( $# == 2 )) || usage; up "$2" ;;
+    back) (( $# == 1 )) || usage; back ;;
+    *) usage ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  set -euo pipefail
+  main "$@"
+fi

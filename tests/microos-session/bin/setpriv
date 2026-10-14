@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+echo "setpriv $*" >> "$FAKE/setpriv.log"
+while [[ ${1:-} == -* ]]; do
+  shift
+done
+[[ $1 == env && $2 == -i ]] || exit 1
+shift 2
+exec env "$@"

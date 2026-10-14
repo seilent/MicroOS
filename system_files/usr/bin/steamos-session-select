@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 me=steamos-session-select
 [[ ${1:-} == gamescope ]] && exit 0
-logger -t "$me" "session $(printf %q "${1:-}") refused, only gamescope runs"
+logger -t "$me" "session $(printf %q "${1:-}") refused, no desktop yet"
 exit 1

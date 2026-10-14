@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+. "${MICROOS_SESSION_BIN:-/usr/bin/microos-session}"
+me=microos-boot-hotkeys
+find_ms=${MICROOS_BOOT_HOTKEYS_FIND_MS:-1200}
+hold_ms=1000
+poll=0.2
+target=steam
+
+boot_keys() { grep -oE 'BTN_(START|SELECT)' <<< "$1" | paste -sd+; }
+
+ready() { systemd-notify --ready || log "systemd-notify failed"; }
+
+poller=""
+trap '[[ -z $poller ]] || kill "$poller" 2> /dev/null' EXIT
+next() {
+  local line
+  if ! read -r -t 2 line <&5; then
+    echo ""
+    return
+  fi
+  boot_keys "$line"
+}
+
+ids || log "no user $user"
+end=$(( $(ms) + find_ms ))
+mapfile -t nodes < <(pad_node)
+while (( ! ${#nodes[@]} )) && (( $(ms) < end )); do
+  sleep 0.1
+  mapfile -t nodes < <(pad_node)
+done
+if (( ! ${#nodes[@]} )); then
+  log "no $pad within $find_ms ms"
+  ready
+  exit 0
+fi
+exec 5< <(pad_poll "$poll" "${nodes[@]}")
+poller=$!
+t0=$(ms)
+held=$(next)
+if [[ -z $held ]]; then
+  ready
+  exit 0
+fi
+read_current
+if [[ $cur_name == "$target" ]]; then
+  log "$held held at boot, $target is current"
+  ready
+  exit 0
+fi
+if ! load "$target"; then
+  log "$held held at boot, $target is not listed"
+  ready
+  exit 0
+fi
+unit=$UNIT
+prev=$cur_name
+attempt=()
+if [[ -f $statedir/session/attempt ]]; then
+  mapfile -t attempt < "$statedir/session/attempt"
+fi
+put "$rundir/sddm-autologin.conf" "[Autologin]" "Session=$DESKTOP" || log "cannot write sddm-autologin.conf"
+put "$rundir/session-current" "$target $unit $(new_serial)" || log "cannot write session-current"
+rm -f "$statedir/session/attempt"
+log "$held held at boot, $target for this boot"
+ready
+while (( $(ms) - t0 < hold_ms )); do
+  started "$unit" && exit 0
+  held=$(next)
+  if [[ -z $held ]]; then
+    log "released before $hold_ms ms, back to ${prev:-steam}"
+    if [[ -n $prev ]] && load "$prev"; then
+      if (( ${#attempt[@]} )); then
+        put "$statedir/session/attempt" "${attempt[@]}" || log "cannot restore the attempt"
+      fi
+      want_put "$prev" requested root || log "cannot write session-wanted"
+      systemctl start --no-block microos-session-switcher.service || log "start of microos-session-switcher.service failed"
+    fi
+    exit 0
+  fi
+done
+log "held $hold_ms ms, $target stays for this boot"
+exit 0

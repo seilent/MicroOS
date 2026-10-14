@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+echo "microset $*" >> "$FAKE/calls"
+[[ ! -e $FAKE/microset-down ]] || exit 1
+[[ $1 == get && $2 == session.default ]] || exit 4
+cat "$FAKE/default"

@@ -1,0 +1,9 @@
+[Unit]
+Description=Switch when a session is wanted
+
+[Path]
+PathExists=/run/microos/session-pending
+Unit=microos-session-switcher.service
+
+[Install]
+WantedBy=multi-user.target

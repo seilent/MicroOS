@@ -1,0 +1,21 @@
+[Unit]
+Description=Pick the session for this boot
+After=microsetd.service systemd-tmpfiles-setup.service
+Before=display-manager.service
+RequiresMountsFor=/var/lib/microos
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=15
+ExecStart=/usr/libexec/microos/microos-session-boot
+ProtectSystem=strict
+ReadWritePaths=/run/microos /var/lib/microos/session
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,20 @@
+[Unit]
+Description=Steam for this boot while Start or Select is held
+After=microos-session-boot.service
+Before=display-manager.service
+
+[Service]
+Type=notify
+NotifyAccess=all
+TimeoutStartSec=10
+ExecStart=/usr/libexec/microos/microos-boot-hotkeys
+ProtectSystem=strict
+ReadWritePaths=/run/microos /var/lib/microos/session
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+
+[Install]
+WantedBy=multi-user.target

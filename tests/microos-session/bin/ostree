@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+[[ $* == "admin status --json" ]] || exit 1
+cat "$FAKE/status.json"

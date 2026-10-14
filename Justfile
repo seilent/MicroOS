@@ -163,6 +163,7 @@ test-services:
       sh -c "$dnf systemd-udev && /repo/tests/helpers.sh"
     run "$fedora" sh -c "$dnf alsa-ucm alsa-ucm-utils alsa-utils pipewire-utils systemd-udev && /repo/tests/audio.sh"
     run "$fedora" sh -c "$dnf jq util-linux systemd-udev && /repo/tests/storage.sh"
+    run "$fedora" sh -c "$dnf jq python3 util-linux systemd && /repo/tests/microos-session.sh"
     run "$fedora" sh -c "$dnf git-core && /repo/tests/pkg-hash.sh"
     just pkg microset
     just pkg gamescope-session

@@ -1,0 +1,16 @@
+[Unit]
+Description=Switch to the wanted session
+After=microos-session-boot.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=330
+ExecStart=/usr/bin/microos-session switcher
+ExecStopPost=/usr/bin/rm -f /run/microos/switching
+ProtectSystem=strict
+ReadWritePaths=/run/microos /var/lib/microos/session
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID

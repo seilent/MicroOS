@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+. "${MICROOS_SESSION_BIN:-/usr/bin/microos-session}"
+me=microos-session-boot
+attempt=$statedir/session/attempt
+
+deployments() {
+  local st booted c="" confirmed=no rollback=no
+  st=$(timeout 5 ostree admin status --json 2> /dev/null) || st=""
+  booted=$(jq -r '[.deployments[] | select(.booted) | "\(.checksum).\(.serial)"] | first // empty' <<< "$st" 2> /dev/null) ||
+    booted=""
+  if jq -e 'any(.deployments[]; (.booted | not) and (.staged | not))' <<< "$st" > /dev/null 2>&1; then
+    rollback=yes
+  fi
+  if [[ -f $statedir/confirmed ]]; then
+    c=$(tr -d '[:space:]' < "$statedir/confirmed")
+  fi
+  [[ -z $booted || $c != "$booted" ]] || confirmed=yes
+  put "$rundir/deployments" "booted=$booted" "confirmed=$confirmed" "rollback=$rollback" || log "cannot write deployments"
+}
+
+install -d -m 0755 "$rundir" "$statedir/session" || log "cannot create $rundir or $statedir/session"
+def=$(get_default)
+target=$def
+a_name="" a_count=0 a_fallback=0
+if [[ -f $attempt ]]; then
+  while IFS='=' read -r k v; do
+    case $k in
+      name) a_name=$v ;;
+      count) [[ ! $v =~ ^[0-9]+$ ]] || a_count=$v ;;
+      fallback) [[ ! $v =~ ^[0-9]+$ ]] || a_fallback=$v ;;
+    esac
+  done < "$attempt"
+fi
+if [[ $a_name == "$def" ]] && (( a_count >= 2 )); then
+  target=steam
+  [[ $def != steam ]] || target=recovery
+  if [[ $target != recovery ]] && (( a_fallback >= 2 )); then
+    target=recovery
+    log "$def and steam did not come up on the last boots, recovery for this boot, the default stays $def"
+  else
+    a_fallback=$(( a_fallback + 1 ))
+    log "$def did not come up on the last $a_count boots, $target for this boot, the default stays $def"
+  fi
+  put "$attempt" "name=$def" "count=$a_count" "fallback=$a_fallback" "target=$target" || log "cannot write $attempt"
+else
+  count=1
+  [[ $a_name != "$def" ]] || count=$(( a_count + 1 ))
+  put "$attempt" "name=$def" "count=$count" "fallback=0" "target=$def" || log "cannot write $attempt"
+fi
+deployments
+if ! load "$target"; then
+  log "$target is not listed, steam for this boot"
+  target=steam
+  load steam || log "steam is not listed"
+fi
+put "$rundir/sddm-autologin.conf" "[Autologin]" "Session=${DESKTOP:-gamescope-session-steam.desktop}" ||
+  log "cannot write sddm-autologin.conf"
+put "$rundir/session-current" "$target ${UNIT:-gamescope-session-plus@steam.service} $(new_serial)" ||
+  log "cannot write session-current"
+log "$target for this boot"
+exit 0

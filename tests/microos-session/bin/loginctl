@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+F=$FAKE
+up() {
+  local u
+  for u in "$F"/units/gamescope-session-plus@*; do
+    [[ -e $u && $(< "$u") =~ ^(active|activating)$ ]] && return 0
+  done
+  return 1
+}
+id=$(cat "$F/seat-id" 2> /dev/null || echo 0)
+case $1 in
+  list-sessions) ! up || echo "$id 1000 micro seat0 tty1 user active no -" ;;
+  show-session)
+    [[ $2 == "$id" ]] && up || exit 1
+    if [[ $* == *--value* ]]; then
+      echo active
+    else
+      printf 'Name=micro\nSeat=seat0\nState=active\n'
+    fi
+    ;;
+  *) exit 1 ;;
+esac

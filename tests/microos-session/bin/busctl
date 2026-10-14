@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+echo "busctl $*" >> "$FAKE/calls"
+if [[ $1 == tree ]]; then
+  printf '/\n/org\n/org/shadowblip/InputPlumber\n/org/shadowblip/InputPlumber/CompositeDevice0\n/org/shadowblip/InputPlumber/CompositeDevice1\n/org/shadowblip/InputPlumber/devices\n'
+fi

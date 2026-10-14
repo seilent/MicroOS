@@ -1,0 +1,6 @@
+[Unit]
+Description=Report the %i session up
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start --no-block microos-session-up@%i.service

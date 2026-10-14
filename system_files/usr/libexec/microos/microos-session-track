@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+. "${MICROOS_SESSION_BIN:-/usr/bin/microos-session}"
+me=microos-session-track
+short=${MICROOS_SESSION_SHORT_TRACKER:-/tmp/chimeraos-short-session-tracker}
+window=${MICROOS_SESSION_WINDOW:-600}
+track=$rundir/user/track
+limit=3
+
+if [[ $# != 2 || $1 != stop || ! $2 =~ $namere ]]; then
+  echo "usage: $me stop <name>" >&2
+  exit 2
+fi
+name=$2
+now=$(( $(boottime_us) / 1000000 ))
+
+runs() {
+  local f=$track/$1 t
+  [[ -f $f && ! -L $f ]] || return 0
+  while read -r t; do
+    if [[ $t =~ ^[0-9]+$ ]] && (( t > now - window && t >= $2 )); then
+      echo "$t"
+    fi
+  done < "$f"
+}
+
+rm -f "$short"
+if [[ -e $rundir/switching ]]; then
+  log "$name stopped by a switch"
+  exit 0
+fi
+if [[ $(systemctl is-system-running 2> /dev/null) == stopping ]]; then
+  exit 0
+fi
+read_current
+[[ $cur_name == "$name" ]] || exit 0
+if [[ -f $rundir/session-up && $(< "$rundir/session-up") == "$name $cur_serial ${INVOCATION_ID:-}" ]]; then
+  exit 0
+fi
+
+install -d -m 0755 "$track" || log "cannot create $track"
+mapfile -t kept < <(runs "$name" $(( cur_serial / 1000000 )))
+kept+=("$now")
+if ! t=$(mktemp "$track/.$name.XXXXXX") || ! printf '%s\n' "${kept[@]}" > "$t" || ! mv -fT "$t" "$track/$name"; then
+  log "cannot write $track/$name"
+fi
+n=${#kept[@]}
+log "$name stopped before it was up, $n in $window s"
+(( n >= limit )) || exit 0
+
+if [[ $name == recovery ]]; then
+  log "recovery stopped $n times, giving up"
+  systemctl start --no-block microos-session-fallback@recovery.service ||
+    log "start of microos-session-fallback@recovery.service failed"
+  exit 0
+fi
+fallback=recovery
+for c in "$(get_default)" steam; do
+  if [[ $c == "$name" ]] || ! load "$c"; then
+    continue
+  fi
+  if (( $(runs "$c" 0 | wc -l) < limit )); then
+    fallback=$c
+    break
+  fi
+done
+log "$name stopped $n times in $window s, switching to $fallback"
+systemctl start --no-block "microos-session-fallback@$fallback.service" ||
+  log "start of microos-session-fallback@$fallback.service failed"
+exit 0

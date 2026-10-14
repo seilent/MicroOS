@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+echo "systemd-run $*" >> "$FAKE/calls"
+while [[ $# -gt 0 && $1 != /* ]]; do
+  shift
+done
+[[ $1 == /usr/bin/steam ]] || exit 1
+shift
+exec steam "$@"

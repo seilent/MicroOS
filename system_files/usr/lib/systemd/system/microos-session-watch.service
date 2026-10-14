@@ -1,0 +1,17 @@
+[Unit]
+Description=Recovery when the session never starts
+After=display-manager.service microos-session-boot.service
+
+[Service]
+Type=exec
+ExecStart=/usr/libexec/microos/microos-session-watch
+ProtectSystem=strict
+ReadWritePaths=/run/microos /var/lib/microos/session
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+
+[Install]
+WantedBy=graphical.target

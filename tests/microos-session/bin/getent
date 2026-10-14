@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+[[ $1 == passwd && $2 == micro ]] || exit 2
+echo "micro:x:1000:1000::$FAKE/home:/bin/bash"

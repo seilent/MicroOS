@@ -1,0 +1,14 @@
+[Unit]
+Description=Give up on the session after recovery failed
+ConditionPathExists=/run/ostree-booted
+RequiresMountsFor=/sysroot /boot /boot/efi /var/lib/microos
+CollectMode=inactive-or-failed
+
+[Service]
+Type=oneshot
+PrivateMounts=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+RestrictSUIDSGID=yes
+ExecStart=/usr/libexec/microos/microos-session-giveup giveup

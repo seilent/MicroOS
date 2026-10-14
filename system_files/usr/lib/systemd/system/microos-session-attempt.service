@@ -1,0 +1,23 @@
+[Unit]
+Description=Clear the session boot attempt on a clean shutdown
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+After=systemd-tmpfiles-setup.service microos-session-boot.service
+RequiresMountsFor=/var/lib/microos/session
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/true
+ExecStop=/usr/bin/rm -f /var/lib/microos/session/attempt
+ProtectSystem=strict
+ReadWritePaths=/run/microos /var/lib/microos/session
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

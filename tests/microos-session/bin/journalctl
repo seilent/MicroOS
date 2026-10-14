@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+echo "journalctl $*" >> "$FAKE/calls"
+pid=""
+for a; do
+  [[ $a != _PID=* ]] || pid=${a#_PID=}
+done
+[[ -f $FAKE/journal ]] || exit 0
+if [[ -n $pid ]]; then
+  grep -F "systemd[$pid]:" "$FAKE/journal"
+else
+  cat "$FAKE/journal"
+fi
+exit 0
