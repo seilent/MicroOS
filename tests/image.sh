@@ -68,7 +68,7 @@ grep -qE 'session\.dont-restore-off-profile"? *[=:] *true' /usr/share/wireplumbe
 rpm -q python3-gobject python3-evdev upower >/dev/null || fail "steam service rpms missing"
 [[ $(rpm -q --qf '%{VENDOR}' steamos-manager) == MicroOS ]] || fail "steamos-manager is not the MicroOS build"
 ! rpm -q iwd >/dev/null 2>&1 || fail "iwd is installed"
-for u in steamos-manager.service upower.service microos-powerd.service; do
+for u in steamos-manager.service upower.service microos-powerd.service microsetd.service; do
   [[ $(systemctl is-enabled "$u") == enabled ]] || fail "$u is not enabled"
 done
 for u in steamos-manager.service microos-audio-sleep.service; do
@@ -106,6 +106,24 @@ for c in f3probe pkexec wipefs sfdisk mkfs.ext4 mkfs.exfat fsck.ext4 fstrim floc
 done
 [[ -x /usr/libexec/microos/microos-powerd ]] || fail "microos-powerd missing"
 ! grep -qE 'pwm|hwmon|thermal' /usr/libexec/microos/microos-powerd || fail "microos-powerd names a pwm, hwmon or thermal path"
+[[ $(rpm -q --qf '%{VENDOR}' microset) == MicroOS ]] || fail "microset is not the MicroOS build"
+! rpm -q microset-devel >/dev/null 2>&1 || fail "microset-devel is installed"
+schema=/usr/share/microset/schema.d/10-microset.json
+enum() { jq -er --arg k "$1" '.keys[$k].enum | sort | join(" ")' "$schema" || fail "$schema has no enum for $1"; }
+profiles=$(sed -n 's/^\[\(.*\)\]$/\1/p' /usr/lib/microos/power-profiles.conf | grep -vx tdp | sort | paste -sd' ')
+schemaprofiles=$(enum power.profile)
+[[ $schemaprofiles == "$profiles" ]] || fail "power.profile enum $schemaprofiles, power-profiles.conf $profiles"
+read -ra offered < "$(dirname "$0")/fixtures/pm2-scaling-available-governors.txt"
+governors=$(enum power.governor)
+for g in $governors; do
+  [[ " ${offered[*]} " == *" $g "* ]] || fail "power.governor $g is not offered by the PM2"
+done
+tdps=$(sed -n '/^\[tdp\]$/,/^\[/s/^\([0-9]\+\)=.*/\1/p' /usr/lib/microos/power-profiles.conf | sort -n)
+[[ $(jq -r '.keys["power.tdp"] | "\(.min) \(.max)"' "$schema") == "$(head -1 <<< "$tdps") $(tail -1 <<< "$tdps")" ]] \
+  || fail "power.tdp range differs from the [tdp] table"
+clocks="$(sed -n 's/^CLOCK_MIN = \([0-9]\+\)$/\1/p' /usr/libexec/microos/microos-powerd) $(sed -n 's/^CLOCK_MAX = \([0-9]\+\)$/\1/p' /usr/libexec/microos/microos-powerd)"
+[[ $(jq -r '.keys["power.gpu_clock"] | "\(.min) \(.max)"' "$schema") == "$clocks" ]] \
+  || fail "power.gpu_clock range differs from microos-powerd CLOCK_MIN CLOCK_MAX $clocks"
 rpm -q sddm sddm-wayland-generic steam-devices gtk2 openal-soft sdl2-compat libXcomposite libXdamage libXfixes libXi \
   libXinerama libXrandr libXrender libXtst libSM libICE at-spi2-atk cups-libs libssh2 libva libvdpau \
   google-noto-sans-cjk-vf-fonts google-noto-color-emoji-fonts google-noto-sans-arabic-vf-fonts \
@@ -192,6 +210,9 @@ for g in wheel systemd-journal input video render audio; do
   [[ " $groups " == *" $g "* ]] || fail "micro is not in $g"
 done
 [[ $(getent passwd micro | cut -d: -f6,7) == /var/home/micro:/bin/bash ]] || fail "micro home or shell"
+microset=$(getent passwd microset) || fail "user microset missing"
+(( $(cut -d: -f3 <<< "$microset") < 1000 )) || fail "microset is not a system user"
+[[ $(cut -d: -f7 <<< "$microset") == */nologin ]] || fail "microset has a login shell"
 rules=$(sudo -l -U micro)
 grep -q '(ALL) ALL' <<< "$rules" || fail "micro has no wheel sudo rule"
 ! grep -q NOPASSWD <<< "$rules" || fail "micro has a NOPASSWD rule"

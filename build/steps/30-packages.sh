@@ -11,6 +11,7 @@ own=(
   gamescope-session/gamescope-session-steam
   steamos-manager/steamos-manager
   mangohud/mangohud
+  microset/microset
 )
 
 rpms=()
