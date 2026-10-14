@@ -12,6 +12,7 @@ own=(
   steamos-manager/steamos-manager
   mangohud/mangohud
   microset/microset
+  microset/microset-recovery
 )
 
 rpms=()

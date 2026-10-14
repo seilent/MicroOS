@@ -24,6 +24,11 @@ else
   echo "$MICROSET_SHA256  $tarball" | sha256sum -c -
 fi
 
+curl -fsSL --retry 3 -o "$top/SOURCES/Selawik_Release.zip" "$SELAWIK_URL"
+echo "$SELAWIK_SHA256  $top/SOURCES/Selawik_Release.zip" | sha256sum -c -
+curl -fsSL --retry 3 -o "$top/SOURCES/LICENSE.txt" "$SELAWIK_LICENSE_URL"
+echo "$SELAWIK_LICENSE_SHA256  $top/SOURCES/LICENSE.txt" | sha256sum -c -
+
 rpmbuild -ba \
   --define "_topdir $top" \
   --define "commit $ref" \

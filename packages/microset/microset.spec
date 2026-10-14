@@ -9,14 +9,19 @@ Summary:        MicroOS settings daemon, client library and CLI
 License:        GPL-2.0-or-later
 URL:            https://github.com/seilent/MicroSET
 Source0:        %{url}/archive/%{commit}/%{name}-%{commit}.tar.gz
+Source1:        https://github.com/microsoft/Selawik/releases/download/1.01/Selawik_Release.zip
+Source2:        https://raw.githubusercontent.com/microsoft/Selawik/89362e8/LICENSE.txt
 Vendor:         MicroOS
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
 BuildRequires:  qt6-qtbase-devel
+BuildRequires:  qt6-qtdeclarative-devel
+BuildRequires:  pkgconfig(xcb)
 BuildRequires:  alsa-lib-devel
 BuildRequires:  dbus-daemon
 BuildRequires:  /usr/bin/setpriv
 BuildRequires:  systemd-rpm-macros
+BuildRequires:  unzip
 
 %description
 microsetd holds every MicroOS, MicroDAP and MicroEMU setting behind
@@ -31,11 +36,22 @@ Requires:       qt6-qtbase-devel
 %description devel
 Headers and the CMake package to build against libmicroset.
 
+%package recovery
+Summary:        MicroOS recovery screen
+License:        GPL-2.0-or-later AND OFL-1.1
+Requires:       qt6-qtdeclarative
+
+%description recovery
+The Qt Quick screen of the MicroOS recovery session. It shows the failing
+session with its journal and switches, rolls back or powers off.
+
 %prep
 %autosetup -n MicroSET-%{commit}
+cp -p %{SOURCE2} Selawik.txt
+unzip -o -q -j %{SOURCE1} selawkl.ttf selawksl.ttf selawk.ttf selawksb.ttf selawkb.ttf -d fonts
 
 %build
-%cmake
+%cmake -DMICROSET_TEST_FONT_DIR="$PWD/fonts"
 %cmake_build
 
 %check
@@ -43,6 +59,8 @@ Headers and the CMake package to build against libmicroset.
 
 %install
 %cmake_install
+install -d %{buildroot}%{_datadir}/fonts/microset
+install -pm644 fonts/*.ttf %{buildroot}%{_datadir}/fonts/microset/
 
 %post
 %systemd_post microsetd.service
@@ -71,3 +89,8 @@ Headers and the CMake package to build against libmicroset.
 %{_includedir}/microset/
 %{_libdir}/libmicroset.so
 %{_libdir}/cmake/MicroSet/
+
+%files recovery
+%license LICENSE Selawik.txt
+%{_bindir}/microset-recovery
+%{_datadir}/fonts/microset/

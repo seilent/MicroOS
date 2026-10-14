@@ -1,5 +1,5 @@
 FROM localhost/microos-pkg-builder
 
 RUN dnf -y --setopt=install_weak_deps=False install \
-      cmake gcc-c++ qt6-qtbase-devel alsa-lib-devel dbus-daemon util-linux \
+      cmake gcc-c++ qt6-qtbase-devel qt6-qtdeclarative-devel libxcb-devel alsa-lib-devel dbus-daemon util-linux unzip \
  && dnf clean all
