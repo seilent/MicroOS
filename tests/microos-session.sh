@@ -23,7 +23,7 @@ export MICROOS_ROOT=$root MICROOS_RUNDIR=$tmp/run MICROOS_STATEDIR=$tmp/state FA
 export MICROOS_SESSION_BIN=$session TREE=$tree MICROOS_UPTIME=$tmp/uptime
 export MICROOS_SESSION_SHORT_TRACKER=$tmp/short-tracker
 export MICROOS_SESSION_STEP=0.1 MICROOS_SESSION_SHUTDOWN_WAIT=2 MICROOS_SESSION_STOP_WAIT=2 MICROOS_SESSION_GAMES_WAIT=1
-export MICROOS_SESSION_RATE_MS=0 MICROOS_SESSION_SEAT_WAIT=1 MICROOS_SESSION_START_WAIT=2 MICROOS_SESSION_RESTART_WAIT=2 MICROOS_SESSION_WATCH_WAIT=2
+export MICROOS_SESSION_RATE_MS=0 MICROOS_SESSION_SEAT_WAIT=1 MICROOS_SESSION_START_WAIT=2 MICROOS_SESSION_RESTART_WAIT=2 MICROOS_SESSION_WATCH_WAIT=2 MICROOS_SESSION_WATCH_PENDING=8
 export PATH=$here/microos-session/bin:$PATH
 tick() { awk '{ printf "%.2f 0\n", $1 + 100000 }' /proc/uptime > "$tmp/uptime.new" && mv -f "$tmp/uptime.new" "$tmp/uptime"; }
 tick
@@ -672,8 +672,19 @@ cur microdap
 echo inactive > "$FAKE/units/$(unit_of microdap)"
 rm -f "$FAKE/sddm-up"
 echo "7 gamescope-session-plus@microdap.service start waiting" > "$FAKE/jobs"
+( sleep 4; echo active > "$FAKE/units/$(unit_of microdap)"; rm "$FAKE/jobs" ) &
 "$libexec/microos-session-watch" 2> /dev/null
+wait $!
 ! hasre 'microos-session-(switch|fallback)|giveup' || fail "watch acted on a queued session start"
+reset
+cur microdap
+echo inactive > "$FAKE/units/$(unit_of microdap)"
+touch "$FAKE/never/$(unit_of microdap)"
+echo "7 gamescope-session-plus@microdap.service start waiting" > "$FAKE/jobs"
+( sleep 4; rm "$FAKE/jobs" ) &
+"$libexec/microos-session-watch" 2> /dev/null || true
+wait $!
+has "start microos-session-switcher.service" || fail "watch did not switch when a queued start ended without the unit up: $(calls)"
 unset FAKE_RUN_SWITCH
 
 hot() {

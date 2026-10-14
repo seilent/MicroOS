@@ -4,14 +4,18 @@ set -uo pipefail
 . "${MICROOS_SESSION_BIN:-/usr/bin/microos-session}"
 me=microos-session-watch
 wait=${MICROOS_SESSION_WATCH_WAIT:-60}
+pending=${MICROOS_SESSION_WATCH_PENDING:-600}
 
-current_started() {
+current_up() {
   read_current
-  [[ -n $cur_unit ]] && started "$cur_unit"
+  [[ -n $cur_unit ]] && active "$cur_unit"
 }
 
 ids || { log "no user $user"; exit 1; }
-within "$wait" current_started && exit 0
+within "$wait" current_up && exit 0
+settled() { current_up || [[ -z $cur_unit ]] || ! started "$cur_unit"; }
+within "$pending" settled
+current_up && exit 0
 if [[ $cur_name != recovery ]]; then
   log "${cur_name:-no session} did not start within $wait s, switching to recovery"
   want_put recovery fallback root || log "cannot write session-wanted"
