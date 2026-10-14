@@ -56,7 +56,7 @@ Retroid kernel is [lineageos-on-retroid/android_kernel_retroid_sm8250_ack](https
 
 | What | Origin | Author | License |
 |---|---|---|---|
-| Base image | [Fedora bootc](https://gitlab.com/fedora/bootc/base-images) `quay.io/fedora/fedora-bootc:44` | Fedora Project | per package (Fedora 44) |
+| Base image | [Fedora bootc](https://gitlab.com/fedora/bootc/base-images) `registry.fedoraproject.org/fedora-bootc:44` | Fedora Project | per package (Fedora 44) |
 | bootc | [bootc-dev/bootc](https://github.com/bootc-dev/bootc), Fedora `bootc` | bootc contributors | Apache-2.0 OR MIT |
 | OSTree | [ostreedev/ostree](https://github.com/ostreedev/ostree), Fedora `ostree` | OSTree contributors | LGPL-2.0-or-later |
 | bootc-image-builder | [osbuild/bootc-image-builder](https://github.com/osbuild/bootc-image-builder) `quay.io/centos-bootc/bootc-image-builder` | osbuild contributors | Apache-2.0 |
