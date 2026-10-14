@@ -1,0 +1,5 @@
+#!/usr/bin/bash
+if [[ $(id -u) != 0 ]]; then
+  exec pkexec --disable-internal-agent /usr/bin/steamos-polkit-helpers/steamos-format-sdcard --owner "$(id -u):$(id -g)" "$@"
+fi
+exec /usr/lib/hwsupport/format-sdcard.sh "$@"

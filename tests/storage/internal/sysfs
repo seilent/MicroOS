@@ -1,0 +1,4 @@
+block/mmcblk0/diskseq 9
+block/mmcblk0/device/type SD
+block/mmcblk0/device/manfid 0x000002
+block/mmcblk0/device/oemid 0x544d

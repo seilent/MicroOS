@@ -1,0 +1,1 @@
+PM2 booted from the MicroOS SD: internal rows with the sda partitions replaced by the SD layout from build/finalize-disk.sh

@@ -84,6 +84,108 @@ run "$tree/usr/bin/steamos-mandatory-update" check --supports-duplicate-detectio
 run "$tree/usr/bin/jupiter-initial-firmware-update" check
 (( r == 0 )) || fail "jupiter-initial-firmware-update check: exit $r, want 0"
 
+hw=$tmp/hw
+mkdir -p "$hw" "$tmp/sbin" "$tmp/ssys/block" "$tmp/class"
+cat > "$tmp/storage" <<'EOF'
+#!/usr/bin/env bash
+if [[ $1 == classify ]]; then
+  cat "$CLASS_DIR/$2" 2>/dev/null
+  exit 0
+fi
+printf '%q ' "$@" >> "$STORAGE_LOG"
+echo >> "$STORAGE_LOG"
+exit "$STORAGE_RC"
+EOF
+cat > "$tmp/sbin/pkexec" <<'EOF'
+#!/usr/bin/env bash
+printf '%q ' "$@" >> "$PKEXEC_LOG"
+echo >> "$PKEXEC_LOG"
+exit "$STORAGE_RC"
+EOF
+cat > "$tmp/sbin/id" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+  -u) echo "$ID_U" ;;
+  -g) echo "$ID_G" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$tmp/storage" "$tmp/sbin/pkexec" "$tmp/sbin/id"
+for f in format-device.sh format-sdcard.sh trim-devices.sh; do
+  sed "s|/usr/libexec/microos/microos-storage|$tmp/storage|" "$tree/usr/lib/hwsupport/$f" > "$hw/$f"
+done
+for f in steamos-format-device steamos-format-sdcard steamos-trim-devices; do
+  sed "s|/usr/lib/hwsupport/|$hw/|" "$helpers/$f" > "$hw/$f"
+done
+chmod +x "$hw"/*
+
+srun() {
+  local want=$1 uid=$2
+  shift 2
+  : > "$tmp/slog"
+  : > "$tmp/plog"
+  r=0
+  env -i PATH="$tmp/sbin:/usr/bin:/bin" STORAGE_LOG="$tmp/slog" PKEXEC_LOG="$tmp/plog" STORAGE_RC="$want" \
+    CLASS_DIR="$tmp/class" MICROOS_SYSFS="$tmp/ssys" ID_U="$uid" ID_G=1000 "$@" > "$tmp/out" 2>&1 || r=$?
+  (( r == want )) || fail "$*: exit $r, want $want: $(cat "$tmp/out")"
+}
+slog() { [[ $(< "$tmp/slog") == "$1" ]] || fail "$2: microos-storage got '$(< "$tmp/slog")', want '$1'"; }
+plog() { [[ $(< "$tmp/plog") == "$1" ]] || fail "$2: pkexec got '$(< "$tmp/plog")', want '$1'"; }
+
+for want in 0 2 5 13 14 16 19 22 32 53; do
+  srun "$want" 0 "$hw/format-device.sh" --label "" --skip-validation --device /dev/mmcblk0
+  slog "format --label '' --skip-validation --device /dev/mmcblk0 " "format-device.sh exit $want"
+done
+srun 1 0 "$hw/trim-devices.sh"
+slog "trim " "trim-devices.sh"
+srun 0 0 "$hw/trim-devices.sh" extra
+slog "trim " "trim-devices.sh extra"
+
+for d in mmcblk0 mmcblk1 mmcblk2 sda mmcblk0p1; do
+  mkdir -p "$tmp/ssys/block/$d"
+done
+echo system > "$tmp/class/mmcblk0"
+echo data > "$tmp/class/mmcblk1"
+echo data > "$tmp/class/mmcblk2"
+echo data > "$tmp/class/sda"
+echo data > "$tmp/class/mmcblk0p1"
+for want in 0 13 53; do
+  srun "$want" 0 "$hw/format-sdcard.sh" --label "" --device /dev/mmcblk0
+  slog "format --label '' --device /dev/mmcblk0 --device /dev/mmcblk1 " "format-sdcard.sh exit $want"
+done
+echo system > "$tmp/class/mmcblk1"
+echo bogus > "$tmp/class/mmcblk2"
+srun 19 0 "$hw/format-sdcard.sh"
+slog "" "format-sdcard.sh with only system disks"
+rm -rf "$tmp/ssys/block"/*
+srun 19 0 "$hw/format-sdcard.sh"
+slog "" "format-sdcard.sh with no card"
+
+for want in 0 13 126; do
+  srun "$want" 1000 "$hw/steamos-format-device" --label x --device /dev/mmcblk0
+  plog "--disable-internal-agent /usr/bin/steamos-polkit-helpers/steamos-format-device --owner 1000:1000 --label x --device /dev/mmcblk0 " "steamos-format-device as micro"
+  slog "" "steamos-format-device as micro"
+  srun "$want" 1000 "$hw/steamos-format-sdcard" --skip-validation
+  plog "--disable-internal-agent /usr/bin/steamos-polkit-helpers/steamos-format-sdcard --owner 1000:1000 --skip-validation " "steamos-format-sdcard as micro"
+  srun "$want" 1000 "$hw/steamos-trim-devices"
+  plog "--disable-internal-agent /usr/bin/steamos-polkit-helpers/steamos-trim-devices " "steamos-trim-devices as micro"
+done
+
+srun 53 0 "$hw/steamos-format-device" --owner 1000:1000 --label "" --device /dev/mmcblk0
+plog "" "steamos-format-device as root"
+slog "format --owner 1000:1000 --label '' --device /dev/mmcblk0 " "steamos-format-device as root"
+srun 0 0 "$hw/steamos-trim-devices"
+plog "" "steamos-trim-devices as root"
+slog "trim " "steamos-trim-devices as root"
+mkdir -p "$tmp/ssys/block/mmcblk0"
+echo data > "$tmp/class/mmcblk0"
+srun 14 0 "$hw/steamos-format-sdcard" --owner 1000:1000
+plog "" "steamos-format-sdcard as root"
+slog "format --owner 1000:1000 --device /dev/mmcblk0 " "steamos-format-sdcard as root"
+echo system > "$tmp/class/mmcblk0"
+srun 19 0 "$hw/steamos-format-sdcard" --owner 1000:1000
+slog "" "steamos-format-sdcard as root with only system disks"
+
 if command -v udevadm > /dev/null; then
   udevadm verify --no-summary "$tree/usr/lib/udev/rules.d/60-microos-backlight.rules" || fail "backlight rules do not verify"
 else

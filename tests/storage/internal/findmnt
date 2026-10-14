@@ -1,0 +1,6 @@
+/ composefs overlay 
+/sysroot /dev/sda22[/root] btrfs 4acb1123-998a-460a-a5a5-e2c85d82d9b4
+/var /dev/sda22[/root/ostree/deploy/default/var] btrfs 4acb1123-998a-460a-a5a5-e2c85d82d9b4
+/etc /dev/sda22[/root/ostree/deploy/default/deploy/d46a78658b64628fab25132bd252fa570743e43ec14b49c9919c86893c591e42.0/etc] btrfs 4acb1123-998a-460a-a5a5-e2c85d82d9b4
+/boot /dev/sda21 ext4 e6bd10f8-d52f-47e9-b96e-4ce140d1c659
+/boot/efi /dev/sda20 vfat 63F8-C75D

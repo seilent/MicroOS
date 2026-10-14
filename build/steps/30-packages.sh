@@ -38,6 +38,8 @@ dnf -y install \
   cloud-utils-growpart \
   btrfs-progs \
   dosfstools \
+  f3 \
+  jq \
   mesa-dri-drivers \
   mesa-vulkan-drivers \
   mesa-libgbm \

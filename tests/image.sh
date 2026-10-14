@@ -77,8 +77,33 @@ done
 [[ $(systemctl --global is-enabled steamos-manager-session-cleanup.service) != enabled ]] \
   || fail "user steamos-manager-session-cleanup.service is enabled"
 [[ -f /usr/share/steamos-manager/devices/microos-pm2.toml ]] || fail "microos-pm2.toml missing"
-[[ ! -e /usr/lib/hwsupport ]] || fail "/usr/lib/hwsupport exists"
-[[ -z $(find /usr -name 'steamos-format-*') ]] || fail "steamos-format helpers present: $(find /usr -name 'steamos-format-*')"
+for f in /usr/lib/hwsupport/format-device.sh /usr/lib/hwsupport/trim-devices.sh /usr/lib/hwsupport/format-sdcard.sh \
+  /usr/bin/steamos-polkit-helpers/steamos-format-device /usr/bin/steamos-polkit-helpers/steamos-format-sdcard \
+  /usr/bin/steamos-polkit-helpers/steamos-trim-devices /usr/libexec/microos/microos-storage; do
+  [[ -f $f && ! -L $f && -x $f ]] || fail "$f is not a regular executable"
+  [[ $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f mode or owner"
+done
+for f in /usr/share/polkit-1/actions/net.seilent.MicroOs.storage.policy /usr/share/polkit-1/rules.d/50-microos-storage.rules; do
+  [[ $(stat -c '%a %U %G' "$f") == '644 root root' ]] || fail "$f missing, mode or owner"
+done
+for h in format-device format-sdcard trim-devices; do
+  grep -qF "<action id=\"net.seilent.MicroOs.storage.$h\">" /usr/share/polkit-1/actions/net.seilent.MicroOs.storage.policy \
+    || fail "storage policy lacks net.seilent.MicroOs.storage.$h"
+  grep -qF ">/usr/bin/steamos-polkit-helpers/steamos-$h</annotate>" /usr/share/polkit-1/actions/net.seilent.MicroOs.storage.policy \
+    || fail "storage policy lacks the steamos-$h exec.path"
+  grep -qF "\"net.seilent.MicroOs.storage.$h\"" /usr/share/polkit-1/rules.d/50-microos-storage.rules \
+    || fail "50-microos-storage.rules lacks net.seilent.MicroOs.storage.$h"
+done
+for a in eject-media filesystem-unmount-others; do
+  grep -qF "\"org.freedesktop.udisks2.$a\"" /usr/share/polkit-1/rules.d/50-microos-storage.rules \
+    || fail "50-microos-storage.rules lacks org.freedesktop.udisks2.$a"
+done
+grep -qF 'udisks.indexOf(action.id) >= 0 && device && device.indexOf("/dev/mmcblk") == 0' \
+  /usr/share/polkit-1/rules.d/50-microos-storage.rules || fail "50-microos-storage.rules udisks2 actions not limited to /dev/mmcblk"
+rpm -q f3 udisks2 exfatprogs dosfstools e2fsprogs >/dev/null || fail "storage rpms missing"
+for c in f3probe pkexec wipefs sfdisk mkfs.ext4 mkfs.exfat fsck.ext4 fstrim flock jq busctl blkid findmnt; do
+  command -v "$c" >/dev/null || fail "$c is not on PATH"
+done
 [[ -x /usr/libexec/microos/microos-powerd ]] || fail "microos-powerd missing"
 ! grep -qE 'pwm|hwmon|thermal' /usr/libexec/microos/microos-powerd || fail "microos-powerd names a pwm, hwmon or thermal path"
 rpm -q sddm sddm-wayland-generic steam-devices gtk2 openal-soft sdl2-compat libXcomposite libXdamage libXfixes libXi \

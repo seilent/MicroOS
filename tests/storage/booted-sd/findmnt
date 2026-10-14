@@ -1,0 +1,6 @@
+/ composefs overlay 
+/sysroot /dev/mmcblk0p3[/root] btrfs a1b2c3d4-0000-4000-8000-000000000003
+/var /dev/mmcblk0p3[/root/ostree/deploy/default/var] btrfs a1b2c3d4-0000-4000-8000-000000000003
+/etc /dev/mmcblk0p3[/root/ostree/deploy/default/deploy/0000000000000000000000000000000000000000000000000000000000000000.0/etc] btrfs a1b2c3d4-0000-4000-8000-000000000003
+/boot /dev/mmcblk0p2 ext4 a1b2c3d4-0000-4000-8000-000000000002
+/boot/efi /dev/mmcblk0p1 vfat A1B2-0001

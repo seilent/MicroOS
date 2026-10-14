@@ -128,5 +128,6 @@ test-services:
     run -v "$PWD/system_files/usr/bin/steamos-update:/usr/bin/steamos-update:ro,Z" "$fedora" \
       sh -c "$dnf systemd-udev && /repo/tests/helpers.sh"
     run "$fedora" sh -c "$dnf alsa-ucm alsa-ucm-utils alsa-utils pipewire-utils systemd-udev && /repo/tests/audio.sh"
+    run "$fedora" sh -c "$dnf jq util-linux systemd-udev && /repo/tests/storage.sh"
     just pkg gamescope-session
     run "$fedora" sh -c "$dnf /repo/out/pkg/gamescope-session/*.noarch.rpm && /repo/tests/session.sh"

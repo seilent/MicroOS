@@ -1,0 +1,1 @@
+SUBSYSTEM=="block", ACTION!="remove", KERNEL=="mmcblk[0-9]p[0-9]*", ENV{ID_FS_USAGE}=="filesystem", ENV{UDISKS_AUTO}="0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-automount@%k.service"

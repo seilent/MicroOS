@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>MicroOS</vendor>
+  <vendor_url>https://github.com/seilent/MicroOS</vendor_url>
+
+  <action id="net.seilent.MicroOs.storage.format-device">
+    <description>Format a storage device</description>
+    <message>Authentication is required to format a storage device</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/steamos-polkit-helpers/steamos-format-device</annotate>
+  </action>
+
+  <action id="net.seilent.MicroOs.storage.format-sdcard">
+    <description>Format the microSD card</description>
+    <message>Authentication is required to format the microSD card</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/steamos-polkit-helpers/steamos-format-sdcard</annotate>
+  </action>
+
+  <action id="net.seilent.MicroOs.storage.trim-devices">
+    <description>Trim mounted filesystems</description>
+    <message>Authentication is required to trim mounted filesystems</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/steamos-polkit-helpers/steamos-trim-devices</annotate>
+  </action>
+</policyconfig>

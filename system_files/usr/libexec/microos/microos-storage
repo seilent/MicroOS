@@ -1,0 +1,478 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export LC_ALL=C LOCK_BLOCK_DEVICE=0
+unset GETOPT_COMPATIBLE
+
+me=microos-storage
+sysfs=${MICROOS_SYSFS:-/sys}
+devroot=${MICROOS_DEV:-/dev}
+lockwait=${MICROOS_STORAGE_LOCK_WAIT:-30}
+[[ $lockwait =~ ^[0-9]+$ ]] || lockwait=30
+retry=${MICROOS_STORAGE_MOUNT_RETRY:-5}
+[[ $retry =~ ^[0-9]+$ ]] || retry=5
+user=micro
+targets=(/ /sysroot /var /etc /boot /boot/efi)
+chunk=1073741824
+
+log() { logger -t "$me" "$*" || true; }
+quit() {
+  local code=$1
+  shift
+  echo "$me: $*" >&2
+  log "$*"
+  exit "$code"
+}
+usage() {
+  echo "usage: $me classify <disk> | mount <part> | unmount <part> | format ... | trim" >&2
+  exit 1
+}
+
+disk_of() {
+  local c=$sysfs/class/block/$1 p
+  [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && -e $c ]] || return 1
+  [[ -z $(ls -A "$c/slaves" 2> /dev/null) ]] || return 1
+  if [[ -e $c/partition ]]; then
+    p=$(realpath -e "$c/..") || return 1
+    echo "${p##*/}"
+  else
+    echo "$1"
+  fi
+}
+
+btrfs_disks() {
+  local dir=$sysfs/fs/btrfs/$1/devices e n=0
+  [[ $1 =~ ^[0-9a-f-]+$ && -d $dir ]] || return 1
+  for e in "$dir"/*; do
+    [[ -e $e || -L $e ]] || continue
+    disk_of "${e##*/}" || return 1
+    n=$(( n + 1 ))
+  done
+  (( n > 0 ))
+}
+
+system_disks() {
+  local t out src fstype uuid
+  for t in "${targets[@]}"; do
+    out=$(findmnt -rno SOURCE,FSTYPE,UUID --mountpoint "$t") || return 1
+    [[ -n $out ]] || return 1
+    while read -r src fstype uuid; do
+      if [[ $t == / && $src == composefs && $fstype == overlay ]]; then
+        continue
+      elif [[ $fstype == btrfs ]]; then
+        btrfs_disks "$uuid" || return 1
+      elif [[ $src =~ ^/dev/([A-Za-z0-9][A-Za-z0-9._-]*)$ ]]; then
+        disk_of "${BASH_REMATCH[1]}" || return 1
+      else
+        return 1
+      fi
+    done <<< "$out"
+  done
+}
+
+children() {
+  local c
+  for c in "$sysfs/block/$1/$1"p[0-9]*; do
+    [[ -e $c/partition ]] && echo "${c##*/}"
+  done
+  return 0
+}
+
+is_data() {
+  local disk=$1 type sys out c r
+  [[ $disk =~ ^mmcblk[0-9]$ ]] || return 1
+  type=$(cat "$sysfs/block/$disk/device/type" 2> /dev/null) || return 1
+  [[ $type == SD ]] || return 1
+  sys=$(system_disks) || return 1
+  ! grep -qxF "$disk" <<< "$sys" || return 1
+  for c in $(children "$disk"); do
+    r=0
+    out=$(blkid -p -o export "/dev/$c") || r=$?
+    (( r == 0 || r == 2 )) || return 1
+    ! grep -qxE 'LABEL=MICROOS|PART_ENTRY_NAME=ARMADA(_BOOT|_ROOT)?' <<< "$out" || return 1
+  done
+}
+
+mount_targets() {
+  local t
+  findmnt -rno TARGET --source "/dev/$1" 2> /dev/null | while read -r t; do
+    printf '%b\n' "$t"
+  done
+  return 0
+}
+
+shared_lock() {
+  local node=$devroot/$1
+  [[ -e $node ]] || return 1
+  exec {lockfd}< "$node" || return 1
+  flock -s -w "$lockwait" "$lockfd"
+}
+
+urlencode() {
+  local s=$1 i
+  for (( i = 0; i < ${#s}; i++ )); do
+    printf '%%%02x' "'${s:i:1}"
+  done
+}
+
+notify() {
+  local url
+  url=steam://system/devicemountresult/$(urlencode "$1/$2")
+  if ! systemd-run -M "$user@" --user --collect --quiet /usr/bin/steam -ifrunning "$url" > /dev/null 2>&1; then
+    log "$1: could not send $url"
+  fi
+}
+
+part_arg() {
+  [[ $1 =~ ^(mmcblk[0-9])p[0-9]+$ ]] || return 1
+  disk=${BASH_REMATCH[1]}
+}
+
+cmd_mount() {
+  local part=$1 info fstype label uuid opts=noatime r out got want i
+  if ! part_arg "$part"; then
+    log "$part: not an SD card partition, not mounted"
+    exit 0
+  fi
+  if ! shared_lock "$disk"; then
+    log "$part: $disk lock not taken within $lockwait s, not mounted"
+    exit 1
+  fi
+  if ! is_data "$disk"; then
+    log "$part: $disk is a system disk, not mounted"
+    exit 0
+  fi
+  info=$(blkid -p -o export "/dev/$part") || true
+  fstype=$(sed -n 's/^TYPE=//p' <<< "$info")
+  label=$(sed -n 's/^LABEL=//p' <<< "$info")
+  uuid=$(sed -n 's/^UUID=//p' <<< "$info")
+  case $fstype in
+    ext4 | btrfs | exfat | vfat) ;;
+    *)
+      log "$part: filesystem '$fstype' not mounted"
+      exit 0
+      ;;
+  esac
+  got=$(mount_targets "$part")
+  if [[ -n $got ]]; then
+    log "$part: already mounted at ${got%%$'\n'*}"
+    exit 0
+  fi
+  if [[ $fstype == ext4 ]]; then
+    log "$part: fsck.ext4 started"
+    r=0
+    fsck.ext4 -y "/dev/$part" || r=$?
+    log "$part: fsck.ext4 ended with status $r"
+    if (( r > 1 )); then
+      opts+=,ro
+      notify "$part" 1
+    fi
+  fi
+  got=""
+  for (( i = 0; ; i++ )); do
+    if out=$(busctl call --allow-interactive-authorization=false --expect-reply=true --json=short \
+      org.freedesktop.UDisks2 "/org/freedesktop/UDisks2/block_devices/$part" org.freedesktop.UDisks2.Filesystem Mount \
+      'a{sv}' 3 as-user s "$user" auth.no_user_interaction b true options s "$opts" 2>&1); then
+      got=$(jq -r 'select(.type == "s") | .data[0] // empty' <<< "$out" 2> /dev/null) || got=""
+      break
+    fi
+    if (( i >= retry * 2 )) || ! grep -qiE 'unknown (object|interface)|object does not exist|no such interface' <<< "$out"; then
+      log "$part: UDisks Mount failed: ${out//$'\n'/ }"
+      break
+    fi
+    sleep 0.5
+  done
+  [[ -n $got ]] || got=$(mount_targets "$part")
+  got=${got%%$'\n'*}
+  if [[ -z $got ]]; then
+    notify "$part" 2
+    log "$part: mount failed"
+    exit 1
+  fi
+  label=${label//\\/}
+  want=/run/media/$user/${label:-$uuid}
+  if [[ $got == "$want" ]]; then
+    log "$part: mounted at $got ($opts)"
+  else
+    log "$part: mounted at $got, expected $want"
+  fi
+}
+
+cmd_unmount() {
+  local part=$1 t r=0
+  part_arg "$part" || exit 0
+  if [[ ! -e $devroot/$disk ]]; then
+    while read -r t; do
+      [[ $t == /run/media/* ]] || continue
+      if umount -l "$t"; then
+        log "$part: card gone, lazy unmount of $t"
+      else
+        log "$part: card gone, umount -l $t failed"
+        r=1
+      fi
+    done < <(mount_targets "$part")
+    exit "$r"
+  fi
+  if ! shared_lock "$disk"; then
+    log "$part: $disk lock not taken within $lockwait s, not unmounted"
+    exit 1
+  fi
+  is_data "$disk" || exit 0
+  [[ -n $(mount_targets "$part") ]] || exit 0
+  if busctl call --allow-interactive-authorization=false --expect-reply=true \
+    org.freedesktop.UDisks2 "/org/freedesktop/UDisks2/block_devices/$part" org.freedesktop.UDisks2.Filesystem Unmount \
+    'a{sv}' 1 auth.no_user_interaction b true > /dev/null; then
+    log "$part: unmounted"
+    exit 0
+  fi
+  while read -r t; do
+    [[ $t == /run/media/* ]] || continue
+    if umount -l "$t"; then
+      log "$part: lazy unmount of $t"
+    else
+      log "$part: umount -l $t failed"
+      r=1
+    fi
+  done < <(mount_targets "$part")
+  exit "$r"
+}
+
+trim_safe() {
+  local d=$sysfs/block/$1/device manfid oemid quirk
+  manfid=$(cat "$d/manfid" 2> /dev/null) || return 1
+  oemid=$(cat "$d/oemid" 2> /dev/null) || return 1
+  [[ $manfid =~ ^0x[0-9a-fA-F]{1,8}$ && $oemid =~ ^0x[0-9a-fA-F]{1,8}$ ]] || return 1
+  quirk=$(cat "$d/safe_trim_quirk" 2> /dev/null) || quirk=0
+  [[ $quirk =~ ^[0-9]{1,9}$ ]] || quirk=0
+  (( manfid != 0x3 && oemid != 0x5344 )) || (( 10#$quirk >= 1 ))
+}
+
+cmd_trim() {
+  local out src target fstype size seen=" " off d r=0
+  out=$(findmnt -rnv -t ext4,btrfs -O rw -o SOURCE,TARGET,FSTYPE) || out=""
+  while read -r src target fstype; do
+    [[ -n $src && $seen != *" $src "* ]] || continue
+    seen+="$src "
+    target=$(printf '%b' "$target")
+    if [[ $src =~ ^/dev/(mmcblk[0-9])p[0-9]+$ ]]; then
+      d=${BASH_REMATCH[1]}
+      if ! trim_safe "$d"; then
+        log "$target: $d is not safe to trim, skipped"
+        continue
+      fi
+    fi
+    if [[ $fstype == btrfs ]]; then
+      if ! fstrim "$target"; then
+        log "$target: fstrim failed"
+        r=1
+      fi
+      continue
+    fi
+    size=""
+    if [[ $src =~ ^/dev/([A-Za-z0-9][A-Za-z0-9._-]*)$ ]]; then
+      size=$(cat "$sysfs/class/block/${BASH_REMATCH[1]}/size" 2> /dev/null) || size=""
+    fi
+    if [[ ! $size =~ ^[0-9]+$ ]]; then
+      log "$target: no size for $src, not trimmed"
+      r=1
+      continue
+    fi
+    size=$(( size * 512 ))
+    for (( off = 0; off < size; off += chunk )); do
+      if ! fstrim -o "$off" -l "$chunk" "$target"; then
+        log "$target: fstrim at $off failed"
+        r=1
+        break
+      fi
+    done
+  done <<< "$out"
+  exit "$r"
+}
+
+read_seq() {
+  local s
+  s=$(cat "$sysfs/block/$disk/diskseq" 2> /dev/null) || return 1
+  [[ $s =~ ^[0-9]+$ ]] || return 1
+  echo "$s"
+}
+
+seq_check() {
+  [[ $(read_seq) == "$seq" ]] || quit 16 "$disk: diskseq changed, card swapped, nothing more written"
+}
+
+held() {
+  local x t
+  for x in "$disk" "${parts[@]}"; do
+    while read -r t; do
+      [[ -n $t ]] && echo "/dev/$x $t"
+    done < <(mount_targets "$x")
+  done
+  return 0
+}
+
+show() {
+  printf '%q' "$1"
+  shift
+  (( $# == 0 )) || printf ' %q' "$@"
+  echo
+}
+
+w() {
+  seq_check
+  if (( dry )); then
+    show "$@"
+  elif ! "$@"; then
+    quit 1 "$1 failed"
+  fi
+}
+
+table() {
+  local script
+  script=$(printf 'label: %s\nstart=2048, type=%s\n' "$1" "$2")
+  seq_check
+  if (( dry )); then
+    echo "$(show sfdisk -q "/dev/$disk") <<< $(printf '%q' "$script")"
+  elif ! sfdisk -q "/dev/$disk" <<< "$script"; then
+    quit 1 "sfdisk failed"
+  fi
+  (( dry )) && return 0
+  local i
+  for (( i = 0; i < 100; i++ )); do
+    [[ -e $devroot/${disk}p1 ]] && return 0
+    sleep 0.1
+  done
+  quit 1 "/dev/${disk}p1 did not appear"
+}
+
+wipe() {
+  local p
+  for p in "${parts[@]}"; do
+    w wipefs -a "/dev/$p"
+  done
+  w wipefs -a "/dev/$disk"
+}
+
+cmd_format() {
+  local opts validate=1 ext=nodiscard owner="" label="" device="" dry=0 p m
+  local -a lab=() parts=()
+  opts=$(getopt -q -l version,force,skip-validation,full,quick,owner:,device:,label:,dry-run -n "$me" -- "" "$@") ||
+    quit 22 "bad option"
+  eval set -- "$opts"
+  while :; do
+    case $1 in
+      --version)
+        echo 1
+        exit 0
+        ;;
+      --force | --skip-validation) validate=0 ;;
+      --full) ext=discard ;;
+      --quick) ext=nodiscard ;;
+      --owner) owner=$2 && shift ;;
+      --label) label=$2 && shift ;;
+      --device) device=$2 && shift ;;
+      --dry-run) dry=1 ;;
+      --)
+        shift
+        break
+        ;;
+    esac
+    shift
+  done
+  (( $# == 0 )) || quit 22 "unknown argument $1"
+  if [[ -z $owner ]]; then
+    owner=$(getent passwd "$user" | cut -d: -f3,4) || quit 22 "no user $user"
+  fi
+  [[ $owner =~ ^[0-9]+:[0-9]+$ ]] || quit 22 "bad owner $owner"
+  (( ${#label} <= 16 )) || quit 22 "label longer than 16 bytes"
+  [[ $label != *[[:cntrl:]]* ]] || quit 22 "label has control characters"
+  [[ ${label^^} != MICROOS ]] || quit 22 "label MICROOS is reserved"
+  [[ -z $label ]] || lab=(-L "$label")
+
+  [[ $device =~ ^/dev/mmcblk[0-9]$ ]] || quit 19 "no device or unsupported device '$device'"
+  disk=${device#/dev/}
+  [[ -e $devroot/$disk && -d $sysfs/block/$disk ]] || quit 19 "$device does not exist"
+  seq=$(read_seq) || quit 19 "$device has no diskseq"
+
+  is_data "$disk" || quit 13 "$disk is a system disk"
+  seq_check
+  if (( validate )) && ! command -v f3probe > /dev/null; then
+    quit 2 "f3probe missing"
+  fi
+
+  mapfile -t parts < <(children "$disk")
+  for p in "${parts[@]}"; do
+    if (( dry )); then
+      echo "systemctl stop microos-automount@$p.service"
+    elif ! systemctl stop "microos-automount@$p.service"; then
+      log "microos-automount@$p.service did not stop"
+    fi
+  done
+  m=$(held)
+  if (( dry )); then
+    while read -r p; do
+      [[ -z $p ]] || echo "release $p"
+    done <<< "$m"
+  elif [[ -n $m ]]; then
+    quit 32 "still mounted: ${m//$'\n'/, }"
+  fi
+
+  exec {lockfd}< "$devroot/$disk" || quit 19 "$device does not exist"
+  flock -x -w 2 "$lockfd" || quit 53 "$disk is locked"
+  seq_check
+  is_data "$disk" || quit 13 "$disk is a system disk"
+  if (( ! dry )); then
+    m=$(held)
+    [[ -z $m ]] || quit 32 "still mounted: ${m//$'\n'/, }"
+  fi
+
+  if (( validate )); then
+    echo "stage=testing"
+    seq_check
+    if (( dry )); then
+      show f3probe --destructive "/dev/$disk"
+    elif ! f3probe --destructive "/dev/$disk"; then
+      echo "stage=rescuing"
+      wipe
+      table dos 7
+      w mkfs.exfat "/dev/${disk}p1"
+      quit 14 "$disk failed f3probe, restored to one exfat partition"
+    fi
+  fi
+
+  echo "stage=formatting"
+  wipe
+  table gpt L
+  w mkfs.ext4 -m 0 -O casefold -E "$ext,root_owner=$owner" "${lab[@]}" -F "/dev/${disk}p1"
+  exec {lockfd}<&-
+
+  if (( dry )); then
+    echo "systemctl start microos-automount@${disk}p1.service"
+    exit 0
+  fi
+  udevadm settle || true
+  systemctl start "microos-automount@${disk}p1.service" || quit 5 "${disk}p1 formatted, microos-automount@${disk}p1.service failed"
+}
+
+(( $# >= 1 )) || usage
+case $1 in
+  classify)
+    (( $# == 2 )) || usage
+    if is_data "${2#/dev/}"; then echo data; else echo system; fi
+    ;;
+  mount)
+    (( $# == 2 )) || usage
+    cmd_mount "$2"
+    ;;
+  unmount)
+    (( $# == 2 )) || usage
+    cmd_unmount "$2"
+    ;;
+  format)
+    shift
+    cmd_format "$@"
+    ;;
+  trim)
+    (( $# == 1 )) || usage
+    cmd_trim
+    ;;
+  *) usage ;;
+esac

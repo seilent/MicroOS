@@ -1,0 +1,12 @@
+[Unit]
+Description=Mount microSD partition %i
+BindsTo=dev-%i.device
+After=dev-%i.device local-fs.target udisks2.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microos/microos-storage mount %i
+ExecStop=/usr/libexec/microos/microos-storage unmount %i
+TimeoutStartSec=infinity
+TimeoutStopSec=30

@@ -1,0 +1,50 @@
+{
+  "blockdevices": [
+    {
+      "name": "mmcblk0",
+      "path": "/dev/mmcblk0",
+      "pkname": null,
+      "type": "disk",
+      "fstype": null,
+      "label": null,
+      "uuid": null,
+      "partlabel": null,
+      "tran": "mmc",
+      "children": [
+        {
+          "name": "mmcblk0p1",
+          "path": "/dev/mmcblk0p1",
+          "pkname": "mmcblk0",
+          "type": "part",
+          "fstype": "vfat",
+          "label": "MICROOS",
+          "uuid": null,
+          "partlabel": null,
+          "tran": "mmc"
+        },
+        {
+          "name": "mmcblk0p2",
+          "path": "/dev/mmcblk0p2",
+          "pkname": "mmcblk0",
+          "type": "part",
+          "fstype": "ext4",
+          "label": "boot",
+          "uuid": null,
+          "partlabel": null,
+          "tran": "mmc"
+        },
+        {
+          "name": "mmcblk0p3",
+          "path": "/dev/mmcblk0p3",
+          "pkname": "mmcblk0",
+          "type": "part",
+          "fstype": "btrfs",
+          "label": "root",
+          "uuid": null,
+          "partlabel": null,
+          "tran": "mmc"
+        }
+      ]
+    }
+  ]
+}
