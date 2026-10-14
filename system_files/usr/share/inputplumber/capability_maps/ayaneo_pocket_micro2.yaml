@@ -219,3 +219,12 @@ mapping:
       gamepad:
         axis:
           name: RightStick
+
+  - name: Guide Button
+    source_events:
+      - evdev:
+          event_type: KEY
+          event_code: BTN_MODE
+          value_type: button
+    target_event:
+      keyboard: KeyF13

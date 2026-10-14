@@ -52,5 +52,12 @@ for kind, path in checks:
         print(f"FAIL: {path}: {err}", file=sys.stderr)
     rc |= bool(errors)
     print(f"{'FAIL' if errors else 'ok'} {kind} {path.rsplit('/', 1)[-1]}")
+
+pm2 = yaml.safe_load(open(f"{conf}/capability_maps/ayaneo_pocket_micro2.yaml"))
+mode = [m["target_event"] for m in pm2["mapping"]
+        if any(e.get("evdev", {}).get("event_code") == "BTN_MODE" for e in m["source_events"])]
+if mode != [{"keyboard": "KeyF13"}]:
+    print(f"FAIL: BTN_MODE maps to {mode}, want one KeyF13 row", file=sys.stderr)
+    rc = 1
 sys.exit(rc)
 PY
