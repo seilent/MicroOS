@@ -50,7 +50,8 @@ if ! grep -q "^$libdir/cmake/MicroSet/.*Config\.cmake$" <<<"$devfiles"; then fai
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-(cd "$tmp" && rpm2cpio "${rpms[microset]}" | cpio -idm --quiet)
+rpm2cpio "${rpms[microset]}" > "$tmp/microset.cpio"
+(cd "$tmp" && cpio -idm --quiet < microset.cpio)
 
 unit=$tmp/usr/lib/systemd/system/microsetd.service
 for kv in Type=dbus BusName=net.seilent.MicroSet User=microset StateDirectory=microset ExecStart=/usr/libexec/microsetd \
