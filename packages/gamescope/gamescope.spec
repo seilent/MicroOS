@@ -20,6 +20,7 @@ Source3:        https://github.com/misyltoad/vkroots/archive/%{vkroots_commit}/v
 Patch:          Allow-to-use-system-wlroots.patch
 Patch:          Use-system-stb-glm.patch
 Patch:          0003-pace-the-non-vrr-fps-limit-on-time.patch
+Patch:          0004-latch-done-commits-in-commit-order.patch
 
 Vendor:         MicroOS
 BuildRequires:  cmake

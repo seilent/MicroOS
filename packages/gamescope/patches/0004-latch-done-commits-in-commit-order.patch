@@ -1,0 +1,34 @@
+From e621772e416df7de10896340075a0574bcbcf17c Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 15 Oct 2026 01:00:00 +0900
+Subject: [PATCH] Latch done commits in commit order
+
+---
+ src/steamcompmgr.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
+index 0a009a9..46321c1 100644
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -8013,6 +8013,8 @@ bool handle_done_commit( steamcompmgr_win_t *w, xwayland_ctx_t *ctx, uint64_t co
+ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank )
+ {
+ 	std::lock_guard<std::mutex> lock( ctx->doneCommits.listCommitsDoneLock );
++	std::stable_sort( ctx->doneCommits.listCommitsDone.begin(), ctx->doneCommits.listCommitsDone.end(),
++		[]( const CommitDoneEntry_t &a, const CommitDoneEntry_t &b ) { return a.commitID < b.commitID; } );
+ 
+ 	uint64_t next_refresh_time = g_SteamCompMgrVBlankTime.schedule.ulTargetVBlank;
+ 
+@@ -8075,6 +8077,8 @@ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank )
+ void handle_done_commits_xdg( bool vblank )
+ {
+ 	std::lock_guard<std::mutex> lock( g_steamcompmgr_xdg_done_commits.listCommitsDoneLock );
++	std::stable_sort( g_steamcompmgr_xdg_done_commits.listCommitsDone.begin(), g_steamcompmgr_xdg_done_commits.listCommitsDone.end(),
++		[]( const CommitDoneEntry_t &a, const CommitDoneEntry_t &b ) { return a.commitID < b.commitID; } );
+ 
+ 	uint64_t next_refresh_time = g_SteamCompMgrVBlankTime.schedule.ulTargetVBlank;
+ 
+-- 
+2.43.0
+
