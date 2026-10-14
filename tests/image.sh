@@ -68,7 +68,7 @@ grep -qE 'session\.dont-restore-off-profile"? *[=:] *true' /usr/share/wireplumbe
 rpm -q python3-gobject python3-evdev upower >/dev/null || fail "steam service rpms missing"
 [[ $(rpm -q --qf '%{VENDOR}' steamos-manager) == MicroOS ]] || fail "steamos-manager is not the MicroOS build"
 ! rpm -q iwd >/dev/null 2>&1 || fail "iwd is installed"
-for u in steamos-manager.service upower.service microos-powerd.service microsetd.service; do
+for u in steamos-manager.service upower.service microos-powerd.service microos-vpower.service microsetd.service; do
   [[ $(systemctl is-enabled "$u") == enabled ]] || fail "$u is not enabled"
 done
 for u in steamos-manager.service microos-audio-sleep.service; do
@@ -105,6 +105,7 @@ for c in f3probe pkexec wipefs sfdisk mkfs.ext4 mkfs.exfat fsck.ext4 fstrim floc
   command -v "$c" >/dev/null || fail "$c is not on PATH"
 done
 [[ -x /usr/libexec/microos/microos-powerd ]] || fail "microos-powerd missing"
+[[ -x /usr/libexec/microos/microos-vpower ]] || fail "microos-vpower missing"
 ! grep -qE 'pwm|hwmon|thermal' /usr/libexec/microos/microos-powerd || fail "microos-powerd names a pwm, hwmon or thermal path"
 [[ $(rpm -q --qf '%{VENDOR}' microset) == MicroOS ]] || fail "microset is not the MicroOS build"
 ! rpm -q microset-devel >/dev/null 2>&1 || fail "microset-devel is installed"

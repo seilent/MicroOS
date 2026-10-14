@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+import os
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+SUPPLY = Path(os.environ.get("MICROOS_POWER_SUPPLY", "/sys/class/power_supply"))
+OUT = Path(os.environ.get("MICROOS_VPOWER", "/run/vpower"))
+INTERVAL = 2
+SMOOTH = INTERVAL / 60
+MIN_CURRENT = 50000
+AC_TYPES = {"Mains", "USB"}
+
+
+def read(path):
+    try:
+        return path.read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def number(path):
+    try:
+        return int(read(path))
+    except ValueError:
+        return None
+
+
+def battery():
+    for d in sorted(SUPPLY.glob("*")):
+        if read(d / "type") == "Battery" and read(d / "present") != "0":
+            return d
+    return None
+
+
+def ac_online():
+    for d in SUPPLY.glob("*"):
+        if read(d / "type") in AC_TYPES and (number(d / "online") or 0) != 0:
+            return True
+    return False
+
+
+class Estimate:
+    def __init__(self):
+        self.status = None
+        self.current = None
+
+    def smooth(self, status, current):
+        if status != self.status or self.current is None:
+            self.status, self.current = status, current
+        else:
+            self.current += (current - self.current) * SMOOTH
+        return self.current
+
+    def times(self, b, status, percent):
+        full = number(b / "charge_full") or number(b / "charge_full_design")
+        now = number(b / "charge_now")
+        current = number(b / "current_now")
+        if not full or current is None:
+            return -1, -1
+        if now is None:
+            now = full * percent // 100
+        current = self.smooth(status, abs(current))
+        if status == "Full":
+            return 0, -1
+        if current < MIN_CURRENT:
+            return -1, -1
+        if status == "Charging":
+            return round(max(0, full - now) * 3600 / current / 60) * 60, -1
+        if status == "Discharging":
+            return -1, round(now * 3600 / current / 60) * 60
+        return -1, -1
+
+
+def write(name, value):
+    fd, tmp = tempfile.mkstemp(dir=OUT, prefix=f".{name}.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(f"{value}\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, OUT / name)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
+def values(estimate):
+    b = battery()
+    if b is None:
+        return None
+    status = read(b / "status")
+    percent = number(b / "capacity")
+    if not status or percent is None:
+        return None
+    full, empty = estimate.times(b, status, percent)
+    return {
+        "ac_status": "Connected" if ac_online() else "Disconnected",
+        "battery_percent": f"{percent:.2f}",
+        "secs_until_battery_full": full,
+        "secs_until_shutdown_request": empty,
+        "battery_status": status,
+    }
+
+
+def main(argv):
+    once = argv == ["--once"]
+    estimate = Estimate()
+    last = None
+    while True:
+        v = values(estimate)
+        if v is not None and v != last:
+            for k, value in v.items():
+                write(k, value)
+            last = v
+        if once:
+            return 0
+        time.sleep(INTERVAL)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,23 @@
+[Unit]
+Description=Battery state for Steam in /run/vpower
+Before=display-manager.service
+StartLimitIntervalSec=120
+StartLimitBurst=30
+
+[Service]
+ExecStart=/usr/libexec/microos/microos-vpower
+Restart=always
+RestartSec=2
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RuntimeDirectory=vpower
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+
+[Install]
+WantedBy=multi-user.target
