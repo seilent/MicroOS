@@ -11,6 +11,27 @@ pkg name:
     [[ -z $(git status --porcelain -- "${inputs[@]}") ]] || dirty=1
     out=out/pkg/$1
     tag=localhost/microos-pkg/$1:$hash
+    mapfile -t deps < <(build/pkg-hash.sh --deps "$1")
+    depdir=out/deps/$1
+    rm -rf "$depdir"
+    mounts=()
+    for dep in "${deps[@]}"; do
+      dtag=localhost/microos-pkg/$dep:$(build/pkg-hash.sh "$dep")
+      mapfile -t dinputs < <(build/pkg-hash.sh --inputs "$dep")
+      if [[ -n $(git status --porcelain -- "${dinputs[@]}") \
+        || $(podman image inspect -f '{{{{index .Labels "microos.dirty"}}' "$dtag" 2>/dev/null) != 0 ]]; then
+        just pkg "$dep"
+      fi
+      [[ $(podman image inspect -f '{{{{index .Labels "microos.dirty"}}' "$dtag") == 0 ]] || dirty=1
+      mkdir -p "$depdir"
+      ctr=$(podman create "$dtag" none)
+      podman cp "$ctr:/rpms/." "$depdir/"
+      podman rm "$ctr" >/dev/null
+    done
+    (( ${#deps[@]} == 0 )) || mounts=(-v "$PWD/$depdir:/deps:ro,Z")
+    if [[ $1 == microset && -n ${MICROSET_SRC:-} ]]; then
+      mounts+=(-v "$(realpath "$MICROSET_SRC"):/microset-src:ro,Z" -e MICROSET_SRC=/microset-src)
+    fi
     podman build -t {{builder}} -f build/pkg.Containerfile build
     img={{builder}}
     if [[ -f packages/$1/Containerfile ]]; then
@@ -32,24 +53,26 @@ pkg name:
         -v "$PWD/packages/$1:/src:ro,Z" \
         -v "$PWD/$work:/work:Z" \
         "$img" /src/fetch.sh /work
-      podman run --rm --network=none "${cache[@]}" \
+      podman run --rm --network=none "${cache[@]}" "${mounts[@]}" \
         -v "$PWD/packages/$1:/src:ro,Z" \
         -v "$PWD/$work:/work:ro,Z" \
         -v "$PWD/$out:/out:Z" \
         "$img" /src/build.sh /out /work
       rm -rf "$work"
     else
-      podman run --rm "${cache[@]}" \
+      podman run --rm "${cache[@]}" "${mounts[@]}" \
         -v "$PWD/packages/$1:/src:ro,Z" \
         -v "$PWD/$out:/out:Z" \
         "$img" /src/build.sh /out
     fi
     if [[ -f tests/pkg-$1.sh ]]; then
-      podman run --rm --security-opt apparmor=unconfined \
+      podman run --rm --security-opt apparmor=unconfined "${mounts[@]}" \
         -v "$PWD/tests:/tests:ro,Z" \
         -v "$PWD/$out:/out:ro,Z" \
         "$img" "/tests/pkg-$1.sh" /out
     fi
+    rm -rf "$depdir"
+    [[ ! -e $out/dirty ]] || dirty=1
     podman build -f build/pkg-wrap.Containerfile --label "microos.dirty=$dirty" -t "$tag" "$out"
     echo "$tag"
 
@@ -70,6 +93,17 @@ pkg-push name:
       echo "$local was built from uncommitted inputs" >&2
       exit 1
     fi
+    for dep in $(build/pkg-hash.sh --deps "$1"); do
+      dtag=localhost/microos-pkg/$dep:$(build/pkg-hash.sh "$dep")
+      if ! podman image exists "$dtag"; then
+        echo "dep $dep has no local image $dtag, run just pkg $dep" >&2
+        exit 1
+      fi
+      if [[ $(podman inspect -f '{{{{index .Labels "microos.dirty"}}' "$dtag") != 0 ]]; then
+        echo "$dtag, a dep of $1, was built from uncommitted inputs" >&2
+        exit 1
+      fi
+    done
     repo=ghcr.io/seilent/microos/pkg/$1
     api=/user/packages/container/microos%2Fpkg%2F$1
     keys=${MICROOS_KEYS:-$HOME/.config/microos/keys}
@@ -129,5 +163,7 @@ test-services:
       sh -c "$dnf systemd-udev && /repo/tests/helpers.sh"
     run "$fedora" sh -c "$dnf alsa-ucm alsa-ucm-utils alsa-utils pipewire-utils systemd-udev && /repo/tests/audio.sh"
     run "$fedora" sh -c "$dnf jq util-linux systemd-udev && /repo/tests/storage.sh"
+    run "$fedora" sh -c "$dnf git-core && /repo/tests/pkg-hash.sh"
+    just pkg microset
     just pkg gamescope-session
     run "$fedora" sh -c "$dnf /repo/out/pkg/gamescope-session/*.noarch.rpm && /repo/tests/session.sh"

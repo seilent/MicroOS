@@ -22,6 +22,8 @@ jobs:
       contents: read
     outputs:
       packages: ${{ steps.list.outputs.packages }}
+      deps: ${{ steps.list.outputs.deps }}
+      all: ${{ steps.list.outputs.all }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -30,10 +32,33 @@ jobs:
       - name: List
         id: list
         run: |
-          packages=$(git ls-files -- 'packages/*/build.sh' | cut -d/ -f2 | jq -Rnc '[inputs]')
-          [[ $packages != '[]' ]] || { echo "::error::no packages"; exit 1; }
-          echo "packages=$packages" >> "$GITHUB_OUTPUT"
-          echo "$packages"
+          plain=()
+          withdeps=()
+          for name in $(git ls-files -- 'packages/*/build.sh' | cut -d/ -f2); do
+            if [[ -n $(git ls-files -- "packages/$name/DEPS") ]]; then
+              withdeps+=("$name")
+            else
+              plain+=("$name")
+            fi
+          done
+          (( ${#plain[@]} )) || { echo "::error::no packages"; exit 1; }
+          for name in "${withdeps[@]}"; do
+            deps=$(build/pkg-hash.sh --deps "$name")
+            [[ -n $deps ]] || { echo "::error::packages/$name/DEPS lists no package"; exit 1; }
+            for dep in $deps; do
+              [[ " ${plain[*]} " == *" $dep "* ]] || { echo "::error::$name depends on $dep, which is not a package without DEPS"; exit 1; }
+            done
+          done
+          packages=$(printf '%s\n' "${plain[@]}" | jq -Rnc '[inputs]')
+          deps=$(printf '%s\n' "${withdeps[@]}" | jq -Rnc '[inputs | select(length > 0)]')
+          all=$(jq -nc --argjson a "$packages" --argjson b "$deps" '$a + $b')
+          {
+            echo "packages=$packages"
+            echo "deps=$deps"
+            echo "all=$all"
+          } >> "$GITHUB_OUTPUT"
+          echo "without DEPS $packages"
+          echo "with DEPS $deps"
 
   build:
     needs: list
@@ -177,8 +202,167 @@ jobs:
           compression-level: 0
           overwrite: true
 
-  publish:
+  build-deps:
     needs: [list, build]
+    if: ${{ !cancelled() && needs.list.result == 'success' && needs.list.outputs.deps != '[]' }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJSON(needs.list.outputs.deps) }}
+    env:
+      PKG: ${{ matrix.package }}
+      REPO: ghcr.io/seilent/microos/pkg/${{ matrix.package }}
+      PUBKEY: system_files/usr/share/microos/keys/microos.pub
+      JUST_VERSION: 1.58.0
+      JUST_SHA256: 748237128c4c40cbdabc65e841d05ceba13cc23a91eaba395495894c1d9764df
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman skopeo
+          tarball=just-$JUST_VERSION-aarch64-unknown-linux-musl.tar.gz
+          curl -fsSL -o "$RUNNER_TEMP/$tarball" "https://github.com/casey/just/releases/download/$JUST_VERSION/$tarball"
+          echo "$JUST_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/bin" just
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v2.6.3
+
+      - name: Hash
+        id: hash
+        run: |
+          hash=$(build/pkg-hash.sh "$PKG")
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
+      - name: Check registry
+        id: check
+        env:
+          HASH: ${{ steps.hash.outputs.hash }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if err=$(skopeo inspect --no-creds --raw "docker://$REPO:$HASH" 2>&1 > /dev/null); then
+            echo "$REPO:$HASH exists"
+            echo "state=exists" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! grep -qiE 'manifest unknown|404|403|denied|unauthorized' <<< "$err"; then
+            echo "::error::$err"
+            exit 1
+          fi
+          skopeo login ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          if err=$(skopeo inspect --raw "docker://$REPO:$HASH" 2>&1 > /dev/null); then
+            echo "::error::$REPO:$HASH exists but is not public"
+            exit 1
+          fi
+          if ! grep -qiE 'manifest unknown|404|403' <<< "$err"; then
+            echo "::error::$err"
+            exit 1
+          fi
+          echo "state=missing" >> "$GITHUB_OUTPUT"
+          echo "build=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify existing
+        id: verify
+        if: steps.check.outputs.state == 'exists'
+        env:
+          HASH: ${{ steps.hash.outputs.hash }}
+        run: |
+          sig() {
+            local out
+            for _ in 1 2 3; do
+              if out=$(cosign verify --key "$PUBKEY" "$1" 2>&1 > /dev/null); then echo signed; return; fi
+              if grep -qE 'no signatures found|no matching signatures: (.*invalid signature|signature not found in transparency log)' <<< "$out"; then
+                echo unsigned
+                return
+              fi
+              echo "::warning::cosign verify $1: $out" >&2
+              sleep 10
+            done
+            echo "::error::cosign verify $1: $out" >&2
+            return 1
+          }
+          state=$(sig "$REPO:$HASH")
+          [[ $state == unsigned ]] || exit 0
+          echo "::warning::$REPO:$HASH has no valid signature, building and pushing a new one"
+          echo "build=true" >> "$GITHUB_OUTPUT"
+
+      - name: Load deps
+        if: steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -o pipefail
+          shopt -s nullglob
+          mapfile -t built < <(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '.artifacts[] | select(.expired | not) | .name')
+          for dep in $(build/pkg-hash.sh --deps "$PKG"); do
+            hash=$(build/pkg-hash.sh "$dep")
+            tag=localhost/microos-pkg/$dep:$hash
+            dir=$RUNNER_TEMP/deps/$dep
+            if [[ " ${built[*]} " == *" pkg-$dep "* ]]; then
+              gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "pkg-$dep" -D "$dir"
+              files=("$dir"/*)
+              [[ ${#files[@]} == 1 && ${files[0]##*/} =~ ^(missing|unsigned)\.oci\.tar$ ]] || { echo "::error::unexpected artifact files for $dep: ${files[*]##*/}"; exit 1; }
+              archive=${files[0]}
+              from="this run"
+            else
+              repo=ghcr.io/seilent/microos/pkg/$dep
+              if ! err=$(skopeo inspect --no-creds --raw "docker://$repo:$hash" 2>&1 > /dev/null); then
+                echo "::error::$dep was not built in this run and $repo:$hash is not readable: $err"
+                exit 1
+              fi
+              digest=sha256:$(skopeo inspect --no-creds --raw "docker://$repo:$hash" | sha256sum | cut -d' ' -f1)
+              cosign verify --key "$PUBKEY" "$repo@$digest" > /dev/null
+              archive=$dir/registry.oci.tar
+              mkdir -p "$dir"
+              skopeo copy --quiet --src-no-creds "docker://$repo@$digest" "oci-archive:$archive:$tag"
+              from=$repo@$digest
+            fi
+            loaded=$(podman load -q -i "$archive" | sed -n 's/^Loaded image[^:]*: //p' | head -n 1)
+            [[ -n $loaded ]] || { echo "::error::podman load of $archive named no image"; exit 1; }
+            [[ $loaded == "$tag" ]] || podman tag "$loaded" "$tag"
+            podman image exists "$tag"
+            echo "$tag from $from"
+          done
+
+      - name: Build
+        if: steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true'
+        run: just pkg "$PKG"
+
+      - name: Save
+        if: steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true'
+        env:
+          HASH: ${{ steps.hash.outputs.hash }}
+          STATE: ${{ steps.verify.outputs.build == 'true' && 'unsigned' || 'missing' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/save"
+          podman save --format oci-archive -o "$RUNNER_TEMP/save/$STATE.oci.tar" "localhost/microos-pkg/$PKG:$HASH"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true'
+        with:
+          name: pkg-${{ matrix.package }}
+          path: ${{ runner.temp }}/save
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+
+  publish:
+    needs: [list, build, build-deps]
     if: ${{ !cancelled() && needs.list.result == 'success' }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
@@ -188,7 +372,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: ${{ fromJSON(needs.list.outputs.packages) }}
+        package: ${{ fromJSON(needs.list.outputs.all) }}
     env:
       PKG: ${{ matrix.package }}
       REPO: ghcr.io/seilent/microos/pkg/${{ matrix.package }}
@@ -204,14 +388,30 @@ jobs:
           path: ${{ runner.temp }}/pkg
           merge-multiple: true
 
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y skopeo
+
       - name: Built
         id: built
+        env:
+          DISPATCH: ${{ github.event_name == 'workflow_dispatch' && github.workflow == 'packages' }}
         run: |
           shopt -s nullglob
           files=("$RUNNER_TEMP"/pkg/*)
           if (( ${#files[@]} == 0 )); then
-            echo "$PKG was not built in this run"
-            exit 0
+            hash=$(build/pkg-hash.sh "$PKG")
+            if err=$(skopeo inspect --no-creds --raw "docker://$REPO:$hash" 2>&1 > /dev/null); then
+              echo "$PKG was not built in this run, $REPO:$hash exists"
+              exit 0
+            fi
+            if [[ $PKG == kernel && $DISPATCH != true ]]; then
+              echo "::warning::$REPO:$hash is missing and comes from the build PC (just pkg-push kernel)"
+              exit 0
+            fi
+            echo "::error::$PKG was not built in this run and $REPO:$hash is not readable: $err"
+            exit 1
           fi
           [[ ${#files[@]} == 1 && ${files[0]##*/} =~ ^(missing|unsigned)\.oci\.tar$ ]] || { echo "::error::unexpected artifact files: ${files[*]##*/}"; exit 1; }
           replace=false
@@ -229,8 +429,10 @@ jobs:
           DISPATCH: ${{ github.event_name == 'workflow_dispatch' && github.workflow == 'packages' }}
         run: |
           [[ $PKG != kernel || $DISPATCH == true ]] || { echo "::error::kernel artifact outside a packages.yml dispatch"; exit 1; }
-          mapfile -t names < <(sed -n 's/^Name:[[:space:]]*\([A-Za-z0-9._+-]*\)[[:space:]]*$/\1/p' "packages/$PKG"/*.spec)
+          mapfile -t names < <(awk '$1 == "Name:" { n = $2; print n } $1 == "%package" { print ($2 == "-n" ? $3 : n "-" $2) }' "packages/$PKG"/*.spec)
           (( ${#names[@]} )) || { echo "::error::no spec Name in packages/$PKG"; exit 1; }
+          bad=$(printf '%s\n' "${names[@]}" | grep -vE '^[A-Za-z0-9._+-]+$' || true)
+          [[ -z $bad ]] || { echo "::error::package names in packages/$PKG that are not literal: $bad"; exit 1; }
           re="^rpms/($(printf '%s\n' "${names[@]}" | sed 's/[.+]/\\&/g' | paste -sd'|'))-[0-9][^/]*\.rpm$"
           oci=$RUNNER_TEMP/oci
           mkdir -p "$oci"
@@ -245,12 +447,6 @@ jobs:
           grep -q '\.rpm$' <<< "$listing" || { echo "::error::no RPM in the archive"; exit 1; }
           rm -rf "$oci"
           echo "${names[*]}: $(grep -c '\.rpm$' <<< "$listing") RPMs"
-
-      - name: Install tools
-        if: steps.built.outputs.archive != ''
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y skopeo
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
         if: steps.built.outputs.archive != ''

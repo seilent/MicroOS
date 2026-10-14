@@ -26,6 +26,7 @@ env:
 jobs:
   packages:
     permissions:
+      actions: read
       contents: read
       packages: write
     uses: ./.github/workflows/packages.yml
@@ -200,6 +201,8 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.push_tag }}
         run: |
+          git fetch --no-tags --depth=1 origin main
+          PKG_HASH_BASE=FETCH_HEAD tests/pkg-hash.sh
           podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/steamos-manager-policy.sh'
           podman run --rm -v "$PWD/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/seed-rpm:ro" "$IMAGE:$TAG" /tests/image.sh

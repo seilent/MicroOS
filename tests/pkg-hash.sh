@@ -13,7 +13,7 @@ echo base > "$tmp/build/pkg.Containerfile"
 echo one > "$tmp/packages/a/build.sh"
 echo one > "$tmp/packages/b/build.sh"
 git -C "$tmp" init -q
-pkghash() { git -C "$tmp" add -A && "$tmp/build/pkg-hash.sh" "$1"; }
+pkghash() { git -C "$tmp" add -A && "$tmp/build/pkg-hash.sh" "$@"; }
 
 h=$(pkghash a)
 [[ $h =~ ^[0-9a-f]{16}$ ]] || fail "format: $h"
@@ -61,5 +61,59 @@ rm "$tmp/packages/a/untracked"
 
 pkghash missing 2>/dev/null && fail "accepts a missing package"
 pkghash ../build 2>/dev/null && fail "accepts a path"
+
+[[ -z $(pkghash --deps a) ]] || fail "deps without DEPS"
+[[ $(pkghash --inputs a) == "$(printf '%s\n' packages/a build/pkg.Containerfile build/pkg-wrap.Containerfile tests/pkg-a.sh tests/pkg-a)" ]] || fail "inputs without DEPS"
+plain=$(git -C "$tmp" ls-files -s -- packages/a build/pkg.Containerfile build/pkg-wrap.Containerfile tests/pkg-a.sh tests/pkg-a | LC_ALL=C sort -k4 | sha256sum | cut -c1-16)
+[[ $h == "$plain" ]] || fail "input without DEPS is not the index entries alone"
+
+mkdir -p "$tmp/packages/c"
+echo one > "$tmp/packages/c/build.sh"
+printf 'b\n\na\n' > "$tmp/packages/c/DEPS"
+hc=$(pkghash c)
+[[ $hc =~ ^[0-9a-f]{16}$ ]] || fail "deps format: $hc"
+[[ $(pkghash --deps c) == "$(printf 'a\nb')" ]] || fail "deps list: $(pkghash --deps c)"
+want=$({ git -C "$tmp" ls-files -s -- packages/c build/pkg.Containerfile build/pkg-wrap.Containerfile tests/pkg-c.sh tests/pkg-c | LC_ALL=C sort -k4; printf 'dep a %s\ndep b %s\n' "$h" "$hb"; } | sha256sum | cut -c1-16)
+[[ $hc == "$want" ]] || fail "deps input is not the index entries plus the dep hashes"
+[[ $(pkghash a) == "$h" && $(pkghash b) == "$hb" ]] || fail "DEPS of c moves its deps"
+grep -qx packages/b <(pkghash --inputs c) || fail "inputs of c miss its dep b"
+echo two > "$tmp/packages/b/extra"
+[[ $(pkghash c) != "$hc" ]] || fail "ignores a dep change"
+rm "$tmp/packages/b/extra"
+[[ $(pkghash c) == "$hc" ]] || fail "deps not restored"
+printf 'a\n' > "$tmp/packages/c/DEPS"
+[[ $("$tmp/build/pkg-hash.sh" c) == "$hc" ]] || fail "reads DEPS from the work tree"
+[[ $("$tmp/build/pkg-hash.sh" --deps c) == "$(printf 'a\nb')" ]] || fail "reads the deps list from the work tree"
+echo c > "$tmp/packages/a/DEPS"
+pkghash c >/dev/null 2>&1 && fail "accepts a dep with DEPS"
+rm "$tmp/packages/a/DEPS"
+echo c > "$tmp/packages/c/DEPS"
+pkghash c >/dev/null 2>&1 && fail "accepts itself as dep"
+echo missing > "$tmp/packages/c/DEPS"
+pkghash c >/dev/null 2>&1 && fail "accepts a missing dep"
+echo ../a > "$tmp/packages/c/DEPS"
+pkghash c >/dev/null 2>&1 && fail "accepts a path as dep"
+
+base=${PKG_HASH_BASE:-main}
+if old=$(git -C "$root" show "$base:build/pkg-hash.sh" 2>/dev/null); then
+  mkdir -p "$tmp/base/build"
+  printf '%s\n' "$old" > "$tmp/base/build/pkg-hash.sh"
+  chmod +x "$tmp/base/build/pkg-hash.sh"
+  n=0
+  for name in $(git -C "$root" ls-files -- 'packages/*/build.sh' | cut -d/ -f2); do
+    [[ -z $(git -C "$root" ls-files -- "packages/$name/DEPS") ]] || continue
+    new=$("$root/build/pkg-hash.sh" "$name")
+    was=$(GIT_DIR=$(git -C "$root" rev-parse --absolute-git-dir) GIT_WORK_TREE=$tmp/base "$tmp/base/build/pkg-hash.sh" "$name")
+    if [[ $new == "$was" ]]; then
+      n=$((n + 1))
+    else
+      fail "$name hashes $new, $was with the $base script"
+    fi
+  done
+  (( n )) || fail "no package matches the $base script"
+  echo "$n packages hash the same as with the $base script"
+else
+  fail "no build/pkg-hash.sh at $base"
+fi
 
 exit "$rc"
