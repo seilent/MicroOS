@@ -1,0 +1,2670 @@
+From 540744bcd599f192de93191008b87dd8db4b7fe0 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 15 Oct 2026 18:00:00 +0900
+Subject: [PATCH] feat(source): add Qualcomm SSC IMU source
+
+---
+ .../schema/composite_device_v1.json           |   17 +
+ src/config/mod.rs                             |   28 +-
+ src/drivers/mod.rs                            |    1 +
+ src/drivers/ssc/driver.rs                     | 1225 +++++++++++++++++
+ src/drivers/ssc/mod.rs                        |    4 +
+ src/drivers/ssc/protobuf.rs                   |  178 +++
+ src/drivers/ssc/qmi.rs                        |  106 ++
+ src/drivers/ssc/qrtr.rs                       |  147 ++
+ src/input/composite_device/mod.rs             |   87 +-
+ src/input/composite_device/targets.rs         |    9 +
+ src/input/manager.rs                          |   37 +-
+ src/input/source/iio.rs                       |    2 +-
+ src/input/source/iio/common.rs                |   10 +-
+ src/input/source/mod.rs                       |   12 +-
+ src/input/source/ssc.rs                       |   90 ++
+ src/input/source/ssc/imu.rs                   |  133 ++
+ src/input/source/ssc/sleep.rs                 |   67 +
+ src/udev/device.rs                            |    3 +
+ 18 files changed, 2135 insertions(+), 21 deletions(-)
+ create mode 100644 src/drivers/ssc/driver.rs
+ create mode 100644 src/drivers/ssc/mod.rs
+ create mode 100644 src/drivers/ssc/protobuf.rs
+ create mode 100644 src/drivers/ssc/qmi.rs
+ create mode 100644 src/drivers/ssc/qrtr.rs
+ create mode 100644 src/input/source/ssc.rs
+ create mode 100644 src/input/source/ssc/imu.rs
+ create mode 100644 src/input/source/ssc/sleep.rs
+
+diff --git a/rootfs/usr/share/inputplumber/schema/composite_device_v1.json b/rootfs/usr/share/inputplumber/schema/composite_device_v1.json
+index 461be3d..38e6c28 100644
+--- a/rootfs/usr/share/inputplumber/schema/composite_device_v1.json
++++ b/rootfs/usr/share/inputplumber/schema/composite_device_v1.json
+@@ -208,6 +208,9 @@
+         "led": {
+           "$ref": "#/definitions/LED"
+         },
++        "ssc": {
++          "$ref": "#/definitions/SSC"
++        },
+         "config": {
+           "$ref": "#/definitions/SourceDeviceConfig"
+         },
+@@ -450,6 +453,20 @@
+       },
+       "title": "LED"
+     },
++    "SSC": {
++      "type": "object",
++      "additionalProperties": false,
++      "properties": {
++        "name": {
++          "description": "FastRPC device node of the DSP running the Qualcomm Sensor Core (e.g. fastrpc-sdsp)",
++          "type": "string"
++        }
++      },
++      "required": [
++        "name"
++      ],
++      "title": "SSC"
++    },
+     "MountMatrix": {
+       "type": "object",
+       "description": "Custom mount matrix to use to define how sensors are physically mounted",
+diff --git a/src/config/mod.rs b/src/config/mod.rs
+index 4a8477d..7824350 100644
+--- a/src/config/mod.rs
++++ b/src/config/mod.rs
+@@ -250,6 +250,8 @@ pub struct SourceDevice {
+     /// Devices that match the given tty propertied will be captured by InputPlumber
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub tty: Option<Tty>,
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub ssc: Option<Ssc>,
+     /// Device configuration options are used to alter how the source device is managed
+     #[serde(skip_serializing_if = "Option::is_none")]
+     pub config: Option<SourceDeviceConfig>,
+@@ -422,6 +424,13 @@ pub struct IIO {
+     pub mount_matrix: Option<MountMatrix>,
+ }
+ 
++#[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
++#[serde(rename_all = "snake_case")]
++pub struct Ssc {
++    #[serde(skip_serializing_if = "Option::is_none")]
++    pub name: Option<String>,
++}
++
+ #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
+ #[serde(rename_all = "snake_case")]
+ #[allow(clippy::upper_case_acronyms)]
+@@ -555,7 +564,7 @@ impl CompositeDeviceConfig {
+ 
+         // TODO: This is a dirty hack to get around slow iio udev querying on
+         // some devices. Replace with proper mitigation.
+-        let should_check_udev = { subsystem.as_str() != "iio" };
++        let should_check_udev = { subsystem.as_str() != "iio" && subsystem.as_str() != "misc" };
+ 
+         // Check udev matches first
+         if should_check_udev {
+@@ -598,6 +607,12 @@ impl CompositeDeviceConfig {
+                     return Some(config.clone());
+                 }
+             }
++            "misc" => {
++                let ssc_config = config.ssc.as_ref()?;
++                if self.has_matching_ssc(udevice, ssc_config) {
++                    return Some(config.clone());
++                }
++            }
+             _ => (),
+         }
+ 
+@@ -860,6 +875,17 @@ impl CompositeDeviceConfig {
+         true
+     }
+ 
++    pub fn has_matching_ssc(&self, device: &UdevDevice, ssc_config: &Ssc) -> bool {
++        log::trace!("Checking ssc config: {:?} against {:?}", ssc_config, device);
++
++        let Some(name) = ssc_config.name.as_ref() else {
++            return false;
++        };
++        let dname = device.sysname();
++        log::trace!("Checking name: {name} against {dname}");
++        glob_match(name.as_str(), dname.as_str())
++    }
++
+     /// Returns true if a given evdev device is within a list of evdev configs.
+     pub fn has_matching_evdev(&self, device: &UdevDevice, evdev_config: &Evdev) -> bool {
+         //TODO: Check if the evdev has no proterties defined, that would always match.
+diff --git a/src/drivers/mod.rs b/src/drivers/mod.rs
+index 5b845bc..7e6533e 100644
+--- a/src/drivers/mod.rs
++++ b/src/drivers/mod.rs
+@@ -11,6 +11,7 @@ pub mod opineo;
+ pub mod oxp_hid;
+ pub mod oxp_tty;
+ pub mod rog_ally;
++pub mod ssc;
+ pub mod steam_deck;
+ pub mod ultimate_2;
+ pub mod unified_gamepad;
+diff --git a/src/drivers/ssc/driver.rs b/src/drivers/ssc/driver.rs
+new file mode 100644
+index 0000000..e9b6193
+--- /dev/null
++++ b/src/drivers/ssc/driver.rs
+@@ -0,0 +1,1225 @@
++use std::{
++    collections::HashSet,
++    io, mem,
++    time::{Duration, Instant},
++};
++
++use crate::{
++    drivers::iio_imu::{
++        event::{AxisData, Event},
++        info::MountMatrix,
++    },
++    input::capability::{Capability, Source},
++};
++
++use super::{
++    protobuf::{self, Value},
++    qmi,
++    qrtr::{self, Server},
++};
++
++const SSC_SERVICE: u32 = 400;
++const DEFAULT_SAMPLE_RATE: f64 = 400.0;
++const STALL_TIMEOUT: Duration = Duration::from_secs(3);
++const RETRY_MIN: Duration = Duration::from_secs(3);
++const RETRY_MAX: Duration = Duration::from_secs(60);
++const RECV_BUFFER_SIZE: usize = 65536;
++
++const SUID_UID: Uid = Uid {
++    low: 0xABABABABABABABAB,
++    high: 0xABABABABABABABAB,
++};
++const MSG_ERROR_EVENT: u32 = 130;
++const MSG_DISABLE: u32 = 10;
++const MSG_SUID_REQUEST: u32 = 512;
++const MSG_ENABLE_CONTINUOUS: u32 = 513;
++const MSG_CONFIG_EVENT: u32 = 768;
++const MSG_MEASUREMENT: u32 = 1025;
++const PROCESSOR_APSS: u64 = 1;
++const DELIVERY_NO_WAKEUP: u64 = 1;
++const STATUS_UNRELIABLE: u64 = 0;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++struct Uid {
++    low: u64,
++    high: u64,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Sensor {
++    Accel,
++    Gyro,
++}
++
++impl Sensor {
++    fn data_type(&self) -> &'static str {
++        match self {
++            Sensor::Accel => "accel",
++            Sensor::Gyro => "gyro",
++        }
++    }
++
++    fn capability(&self) -> Capability {
++        match self {
++            Sensor::Accel => Capability::Accelerometer(Source::Center),
++            Sensor::Gyro => Capability::Gyroscope(Source::Center),
++        }
++    }
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++enum Action {
++    Enable,
++    Disable,
++    Lookup,
++    None,
++}
++
++fn plan(filtered: bool, server_present: bool, uid: Option<Uid>, streaming: bool) -> Action {
++    if !server_present {
++        return Action::None;
++    }
++    match (filtered, streaming, uid) {
++        (true, true, _) => Action::Disable,
++        (false, false, Some(_)) => Action::Enable,
++        (false, false, None) => Action::Lookup,
++        _ => Action::None,
++    }
++}
++
++#[derive(Debug, Clone, Copy)]
++struct Stream {
++    uid: Uid,
++    last_sample: Instant,
++}
++
++struct Session {
++    socket: qrtr::Socket,
++    server: Option<Server>,
++    accel: Option<Stream>,
++    gyro: Option<Stream>,
++    uid_accel: Option<Uid>,
++    uid_gyro: Option<Uid>,
++    lookup: Option<Lookup>,
++    txn: u16,
++}
++
++impl Session {
++    fn open() -> io::Result<Self> {
++        let socket = qrtr::Socket::new()?;
++        socket.lookup(SSC_SERVICE)?;
++        Ok(Self {
++            socket,
++            server: None,
++            accel: None,
++            gyro: None,
++            uid_accel: None,
++            uid_gyro: None,
++            lookup: None,
++            txn: 0,
++        })
++    }
++
++    fn send(&mut self, uid: Uid, msg_id: u32, payload: Option<&[u8]>) -> io::Result<()> {
++        let Some(server) = self.server else {
++            return Ok(());
++        };
++        self.txn = self.txn.wrapping_add(1).max(1);
++        let msg = request(self.txn, uid, msg_id, payload);
++        self.socket.send_to(server.node, server.port, &msg)
++    }
++
++    fn request_suid(&mut self, sensor: Sensor) -> io::Result<()> {
++        self.send(SUID_UID, MSG_SUID_REQUEST, Some(&suid_request(sensor)))
++    }
++
++    fn enable(&mut self, uid: Uid, sample_rate: f32) -> io::Result<()> {
++        self.send(
++            uid,
++            MSG_ENABLE_CONTINUOUS,
++            Some(&enable_request(sample_rate)),
++        )
++    }
++
++    fn disable(&mut self) {
++        for stream in [self.accel.take(), self.gyro.take()].into_iter().flatten() {
++            if let Err(e) = self.send(stream.uid, MSG_DISABLE, None) {
++                log::debug!("Failed to disable SSC sensor: {e}");
++            }
++        }
++    }
++
++    fn apply(&mut self, sensor: Sensor, filtered: bool, sample_rate: f32) -> io::Result<()> {
++        let uid = *self.uid_mut(sensor);
++        let streaming = self.stream_mut(sensor).is_some();
++        match (plan(filtered, self.server.is_some(), uid, streaming), uid) {
++            (Action::Enable, Some(uid)) => {
++                log::info!(
++                    "Enabling SSC {} sensor {:016x}{:016x} at {} Hz",
++                    sensor.data_type(),
++                    uid.high,
++                    uid.low,
++                    sample_rate
++                );
++                *self.stream_mut(sensor) = Some(Stream {
++                    uid,
++                    last_sample: Instant::now(),
++                });
++                self.enable(uid, sample_rate)
++            }
++            (Action::Disable, _) => {
++                let Some(stream) = self.stream_mut(sensor).take() else {
++                    return Ok(());
++                };
++                log::info!("Disabling filtered SSC {} sensor", sensor.data_type());
++                self.send(stream.uid, MSG_DISABLE, None)
++            }
++            (Action::Lookup, _) => {
++                self.lookup
++                    .get_or_insert_with(|| Lookup::new(Instant::now()));
++                self.request_suid(sensor)
++            }
++            _ => Ok(()),
++        }
++    }
++
++    fn missing(&self, filtered: &HashSet<Capability>) -> Vec<Sensor> {
++        let mut missing = Vec::new();
++        for (sensor, uid) in [
++            (Sensor::Accel, self.uid_accel),
++            (Sensor::Gyro, self.uid_gyro),
++        ] {
++            if uid.is_none() && !filtered.contains(&sensor.capability()) {
++                missing.push(sensor);
++            }
++        }
++        missing
++    }
++
++    fn retry_lookup(&mut self, now: Instant, filtered: &HashSet<Capability>) -> io::Result<()> {
++        let missing = self.missing(filtered);
++        let Some(lookup) = self.lookup.as_mut() else {
++            return Ok(());
++        };
++        if missing.is_empty() {
++            self.lookup = None;
++            return Ok(());
++        }
++        let Some(delay) = lookup.due(now) else {
++            return Ok(());
++        };
++        for sensor in missing {
++            log::debug!(
++                "Retrying SSC {} sensor lookup, next in {delay:?}",
++                sensor.data_type()
++            );
++            self.request_suid(sensor)?;
++        }
++        Ok(())
++    }
++
++    fn stream_mut(&mut self, sensor: Sensor) -> &mut Option<Stream> {
++        match sensor {
++            Sensor::Accel => &mut self.accel,
++            Sensor::Gyro => &mut self.gyro,
++        }
++    }
++
++    fn uid_mut(&mut self, sensor: Sensor) -> &mut Option<Uid> {
++        match sensor {
++            Sensor::Accel => &mut self.uid_accel,
++            Sensor::Gyro => &mut self.uid_gyro,
++        }
++    }
++
++    fn sensor_for(&self, uid: Uid) -> Option<Sensor> {
++        if self.accel.is_some_and(|stream| stream.uid == uid) {
++            return Some(Sensor::Accel);
++        }
++        if self.gyro.is_some_and(|stream| stream.uid == uid) {
++            return Some(Sensor::Gyro);
++        }
++        None
++    }
++
++    fn reset(&mut self, server: Option<Server>) {
++        self.server = server;
++        self.accel = None;
++        self.gyro = None;
++        self.uid_accel = None;
++        self.uid_gyro = None;
++        self.lookup = None;
++    }
++
++    fn stalled(&self, now: Instant, filtered: &HashSet<Capability>) -> bool {
++        [(Sensor::Accel, self.accel), (Sensor::Gyro, self.gyro)]
++            .into_iter()
++            .filter(|(sensor, _)| !filtered.contains(&sensor.capability()))
++            .filter_map(|(_, stream)| stream)
++            .any(|stream| now.duration_since(stream.last_sample) > STALL_TIMEOUT)
++    }
++}
++
++impl Drop for Session {
++    fn drop(&mut self) {
++        self.disable();
++    }
++}
++
++pub struct Backoff {
++    delay: Duration,
++    retry_at: Instant,
++}
++
++impl Backoff {
++    pub fn new(now: Instant) -> Self {
++        Self {
++            delay: RETRY_MIN,
++            retry_at: now,
++        }
++    }
++
++    pub fn ready(&self, now: Instant) -> bool {
++        now >= self.retry_at
++    }
++
++    pub fn fail(&mut self, now: Instant) -> Duration {
++        let delay = self.delay;
++        self.retry_at = now + delay;
++        self.delay = (delay * 2).min(RETRY_MAX);
++        delay
++    }
++
++    pub fn reset(&mut self) {
++        self.delay = RETRY_MIN;
++    }
++}
++
++struct Lookup {
++    backoff: Backoff,
++    missed: Vec<Sensor>,
++}
++
++impl Lookup {
++    fn new(now: Instant) -> Self {
++        let mut backoff = Backoff::new(now);
++        backoff.fail(now);
++        Self {
++            backoff,
++            missed: Vec::new(),
++        }
++    }
++
++    fn due(&mut self, now: Instant) -> Option<Duration> {
++        if !self.backoff.ready(now) {
++            return None;
++        }
++        Some(self.backoff.fail(now))
++    }
++
++    fn first_miss(&mut self, sensor: Sensor) -> bool {
++        if self.missed.contains(&sensor) {
++            return false;
++        }
++        self.missed.push(sensor);
++        true
++    }
++}
++
++pub struct Driver {
++    sample_rate: f32,
++    mount_matrix: MountMatrix,
++    session: Option<Session>,
++    suspended: bool,
++    backoff: Backoff,
++    recovering: Option<Instant>,
++    buffer: Vec<u8>,
++    filtered_events: HashSet<Capability>,
++}
++
++impl Driver {
++    pub fn new(mount_matrix: Option<MountMatrix>, sample_rate: Option<f64>) -> Self {
++        Self {
++            sample_rate: sample_rate.unwrap_or(DEFAULT_SAMPLE_RATE) as f32,
++            mount_matrix: mount_matrix.unwrap_or_default(),
++            session: None,
++            suspended: false,
++            backoff: Backoff::new(Instant::now()),
++            recovering: None,
++            buffer: vec![0; RECV_BUFFER_SIZE],
++            filtered_events: Default::default(),
++        }
++    }
++
++    pub fn update_filtered_events(&mut self, events: HashSet<Capability>) {
++        self.filtered_events = events;
++        if let Err(e) = self.apply_filter() {
++            log::warn!("SSC session failed: {e}");
++            self.restart();
++        }
++    }
++
++    fn apply_filter(&mut self) -> io::Result<()> {
++        let Some(session) = self.session.as_mut() else {
++            return Ok(());
++        };
++        for sensor in [Sensor::Accel, Sensor::Gyro] {
++            let filtered = self.filtered_events.contains(&sensor.capability());
++            session.apply(sensor, filtered, self.sample_rate)?;
++        }
++        Ok(())
++    }
++
++    pub fn suspend(&mut self) {
++        log::info!("Disabling SSC sensors for system suspend");
++        self.suspended = true;
++        self.session = None;
++    }
++
++    pub fn resume(&mut self) {
++        if !self.suspended {
++            return;
++        }
++        log::info!("Re-enabling SSC sensors after system resume");
++        let now = Instant::now();
++        self.suspended = false;
++        self.backoff = Backoff::new(now);
++        self.recovering = Some(now);
++    }
++
++    pub fn streaming(&self) -> bool {
++        self.session
++            .as_ref()
++            .is_some_and(|session| session.accel.is_some() || session.gyro.is_some())
++    }
++
++    pub fn poll(&mut self) -> io::Result<Vec<Event>> {
++        let mut events = vec![];
++        if self.suspended {
++            return Ok(events);
++        }
++
++        if self.session.is_none() {
++            let now = Instant::now();
++            if !self.backoff.ready(now) {
++                return Ok(events);
++            }
++            match Session::open() {
++                Ok(session) => self.session = Some(session),
++                Err(e) => {
++                    let delay = self.backoff.fail(now);
++                    log::warn!("Failed to open SSC session, retrying in {delay:?}: {e}");
++                    return Ok(events);
++                }
++            }
++        }
++
++        if let Err(e) = self.receive(&mut events) {
++            log::warn!("SSC session failed: {e}");
++            self.restart();
++            return Ok(events);
++        }
++
++        let now = Instant::now();
++        let filtered = &self.filtered_events;
++        if let Some(Err(e)) = self
++            .session
++            .as_mut()
++            .map(|session| session.retry_lookup(now, filtered))
++        {
++            log::warn!("SSC session failed: {e}");
++            self.restart();
++            return Ok(events);
++        }
++
++        if self
++            .session
++            .as_ref()
++            .is_some_and(|session| session.stalled(now, &self.filtered_events))
++        {
++            log::warn!("SSC sensor sent no samples for {STALL_TIMEOUT:?}");
++            self.restart();
++        }
++
++        Ok(events)
++    }
++
++    fn restart(&mut self) {
++        self.session = None;
++        let now = Instant::now();
++        self.recovering.get_or_insert(now);
++        let delay = self.backoff.fail(now);
++        log::warn!("Restarting SSC session in {delay:?}");
++    }
++
++    fn receive(&mut self, events: &mut Vec<Event>) -> io::Result<()> {
++        let mut buffer = mem::take(&mut self.buffer);
++        let result = self.drain(&mut buffer, events);
++        self.buffer = buffer;
++        result
++    }
++
++    fn drain(&mut self, buffer: &mut [u8], events: &mut Vec<Event>) -> io::Result<()> {
++        loop {
++            let Some(session) = self.session.as_ref() else {
++                return Ok(());
++            };
++            let Some((len, node, port)) = session.socket.recv_from(buffer)? else {
++                return Ok(());
++            };
++            let data = &buffer[..len];
++
++            if port == qrtr::PORT_CTRL {
++                self.handle_ctrl(data)?;
++                continue;
++            }
++
++            let Some(server) = session.server else {
++                continue;
++            };
++            if server.node != node || server.port != port {
++                continue;
++            }
++            self.handle_qmi(data, events)?;
++        }
++    }
++
++    fn handle_ctrl(&mut self, data: &[u8]) -> io::Result<()> {
++        let Some(session) = self.session.as_ref() else {
++            return Ok(());
++        };
++        let Some((cmd, server)) = qrtr::parse_ctrl(data) else {
++            return Ok(());
++        };
++        if server.service != SSC_SERVICE {
++            return Ok(());
++        }
++
++        match cmd {
++            qrtr::TYPE_NEW_SERVER
++                if session.server.is_none_or(|current| {
++                    current.node != server.node || current.port != server.port
++                }) =>
++            {
++                log::info!(
++                    "Found SSC service on QRTR node {} port {}",
++                    server.node,
++                    server.port
++                );
++                if let Some(session) = self.session.as_mut() {
++                    session.reset(Some(server));
++                }
++                self.apply_filter()?;
++            }
++            qrtr::TYPE_DEL_SERVER if session.server == Some(server) => {
++                log::info!("SSC service removed, waiting for it to return");
++                self.recovering.get_or_insert(Instant::now());
++                if let Some(session) = self.session.as_mut() {
++                    session.reset(None);
++                }
++            }
++            _ => (),
++        }
++
++        Ok(())
++    }
++
++    fn handle_qmi(&mut self, data: &[u8], events: &mut Vec<Event>) -> io::Result<()> {
++        let Some(msg) = qmi::Message::parse(data) else {
++            log::debug!("Dropping malformed QMI message");
++            return Ok(());
++        };
++
++        match (msg.kind, msg.msg_id) {
++            (qmi::TYPE_RESPONSE, qmi::SSC_CONTROL) => {
++                if let Some((result, error)) = msg.result() {
++                    if result != 0 {
++                        log::warn!("SSC request failed with QMI error {error}");
++                    }
++                }
++            }
++            (qmi::TYPE_INDICATION, qmi::SSC_REPORT_SMALL | qmi::SSC_REPORT_LARGE) => {
++                if let Some(report) = msg.ssc_data() {
++                    self.handle_report(report, events)?;
++                }
++            }
++            _ => (),
++        }
++
++        Ok(())
++    }
++
++    fn handle_report(&mut self, report: &[u8], events: &mut Vec<Event>) -> io::Result<()> {
++        let Some((uid, bodies)) = parse_report(report) else {
++            log::debug!("Dropping SSC report without sensor uid");
++            return Ok(());
++        };
++
++        for (msg_id, payload) in bodies {
++            if msg_id == MSG_ERROR_EVENT {
++                let error = protobuf::fields(payload).find_map(|field| match field {
++                    (1, Value::Varint(error)) => Some(error),
++                    _ => None,
++                });
++                log::debug!(
++                    "SSC error event {error:?} from sensor {:016x}{:016x}",
++                    uid.high,
++                    uid.low
++                );
++                continue;
++            }
++
++            if uid == SUID_UID && msg_id == MSG_CONFIG_EVENT {
++                self.handle_suid(payload)?;
++                continue;
++            }
++
++            let Some(session) = self.session.as_mut() else {
++                return Ok(());
++            };
++            let Some(sensor) = session.sensor_for(uid) else {
++                continue;
++            };
++            match msg_id {
++                MSG_CONFIG_EVENT => {
++                    let rate = protobuf::floats(payload, 1).next();
++                    log::info!("SSC {} configured at {rate:?} Hz", sensor.data_type());
++                }
++                MSG_MEASUREMENT => {
++                    if let Some(stream) = session.stream_mut(sensor) {
++                        stream.last_sample = Instant::now();
++                    }
++                    self.backoff.reset();
++                    if let Some(since) = self.recovering.take() {
++                        log::info!("SSC samples back after {:?}", since.elapsed());
++                    }
++                    if let Some(event) = self.translate(sensor, payload) {
++                        events.push(event);
++                    }
++                }
++                _ => (),
++            }
++        }
++
++        Ok(())
++    }
++
++    fn handle_suid(&mut self, payload: &[u8]) -> io::Result<()> {
++        let Some(session) = self.session.as_mut() else {
++            return Ok(());
++        };
++        let Some((sensor, uid)) = parse_suid(payload) else {
++            return Ok(());
++        };
++        if session.uid_mut(sensor).is_some() {
++            return Ok(());
++        }
++        let Some(uid) = uid else {
++            let first = session
++                .lookup
++                .as_mut()
++                .is_none_or(|lookup| lookup.first_miss(sensor));
++            if first {
++                log::info!(
++                    "No SSC sensor available for '{}' yet, retrying lookup",
++                    sensor.data_type()
++                );
++            } else {
++                log::debug!("No SSC sensor available for '{}'", sensor.data_type());
++            }
++            return Ok(());
++        };
++
++        *session.uid_mut(sensor) = Some(uid);
++        let filtered = self.filtered_events.contains(&sensor.capability());
++        session.apply(sensor, filtered, self.sample_rate)
++    }
++
++    fn translate(&self, sensor: Sensor, payload: &[u8]) -> Option<Event> {
++        if self.filtered_events.contains(&sensor.capability()) {
++            return None;
++        }
++        let (x, y, z) = sample(payload)?;
++        let data = self.rotate(x, y, z);
++        match sensor {
++            Sensor::Accel => Some(Event::Accelerometer(data)),
++            Sensor::Gyro => Some(Event::Gyroscope(data)),
++        }
++    }
++
++    fn rotate(&self, x: f64, y: f64, z: f64) -> AxisData {
++        let m = &self.mount_matrix;
++        AxisData {
++            roll: m.x.0 * x + m.x.1 * y + m.x.2 * z,
++            pitch: m.y.0 * x + m.y.1 * y + m.y.2 * z,
++            yaw: m.z.0 * x + m.z.1 * y + m.z.2 * z,
++            scale: 1.0,
++        }
++    }
++}
++
++fn request(txn: u16, uid: Uid, msg_id: u32, payload: Option<&[u8]>) -> Vec<u8> {
++    let mut uid_msg = Vec::with_capacity(18);
++    protobuf::put_fixed64(&mut uid_msg, 1, uid.low);
++    protobuf::put_fixed64(&mut uid_msg, 2, uid.high);
++    let mut config = Vec::with_capacity(4);
++    protobuf::put_uint(&mut config, 1, PROCESSOR_APSS);
++    protobuf::put_uint(&mut config, 2, DELIVERY_NO_WAKEUP);
++    let mut body = Vec::new();
++    if let Some(payload) = payload {
++        protobuf::put_bytes(&mut body, 2, payload);
++    }
++
++    let mut request = Vec::with_capacity(body.len() + 32);
++    protobuf::put_bytes(&mut request, 1, &uid_msg);
++    protobuf::put_fixed32(&mut request, 2, msg_id);
++    protobuf::put_bytes(&mut request, 3, &config);
++    protobuf::put_bytes(&mut request, 4, &body);
++    qmi::ssc_control(txn, &request)
++}
++
++fn suid_request(sensor: Sensor) -> Vec<u8> {
++    let mut msg = Vec::new();
++    protobuf::put_bytes(&mut msg, 1, sensor.data_type().as_bytes());
++    protobuf::put_uint(&mut msg, 2, 0);
++    protobuf::put_uint(&mut msg, 3, 1);
++    msg
++}
++
++fn enable_request(sample_rate: f32) -> Vec<u8> {
++    let mut msg = Vec::new();
++    protobuf::put_float(&mut msg, 1, sample_rate);
++    msg
++}
++
++type Body<'a> = (u32, &'a [u8]);
++
++fn parse_report(report: &[u8]) -> Option<(Uid, Vec<Body<'_>>)> {
++    let uid = protobuf::fields(report).find_map(|field| match field {
++        (1, Value::Bytes(bytes)) => parse_uid(bytes),
++        _ => None,
++    })?;
++    let mut bodies = Vec::new();
++    for field in protobuf::fields(report) {
++        let (2, Value::Bytes(body)) = field else {
++            continue;
++        };
++        let mut msg_id = None;
++        let mut payload: &[u8] = &[];
++        for field in protobuf::fields(body) {
++            match field {
++                (1, Value::Fixed32(value)) => msg_id = Some(value),
++                (3, Value::Bytes(bytes)) => payload = bytes,
++                _ => (),
++            }
++        }
++        if let Some(msg_id) = msg_id {
++            bodies.push((msg_id, payload));
++        }
++    }
++    Some((uid, bodies))
++}
++
++fn parse_suid(payload: &[u8]) -> Option<(Sensor, Option<Uid>)> {
++    let mut data_type = None;
++    let mut uid = None;
++    for field in protobuf::fields(payload) {
++        match field {
++            (1, Value::Bytes(bytes)) => data_type = Some(bytes),
++            (2, Value::Bytes(bytes)) if uid.is_none() => uid = parse_uid(bytes),
++            _ => (),
++        }
++    }
++    let sensor = match data_type? {
++        b"accel" => Sensor::Accel,
++        b"gyro" => Sensor::Gyro,
++        _ => return None,
++    };
++    Some((sensor, uid))
++}
++
++fn sample(payload: &[u8]) -> Option<(f64, f64, f64)> {
++    if is_unreliable(payload) {
++        return None;
++    }
++    let mut values = protobuf::floats(payload, 1).map(f64::from);
++    Some((values.next()?, values.next()?, values.next()?))
++}
++
++fn is_unreliable(payload: &[u8]) -> bool {
++    protobuf::fields(payload).any(|field| matches!(field, (2, Value::Varint(STATUS_UNRELIABLE))))
++}
++
++fn parse_uid(bytes: &[u8]) -> Option<Uid> {
++    let mut low = None;
++    let mut high = None;
++    for field in protobuf::fields(bytes) {
++        match field {
++            (1, Value::Fixed64(value)) => low = Some(value),
++            (2, Value::Fixed64(value)) => high = Some(value),
++            _ => (),
++        }
++    }
++    Some(Uid {
++        low: low?,
++        high: high?,
++    })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::{
++        config,
++        input::{
++            event::value::InputValue,
++            source::iio::common::{
++                corrections_from_config, mount_matrix_from_config, sample_rate_from_config,
++                translate_events,
++            },
++        },
++    };
++
++    #[test]
++    fn backoff_doubles_to_cap_and_resets() {
++        let now = Instant::now();
++        let mut backoff = Backoff::new(now);
++        assert!(backoff.ready(now));
++        let delays: Vec<u64> = (0..7).map(|_| backoff.fail(now).as_secs()).collect();
++        assert_eq!(delays, vec![3, 6, 12, 24, 48, 60, 60]);
++        assert!(!backoff.ready(now + Duration::from_secs(59)));
++        assert!(backoff.ready(now + RETRY_MAX));
++        backoff.reset();
++        assert_eq!(backoff.fail(now), RETRY_MIN);
++    }
++
++    #[test]
++    fn lookup_retries_with_backoff() {
++        let now = Instant::now();
++        let mut lookup = Lookup::new(now);
++        assert_eq!(lookup.due(now), None);
++        assert_eq!(lookup.due(now + Duration::from_secs(2)), None);
++        let at = now + RETRY_MIN;
++        assert_eq!(lookup.due(at), Some(Duration::from_secs(6)));
++        assert_eq!(lookup.due(at + Duration::from_secs(5)), None);
++        let at = at + Duration::from_secs(6);
++        assert_eq!(lookup.due(at), Some(Duration::from_secs(12)));
++    }
++
++    #[test]
++    fn lookup_reports_first_miss_per_sensor() {
++        let mut lookup = Lookup::new(Instant::now());
++        assert!(lookup.first_miss(Sensor::Accel));
++        assert!(!lookup.first_miss(Sensor::Accel));
++        assert!(lookup.first_miss(Sensor::Gyro));
++        assert!(!lookup.first_miss(Sensor::Gyro));
++    }
++
++    const UID: Uid = Uid { low: 1, high: 2 };
++
++    #[test]
++    fn plan_filtered_before_suid() {
++        assert_eq!(plan(true, true, None, false), Action::None);
++        assert_eq!(plan(true, true, Some(UID), false), Action::None);
++    }
++
++    #[test]
++    fn plan_filtered_while_streaming() {
++        assert_eq!(plan(true, true, Some(UID), true), Action::Disable);
++    }
++
++    #[test]
++    fn plan_unfiltered() {
++        assert_eq!(plan(false, true, Some(UID), false), Action::Enable);
++        assert_eq!(plan(false, true, None, false), Action::Lookup);
++        assert_eq!(plan(false, true, Some(UID), true), Action::None);
++    }
++
++    #[test]
++    fn plan_no_server() {
++        for filtered in [false, true] {
++            for uid in [None, Some(UID)] {
++                for streaming in [false, true] {
++                    assert_eq!(plan(filtered, false, uid, streaming), Action::None);
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn plan_both_filtered_never_streams() {
++        for server in [false, true] {
++            for uid in [None, Some(UID)] {
++                assert_eq!(plan(true, server, uid, false), Action::None);
++                assert_ne!(plan(true, server, uid, true), Action::Enable);
++                assert_ne!(plan(true, server, uid, true), Action::Lookup);
++            }
++        }
++    }
++
++    #[test]
++    fn unreliable_status() {
++        let mut sample = Vec::new();
++        protobuf::put_float(&mut sample, 1, 9.81);
++        assert!(!is_unreliable(&sample));
++        let mut reliable = sample.clone();
++        protobuf::put_uint(&mut reliable, 2, 3);
++        assert!(!is_unreliable(&reliable));
++        protobuf::put_uint(&mut sample, 2, STATUS_UNRELIABLE);
++        assert!(is_unreliable(&sample));
++    }
++
++    const LOOKUP: &[u8] = &[
++        0x0a, 0x00, 0x00, 0x00, 0x90, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00,
++    ];
++    const NEW_SERVER: &[u8] = &[
++        0x04, 0x00, 0x00, 0x00, 0x90, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00,
++        0x00, 0x0d, 0x00, 0x00, 0x00,
++    ];
++    const NEW_SERVER_END: &[u8] = &[
++        0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00,
++    ];
++    const SUID_REQUEST_ACCEL: &[u8] = &[
++        0x00, 0x01, 0x00, 0x20, 0x00, 0x37, 0x00, 0x01, 0x30, 0x00, 0x2e, 0x00, 0x0a, 0x12, 0x09,
++        0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0x11, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
++        0xab, 0xab, 0x15, 0x00, 0x02, 0x00, 0x00, 0x1a, 0x04, 0x08, 0x01, 0x10, 0x01, 0x22, 0x0d,
++        0x12, 0x0b, 0x0a, 0x05, 0x61, 0x63, 0x63, 0x65, 0x6c, 0x10, 0x00, 0x18, 0x01, 0x10, 0x01,
++        0x00, 0x01,
++    ];
++    const RESPONSE_TXN_1: &[u8] = &[
++        0x02, 0x01, 0x00, 0x20, 0x00, 0x19, 0x00, 0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10,
++        0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x11, 0x04, 0x00, 0x00, 0x00,
++        0x00, 0x00,
++    ];
++    const SUID_EVENT_ACCEL: &[u8] = &[
++        0x04, 0x01, 0x00, 0x22, 0x00, 0x51, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x02, 0x43, 0x00, 0x41, 0x00, 0x0a, 0x12, 0x09, 0xab, 0xab, 0xab, 0xab,
++        0xab, 0xab, 0xab, 0xab, 0x11, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0x12, 0x2b,
++        0x0d, 0x00, 0x03, 0x00, 0x00, 0x11, 0xd4, 0x38, 0x06, 0xc5, 0x00, 0x00, 0x00, 0x00, 0x1a,
++        0x1b, 0x0a, 0x05, 0x61, 0x63, 0x63, 0x65, 0x6c, 0x12, 0x12, 0x09, 0x16, 0xd3, 0xac, 0x47,
++        0xde, 0x2e, 0x44, 0x58, 0x11, 0xaa, 0xc9, 0xa5, 0xb4, 0x76, 0x53, 0xab, 0x61,
++    ];
++    const SUID_REQUEST_GYRO: &[u8] = &[
++        0x00, 0x02, 0x00, 0x20, 0x00, 0x36, 0x00, 0x01, 0x2f, 0x00, 0x2d, 0x00, 0x0a, 0x12, 0x09,
++        0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0x11, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab,
++        0xab, 0xab, 0x15, 0x00, 0x02, 0x00, 0x00, 0x1a, 0x04, 0x08, 0x01, 0x10, 0x01, 0x22, 0x0c,
++        0x12, 0x0a, 0x0a, 0x04, 0x67, 0x79, 0x72, 0x6f, 0x10, 0x00, 0x18, 0x01, 0x10, 0x01, 0x00,
++        0x01,
++    ];
++    const SUID_EVENT_GYRO: &[u8] = &[
++        0x04, 0x02, 0x00, 0x22, 0x00, 0x50, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x02, 0x42, 0x00, 0x40, 0x00, 0x0a, 0x12, 0x09, 0xab, 0xab, 0xab, 0xab,
++        0xab, 0xab, 0xab, 0xab, 0x11, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0xab, 0x12, 0x2a,
++        0x0d, 0x00, 0x03, 0x00, 0x00, 0x11, 0x82, 0x97, 0x30, 0xc6, 0x00, 0x00, 0x00, 0x00, 0x1a,
++        0x1a, 0x0a, 0x04, 0x67, 0x79, 0x72, 0x6f, 0x12, 0x12, 0x09, 0x0f, 0xa3, 0x60, 0x17, 0x50,
++        0xde, 0x4a, 0x45, 0x11, 0xa1, 0x86, 0xfc, 0x3e, 0x42, 0xec, 0x9a, 0x14,
++    ];
++    const ENABLE_ACCEL: &[u8] = &[
++        0x00, 0x03, 0x00, 0x20, 0x00, 0x31, 0x00, 0x01, 0x2a, 0x00, 0x28, 0x00, 0x0a, 0x12, 0x09,
++        0x16, 0xd3, 0xac, 0x47, 0xde, 0x2e, 0x44, 0x58, 0x11, 0xaa, 0xc9, 0xa5, 0xb4, 0x76, 0x53,
++        0xab, 0x61, 0x15, 0x01, 0x02, 0x00, 0x00, 0x1a, 0x04, 0x08, 0x01, 0x10, 0x01, 0x22, 0x07,
++        0x12, 0x05, 0x0d, 0x00, 0x00, 0xc8, 0x43, 0x10, 0x01, 0x00, 0x01,
++    ];
++    const ENABLE_GYRO: &[u8] = &[
++        0x00, 0x04, 0x00, 0x20, 0x00, 0x31, 0x00, 0x01, 0x2a, 0x00, 0x28, 0x00, 0x0a, 0x12, 0x09,
++        0x0f, 0xa3, 0x60, 0x17, 0x50, 0xde, 0x4a, 0x45, 0x11, 0xa1, 0x86, 0xfc, 0x3e, 0x42, 0xec,
++        0x9a, 0x14, 0x15, 0x01, 0x02, 0x00, 0x00, 0x1a, 0x04, 0x08, 0x01, 0x10, 0x01, 0x22, 0x07,
++        0x12, 0x05, 0x0d, 0x00, 0x00, 0xc8, 0x43, 0x10, 0x01, 0x00, 0x01,
++    ];
++    const CONFIG_EVENT_ACCEL: &[u8] = &[
++        0x04, 0x03, 0x00, 0x22, 0x00, 0x5a, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x02, 0x4c, 0x00, 0x4a, 0x00, 0x0a, 0x12, 0x09, 0x16, 0xd3, 0xac, 0x47,
++        0xde, 0x2e, 0x44, 0x58, 0x11, 0xaa, 0xc9, 0xa5, 0xb4, 0x76, 0x53, 0xab, 0x61, 0x12, 0x34,
++        0x0d, 0x00, 0x03, 0x00, 0x00, 0x11, 0x6c, 0x19, 0x7a, 0xc7, 0x00, 0x00, 0x00, 0x00, 0x1a,
++        0x24, 0x0d, 0x00, 0x00, 0xc8, 0x43, 0x10, 0x01, 0x1a, 0x08, 0x76, 0xfd, 0x1c, 0xc3, 0x76,
++        0xfd, 0x1c, 0x43, 0x25, 0x76, 0xfd, 0x9c, 0x3b, 0x2a, 0x07, 0x4e, 0x4f, 0x52, 0x4d, 0x41,
++        0x4c, 0x00, 0x30, 0xf0, 0x01, 0x40, 0x01,
++    ];
++    const EVENT_1022_ACCEL: &[u8] = &[
++        0x04, 0x04, 0x00, 0x22, 0x00, 0x6c, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x02, 0x5e, 0x00, 0x5c, 0x00, 0x0a, 0x12, 0x09, 0x16, 0xd3, 0xac, 0x47,
++        0xde, 0x2e, 0x44, 0x58, 0x11, 0xaa, 0xc9, 0xa5, 0xb4, 0x76, 0x53, 0xab, 0x61, 0x12, 0x46,
++        0x0d, 0xfe, 0x03, 0x00, 0x00, 0x11, 0xc2, 0x25, 0x7a, 0xc7, 0x00, 0x00, 0x00, 0x00, 0x1a,
++        0x36, 0x0a, 0x0c, 0x02, 0x63, 0x7d, 0x3d, 0xba, 0x83, 0x18, 0xbe, 0x35, 0x0a, 0xa9, 0x3d,
++        0x1a, 0x24, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x20, 0x03,
++    ];
++    const SAMPLE_ACCEL_STATUS_0: &[u8] = &[
++        0x04, 0x07, 0x00, 0x22, 0x00, 0x46, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x02, 0x38, 0x00, 0x36, 0x00, 0x0a, 0x12, 0x09, 0x16, 0xd3, 0xac, 0x47,
++        0xde, 0x2e, 0x44, 0x58, 0x11, 0xaa, 0xc9, 0xa5, 0xb4, 0x76, 0x53, 0xab, 0x61, 0x12, 0x20,
++        0x0d, 0x01, 0x04, 0x00, 0x00, 0x11, 0x5d, 0xe7, 0x7a, 0xc7, 0x00, 0x00, 0x00, 0x00, 0x1a,
++        0x10, 0x0a, 0x0c, 0x55, 0x8a, 0x1b, 0x41, 0x86, 0x16, 0x0b, 0x3d, 0x0c, 0xda, 0xb2, 0xbd,
++        0x10, 0x00,
++    ];
++    const SAMPLE_ACCEL: &[u8] = &[
++        0x04, 0x17, 0x00, 0x22, 0x00, 0x46, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x02, 0x38, 0x00, 0x36, 0x00, 0x0a, 0x12, 0x09, 0x16, 0xd3, 0xac, 0x47,
++        0xde, 0x2e, 0x44, 0x58, 0x11, 0xaa, 0xc9, 0xa5, 0xb4, 0x76, 0x53, 0xab, 0x61, 0x12, 0x20,
++        0x0d, 0x01, 0x04, 0x00, 0x00, 0x11, 0x4f, 0xc9, 0x80, 0xc7, 0x00, 0x00, 0x00, 0x00, 0x1a,
++        0x10, 0x0a, 0x0c, 0xb5, 0x76, 0x1b, 0x41, 0xb0, 0xed, 0xee, 0x3c, 0xb0, 0xe4, 0x2e, 0xbc,
++        0x10, 0x03,
++    ];
++    const SAMPLE_GYRO: &[u8] = &[
++        0x04, 0x20, 0x00, 0x22, 0x00, 0x46, 0x00, 0x01, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
++        0x00, 0x00, 0x00, 0x02, 0x38, 0x00, 0x36, 0x00, 0x0a, 0x12, 0x09, 0x0f, 0xa3, 0x60, 0x17,
++        0x50, 0xde, 0x4a, 0x45, 0x11, 0xa1, 0x86, 0xfc, 0x3e, 0x42, 0xec, 0x9a, 0x14, 0x12, 0x20,
++        0x0d, 0x01, 0x04, 0x00, 0x00, 0x11, 0x76, 0xb9, 0x83, 0xc7, 0x00, 0x00, 0x00, 0x00, 0x1a,
++        0x10, 0x0a, 0x0c, 0x26, 0xe8, 0xe4, 0xbb, 0x4e, 0xc7, 0x9f, 0x3b, 0x43, 0x99, 0x85, 0xbb,
++        0x10, 0x03,
++    ];
++    const DISABLE_ACCEL: &[u8] = &[
++        0x00, 0x05, 0x00, 0x20, 0x00, 0x2a, 0x00, 0x01, 0x23, 0x00, 0x21, 0x00, 0x0a, 0x12, 0x09,
++        0x16, 0xd3, 0xac, 0x47, 0xde, 0x2e, 0x44, 0x58, 0x11, 0xaa, 0xc9, 0xa5, 0xb4, 0x76, 0x53,
++        0xab, 0x61, 0x15, 0x0a, 0x00, 0x00, 0x00, 0x1a, 0x04, 0x08, 0x01, 0x10, 0x01, 0x22, 0x00,
++        0x10, 0x01, 0x00, 0x01,
++    ];
++    const DISABLE_GYRO: &[u8] = &[
++        0x00, 0x06, 0x00, 0x20, 0x00, 0x2a, 0x00, 0x01, 0x23, 0x00, 0x21, 0x00, 0x0a, 0x12, 0x09,
++        0x0f, 0xa3, 0x60, 0x17, 0x50, 0xde, 0x4a, 0x45, 0x11, 0xa1, 0x86, 0xfc, 0x3e, 0x42, 0xec,
++        0x9a, 0x14, 0x15, 0x0a, 0x00, 0x00, 0x00, 0x1a, 0x04, 0x08, 0x01, 0x10, 0x01, 0x22, 0x00,
++        0x10, 0x01, 0x00, 0x01,
++    ];
++
++    const UID_ACCEL: Uid = Uid {
++        low: 0x58442ede47acd316,
++        high: 0x61ab5376b4a5c9aa,
++    };
++    const UID_GYRO: Uid = Uid {
++        low: 0x454ade501760a30f,
++        high: 0x149aec423efc86a1,
++    };
++
++    fn report(buf: &[u8]) -> (u8, u16, Option<(u16, u16)>, Option<&[u8]>) {
++        let msg = qmi::Message::parse(buf).unwrap();
++        (msg.kind, msg.msg_id, msg.result(), msg.ssc_data())
++    }
++
++    fn pm2_driver() -> Driver {
++        let mount_matrix = MountMatrix {
++            x: (0.0, -1.0, 0.0),
++            y: (1.0, 0.0, 0.0),
++            z: (0.0, 0.0, 1.0),
++        };
++        Driver::new(Some(mount_matrix), None)
++    }
++
++    #[test]
++    fn fixture_lookup() {
++        assert_eq!(qrtr::lookup_packet(SSC_SERVICE), LOOKUP);
++        let (cmd, server) = qrtr::parse_ctrl(NEW_SERVER).unwrap();
++        assert_eq!(cmd, qrtr::TYPE_NEW_SERVER);
++        assert_eq!(
++            server,
++            Server {
++                service: SSC_SERVICE,
++                instance: 1,
++                node: 9,
++                port: 13,
++            }
++        );
++        let (cmd, server) = qrtr::parse_ctrl(NEW_SERVER_END).unwrap();
++        assert_eq!(cmd, qrtr::TYPE_NEW_SERVER);
++        assert_eq!(server.service, 0);
++    }
++
++    #[test]
++    fn fixture_requests() {
++        let accel = suid_request(Sensor::Accel);
++        let gyro = suid_request(Sensor::Gyro);
++        let rate = enable_request(400.0);
++        assert_eq!(
++            request(1, SUID_UID, MSG_SUID_REQUEST, Some(&accel)),
++            SUID_REQUEST_ACCEL
++        );
++        assert_eq!(
++            request(2, SUID_UID, MSG_SUID_REQUEST, Some(&gyro)),
++            SUID_REQUEST_GYRO
++        );
++        assert_eq!(
++            request(3, UID_ACCEL, MSG_ENABLE_CONTINUOUS, Some(&rate)),
++            ENABLE_ACCEL
++        );
++        assert_eq!(
++            request(4, UID_GYRO, MSG_ENABLE_CONTINUOUS, Some(&rate)),
++            ENABLE_GYRO
++        );
++        assert_eq!(request(5, UID_ACCEL, MSG_DISABLE, None), DISABLE_ACCEL);
++        assert_eq!(request(6, UID_GYRO, MSG_DISABLE, None), DISABLE_GYRO);
++    }
++
++    #[test]
++    fn fixture_response() {
++        let (kind, msg_id, result, _) = report(RESPONSE_TXN_1);
++        assert_eq!(kind, qmi::TYPE_RESPONSE);
++        assert_eq!(msg_id, qmi::SSC_CONTROL);
++        assert_eq!(result, Some((0, 0)));
++    }
++
++    #[test]
++    fn fixture_suid_events() {
++        for (buf, sensor, uid) in [
++            (SUID_EVENT_ACCEL, Sensor::Accel, UID_ACCEL),
++            (SUID_EVENT_GYRO, Sensor::Gyro, UID_GYRO),
++        ] {
++            let (kind, msg_id, _, data) = report(buf);
++            assert_eq!(kind, qmi::TYPE_INDICATION);
++            assert_eq!(msg_id, qmi::SSC_REPORT_LARGE);
++            let (from, bodies) = parse_report(data.unwrap()).unwrap();
++            assert_eq!(from, SUID_UID);
++            assert_eq!(bodies.len(), 1);
++            assert_eq!(bodies[0].0, MSG_CONFIG_EVENT);
++            assert_eq!(parse_suid(bodies[0].1), Some((sensor, Some(uid))));
++        }
++    }
++
++    #[test]
++    fn fixture_config_events() {
++        let (_, _, _, data) = report(CONFIG_EVENT_ACCEL);
++        let (uid, bodies) = parse_report(data.unwrap()).unwrap();
++        assert_eq!(uid, UID_ACCEL);
++        assert_eq!(bodies[0].0, MSG_CONFIG_EVENT);
++        assert_eq!(protobuf::floats(bodies[0].1, 1).next(), Some(400.0));
++
++        let (_, _, _, data) = report(EVENT_1022_ACCEL);
++        let (uid, bodies) = parse_report(data.unwrap()).unwrap();
++        assert_eq!(uid, UID_ACCEL);
++        assert_eq!(bodies.len(), 1);
++        assert_eq!(bodies[0].0, 1022);
++    }
++
++    #[test]
++    fn fixture_samples() {
++        let driver = pm2_driver();
++
++        let (_, _, _, data) = report(SAMPLE_ACCEL_STATUS_0);
++        let (uid, bodies) = parse_report(data.unwrap()).unwrap();
++        assert_eq!(uid, UID_ACCEL);
++        assert_eq!(bodies[0].0, MSG_MEASUREMENT);
++        assert_eq!(sample(bodies[0].1), None);
++        assert!(driver.translate(Sensor::Accel, bodies[0].1).is_none());
++
++        let (_, _, _, data) = report(SAMPLE_ACCEL);
++        let (uid, bodies) = parse_report(data.unwrap()).unwrap();
++        assert_eq!(uid, UID_ACCEL);
++        let (x, y, z) = sample(bodies[0].1).unwrap();
++        assert_eq!(x, 9.71648120880127);
++        assert_eq!(y, 0.029166072607040405);
++        assert_eq!(z, -0.010674640536308289);
++        let event = driver.translate(Sensor::Accel, bodies[0].1).unwrap();
++        let native = translate_events(vec![event], 1.0, 1.0);
++        assert_eq!(
++            native[0].as_capability(),
++            Capability::Accelerometer(Source::Center)
++        );
++        let InputValue::Vector3 {
++            x: rx,
++            y: ry,
++            z: rz,
++        } = native[0].get_value()
++        else {
++            panic!("expected a vector value");
++        };
++        assert_eq!((rx, ry, rz), (Some(-y), Some(x), Some(z)));
++
++        let (_, _, _, data) = report(SAMPLE_GYRO);
++        let (uid, bodies) = parse_report(data.unwrap()).unwrap();
++        assert_eq!(uid, UID_GYRO);
++        let (x, y, z) = sample(bodies[0].1).unwrap();
++        assert_eq!(x, -0.006985682062804699);
++        assert_eq!(y, 0.0048760538920760155);
++        assert_eq!(z, -0.004077108111232519);
++        let event = driver.translate(Sensor::Gyro, bodies[0].1).unwrap();
++        let native = translate_events(vec![event], 1.0, 1.0);
++        assert_eq!(
++            native[0].as_capability(),
++            Capability::Gyroscope(Source::Center)
++        );
++        let InputValue::Vector3 {
++            x: rx,
++            y: ry,
++            z: rz,
++        } = native[0].get_value()
++        else {
++            panic!("expected a vector value");
++        };
++        assert_eq!((rx, ry, rz), (Some(-y), Some(x), Some(z)));
++    }
++
++    #[test]
++    fn filtered_sample() {
++        let mut driver = pm2_driver();
++        driver.update_filtered_events(HashSet::from([Capability::Gyroscope(Source::Center)]));
++        let (_, _, _, data) = report(SAMPLE_GYRO);
++        let (_, bodies) = parse_report(data.unwrap()).unwrap();
++        assert!(driver.translate(Sensor::Gyro, bodies[0].1).is_none());
++        let (_, _, _, data) = report(SAMPLE_ACCEL);
++        let (_, bodies) = parse_report(data.unwrap()).unwrap();
++        assert!(driver.translate(Sensor::Accel, bodies[0].1).is_some());
++    }
++
++    #[test]
++    fn suspend_and_resume() {
++        let mut driver = pm2_driver();
++        driver.resume();
++        assert!(driver.recovering.is_none());
++        driver.suspend();
++        assert!(driver.poll().unwrap().is_empty());
++        assert!(driver.session.is_none());
++        assert!(!driver.streaming());
++        driver.resume();
++        assert!(!driver.suspended);
++        assert!(driver.recovering.is_some());
++        assert!(driver.backoff.ready(Instant::now()));
++    }
++
++    const PM2_IMU: &str = "
++group: imu
++ssc:
++  name: fastrpc-sdsp
++config:
++  imu:
++    sample_rate: 400
++    mount_matrix:
++      x: [0, -1, 0]
++      y: [1, 0, 0]
++      z: [0, 0, 1]
++";
++
++    #[test]
++    fn pm2_config() {
++        let conf: config::SourceDevice = serde_yaml::from_str(PM2_IMU).unwrap();
++        let conf = Some(&conf);
++        assert_eq!(sample_rate_from_config(conf), Some(400.0));
++        let driver = Driver::new(
++            mount_matrix_from_config(conf),
++            sample_rate_from_config(conf),
++        );
++        let (accel_correction, gyro_correction) = corrections_from_config(conf);
++
++        let rate = enable_request(driver.sample_rate);
++        assert_eq!(
++            request(3, UID_ACCEL, MSG_ENABLE_CONTINUOUS, Some(&rate)),
++            ENABLE_ACCEL
++        );
++
++        let (_, _, _, data) = report(SAMPLE_ACCEL);
++        let (_, bodies) = parse_report(data.unwrap()).unwrap();
++        let event = driver.translate(Sensor::Accel, bodies[0].1).unwrap();
++        let native = translate_events(vec![event], accel_correction, gyro_correction);
++        let InputValue::Vector3 { x, y, z } = native[0].get_value() else {
++            panic!("expected a vector value");
++        };
++        assert_eq!(
++            (x, y, z),
++            (
++                Some(-0.029166072607040405),
++                Some(9.71648120880127),
++                Some(-0.010674640536308289)
++            )
++        );
++    }
++}
+diff --git a/src/drivers/ssc/mod.rs b/src/drivers/ssc/mod.rs
+new file mode 100644
+index 0000000..767330a
+--- /dev/null
++++ b/src/drivers/ssc/mod.rs
+@@ -0,0 +1,4 @@
++pub mod driver;
++pub mod protobuf;
++pub mod qmi;
++pub mod qrtr;
+diff --git a/src/drivers/ssc/protobuf.rs b/src/drivers/ssc/protobuf.rs
+new file mode 100644
+index 0000000..ee76821
+--- /dev/null
++++ b/src/drivers/ssc/protobuf.rs
+@@ -0,0 +1,178 @@
++#[derive(Debug, Clone, Copy)]
++pub enum Value<'a> {
++    Varint(u64),
++    Fixed64(u64),
++    Bytes(&'a [u8]),
++    Fixed32(u32),
++}
++
++pub fn put_varint(buf: &mut Vec<u8>, mut value: u64) {
++    loop {
++        let byte = (value & 0x7f) as u8;
++        value >>= 7;
++        if value == 0 {
++            buf.push(byte);
++            return;
++        }
++        buf.push(byte | 0x80);
++    }
++}
++
++fn put_key(buf: &mut Vec<u8>, field: u32, wire_type: u8) {
++    put_varint(buf, ((field as u64) << 3) | wire_type as u64);
++}
++
++pub fn put_uint(buf: &mut Vec<u8>, field: u32, value: u64) {
++    put_key(buf, field, 0);
++    put_varint(buf, value);
++}
++
++pub fn put_fixed64(buf: &mut Vec<u8>, field: u32, value: u64) {
++    put_key(buf, field, 1);
++    buf.extend_from_slice(&value.to_le_bytes());
++}
++
++pub fn put_bytes(buf: &mut Vec<u8>, field: u32, value: &[u8]) {
++    put_key(buf, field, 2);
++    put_varint(buf, value.len() as u64);
++    buf.extend_from_slice(value);
++}
++
++pub fn put_fixed32(buf: &mut Vec<u8>, field: u32, value: u32) {
++    put_key(buf, field, 5);
++    buf.extend_from_slice(&value.to_le_bytes());
++}
++
++pub fn put_float(buf: &mut Vec<u8>, field: u32, value: f32) {
++    put_fixed32(buf, field, value.to_bits());
++}
++
++fn read_varint(buf: &[u8], pos: &mut usize) -> Option<u64> {
++    let mut value = 0u64;
++    for shift in (0..64).step_by(7) {
++        let byte = *buf.get(*pos)?;
++        *pos += 1;
++        value |= ((byte & 0x7f) as u64) << shift;
++        if byte & 0x80 == 0 {
++            return Some(value);
++        }
++    }
++    None
++}
++
++fn read_slice<'a>(buf: &'a [u8], pos: &mut usize, len: usize) -> Option<&'a [u8]> {
++    let end = pos.checked_add(len)?;
++    let slice = buf.get(*pos..end)?;
++    *pos = end;
++    Some(slice)
++}
++
++pub struct Fields<'a> {
++    buf: &'a [u8],
++    pos: usize,
++}
++
++impl<'a> Iterator for Fields<'a> {
++    type Item = (u32, Value<'a>);
++
++    fn next(&mut self) -> Option<Self::Item> {
++        if self.pos >= self.buf.len() {
++            return None;
++        }
++        let field = self.read_field();
++        if field.is_none() {
++            self.pos = self.buf.len();
++        }
++        field
++    }
++}
++
++impl<'a> Fields<'a> {
++    fn read_field(&mut self) -> Option<(u32, Value<'a>)> {
++        let buf = self.buf;
++        let pos = &mut self.pos;
++        let key = read_varint(buf, pos)?;
++        let field = (key >> 3) as u32;
++        let value = match key & 0x7 {
++            0 => Value::Varint(read_varint(buf, pos)?),
++            1 => {
++                let bytes = read_slice(buf, pos, 8)?;
++                Value::Fixed64(u64::from_le_bytes(bytes.try_into().ok()?))
++            }
++            2 => {
++                let len = read_varint(buf, pos)? as usize;
++                Value::Bytes(read_slice(buf, pos, len)?)
++            }
++            5 => {
++                let bytes = read_slice(buf, pos, 4)?;
++                Value::Fixed32(u32::from_le_bytes(bytes.try_into().ok()?))
++            }
++            _ => return None,
++        };
++        Some((field, value))
++    }
++}
++
++pub fn fields(buf: &[u8]) -> Fields<'_> {
++    Fields { buf, pos: 0 }
++}
++
++pub fn floats(buf: &[u8], field: u32) -> impl Iterator<Item = f32> + '_ {
++    fields(buf)
++        .filter(move |(id, _)| *id == field)
++        .flat_map(|(_, value)| {
++            let single = match value {
++                Value::Fixed32(bits) => Some(f32::from_bits(bits)),
++                _ => None,
++            };
++            let packed: &[u8] = match value {
++                Value::Bytes(packed) => packed,
++                _ => &[],
++            };
++            single.into_iter().chain(
++                packed
++                    .chunks_exact(4)
++                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])),
++            )
++        })
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn round_trip() {
++        let mut buf = Vec::new();
++        put_fixed64(&mut buf, 1, 0xABABABABABABABAB);
++        put_fixed32(&mut buf, 2, 513);
++        put_uint(&mut buf, 3, 300);
++        put_bytes(&mut buf, 4, b"accel");
++        put_float(&mut buf, 5, 9.81);
++        let fields: Vec<_> = fields(&buf).collect();
++        assert_eq!(fields.len(), 5);
++        assert!(matches!(fields[0], (1, Value::Fixed64(0xABABABABABABABAB))));
++        assert!(matches!(fields[1], (2, Value::Fixed32(513))));
++        assert!(matches!(fields[2], (3, Value::Varint(300))));
++        assert!(matches!(fields[3], (4, Value::Bytes(b"accel"))));
++        assert_eq!(floats(&buf, 5).collect::<Vec<_>>(), vec![9.81]);
++    }
++
++    #[test]
++    fn packed_floats() {
++        let mut packed = Vec::new();
++        for value in [1.0f32, -2.5, 9.81] {
++            packed.extend_from_slice(&value.to_le_bytes());
++        }
++        let mut buf = Vec::new();
++        put_bytes(&mut buf, 1, &packed);
++        assert_eq!(floats(&buf, 1).collect::<Vec<_>>(), vec![1.0, -2.5, 9.81]);
++    }
++
++    #[test]
++    fn truncated() {
++        assert_eq!(fields(&[0x0a, 0x05, 0x01]).count(), 0);
++        assert_eq!(fields(&[0x09, 0x01]).count(), 0);
++        assert_eq!(fields(&[0x08, 0x01, 0x09, 0x01]).count(), 1);
++    }
++}
+diff --git a/src/drivers/ssc/qmi.rs b/src/drivers/ssc/qmi.rs
+new file mode 100644
+index 0000000..177c8e3
+--- /dev/null
++++ b/src/drivers/ssc/qmi.rs
+@@ -0,0 +1,106 @@
++pub const TYPE_REQUEST: u8 = 0;
++pub const TYPE_RESPONSE: u8 = 2;
++pub const TYPE_INDICATION: u8 = 4;
++
++pub const SSC_CONTROL: u16 = 0x0020;
++pub const SSC_REPORT_SMALL: u16 = 0x0021;
++pub const SSC_REPORT_LARGE: u16 = 0x0022;
++
++const SSC_REPORT_TYPE_LARGE: u8 = 1;
++const HEADER_LEN: usize = 7;
++
++pub struct Message<'a> {
++    pub kind: u8,
++    pub msg_id: u16,
++    tlvs: &'a [u8],
++}
++
++impl<'a> Message<'a> {
++    pub fn parse(buf: &'a [u8]) -> Option<Self> {
++        let header = buf.get(..HEADER_LEN)?;
++        let len = u16::from_le_bytes([header[5], header[6]]) as usize;
++        let tlvs = buf.get(HEADER_LEN..HEADER_LEN + len)?;
++        Some(Self {
++            kind: header[0],
++            msg_id: u16::from_le_bytes([header[3], header[4]]),
++            tlvs,
++        })
++    }
++
++    pub fn tlv(&self, id: u8) -> Option<&'a [u8]> {
++        let mut pos = 0;
++        while let Some(header) = self.tlvs.get(pos..pos + 3) {
++            let len = u16::from_le_bytes([header[1], header[2]]) as usize;
++            let value = self.tlvs.get(pos + 3..pos + 3 + len)?;
++            if header[0] == id {
++                return Some(value);
++            }
++            pos += 3 + len;
++        }
++        None
++    }
++
++    pub fn result(&self) -> Option<(u16, u16)> {
++        let value = self.tlv(0x02)?;
++        let value = value.get(..4)?;
++        Some((
++            u16::from_le_bytes([value[0], value[1]]),
++            u16::from_le_bytes([value[2], value[3]]),
++        ))
++    }
++
++    pub fn ssc_data(&self) -> Option<&'a [u8]> {
++        let value = self.tlv(0x02)?;
++        let len = u16::from_le_bytes([*value.first()?, *value.get(1)?]) as usize;
++        value.get(2..2 + len)
++    }
++}
++
++fn put_tlv(buf: &mut Vec<u8>, id: u8, value: &[u8]) {
++    buf.push(id);
++    buf.extend_from_slice(&(value.len() as u16).to_le_bytes());
++    buf.extend_from_slice(value);
++}
++
++pub fn ssc_control(txn: u16, data: &[u8]) -> Vec<u8> {
++    let mut payload = Vec::with_capacity(data.len() + 2);
++    payload.extend_from_slice(&(data.len() as u16).to_le_bytes());
++    payload.extend_from_slice(data);
++
++    let mut tlvs = Vec::with_capacity(payload.len() + 7);
++    put_tlv(&mut tlvs, 0x01, &payload);
++    put_tlv(&mut tlvs, 0x10, &[SSC_REPORT_TYPE_LARGE]);
++
++    let mut buf = Vec::with_capacity(tlvs.len() + HEADER_LEN);
++    buf.push(TYPE_REQUEST);
++    buf.extend_from_slice(&txn.to_le_bytes());
++    buf.extend_from_slice(&SSC_CONTROL.to_le_bytes());
++    buf.extend_from_slice(&(tlvs.len() as u16).to_le_bytes());
++    buf.extend_from_slice(&tlvs);
++    buf
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn control_request() {
++        let buf = ssc_control(7, &[0xaa, 0xbb]);
++        assert_eq!(
++            buf,
++            vec![0, 7, 0, 0x20, 0, 11, 0, 0x01, 4, 0, 2, 0, 0xaa, 0xbb, 0x10, 1, 0, 1]
++        );
++    }
++
++    #[test]
++    fn report_indication() {
++        let buf = [
++            4, 5, 0, 0x22, 0, 16, 0, 0x01, 8, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0x02, 2, 0, 0, 0,
++        ];
++        let msg = Message::parse(&buf[..23]).unwrap();
++        assert_eq!(msg.kind, TYPE_INDICATION);
++        assert_eq!(msg.msg_id, SSC_REPORT_LARGE);
++        assert_eq!(msg.ssc_data().unwrap(), &[] as &[u8]);
++    }
++}
+diff --git a/src/drivers/ssc/qrtr.rs b/src/drivers/ssc/qrtr.rs
+new file mode 100644
+index 0000000..43c8104
+--- /dev/null
++++ b/src/drivers/ssc/qrtr.rs
+@@ -0,0 +1,147 @@
++use std::{
++    io,
++    mem::size_of,
++    os::fd::{AsRawFd, FromRawFd, OwnedFd},
++};
++
++use nix::libc;
++
++pub const PORT_CTRL: u32 = 0xfffffffe;
++pub const TYPE_NEW_SERVER: u32 = 4;
++pub const TYPE_DEL_SERVER: u32 = 5;
++pub const TYPE_NEW_LOOKUP: u32 = 10;
++
++const AF_QIPCRTR: libc::c_int = 42;
++
++#[repr(C)]
++struct SockaddrQrtr {
++    family: libc::sa_family_t,
++    node: u32,
++    port: u32,
++}
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub struct Server {
++    pub service: u32,
++    pub instance: u32,
++    pub node: u32,
++    pub port: u32,
++}
++
++pub struct Socket {
++    fd: OwnedFd,
++    node: u32,
++}
++
++impl Socket {
++    pub fn new() -> io::Result<Self> {
++        let fd = unsafe {
++            libc::socket(
++                AF_QIPCRTR,
++                libc::SOCK_DGRAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
++                0,
++            )
++        };
++        if fd < 0 {
++            return Err(io::Error::last_os_error());
++        }
++        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
++
++        let mut addr = SockaddrQrtr {
++            family: 0,
++            node: 0,
++            port: 0,
++        };
++        let mut len = size_of::<SockaddrQrtr>() as libc::socklen_t;
++        let ret = unsafe {
++            libc::getsockname(
++                fd.as_raw_fd(),
++                &mut addr as *mut SockaddrQrtr as *mut libc::sockaddr,
++                &mut len,
++            )
++        };
++        if ret < 0 {
++            return Err(io::Error::last_os_error());
++        }
++
++        Ok(Self {
++            fd,
++            node: addr.node,
++        })
++    }
++
++    pub fn send_to(&self, node: u32, port: u32, data: &[u8]) -> io::Result<()> {
++        let addr = SockaddrQrtr {
++            family: AF_QIPCRTR as libc::sa_family_t,
++            node,
++            port,
++        };
++        let ret = unsafe {
++            libc::sendto(
++                self.fd.as_raw_fd(),
++                data.as_ptr() as *const libc::c_void,
++                data.len(),
++                0,
++                &addr as *const SockaddrQrtr as *const libc::sockaddr,
++                size_of::<SockaddrQrtr>() as libc::socklen_t,
++            )
++        };
++        if ret < 0 {
++            return Err(io::Error::last_os_error());
++        }
++        Ok(())
++    }
++
++    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<Option<(usize, u32, u32)>> {
++        let mut addr = SockaddrQrtr {
++            family: 0,
++            node: 0,
++            port: 0,
++        };
++        let mut len = size_of::<SockaddrQrtr>() as libc::socklen_t;
++        let ret = unsafe {
++            libc::recvfrom(
++                self.fd.as_raw_fd(),
++                buf.as_mut_ptr() as *mut libc::c_void,
++                buf.len(),
++                0,
++                &mut addr as *mut SockaddrQrtr as *mut libc::sockaddr,
++                &mut len,
++            )
++        };
++        if ret < 0 {
++            let err = io::Error::last_os_error();
++            if err.kind() == io::ErrorKind::WouldBlock {
++                return Ok(None);
++            }
++            return Err(err);
++        }
++        Ok(Some((ret as usize, addr.node, addr.port)))
++    }
++
++    pub fn lookup(&self, service: u32) -> io::Result<()> {
++        self.send_to(self.node, PORT_CTRL, &lookup_packet(service))
++    }
++}
++
++pub fn lookup_packet(service: u32) -> Vec<u8> {
++    let mut pkt = Vec::with_capacity(20);
++    for value in [TYPE_NEW_LOOKUP, service, 0, 0, 0] {
++        pkt.extend_from_slice(&value.to_le_bytes());
++    }
++    pkt
++}
++
++pub fn parse_ctrl(buf: &[u8]) -> Option<(u32, Server)> {
++    let buf = buf.get(..20)?;
++    let word = |i: usize| u32::from_le_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]);
++    Some((
++        word(0),
++        Server {
++            service: word(4),
++            instance: word(8),
++            node: word(12),
++            port: word(16),
++        },
++    ))
++}
+diff --git a/src/input/composite_device/mod.rs b/src/input/composite_device/mod.rs
+index 3cca2ba..1a1d50b 100644
+--- a/src/input/composite_device/mod.rs
++++ b/src/input/composite_device/mod.rs
+@@ -26,7 +26,7 @@ use crate::{
+         DBusInterfaceManager,
+     },
+     input::{
+-        capability::{Capability, Gamepad, GamepadButton, Mouse},
++        capability::{Capability, Gamepad, GamepadButton, Mouse, Source},
+         event::{
+             native::NativeEvent,
+             value::{InputValue, TranslationError},
+@@ -36,7 +36,7 @@ use crate::{
+         output_event::UinputOutputEvent,
+         source::{
+             evdev::EventDevice, hidraw::HidRawDevice, iio::IioDevice, led::LedDevice,
+-            tty::TtyDevice, SourceDevice,
++            ssc::SscDevice, tty::TtyDevice, SourceDevice, SourceDeviceCompatible,
+         },
+         target::TargetDeviceTypeId,
+     },
+@@ -133,6 +133,9 @@ pub struct CompositeDevice {
+     /// HashSet of source devices that are blocked from passing their input events to target
+     /// events.
+     source_devices_blocked: HashSet<String>,
++    ssc_sources: HashSet<String>,
++    ssc_filter_sent: HashMap<String, HashSet<Capability>>,
++    user_filtered_events: HashMap<String, HashSet<Capability>>,
+     /// Physical device path for source devices. E.g. ["/dev/input/event0"]
+     source_device_paths: Vec<String>,
+     /// All currently running source device threads
+@@ -212,6 +215,9 @@ impl CompositeDevice {
+             source_devices_discovered: Vec::new(),
+             source_devices_to_hide: Vec::new(),
+             source_devices_blocked: HashSet::new(),
++            ssc_sources: HashSet::new(),
++            ssc_filter_sent: HashMap::new(),
++            user_filtered_events: HashMap::new(),
+             source_device_paths: Vec::new(),
+             source_device_tasks: JoinSet::new(),
+             source_device_persistent_ids: HashMap::new(),
+@@ -297,6 +303,7 @@ impl CompositeDevice {
+ 
+         // Start all source devices
+         self.run_source_devices().await?;
++        self.apply_motion_filter().await;
+ 
+         // Set persist value from config if set, used to determine
+         // if CompositeDevice self-closes after all SourceDevices have
+@@ -411,6 +418,7 @@ impl CompositeDevice {
+                         {
+                             log::error!("Failed to set target devices: {e}");
+                         }
++                        self.apply_motion_filter().await;
+                     }
+                     CompositeCommand::TargetDevicesCreated(paths) => {
+                         self.targets.finish_target_creation(paths);
+@@ -422,6 +430,7 @@ impl CompositeDevice {
+                                 log::error!("Failed to set target devices: {e}");
+                             }
+                         }
++                        self.apply_motion_filter().await;
+                     }
+                     CompositeCommand::AttachTargetDevices(targets) => {
+                         if let Err(e) = self.targets.attach_devices(targets).await {
+@@ -435,6 +444,7 @@ impl CompositeDevice {
+                                 log::error!("Failed to set target devices: {e}");
+                             }
+                         }
++                        self.apply_motion_filter().await;
+                     }
+                     CompositeCommand::GetName(sender) => {
+                         let name = self.name.clone();
+@@ -517,6 +527,7 @@ impl CompositeDevice {
+                             "Updating target capabilities for '{dbus_path}': {capabilities:?}"
+                         );
+                         self.targets.update_capabilities(dbus_path, capabilities);
++                        self.apply_motion_filter().await;
+                     }
+                     CompositeCommand::WriteEvent(event) => {
+                         if let Err(e) = self.write_event(event).await {
+@@ -566,6 +577,7 @@ impl CompositeDevice {
+                             self.dbus.path()
+                         );
+                         self.targets.handle_suspend().await;
++                        self.apply_motion_filter().await;
+                         if let Err(e) = sender.send(()).await {
+                             log::error!("Failed to send suspend response: {e:?}");
+                         }
+@@ -577,6 +589,7 @@ impl CompositeDevice {
+                         );
+                         let persistent_id = self.get_persistent_id().await;
+                         self.targets.handle_resume(&persistent_id).await;
++                        self.apply_motion_filter().await;
+                         if let Err(e) = sender.send(()).await {
+                             log::error!("Failed to send resume response: {e:?}");
+                         }
+@@ -644,6 +657,10 @@ impl CompositeDevice {
+                 log::debug!("Skipping unhiding IIO device: {source_path}");
+                 continue;
+             }
++            if source_path.starts_with("/dev/fastrpc-") {
++                log::debug!("Skipping unhiding SSC device: {source_path}");
++                continue;
++            }
+             log::debug!("Un-hiding device: {}", source_path);
+             if let Err(e) = unhide_device(source_path.clone()).await {
+                 log::debug!("Unable to unhide device {source_path}: {:?}", e);
+@@ -1594,6 +1611,7 @@ impl CompositeDevice {
+             return Err(e.to_string().into());
+         }
+         self.run_source_devices().await?;
++        self.apply_motion_filter().await;
+ 
+         // Signal to DBus that source devices have changed
+         self.signal_sources_changed().await;
+@@ -1609,6 +1627,9 @@ impl CompositeDevice {
+     async fn on_source_device_removed(&mut self, device: DeviceInfo) -> Result<(), Box<dyn Error>> {
+         let path = device.path();
+         let id = device.get_id();
++        self.ssc_sources.remove(&id);
++        self.ssc_filter_sent.remove(&id);
++        self.user_filtered_events.remove(&id);
+ 
+         // Remove any ffb effects this device registered
+         let mut freed_effect_ids = Vec::new();
+@@ -1740,8 +1761,10 @@ impl CompositeDevice {
+                     .as_ref()
+                     .and_then(|c| c.passthrough)
+                     .unwrap_or(false);
+-                let should_hide =
+-                    !should_passthru && subsystem.as_str() != "iio" && subsystem.as_str() != "tty";
++                let should_hide = !should_passthru
++                    && subsystem.as_str() != "iio"
++                    && subsystem.as_str() != "tty"
++                    && subsystem.as_str() != "misc";
+                 if should_hide {
+                     let source_path = device.devnode();
+                     // The device should be hidden if either the udev device has
+@@ -1794,6 +1817,14 @@ impl CompositeDevice {
+                         let device = TtyDevice::new(device, self.client(), source_config.clone())?;
+                         SourceDevice::Tty(device)
+                     }
++                    "misc" => {
++                        log::debug!("Adding SSC source device: {:?}", device.sysname());
++                        let device = SscDevice::new(device, self.client(), source_config.clone())?;
++                        let id = device.get_id();
++                        self.ssc_filter_sent.remove(&id);
++                        self.ssc_sources.insert(id);
++                        SourceDevice::Ssc(device)
++                    }
+                     _ => {
+                         return Err(format!(
+                             "Unspported subsystem: {subsystem}, unable to add source device {}",
+@@ -2226,20 +2257,66 @@ impl CompositeDevice {
+         let mut events = events.clone();
+         for (source_id, client) in self.source_devices.iter() {
+             let capabilities = events.remove(source_id).unwrap_or_default();
++            self.user_filtered_events
++                .insert(source_id.clone(), capabilities.iter().cloned().collect());
++            if self.ssc_sources.contains(source_id) {
++                continue;
++            }
+             client.set_filtered_events(capabilities).await?;
+         }
++        self.apply_motion_filter().await;
+         Ok(())
+     }
+ 
++    async fn apply_motion_filter(&mut self) {
++        let motion = self.targets.motion_wanted();
++        for source_id in self.ssc_sources.iter() {
++            let Some(client) = self.source_devices.get(source_id) else {
++                continue;
++            };
++            let mut events = self
++                .user_filtered_events
++                .get(source_id)
++                .cloned()
++                .unwrap_or_default();
++            if !motion {
++                events.insert(Capability::Accelerometer(Source::Center));
++                events.insert(Capability::Gyroscope(Source::Center));
++            }
++            if self.ssc_filter_sent.get(source_id) == Some(&events) {
++                continue;
++            }
++            log::debug!("Setting motion filter for {source_id}: {events:?}");
++            let capabilities = events.iter().cloned().collect();
++            if let Err(e) = client.set_filtered_events(capabilities).await {
++                log::warn!("Failed to set motion filter for {source_id}: {e}");
++                continue;
++            }
++            self.ssc_filter_sent.insert(source_id.clone(), events);
++        }
++    }
++
+     /// Probes all source devices for thier currently filtered events and returns a [HashMap] of
+     /// source device Id's to filtered capabilities.
+     async fn get_filtered_events(&self, sender: mpsc::Sender<HashMap<String, Vec<Capability>>>) {
+         let source_devices = self.source_devices.clone();
++        let ssc_filtered: HashMap<String, Vec<Capability>> = self
++            .ssc_sources
++            .iter()
++            .map(|source_id| {
++                let events = self.user_filtered_events.get(source_id);
++                let events = events.map(|e| e.iter().cloned().collect());
++                (source_id.clone(), events.unwrap_or_default())
++            })
++            .collect();
+ 
+         tokio::task::spawn(async move {
+             let mut filtered_events = HashMap::new();
+             for (source_id, client) in source_devices.into_iter() {
+-                let capabilities = client.get_filtered_events().await.unwrap_or_default();
++                let capabilities = match ssc_filtered.get(&source_id) {
++                    Some(capabilities) => capabilities.clone(),
++                    None => client.get_filtered_events().await.unwrap_or_default(),
++                };
+ 
+                 if capabilities.is_empty() {
+                     continue;
+diff --git a/src/input/composite_device/targets.rs b/src/input/composite_device/targets.rs
+index e3a9d05..82fe4de 100644
+--- a/src/input/composite_device/targets.rs
++++ b/src/input/composite_device/targets.rs
+@@ -499,6 +499,15 @@ impl CompositeDeviceTargets {
+         }
+     }
+ 
++    pub fn motion_wanted(&self) -> bool {
++        self.target_devices_by_capability
++            .iter()
++            .any(|(cap, devices)| {
++                !devices.is_empty()
++                    && matches!(cap, Capability::Accelerometer(_) | Capability::Gyroscope(_))
++            })
++    }
++
+     /// Attach the given target devices to the composite device
+     pub async fn attach_devices(
+         &mut self,
+diff --git a/src/input/manager.rs b/src/input/manager.rs
+index 2c55128..9552586 100644
+--- a/src/input/manager.rs
++++ b/src/input/manager.rs
+@@ -35,7 +35,7 @@ use crate::dbus::interface::{
+ };
+ use crate::dmi::{data::DMIData, get_cpu_info};
+ use crate::input::{
+-    source::{evdev, hidraw, iio, led, tty},
++    source::{evdev, hidraw, iio, led, ssc, tty},
+     target::{TargetDevice, TargetDeviceTypeId},
+ };
+ use crate::udev::{
+@@ -270,7 +270,7 @@ impl Manager {
+         self.listen_on_dbus();
+         let _ = tokio::join!(
+             Self::discover_all_devices(&cmd_tx_all_devices),
+-            Self::watch_iio_devices(self.tx.clone()),
++            Self::watch_udev_devices(self.tx.clone()),
+             Self::watch_devnodes(self.tx.clone(), &mut watcher_rx),
+             self.events_loop()
+         );
+@@ -1389,6 +1389,7 @@ impl Manager {
+                 "iio" => iio::get_dbus_path(sys_name),
+                 "leds" => led::get_dbus_path(sys_name),
+                 "tty" => tty::get_dbus_path(sys_name),
++                "misc" => ssc::get_dbus_path(sys_name),
+                 _ => return Err(format!("Device subsystem not supported: {subsystem:?}").into()),
+             };
+             let conn = self.dbus.connection().clone();
+@@ -1596,6 +1597,10 @@ impl Manager {
+                 }
+             }
+ 
++            "misc" => {
++                log::debug!("SSC anchor device added: {dev_sysname}");
++            }
++
+             _ => {
+                 return Err(format!("Device subsystem not supported: {subsystem:?}").into());
+             }
+@@ -1663,12 +1668,14 @@ impl Manager {
+         Err(Box::from("No available dbus path left"))
+     }
+ 
+-    /// Watch for IIO device events
+-    fn watch_iio_devices(
++    fn watch_udev_devices(
+         cmd_tx: mpsc::Sender<ManagerCommand>,
+     ) -> tokio::task::JoinHandle<Result<(), Box<dyn Error + std::marker::Send + Sync>>> {
+         task::spawn_blocking(move || {
+-            let mut monitor = MonitorBuilder::new()?.match_subsystem("iio")?.listen()?;
++            let mut monitor = MonitorBuilder::new()?
++                .match_subsystem("iio")?
++                .match_subsystem("misc")?
++                .listen()?;
+ 
+             let mut poll = Poll::new()?;
+             let mut events = Events::with_capacity(1024);
+@@ -1685,26 +1692,33 @@ impl Manager {
+                     let device = event.device();
+                     let dev_name = device.name();
+                     let dev_sysname = device.sysname().to_string_lossy();
++                    let subsystem = device.subsystem().unwrap_or_default().to_string_lossy();
++                    if subsystem == "misc" && !ssc::is_anchor_device(&dev_sysname) {
++                        continue;
++                    }
+ 
+                     match action.to_string_lossy().trim() {
+                         "add" => {
+                             log::debug!(
+-                                "Got udev add action for iio device {dev_name} ({dev_sysname})"
++                                "Got udev add action for {subsystem} device {dev_name} ({dev_sysname})"
+                             );
+                             cmd_tx.blocking_send(ManagerCommand::DeviceAdded {
+                                 device: device.into(),
+                             })?;
+                         }
++                        "remove" if subsystem == "misc" => {
++                            log::debug!("Keeping SSC source across removal of {dev_sysname}");
++                        }
+                         "remove" => {
+                             log::debug!(
+-                                "Got udev remove action for iio device {dev_name} ({dev_sysname})"
++                                "Got udev remove action for {subsystem} device {dev_name} ({dev_sysname})"
+                             );
+                             cmd_tx.blocking_send(ManagerCommand::DeviceRemoved {
+                                 device: device.into(),
+                             })?;
+                         }
+                         unhandled_action => {
+-                            log::trace!("Unhandled udev action for iio device {dev_name} ({dev_sysname}: {unhandled_action}");
++                            log::trace!("Unhandled udev action for {subsystem} device {dev_name} ({dev_sysname}: {unhandled_action}");
+                         }
+                     }
+                 }
+@@ -1835,6 +1849,13 @@ impl Manager {
+         let tty_devices = udev::discover_devices("tty")?;
+         let tty_devices = tty_devices.into_iter().map(|dev| dev.into()).collect();
+         Manager::discover_devices(cmd_tx, tty_devices).await?;
++        let misc_devices = udev::discover_devices("misc")?;
++        let misc_devices = misc_devices
++            .into_iter()
++            .filter(|dev| ssc::is_anchor_device(&dev.sysname().to_string_lossy()))
++            .map(|dev| dev.into())
++            .collect();
++        Manager::discover_devices(cmd_tx, misc_devices).await?;
+ 
+         Ok(())
+     }
+diff --git a/src/input/source/iio.rs b/src/input/source/iio.rs
+index fae452f..8a0e28e 100644
+--- a/src/input/source/iio.rs
++++ b/src/input/source/iio.rs
+@@ -1,6 +1,6 @@
+ pub mod accel_gyro_3d;
+ pub mod bmi_imu;
+-mod common;
++pub(crate) mod common;
+ 
+ use std::{error::Error, time::Duration};
+ 
+diff --git a/src/input/source/iio/common.rs b/src/input/source/iio/common.rs
+index e1633a4..d129211 100644
+--- a/src/input/source/iio/common.rs
++++ b/src/input/source/iio/common.rs
+@@ -8,7 +8,7 @@ use crate::{
+ };
+ 
+ /// List of all capabilities that the iio IMU drivers implement
+-pub(super) const CAPABILITIES: &[Capability] = &[
++pub(in crate::input::source) const CAPABILITIES: &[Capability] = &[
+     Capability::Accelerometer(Source::Center),
+     Capability::Gyroscope(Source::Center),
+ ];
+@@ -16,7 +16,7 @@ pub(super) const CAPABILITIES: &[Capability] = &[
+ /// Build a mount matrix override from the per-device config, if one is set.
+ /// The `config.imu.mount_matrix` option takes precedence over the
+ /// deprecated `iio.mount_matrix` option.
+-pub(super) fn mount_matrix_from_config(
++pub(crate) fn mount_matrix_from_config(
+     config: Option<&config::SourceDevice>,
+ ) -> Option<MountMatrix> {
+     let matrix = config
+@@ -39,7 +39,7 @@ fn deprecated_mount_matrix(config: Option<&config::SourceDevice>) -> Option<&con
+ /// The sample rate requested in the per-device config, if one is set.
+ /// The `config.imu.sample_rate` option takes precedence over the
+ /// `iio.sample_rate` option.
+-pub(super) fn sample_rate_from_config(
++pub(crate) fn sample_rate_from_config(
+     config: Option<&config::SourceDevice>,
+ ) -> Option<f64> {
+     if let Some(rate) = config
+@@ -57,7 +57,7 @@ pub(super) fn sample_rate_from_config(
+ 
+ /// The scale correction factors requested in the per-device config.
+ /// Each defaults to 1.0 when the option is not set.
+-pub(super) fn corrections_from_config(config: Option<&config::SourceDevice>) -> (f64, f64) {
++pub(crate) fn corrections_from_config(config: Option<&config::SourceDevice>) -> (f64, f64) {
+     let imu = config
+         .and_then(|c| c.config.as_ref())
+         .and_then(|c| c.imu.as_ref());
+@@ -77,7 +77,7 @@ fn to_mount_matrix(matrix: &config::MountMatrix) -> MountMatrix {
+ 
+ /// Translate the given driver events into native events, applying the given
+ /// per-group scale corrections to the kernel-reported scale.
+-pub(super) fn translate_events(
++pub(crate) fn translate_events(
+     events: Vec<iio_imu::event::Event>,
+     accel_correction: f64,
+     gyro_correction: f64,
+diff --git a/src/input/source/mod.rs b/src/input/source/mod.rs
+index 5844fce..b7841c1 100644
+--- a/src/input/source/mod.rs
++++ b/src/input/source/mod.rs
+@@ -17,7 +17,7 @@ use crate::config;
+ 
+ use self::{
+     client::SourceDeviceClient, command::SourceCommand, evdev::EventDevice, hidraw::HidRawDevice,
+-    iio::IioDevice, tty::TtyDevice,
++    iio::IioDevice, ssc::SscDevice, tty::TtyDevice,
+ };
+ 
+ use super::{
+@@ -35,6 +35,7 @@ pub mod evdev;
+ pub mod hidraw;
+ pub mod iio;
+ pub mod led;
++pub mod ssc;
+ pub mod tty;
+ 
+ /// Size of the [SourceCommand] buffer for receiving output events
+@@ -632,6 +633,7 @@ pub enum SourceDevice {
+     Iio(IioDevice),
+     Led(LedDevice),
+     Tty(TtyDevice),
++    Ssc(SscDevice),
+ }
+ 
+ impl SourceDevice {
+@@ -643,6 +645,7 @@ impl SourceDevice {
+             SourceDevice::Iio(device) => device.get_device_ref(),
+             SourceDevice::Led(device) => device.get_device_ref(),
+             SourceDevice::Tty(device) => device.get_device_ref(),
++            SourceDevice::Ssc(device) => device.get_device_ref(),
+         }
+     }
+ 
+@@ -654,6 +657,7 @@ impl SourceDevice {
+             SourceDevice::Iio(device) => device.get_id(),
+             SourceDevice::Led(device) => device.get_id(),
+             SourceDevice::Tty(device) => device.get_id(),
++            SourceDevice::Ssc(device) => device.get_id(),
+         }
+     }
+ 
+@@ -665,6 +669,7 @@ impl SourceDevice {
+             SourceDevice::Iio(_) => None,
+             SourceDevice::Led(_) => None,
+             SourceDevice::Tty(_) => None,
++            SourceDevice::Ssc(_) => None,
+         }
+     }
+ 
+@@ -676,6 +681,7 @@ impl SourceDevice {
+             SourceDevice::Iio(device) => device.client(),
+             SourceDevice::Led(device) => device.client(),
+             SourceDevice::Tty(device) => device.client(),
++            SourceDevice::Ssc(device) => device.client(),
+         }
+     }
+ 
+@@ -687,6 +693,7 @@ impl SourceDevice {
+             SourceDevice::Iio(device) => device.run().await,
+             SourceDevice::Led(device) => device.run().await,
+             SourceDevice::Tty(device) => device.run().await,
++            SourceDevice::Ssc(device) => device.run().await,
+         }
+     }
+ 
+@@ -698,6 +705,7 @@ impl SourceDevice {
+             SourceDevice::Iio(device) => device.get_capabilities(),
+             SourceDevice::Led(device) => device.get_capabilities(),
+             SourceDevice::Tty(device) => device.get_capabilities(),
++            SourceDevice::Ssc(device) => device.get_capabilities(),
+         }
+     }
+ 
+@@ -709,6 +717,7 @@ impl SourceDevice {
+             SourceDevice::Iio(device) => device.get_output_capabilities(),
+             SourceDevice::Led(device) => device.get_output_capabilities(),
+             SourceDevice::Tty(device) => device.get_output_capabilities(),
++            SourceDevice::Ssc(device) => device.get_output_capabilities(),
+         }
+     }
+ 
+@@ -720,6 +729,7 @@ impl SourceDevice {
+             SourceDevice::Iio(device) => device.get_device_path(),
+             SourceDevice::Led(device) => device.get_device_path(),
+             SourceDevice::Tty(device) => device.get_device_path(),
++            SourceDevice::Ssc(device) => device.get_device_path(),
+         }
+     }
+ }
+diff --git a/src/input/source/ssc.rs b/src/input/source/ssc.rs
+new file mode 100644
+index 0000000..595fa9f
+--- /dev/null
++++ b/src/input/source/ssc.rs
+@@ -0,0 +1,90 @@
++pub mod imu;
++mod sleep;
++
++use std::error::Error;
++
++use glob_match::glob_match;
++
++use crate::{
++    config,
++    constants::BUS_SOURCES_PREFIX,
++    input::{
++        capability::Capability, composite_device::client::CompositeDeviceClient,
++        info::DeviceInfoRef, output_capability::OutputCapability,
++    },
++    udev::device::UdevDevice,
++};
++
++use self::imu::SscImu;
++
++use super::{InputError, OutputError, SourceDeviceCompatible, SourceDriver};
++
++const ANCHOR_DEVICES: &str = "fastrpc-*dsp";
++
++#[derive(Debug)]
++pub enum SscDevice {
++    Imu(SourceDriver<SscImu>),
++}
++
++impl SourceDeviceCompatible for SscDevice {
++    fn get_device_ref(&self) -> DeviceInfoRef<'_> {
++        match self {
++            SscDevice::Imu(source_driver) => source_driver.info_ref(),
++        }
++    }
++
++    fn get_id(&self) -> String {
++        match self {
++            SscDevice::Imu(source_driver) => source_driver.get_id(),
++        }
++    }
++
++    fn client(&self) -> super::client::SourceDeviceClient {
++        match self {
++            SscDevice::Imu(source_driver) => source_driver.client(),
++        }
++    }
++
++    async fn run(self) -> Result<(), Box<dyn Error>> {
++        match self {
++            SscDevice::Imu(source_driver) => source_driver.run().await,
++        }
++    }
++
++    fn get_capabilities(&self) -> Result<Vec<Capability>, InputError> {
++        match self {
++            SscDevice::Imu(source_driver) => source_driver.get_capabilities(),
++        }
++    }
++
++    fn get_output_capabilities(&self) -> Result<Vec<OutputCapability>, OutputError> {
++        Ok(vec![])
++    }
++
++    fn get_device_path(&self) -> String {
++        match self {
++            SscDevice::Imu(source_driver) => source_driver.get_device_path(),
++        }
++    }
++}
++
++impl SscDevice {
++    pub fn new(
++        device_info: UdevDevice,
++        composite_device: CompositeDeviceClient,
++        conf: Option<config::SourceDevice>,
++    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
++        let device = SscImu::new(conf.as_ref());
++        let source_device = SourceDriver::new(composite_device, device, device_info.into(), conf);
++        Ok(Self::Imu(source_device))
++    }
++}
++
++pub fn is_anchor_device(sysname: &str) -> bool {
++    glob_match(ANCHOR_DEVICES, sysname)
++}
++
++pub fn get_dbus_path(id: String) -> String {
++    let name = id.replace([':', '-', '.'], "_");
++    format!("{}/{}", BUS_SOURCES_PREFIX, name)
++}
+diff --git a/src/input/source/ssc/imu.rs b/src/input/source/ssc/imu.rs
+new file mode 100644
+index 0000000..af0358e
+--- /dev/null
++++ b/src/input/source/ssc/imu.rs
+@@ -0,0 +1,133 @@
++use std::{
++    collections::HashSet,
++    fmt::Debug,
++    thread,
++    time::{Duration, Instant},
++};
++
++use tokio::{
++    runtime::Handle,
++    sync::mpsc::{self, error::TryRecvError},
++    task::JoinHandle,
++};
++
++use crate::{
++    config,
++    drivers::ssc::driver::{Backoff, Driver},
++    input::{
++        capability::Capability,
++        event::native::NativeEvent,
++        source::{
++            iio::common::{
++                corrections_from_config, mount_matrix_from_config, sample_rate_from_config,
++                translate_events, CAPABILITIES,
++            },
++            InputError, SourceInputDevice, SourceOutputDevice,
++        },
++    },
++};
++
++use super::sleep::{self, SleepEvent};
++
++const IDLE_POLL: Duration = Duration::from_millis(50);
++
++pub struct SscImu {
++    driver: Driver,
++    accel_correction: f64,
++    gyro_correction: f64,
++    runtime: Handle,
++    sleep_rx: mpsc::UnboundedReceiver<SleepEvent>,
++    sleep_task: JoinHandle<()>,
++    sleep_watching: bool,
++    sleep_backoff: Backoff,
++}
++
++impl SscImu {
++    pub fn new(conf: Option<&config::SourceDevice>) -> Self {
++        let mount_matrix = mount_matrix_from_config(conf);
++        let sample_rate = sample_rate_from_config(conf);
++        let (accel_correction, gyro_correction) = corrections_from_config(conf);
++        let driver = Driver::new(mount_matrix, sample_rate);
++        let runtime = Handle::current();
++        let (sleep_rx, sleep_task) = sleep::watch(&runtime);
++        Self {
++            driver,
++            accel_correction,
++            gyro_correction,
++            runtime,
++            sleep_rx,
++            sleep_task,
++            sleep_watching: true,
++            sleep_backoff: Backoff::new(Instant::now()),
++        }
++    }
++
++    fn handle_sleep(&mut self) {
++        loop {
++            match self.sleep_rx.try_recv() {
++                Ok(SleepEvent::Sleep(lock)) => {
++                    self.sleep_backoff.reset();
++                    self.driver.suspend();
++                    drop(lock);
++                }
++                Ok(SleepEvent::Wake) => {
++                    self.sleep_backoff.reset();
++                    self.driver.resume();
++                }
++                Err(TryRecvError::Empty) => return,
++                Err(TryRecvError::Disconnected) => break,
++            }
++        }
++
++        let now = Instant::now();
++        if self.sleep_watching {
++            self.sleep_watching = false;
++            self.driver.resume();
++            let delay = self.sleep_backoff.fail(now);
++            log::warn!("System suspend watch ended, restarting in {delay:?}");
++            return;
++        }
++        if self.sleep_backoff.ready(now) {
++            (self.sleep_rx, self.sleep_task) = sleep::watch(&self.runtime);
++            self.sleep_watching = true;
++        }
++    }
++}
++
++impl Drop for SscImu {
++    fn drop(&mut self) {
++        self.sleep_task.abort();
++    }
++}
++
++impl SourceInputDevice for SscImu {
++    fn poll(&mut self) -> Result<Vec<NativeEvent>, InputError> {
++        self.handle_sleep();
++        let events = self.driver.poll().map_err(|e| e.to_string())?;
++        if !self.driver.streaming() {
++            thread::sleep(IDLE_POLL);
++        }
++        Ok(translate_events(
++            events,
++            self.accel_correction,
++            self.gyro_correction,
++        ))
++    }
++
++    fn get_capabilities(&self) -> Result<Vec<Capability>, InputError> {
++        Ok(CAPABILITIES.into())
++    }
++
++    fn update_event_filter(&mut self, events: HashSet<Capability>) -> Result<(), InputError> {
++        self.driver.update_filtered_events(events);
++        Ok(())
++    }
++}
++
++impl SourceOutputDevice for SscImu {}
++
++impl Debug for SscImu {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("SscImu").finish()
++    }
++}
+diff --git a/src/input/source/ssc/sleep.rs b/src/input/source/ssc/sleep.rs
+new file mode 100644
+index 0000000..c9f0553
+--- /dev/null
++++ b/src/input/source/ssc/sleep.rs
+@@ -0,0 +1,67 @@
++use futures::StreamExt;
++use tokio::{runtime::Handle, sync::mpsc, task::JoinHandle};
++use zbus::{proxy, zvariant::OwnedFd, Connection};
++
++#[proxy(
++    interface = "org.freedesktop.login1.Manager",
++    default_service = "org.freedesktop.login1",
++    default_path = "/org/freedesktop/login1"
++)]
++trait Login1Manager {
++    fn inhibit(&self, what: &str, who: &str, why: &str, mode: &str) -> zbus::Result<OwnedFd>;
++
++    #[zbus(signal)]
++    fn prepare_for_sleep(&self, start: bool) -> zbus::Result<()>;
++}
++
++pub enum SleepEvent {
++    Sleep(Option<OwnedFd>),
++    Wake,
++}
++
++pub fn watch(runtime: &Handle) -> (mpsc::UnboundedReceiver<SleepEvent>, JoinHandle<()>) {
++    let (tx, rx) = mpsc::unbounded_channel();
++    let task = runtime.spawn(async move {
++        if let Err(e) = run(tx).await {
++            log::warn!("Failed to watch for system suspend: {e}");
++        }
++    });
++    (rx, task)
++}
++
++async fn run(tx: mpsc::UnboundedSender<SleepEvent>) -> zbus::Result<()> {
++    let conn = Connection::system().await?;
++    let manager = Login1ManagerProxy::new(&conn).await?;
++    let mut signals = manager.receive_prepare_for_sleep().await?;
++    let mut lock = inhibit(&manager).await;
++    while let Some(signal) = signals.next().await {
++        let event = if signal.args()?.start {
++            SleepEvent::Sleep(lock.take())
++        } else {
++            lock = inhibit(&manager).await;
++            SleepEvent::Wake
++        };
++        if tx.send(event).is_err() {
++            break;
++        }
++    }
++    Ok(())
++}
++
++async fn inhibit(manager: &Login1ManagerProxy<'_>) -> Option<OwnedFd> {
++    let lock = manager
++        .inhibit(
++            "sleep",
++            "InputPlumber",
++            "Disable SSC sensors before suspend",
++            "delay",
++        )
++        .await;
++    match lock {
++        Ok(lock) => Some(lock),
++        Err(e) => {
++            log::warn!("Failed to take a sleep delay lock for SSC sensors: {e}");
++            None
++        }
++    }
++}
+diff --git a/src/udev/device.rs b/src/udev/device.rs
+index 719a91a..055df7b 100644
+--- a/src/udev/device.rs
++++ b/src/udev/device.rs
+@@ -636,6 +636,9 @@ impl UdevDevice {
+             "leds" => {
+                 format!("leds://{}", self.sysname)
+             }
++            "misc" => {
++                format!("misc://{}", self.sysname)
++            }
+             _ => "".to_string(),
+         }
+     }
+-- 
+2.43.0
+

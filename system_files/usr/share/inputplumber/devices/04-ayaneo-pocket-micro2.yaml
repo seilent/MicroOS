@@ -24,6 +24,16 @@ source_devices:
       name: aya-keys
       handler: event*
     capability_map_id: ayaneo_pocket_micro2_front
+  - group: imu
+    ssc:
+      name: fastrpc-sdsp
+    config:
+      imu:
+        sample_rate: 400
+        mount_matrix:
+          x: [0, -1, 0]
+          y: [1, 0, 0]
+          z: [0, 0, 1]
 
 options:
   auto_manage: true

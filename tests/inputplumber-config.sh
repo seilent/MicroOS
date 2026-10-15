@@ -59,5 +59,18 @@ mode = [m["target_event"] for m in pm2["mapping"]
 if mode != [{"keyboard": "KeyF13"}]:
     print(f"FAIL: BTN_MODE maps to {mode}, want one KeyF13 row", file=sys.stderr)
     rc = 1
+
+dev = yaml.safe_load(open(f"{conf}/devices/04-ayaneo-pocket-micro2.yaml"))
+imu = [s for s in dev["source_devices"] if s["group"] == "imu"]
+cfg = imu[0].get("config", {}).get("imu", {}) if len(imu) == 1 else {}
+if len(imu) != 1 or imu[0].get("ssc") != {"name": "fastrpc-sdsp"}:
+    print(f"FAIL: imu sources {imu}, want one ssc source fastrpc-sdsp", file=sys.stderr)
+    rc = 1
+if cfg.get("sample_rate") != 400:
+    print(f"FAIL: imu sample_rate {cfg.get('sample_rate')}, want 400", file=sys.stderr)
+    rc = 1
+if cfg.get("mount_matrix") != {"x": [0, -1, 0], "y": [1, 0, 0], "z": [0, 0, 1]}:
+    print(f"FAIL: imu mount_matrix {cfg.get('mount_matrix')}", file=sys.stderr)
+    rc = 1
 sys.exit(rc)
 PY

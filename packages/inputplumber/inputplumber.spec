@@ -9,6 +9,7 @@ License:        GPL-3.0-or-later
 URL:            https://github.com/ShadowBlip/InputPlumber
 Source0:        %{url}/archive/%{commit}/%{name}-%{commit}.tar.gz
 Source1:        %{name}-%{version}-vendor.tar.zst
+Patch0:         0001-feat-source-add-qualcomm-ssc-imu-source.patch
 Vendor:         MicroOS
 BuildRequires:  cargo
 BuildRequires:  rust
@@ -23,13 +24,19 @@ InputPlumber from ShadowBlip: combines input devices into composite devices
 and emulates gamepads, keyboards and mice over uinput and uhid.
 
 %prep
-%autosetup -n InputPlumber-%{commit} -a 1
+%autosetup -n InputPlumber-%{commit} -p1 -a 1
 
 %build
 %ifarch aarch64
 export RUSTFLAGS="${RUSTFLAGS:-} -Ctarget-feature=+fp16,+dotprod,+rcpc"
 %endif
 cargo build --release --offline --frozen
+
+%check
+%ifarch aarch64
+export RUSTFLAGS="${RUSTFLAGS:-} -Ctarget-feature=+fp16,+dotprod,+rcpc"
+%endif
+cargo test --release --offline --frozen --lib ssc
 
 %install
 install -D -m 755 target/release/inputplumber %{buildroot}%{_bindir}/inputplumber
