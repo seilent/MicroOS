@@ -55,12 +55,13 @@ rpm2cpio "${rpms[microset]}" > "$tmp/microset.cpio"
 
 unit=$tmp/usr/lib/systemd/system/microsetd.service
 for kv in Type=dbus BusName=net.seilent.MicroSet User=microset StateDirectory=microset ExecStart=/usr/libexec/microsetd \
-  NoNewPrivileges=yes ProtectSystem=strict ProtectHome=yes PrivateTmp=yes RestrictAddressFamilies=AF_UNIX \
-  Restart=always TimeoutStartSec=10 SupplementaryGroups=audio Before=display-manager.service WantedBy=multi-user.target; do
+  NoNewPrivileges=yes ProtectSystem=strict ProtectHome=yes PrivateTmp=yes 'RestrictAddressFamilies=AF_UNIX AF_QIPCRTR' \
+  Restart=always TimeoutStartSec=10 'SupplementaryGroups=audio dialout' Before=display-manager.service WantedBy=multi-user.target; do
   if ! grep -qx "$kv" "$unit"; then fail "microsetd.service lacks $kv"; fi
 done
 if ! grep -qx 'CapabilityBoundingSet=' "$unit"; then fail "microsetd.service CapabilityBoundingSet not empty"; fi
-if ! grep -qx 'PrivateNetwork=yes' "$unit"; then fail "microsetd.service lacks PrivateNetwork=yes"; fi
+if grep -q '^PrivateNetwork=' "$unit"; then fail "microsetd.service sets PrivateNetwork, QRTR needs the host netns"; fi
+if ! grep -qx 'DeviceAllow=/dev/ttyHS2 rw' "$unit"; then fail "microsetd.service lacks DeviceAllow=/dev/ttyHS2 rw"; fi
 if ! grep -qx 'DeviceAllow=char-alsa rw' "$unit"; then fail "microsetd.service lacks DeviceAllow=char-alsa rw"; fi
 if ! grep -qx 'After=.*alsa-restore\.service.*' "$unit"; then fail "microsetd.service not after alsa-restore.service"; fi
 if ! grep -qx 'After=.*alsa-state\.service.*' "$unit"; then fail "microsetd.service not after alsa-state.service"; fi
