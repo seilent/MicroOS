@@ -27,9 +27,10 @@ sed -i 's/[$]{CardId}/0/g' "$u/Qualcomm/sm8250/PocketMICRO2-HiFi.conf"
 mkdir -p "$u/conf.virt.d"
 ln -s ../conf.d/sm8250/PocketMICRO2.conf "$u/conf.virt.d/PocketMICRO2.conf"
 if ALSA_CONFIG_UCM2=$u alsaucm -c PocketMICRO2 dump text > "$tmp/dump" 2> "$tmp/dump.err"; then
-  for want in 'Verb.HiFi {' 'Device.Headphones {' 'Device.Speaker {' 'PlaybackPCM "_ucm0001.hw:0,0"' \
-    'PlaybackPCM "_ucm0001.hw:0,1"' 'PlaybackPriority 200' 'PlaybackPriority 100' 'PlaybackMixerElem HP' \
-    'PlaybackMixerElem Speakers' 'JackControl "Headphone Jack"' 'JackHWMute Speaker'; do
+  for want in 'Verb.HiFi {' 'Device.Headphones {' 'Device.Speaker {' 'Device.Headset {' 'PlaybackPCM "_ucm0001.hw:0,0"' \
+    'PlaybackPCM "_ucm0001.hw:0,1"' 'CapturePCM "_ucm0001.hw:0,2"' 'PlaybackPriority 200' 'PlaybackPriority 100' \
+    'PlaybackMixerElem HP' 'PlaybackMixerElem Speakers' 'CaptureMixerElem ADC2' 'JackControl "Headphone Jack"' \
+    'JackHWMute Speaker' 'JackControl "Mic Jack"'; do
     grep -qF "$want" "$tmp/dump" || fail "ucm dump lacks $want"
   done
 else
@@ -46,6 +47,7 @@ done < <(sed -n 's/^Include\.[^ ]*\.File "\(.*\)"$/\1/p' "$card")
   sed -n "s/.*cset \"name='\([^']*\)'.*/\1/p" "${srcs[@]}"
   sed -n "s/.*\"name='\([^']*\)'\"\.vindex.*/\1/p" "${srcs[@]}"
   sed -n 's/.*JackControl "\([^"]*\)".*/\1/p' "${srcs[@]}"
+  sed -n 's/.*CaptureMixerElem "\([^"]*\)".*/\1 Volume/p' "${srcs[@]}"
 } | sort -u > "$tmp/names"
 (( $(wc -l < "$tmp/names") )) || fail "no control names found in the ucm"
 
@@ -81,6 +83,11 @@ for n in "${!boot[@]}"; do
   done < "$tmp/csets"
   [[ $(grep -cP "^boot\t[^\t]*\t\Q$n\E\t" "$tmp/csets") == 1 ]] || fail "the boot sequence does not write '$n' once"
 done
+while read -r e; do
+  for n in "${!boot[@]}"; do
+    [[ $n == "$e "* ]] && fail "${hifi##*/}: CaptureMixerElem '$e' is '$n', microsetd owns it"
+  done
+done < <(sed -n 's/.*CaptureMixerElem "\([^"]*\)".*/\1/p' "$hifi")
 
 soft=$tree/usr/share/wireplumber/wireplumber.conf.d/50-microos-soft-mixer.conf
 if spa-json-dump "$soft" > "$tmp/soft.json" 2> "$tmp/soft.err"; then

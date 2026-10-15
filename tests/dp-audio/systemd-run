@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+printf 'systemd-run %s\n' "$*" >> "$STUB_LOG"

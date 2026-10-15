@@ -66,6 +66,28 @@ grep -qE 'session\.dont-restore-off-profile"? *[=:] *true' /usr/share/wireplumbe
   || fail "52-microos-pm2.conf does not set session.dont-restore-off-profile"
 grep -qE 'api\.alsa\.soft-mixer"? *[=:] *true' /usr/share/wireplumber/wireplumber.conf.d/50-microos-soft-mixer.conf \
   || fail "50-microos-soft-mixer.conf does not set api.alsa.soft-mixer"
+ucm=$(mktemp -d)/ucm2
+cp -a /usr/share/alsa/ucm2 "$ucm"
+sed -i 's/[$]{CardId}/0/g' "$ucm/Qualcomm/sm8250/PocketMICRO2-HiFi.conf"
+mkdir -p "$ucm/conf.virt.d"
+ln -s ../conf.d/sm8250/PocketMICRO2.conf "$ucm/conf.virt.d/PocketMICRO2.conf"
+ucmdevs=$(ALSA_CONFIG_UCM2=$ucm alsaucm -c PocketMICRO2 list _devices/HiFi 2>/dev/null) || fail "alsaucm cannot list the PocketMICRO2 devices"
+for d in Headphones Speaker Headset; do
+  grep -qE "^ +[0-9]+: $d\$" <<< "$ucmdevs" || fail "alsaucm lists no $d device"
+done
+rm -rf "${ucm%/ucm2}"
+for f in /usr/libexec/microos/microos-dp-audio /usr/libexec/microos/microos-dp-audio-sleep; do
+  [[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f missing, mode or owner"
+done
+dprules=/usr/lib/udev/rules.d/70-microos-dp-audio.rules
+grep -qE '^ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card0", RUN\+="/usr/bin/systemd-run .* -p TimeoutStopSec=2 /usr/libexec/microos/microos-dp-audio hotplug"$' \
+  "$dprules" || fail "$dprules lacks the card0 change rule through systemd-run"
+! grep -q HOTPLUG "$dprules" || fail "$dprules matches HOTPLUG"
+[[ -f /usr/share/wireplumber/scripts/microos/dp-sink.lua ]] || fail "wireplumber dp-sink.lua missing"
+grep -qE '^ *provides *= *monitor\.microos\.dp-sink$' /usr/share/wireplumber/wireplumber.conf.d/53-microos-dp.conf \
+  || fail "53-microos-dp.conf does not provide monitor.microos.dp-sink"
+grep -qE '^ *monitor\.microos\.dp-sink *= *optional$' /usr/share/wireplumber/wireplumber.conf.d/53-microos-dp.conf \
+  || fail "53-microos-dp.conf does not add monitor.microos.dp-sink to the main profile as optional"
 
 rpm -q python3-gobject python3-evdev upower >/dev/null || fail "steam service rpms missing"
 [[ $(rpm -q --qf '%{VENDOR}' steamos-manager) == MicroOS ]] || fail "steamos-manager is not the MicroOS build"

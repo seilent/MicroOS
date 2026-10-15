@@ -1,0 +1,14 @@
+[Unit]
+Description=Stop DisplayPort audio across suspend
+After=dbus.service systemd-logind.service
+
+[Service]
+ExecStart=/usr/libexec/microos/microos-dp-audio-sleep
+Restart=on-failure
+RestartSec=3
+ProtectSystem=strict
+ReadWritePaths=/run/microos
+DeviceAllow=char-alsa rw
+
+[Install]
+WantedBy=multi-user.target

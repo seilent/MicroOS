@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+f=absent
+[[ -e $STUB_FLAG ]] && f=present
+printf 'amixer %s|flag=%s|pcm=%s\n' "$*" "$f" "$(cat "$STUB_PCM" 2> /dev/null)" >> "$STUB_LOG"

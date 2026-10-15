@@ -1,0 +1,2 @@
+ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card0", RUN+="/usr/bin/systemd-run --no-block --collect --unit=microos-dp-audio-hotplug-$env{SEQNUM} -p RuntimeMaxSec=240 -p TimeoutStopSec=2 /usr/libexec/microos/microos-dp-audio hotplug"
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card*", ATTR{id}=="PocketMICRO2", RUN+="/usr/bin/systemd-run --no-block --collect --unit=microos-dp-audio-hotplug-$env{SEQNUM} -p RuntimeMaxSec=240 -p TimeoutStopSec=2 /usr/libexec/microos/microos-dp-audio hotplug"

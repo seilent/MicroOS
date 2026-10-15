@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+printf 'hook %s\n' "$*" >> "$STUB_LOG"
+[[ ! -e $STUB_DIR/hook-hang ]] || exec sleep 30

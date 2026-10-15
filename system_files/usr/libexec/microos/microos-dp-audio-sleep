@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+import time
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-dp-audio-sleep"
+HOOK = os.environ.get("MICROOS_DP_HOOK", "/usr/libexec/microos/microos-dp-audio")
+LOGIN1 = ("org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager")
+SLEEP_TIMEOUT = 4
+ERRORS = (subprocess.SubprocessError, OSError)
+
+
+def log(msg):
+    print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+
+
+def start_resume():
+    unit = f"microos-dp-audio-hotplug-resume-{time.clock_gettime_ns(time.CLOCK_BOOTTIME) // 1000}"
+    try:
+        subprocess.run(
+            ["systemd-run", "--no-block", "--collect", f"--unit={unit}", "-p", "RuntimeMaxSec=240", "-p", "TimeoutStopSec=2", HOOK, "resume"],
+            capture_output=True, text=True, check=True, timeout=SLEEP_TIMEOUT,
+        )
+    except ERRORS as err:
+        log(f"starting {unit} failed: {err}")
+
+
+class DpAudioSleep:
+    def __init__(self, bus):
+        self.bus = bus
+        self.fd = None
+
+    def inhibit(self):
+        if self.fd is not None:
+            return
+        result, fds = self.bus.call_with_unix_fd_list_sync(
+            *LOGIN1,
+            "Inhibit",
+            GLib.Variant(
+                "(ssss)",
+                ("sleep", "MicroOS", "Stop DisplayPort audio before suspend", "delay"),
+            ),
+            GLib.VariantType("(h)"),
+            Gio.DBusCallFlags.NONE,
+            -1,
+            None,
+            None,
+        )
+        self.fd = fds.get(result.unpack()[0])
+
+    def release(self):
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def prepare_for_sleep(self, _conn, _sender, _path, _iface, _signal, params):
+        if params.unpack()[0]:
+            try:
+                subprocess.run([HOOK, "sleep"], check=True, timeout=SLEEP_TIMEOUT)
+            except ERRORS as err:
+                log(f"{HOOK} sleep failed: {err}")
+            self.release()
+        else:
+            try:
+                self.inhibit()
+            except GLib.Error as err:
+                log(f"sleep inhibitor failed: {err.message}")
+            start_resume()
+
+
+def main():
+    bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    sleeper = DpAudioSleep(bus)
+    bus.signal_subscribe(
+        LOGIN1[0], LOGIN1[2], "PrepareForSleep", LOGIN1[1], None,
+        Gio.DBusSignalFlags.NONE, sleeper.prepare_for_sleep,
+    )
+    sleeper.inhibit()
+    start_resume()
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()

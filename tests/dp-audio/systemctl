@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >> "$STUB_LOG"
+[[ -f $STUB_DIR/on-stop ]] && bash "$STUB_DIR/on-stop"
+[[ ! -e $STUB_DIR/systemctl-hang ]] || exec sleep 30
+alive() { [[ -r /proc/$1/stat && $(cut -d' ' -f3 "/proc/$1/stat") != Z ]]; }
+[[ ${1:-} == stop && -f $STUB_DIR/unit.pid ]] || exit 0
+pids=$(cat "$STUB_DIR/unit.pid" "$STUB_DIR/aplay.pid" 2> /dev/null)
+for p in $pids; do kill -TERM "$p" 2> /dev/null; done
+for p in $pids; do
+  while alive "$p"; do sleep 0.05; done
+done
+echo stopped >> "$STUB_LOG"
+(sleep 0.5; echo closed > "$STUB_PCM") > /dev/null 2>&1 &

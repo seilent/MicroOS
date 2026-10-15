@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-dp-audio
+root=${MICROOS_DP_ROOT:-}
+run_dir=${MICROOS_RUN_DIR:-/run/microos}
+settle=${MICROOS_DP_SETTLE:-3}
+retry=${MICROOS_DP_RETRY:-7}
+lock_wait=${MICROOS_DP_LOCK_WAIT:-60}
+deadline=${MICROOS_DP_DEADLINE:-200}
+tries=18
+card=PocketMICRO2
+route='DISPLAY_PORT_RX Audio Mixer MultiMedia4'
+connector=$root/sys/class/drm/card0-DP-1/status
+pcm=$root/proc/asound/$card/pcm3p/sub0/status
+uptime=$root/proc/uptime
+flag=$run_dir/dp-audio
+marker=$run_dir/dp-audio.sleeping
+lock=$run_dir/lock/dp-audio
+unit_glob='microos-dp-audio-hotplug-*.service'
+
+log() { printf '%s: %s\n' "$me" "$*" >&2; }
+
+dp_state() { cat "$connector" 2> /dev/null || echo unknown; }
+
+put() {
+  local t
+  t=$(mktemp "$run_dir/.dp-audio.XXXXXX") || return 1
+  if chmod 0644 "$t" && mv -fT -- "$t" "$1"; then
+    return 0
+  fi
+  rm -f -- "$t"
+  return 1
+}
+
+set_route() { amixer -q -D "hw:$card" cset "name=$route" "$1"; }
+
+have_flag() { [[ -f $flag && ! -L $flag ]]; }
+
+pcm_closed() { [[ ! -e $pcm || $(cat "$pcm" 2> /dev/null) == closed ]]; }
+
+uptime_cs() {
+  local up
+  read -r up _ < "$uptime" || return 1
+  [[ $up =~ ^[0-9]+\.[0-9]{2}$ ]] || return 1
+  echo $((10#${up/./}))
+}
+
+drop() {
+  local t now
+  if [[ -e $flag || -L $flag ]]; then
+    rm -f -- "$flag" && log "DP audio removed"
+  fi
+  t=$(uptime_cs) || t=""
+  until pcm_closed; do
+    if [[ -z $t ]] || ! now=$(uptime_cs) || ((now - t > 150)); then
+      break
+    fi
+    sleep 0.1
+  done
+  pcm_closed || log "pcm3p still open after 1.5 s, clearing the route anyway"
+  set_route 0 > /dev/null 2>&1 || log "clearing $route failed"
+}
+
+start() {
+  local try out now
+  sleep "$settle"
+  for ((try = 1; try <= tries; try++)); do
+    [[ -e $marker ]] && return 0
+    [[ $(dp_state) == connected ]] || return 1
+    if [[ -n $t0 ]] && now=$(uptime_cs) && ((now - t0 > deadline * 100)); then
+      log "DP audio not ready ${deadline} s after the run started"
+      drop
+      return 0
+    fi
+    if out=$(set_route 1 2>&1 && timeout 2 aplay -q -D "hw:CARD=$card,DEV=3" -t raw -f S16_LE -r 48000 -c 2 -d 1 /dev/zero 2>&1); then
+      [[ -e $marker ]] && return 0
+      if put "$flag"; then
+        log "DP audio ready (try $try)"
+      else
+        log "writing $flag failed, clearing the route"
+        set_route 0 > /dev/null 2>&1 || log "clearing $route failed"
+      fi
+      return 0
+    fi
+    log "try $try failed: ${out##*$'\n'}"
+    ((try < tries)) && sleep "$retry"
+  done
+  log "DP audio never became ready after $tries tries"
+  drop
+}
+
+hotplug() {
+  local s
+  [[ -e $marker ]] && { log "suspending, $connector not read"; return 0; }
+  [[ -d $root/proc/asound/$card ]] || { log "no $card card"; return 0; }
+  mkdir -p "$run_dir/lock" || return 1
+  if [[ -L $lock ]]; then
+    log "$lock is a symlink, refusing"
+    return 1
+  fi
+  exec 9> "$lock" || return 1
+  flock -w "$lock_wait" 9 || { log "$lock held for ${lock_wait} s, the holder covers this event"; return 0; }
+  while :; do
+    [[ -e $marker ]] && return 0
+    s=$(dp_state)
+    if [[ $s == connected ]]; then
+      if ! have_flag; then
+        start || continue
+      fi
+    else
+      drop
+    fi
+    [[ -e $marker ]] && return 0
+    [[ $(dp_state) == "$s" ]] && return 0
+    log "DP-1 changed during the run, rechecking"
+  done
+}
+
+suspend_dp() {
+  if ! { mkdir -p "$run_dir" && put "$marker"; }; then
+    log "writing $marker failed"
+  fi
+  timeout 1.5 systemctl stop "$unit_glob" || log "stopping $unit_glob failed"
+  put "$marker" || log "writing $marker failed"
+  drop
+}
+
+t0=$(uptime_cs) || t0=""
+case "${1:-}" in
+  hotplug) hotplug ;;
+  sleep) suspend_dp ;;
+  resume)
+    rm -f -- "$marker"
+    hotplug
+    ;;
+  *)
+    echo "usage: $me hotplug|sleep|resume" >&2
+    exit 2
+    ;;
+esac
