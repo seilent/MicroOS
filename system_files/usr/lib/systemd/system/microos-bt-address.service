@@ -1,0 +1,14 @@
+[Unit]
+Description=Bluetooth public address from the SoC serial
+Before=bluetooth.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=60
+ExecStart=/usr/libexec/microos/microos-bt-address
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_BLUETOOTH AF_UNIX
+CapabilityBoundingSet=CAP_NET_ADMIN

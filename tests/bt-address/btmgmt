@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+printf 'btmgmt %s\n' "$*" >> "$STUB_LOG"
+state=$(cat "$STUB_DIR/state")
+absent=$(cat "$STUB_DIR/absent" 2> /dev/null || echo 0)
+n=$(cat "$STUB_DIR/config.n" 2> /dev/null || echo 0)
+((n < absent)) && state=absent
+
+unconf() {
+  printf 'Unconfigured index list with 1 item\n%s:\tUnconfigured controller\n\tmanufacturer 29\n' "$1"
+  printf '\tsupported options: public-address \n\tmissing options: %s\n' "$2"
+}
+
+primary() {
+  printf 'hci0:\tPrimary controller\n\taddr 00:03:7F:48:64:85 version 11 manufacturer 29 class 0x000000\n'
+  printf '\tsupported settings: powered bondable ssp br/edr le configuration \n\tcurrent settings: bondable ssp br/edr le \n'
+  printf '\tname \n\tshort name \nhci0:\tConfiguration options\n\tsupported options: public-address \n\tmissing options: \n'
+}
+
+case "$*" in
+  config)
+    echo $((n + 1)) > "$STUB_DIR/config.n"
+    case $state in
+      unconfigured) unconf hci0 'public-address ' ;;
+      unconfigured-set) unconf hci0 '' ;;
+      other) unconf hci1 'public-address ' ;;
+      *) echo 'Unconfigured index list with 0 items' ;;
+    esac
+    ;;
+  info)
+    case $state in
+      configured | other) printf 'Index list with 1 item\n'; primary ;;
+      *) echo 'Index list with 0 items' ;;
+    esac
+    ;;
+  '--index 0 public-addr '*)
+    if [[ -e $STUB_DIR/fail ]]; then
+      printf 'Set Public Address for hci0 failed with status 0x0d (Invalid Parameters)\n'
+      exit 1
+    fi
+    printf 'hci0 Set Public Address complete, options: \n'
+    ;;
+  *) exit 1 ;;
+esac

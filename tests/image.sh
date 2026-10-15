@@ -197,6 +197,12 @@ grep -qx 'ExecStart=/usr/bin/hexagonrpcd -f /dev/fastrpc-sdsp -d sdsp -s -R /var
   /usr/lib/systemd/system/microos-hexagonrpcd.service || fail "microos-hexagonrpcd.service ExecStart"
 grep -qx 'DynamicUser=yes' /usr/lib/systemd/system/microos-hexagonrpcd.service || fail "microos-hexagonrpcd.service is not DynamicUser"
 grep -qx 'd /var/lib/microos/slpi 0755 root root -' /usr/lib/tmpfiles.d/microos.conf || fail "tmpfiles lacks /var/lib/microos/slpi"
+f=/usr/libexec/microos/microos-bt-address
+[[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f missing, mode or owner"
+command -v btmgmt >/dev/null || fail "btmgmt is not on PATH"
+grep -qxF 'SUBSYSTEM=="bluetooth", KERNEL=="hci0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-bt-address.service"' \
+  /usr/lib/udev/rules.d/70-microos-bt.rules || fail "70-microos-bt.rules lacks the hci0 rule"
+grep -qx 'Before=bluetooth.service' /usr/lib/systemd/system/microos-bt-address.service || fail "microos-bt-address.service is not before bluetooth.service"
 while read -r u p; do
   [[ $p == -* ]] && continue
   grep -qE "^d $p [0-7]+ " /usr/lib/tmpfiles.d/*.conf || fail "${u##*/} ReadWritePaths=$p has no tmpfiles line"
