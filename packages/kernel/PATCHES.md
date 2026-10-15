@@ -23,6 +23,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0010 serial: qcom-geni: add force suspend/resume to system sleep callbacks | linux-arm-msm v2, 2026-07-02, `20260702-add_force_suspend_resume_to_system_sleep_callbacks-v2-1-b79e254a7015@oss.qualcomm.com`, torvalds `d0cd9c8d0fd5` | Praveen Talari | lore, mainline | CONFIRMED. Taken from git.kernel.org. The Armada copy keeps this header over a body with extra error handling (virtudude, Armada `493b4f7`); not taken |
 | 0101 to 0111 | my Armada `pocket-micro-2-build` and ROCKNIX `pocket-micro2` trees | seilent; 0101 is based on danyi's AR16 driver (ROCKNIX SM8550 `0064`, `aa418ad72e`, 2026-08-13), 0102 on the Sitronix and Waveshare ST7123 driver (raspberrypi/linux `6d4adb6bfea6`, 2026-07-16), 0103 uses the rumble report format of the stock Android 4.19.157 `hid-ayaneo` | own | CONFIRMED |
 | 0112 ASoC: qcom: sm8250: keep the PCM backend format | written new 2026-10-13; the S16_LE force is torvalds `89be3c15a58b` (lore `20250228161430.373961-1-alexey.klimov@linaro.org`, v6.15); the idea of dropping it for PCM is ROCKNIX-old `f7b53cc4b244`, 2025-06-02, `SM8250/0100-revert-force-16bit-audio.patch` | seilent; idea rmake (ROCKNIX-old), force Alexey Klimov | ROCKNIX-old `f7b53cc4b244`, ROCKNIX `9f1fab30f6` (squash import), removed in `4c7e4ab631` and restored in `7a554eedb9` (Philippe Simons), Armada `0100`, batocera and other SM8250 trees carry the same file; patchwork has no revert or follow up on the list | CONFIRMED. The ROCKNIX copy tests `dai_link->compr_ops`, which is never set on a backend link, so it drops the force for compressed playback too; 0112 keeps S16_LE when the format mask is empty (compressed) |
+| 0113 ASoC: codecs: wsa881x: restore the PA gain after power up | written new 2026-10-15; mainline `wsa881x.c` has no fix up to `e857b163c8f4` (2026-07-09) | seilent | none | CONFIRMED |
 | PM2 DTS | my Armada `pocket-micro-2-build` tree | seilent; block layout and many lines shared with mainline `qrb5165-rb5.dts`, `sm8250-retroidpocket-common.dtsi`, `sm8250-ayn-thorlite.dts`; the `gpio-sbu-mux` block follows Tom's Retroid routing (Armada `9741312`, 2026-09-19) with PM2 GPIOs | own | CONFIRMED. 403 of 677 non trivial lines also appear in mainline board files, 145 only in the sibling files |
 
 ## Why and test
@@ -47,6 +48,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0107 | DP start after a clean stop | DP audio after a replug |
 | 0108 to 0111 | s2idle drain, each gated on `ayaneo,pocket-micro2` | s2idle residency |
 | 0112 | PCM backends ran at 16 bit (`params_format()` picks the lowest bit of FE format plus S16_LE), 24 bit streams truncated in the DSP | speaker and headphones play S24_LE without noise; DP audio |
+| 0113 | the SPKR PGA power up writes PA gain 12 dB (`SPKR_DRV_GAIN 0x41`) over the PA Volume value, with no event | `SpkrLeft PA Volume` reads the set value after a speaker stream starts |
 | PM2 DTS | the board | `dts-drivers.sh`, `gpu-opp.sh` |
 
 ## patch-id

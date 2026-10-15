@@ -1,0 +1,108 @@
+From: seilent <github@seilent.net>
+Subject: [PATCH] ASoC: codecs: wsa881x: restore the PA gain after power up
+
+The SPKR PGA PRE_PMU event writes the pre power up sequence, which sets
+SPKR_DRV_GAIN to 0x41, a PA gain of 12 dB. Nothing writes the gain set
+through the PA Volume control back afterwards, so every power up of the
+speaker path drops the PA gain to 12 dB and the control reads 8 with no
+event. Keep the gain from the last PA Volume write and ramp to it in
+POST_PMU, in the same steps the control uses. The put takes the DAPM
+mutex so it cannot race the power up, refuses values out of range and
+reports no change for an unchanged value.
+
+---
+diff --git a/sound/soc/codecs/wsa881x.c b/sound/soc/codecs/wsa881x.c
+--- a/sound/soc/codecs/wsa881x.c
++++ b/sound/soc/codecs/wsa881x.c
+@@ -675,6 +675,7 @@
+ 	bool hw_init;
+ 	bool port_prepared[WSA881X_MAX_SWR_PORTS];
+ 	bool port_enable[WSA881X_MAX_SWR_PORTS];
++	int pa_gain;
+ };
+ 
+ static void wsa881x_init(struct wsa881x_priv *wsa881x)
+@@ -735,21 +736,10 @@
+ 	return 0;
+ }
+ 
+-static int wsa881x_put_pa_gain(struct snd_kcontrol *kc,
+-			       struct snd_ctl_elem_value *ucontrol)
++static void wsa881x_ramp_pa_gain(struct snd_soc_component *comp, int max_gain)
+ {
+-	struct snd_soc_component *comp = snd_kcontrol_chip(kc);
+-	struct soc_mixer_control *mc =
+-			(struct soc_mixer_control *)kc->private_value;
+-	int max = mc->max;
+-	unsigned int mask = (1 << fls(max)) - 1;
+-	int val, ret, min_gain, max_gain;
++	int val, ret, min_gain;
+ 
+-	ret = pm_runtime_resume_and_get(comp->dev);
+-	if (ret < 0 && ret != -EACCES)
+-		return ret;
+-
+-	max_gain = (max - ucontrol->value.integer.value[0]) & mask;
+ 	/*
+ 	 * Gain has to set incrementally in 4 steps
+ 	 * as per HW sequence
+@@ -774,10 +764,40 @@
+ 
+ 		usleep_range(1000, 1010);
+ 	}
++}
++
++static int wsa881x_put_pa_gain(struct snd_kcontrol *kc,
++			       struct snd_ctl_elem_value *ucontrol)
++{
++	struct snd_soc_component *comp = snd_kcontrol_chip(kc);
++	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(comp);
++	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
++	struct soc_mixer_control *mc =
++			(struct soc_mixer_control *)kc->private_value;
++	long val = ucontrol->value.integer.value[0];
++	int max = mc->max;
++	int gain, ret;
++
++	if (val < 0 || val > max)
++		return -EINVAL;
++
++	gain = max - val;
++
++	ret = pm_runtime_resume_and_get(comp->dev);
++	if (ret < 0 && ret != -EACCES)
++		return ret;
++
++	snd_soc_dapm_mutex_lock(dapm);
++	ret = gain != wsa881x->pa_gain;
++	if (ret) {
++		wsa881x->pa_gain = gain;
++		wsa881x_ramp_pa_gain(comp, gain);
++	}
++	snd_soc_dapm_mutex_unlock(dapm);
+ 
+ 	pm_runtime_put_autosuspend(comp->dev);
+ 
+-	return 1;
++	return ret;
+ }
+ 
+ static int wsa881x_get_port(struct snd_kcontrol *kcontrol,
+@@ -928,6 +948,9 @@
+ 					      WSA881X_PA_GAIN_SEL_REG);
+ 		break;
+ 	case SND_SOC_DAPM_POST_PMU:
++		if (wsa881x->pa_gain != G_12DB)
++			wsa881x_ramp_pa_gain(comp, wsa881x->pa_gain);
++
+ 		if (wsa881x->port_prepared[WSA881X_PORT_VISENSE]) {
+ 			wsa881x_visense_txfe_ctrl(comp, true);
+ 			snd_soc_component_update_bits(comp,
+@@ -1115,6 +1138,7 @@
+ 	if (!wsa881x)
+ 		return -ENOMEM;
+ 
++	wsa881x->pa_gain = G_12DB;
+ 	wsa881x->sd_n = devm_gpiod_get_optional(dev, "powerdown", GPIOD_OUT_LOW);
+ 	if (IS_ERR(wsa881x->sd_n))
+ 		return dev_err_probe(dev, PTR_ERR(wsa881x->sd_n),
