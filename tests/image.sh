@@ -203,6 +203,23 @@ command -v btmgmt >/dev/null || fail "btmgmt is not on PATH"
 grep -qxF 'SUBSYSTEM=="bluetooth", KERNEL=="hci0", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-bt-address.service"' \
   /usr/lib/udev/rules.d/70-microos-bt.rules || fail "70-microos-bt.rules lacks the hci0 rule"
 grep -qx 'Before=bluetooth.service' /usr/lib/systemd/system/microos-bt-address.service || fail "microos-bt-address.service is not before bluetooth.service"
+rpm -q plymouth plymouth-scripts plymouth-plugin-script >/dev/null || fail "plymouth rpms missing"
+for f in microos.plymouth microos.script wordmark.png; do
+  [[ -f /usr/share/plymouth/themes/microos/$f ]] || fail "plymouth theme lacks $f"
+done
+[[ $(< /etc/plymouth/plymouthd.conf) == $'[Daemon]\nTheme=microos\nShowDelay=0\nDeviceScale=1' ]] || fail "plymouthd.conf"
+[[ $(plymouth-set-default-theme) == microos ]] || fail "plymouth default theme is $(plymouth-set-default-theme)"
+f=/usr/libexec/microos/microos-splash-quit
+[[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f missing, mode or owner"
+[[ -L /etc/systemd/system/display-manager.service.wants/microos-splash-quit.service ]] \
+  || fail "microos-splash-quit.service is not wanted by display-manager.service"
+quit="-/bin/sh -c '/usr/bin/plymouth deactivate || /usr/bin/plymouth quit'"
+execs() {
+  systemctl cat "$1" | awk -v k="$2=" 'index($0, k) == 1 { v = substr($0, length(k) + 1); if (v == "") n = 0; else l[++n] = v }
+    END { for (i = 1; i <= n; i++) print l[i] }'
+}
+[[ $(execs plymouth-quit.service ExecStart) == "$quit" ]] || fail "effective plymouth-quit.service ExecStart: $(execs plymouth-quit.service ExecStart)"
+execs sddm.service ExecStartPre | grep -qxF -- "$quit" || fail "sddm.service has no plymouth deactivate ExecStartPre"
 while read -r u p; do
   [[ $p == -* ]] && continue
   grep -qE "^d $p [0-7]+ " /usr/lib/tmpfiles.d/*.conf || fail "${u##*/} ReadWritePaths=$p has no tmpfiles line"
@@ -213,7 +230,8 @@ leak=$(find / -xdev \( -path '*/qcom/sm8250/ayaneo/*' -o -type d \( -name slpi -
 [[ -z $leak ]] || fail "SLPI firmware or HexagonFS tree in the image: $leak"
 SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "${units[@]}" /usr/lib/systemd/system/steamos-manager.service \
   /usr/lib/systemd/system/sshd.service /usr/lib/systemd/system/bootc-generic-growpart.service \
-  /usr/lib/systemd/system/ostree-finalize-staged.service || fail "systemd-analyze verify"
+  /usr/lib/systemd/system/ostree-finalize-staged.service /usr/lib/systemd/system/sddm.service \
+  /usr/lib/systemd/system/plymouth-quit.service || fail "systemd-analyze verify"
 mkdir -p "$tmp/xdg"
 XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no \
   /usr/lib/systemd/user/microos-*.service /usr/lib/systemd/user/steamos-manager.service gamescope-session-plus@steam.service \
@@ -284,9 +302,14 @@ for m in erofs overlay btrfs sdhci-msm ufs-qcom; do
   grep -qE "/$m\.ko" <<< "$list" || grep -qE "/$m\.ko$" "/usr/lib/modules/$kver/modules.builtin" || fail "initramfs lacks $m"
 done
 dropin=usr/lib/systemd/system/ostree-prepare-root.service.d/10-microos-remap.conf
-for f in usr/lib/ostree/ostree-prepare-root usr/libexec/microos/prepare-root usr/bin/sh usr/bin/realpath usr/bin/mkdir "$dropin"; do
+for f in usr/lib/ostree/ostree-prepare-root usr/libexec/microos/prepare-root usr/bin/sh usr/bin/realpath usr/bin/mkdir "$dropin" \
+  usr/bin/plymouthd usr/bin/plymouth etc/plymouth/plymouthd.conf usr/share/plymouth/themes/microos/microos.plymouth \
+  usr/share/plymouth/themes/microos/microos.script usr/share/plymouth/themes/microos/wordmark.png; do
   grep -qE " $f( |$)" <<< "$list" || fail "initramfs lacks $f"
 done
+grep -qE "/plymouth/script\.so( |$)" <<< "$list" || fail "initramfs lacks the plymouth script plugin"
+grep -qE "/plymouth/renderers/drm\.so( |$)" <<< "$list" || fail "initramfs lacks the plymouth drm renderer"
+! grep -qE "/kernel/drivers/(gpu|pwm|video/backlight)/.*\.ko" <<< "$list" || fail "initramfs has a GPU, PWM or backlight module"
 [[ $(lsinitrd -f "$dropin" "$img") == $'[Service]\nExecStart=\nExecStart=/usr/libexec/microos/prepare-root' ]] || fail "remap drop-in content"
 lsinitrd -f usr/lib/systemd/system/ostree-prepare-root.service "$img" | grep -qx 'ExecStart=/usr/lib/ostree/ostree-prepare-root /sysroot' \
   || fail "ostree-prepare-root.service ExecStart changed"

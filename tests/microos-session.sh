@@ -553,7 +553,7 @@ giveup giveup
 [[ $r == 0 ]] && ! has "bootc rollback" && has "stop display-manager.service" || fail "second giveup on the same deployment: $(calls)"
 : > "$FAKE/calls"
 giveup giveup
-[[ $r == 0 ]] && ! has "stop display-manager.service" || fail "the display manager stopped twice in one boot"
+[[ $r == 0 ]] && ! has "stop display-manager.service" && ! has "plymouth quit" || fail "the display manager stopped twice in one boot"
 rm -f "$run/giveup-stopped"
 echo /etc/systemd/user/gamescope-session-plus@.service > "$FAKE/fragment"
 giveup giveup
@@ -571,6 +571,9 @@ now=$(date +%s)
 starts "$now" "$now" "$now"
 giveup giveup
 [[ $r == 0 ]] && ! has "bootc rollback" && has "stop display-manager.service" || fail "confirmed giveup: $(calls)"
+a=$(line_of "stop display-manager.service")
+g=$(line_of "plymouth quit")
+[[ -n $a && -n $g ]] && (( a < g )) || fail "giveup did not quit plymouth after the display manager stop: $(calls)"
 reset
 cur recovery $(( ($(bt) - 10) * 1000000 ))
 echo "$P" > "$state/confirmed"

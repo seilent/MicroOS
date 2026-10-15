@@ -68,4 +68,5 @@ Retroid kernel is [lineageos-on-retroid/android_kernel_retroid_sm8250_ack](https
 | hexagonrpcd stopped across suspend (idea, written new) | [postmarketOS pmaports](https://gitlab.postmarketos.org/postmarketOS/pmaports) `fe0002784` | Richard Acayan | GPL-3.0 |
 | Bluetooth address from the SoC serial (idea, written new) | [ROCKNIX/distribution-old](https://github.com/ROCKNIX/distribution-old) `779c788321` | spycat88 | GPL-2.0 |
 | Selawik font in `microset-recovery` | [microsoft/Selawik](https://github.com/microsoft/Selawik) `1.01` | Microsoft Corporation | OFL-1.1 |
+| Doto font, rendered into the boot splash wordmark (font not shipped) | [oliverlalan/Doto](https://github.com/oliverlalan/Doto) `1.000` | Óliver Lalan | OFL-1.1 |
 | `mkbootimg`, `unpack_bootimg` | AOSP `platform/system/tools/mkbootimg`, Fedora `android-tools` | The Android Open Source Project | Apache-2.0 |

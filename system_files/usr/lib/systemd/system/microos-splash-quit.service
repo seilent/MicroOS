@@ -1,0 +1,16 @@
+[Unit]
+Description=Quit the boot splash once a session holds the display
+After=display-manager.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=60
+ExecStart=/usr/libexec/microos/microos-splash-quit
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=display-manager.service

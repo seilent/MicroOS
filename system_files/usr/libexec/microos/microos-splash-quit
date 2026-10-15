@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-splash-quit
+root=${MICROOS_SPLASH_ROOT:-}
+wait=${MICROOS_SPLASH_WAIT:-30}
+poll=${MICROOS_SPLASH_POLL:-0.2}
+clients=$root/sys/kernel/debug/dri/0/clients
+uptime=$root/proc/uptime
+
+log() { echo "$me: $*"; }
+
+uptime_cs() {
+  local up
+  read -r up _ < "$uptime" || return 1
+  [[ $up =~ ^[0-9]+\.[0-9]{2}$ ]] || return 1
+  echo $((10#${up/./}))
+}
+
+master() {
+  local line cmd m
+  [[ -r $clients ]] || return 1
+  while IFS= read -r line; do
+    cmd=${line:0:20}
+    cmd=${cmd#"${cmd%%[! ]*}"}
+    read -r _ _ m _ <<< "${line:20}"
+    if [[ $cmd == systemd-logind && $m == y ]]; then
+      return 0
+    fi
+  done < "$clients"
+  return 1
+}
+
+if ! plymouth --ping; then
+  log "plymouthd is not running"
+  exit 0
+fi
+found=0
+if ! start=$(uptime_cs); then
+  log "cannot read $uptime"
+else
+  while :; do
+    if master; then
+      found=1
+      break
+    fi
+    now=$(uptime_cs) || break
+    ((now - start <= wait * 100)) || break
+    sleep "$poll"
+  done
+fi
+if ((found)); then
+  log "systemd-logind holds DRM master on dri/0, quitting the splash"
+else
+  log "no systemd-logind DRM master on dri/0 after $wait s, quitting the splash"
+fi
+if plymouth quit --retain-splash; then
+  exit 0
+fi
+log "plymouth quit --retain-splash failed, trying again"
+if plymouth quit --retain-splash; then
+  exit 0
+fi
+log "plymouth quit --retain-splash failed again, quitting without the splash"
+if plymouth quit; then
+  exit 1
+fi
+log "plymouth quit failed, sending SIGTERM to plymouthd"
+if ! pkill -TERM -x plymouthd; then
+  log "no plymouthd to signal"
+fi
+exit 1

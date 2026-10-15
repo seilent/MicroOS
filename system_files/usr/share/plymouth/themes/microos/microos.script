@@ -1,0 +1,7 @@
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+
+wordmark.image = Image("wordmark.png");
+wordmark.sprite = Sprite(wordmark.image);
+wordmark.sprite.SetX(Window.GetX() + Math.Int((Window.GetWidth() - wordmark.image.GetWidth()) / 2));
+wordmark.sprite.SetY(Window.GetY() + Math.Int((Window.GetHeight() - wordmark.image.GetHeight()) / 2));

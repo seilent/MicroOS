@@ -68,7 +68,7 @@ echo "bootimg: cmdline ${#c} bytes (kargs from $ksrc)"
 if c=$(microos_cmdline "$opts_a $extra" "$deploy" 2>/dev/null); then
   echo "bootimg: with extra kargs ${#c} bytes, $((MICROOS_CMDLINE_MAX - ${#c})) left"
 else
-  echo "bootimg: with extra kargs it does not fit: $(microos_cmdline "$opts_a $extra" "$deploy" 2>&1 >/dev/null)"
+  fail "image kargs with $extra do not fit: $(microos_cmdline "$opts_a $extra" "$deploy" 2>&1 >/dev/null)"
 fi
 
 sys=$tmp/sysroot

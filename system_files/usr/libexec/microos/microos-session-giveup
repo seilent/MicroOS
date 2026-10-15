@@ -99,3 +99,4 @@ fi
 put "$rundir/giveup-stopped" "$(boottime_us)" || log "cannot write giveup-stopped"
 log "recovery failed, stopping the display manager"
 systemctl stop display-manager.service
+plymouth quit 2> /dev/null || true

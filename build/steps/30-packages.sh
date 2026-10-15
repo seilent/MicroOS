@@ -61,6 +61,9 @@ dnf -y install \
   alsa-utils \
   sddm \
   sddm-wayland-generic \
+  plymouth \
+  plymouth-scripts \
+  plymouth-plugin-script \
   steam-devices \
   gtk2 \
   openal-soft \
