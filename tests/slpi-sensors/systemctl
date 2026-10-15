@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >> "$STUB_LOG"
+[[ $1 == -q ]] && { q=1; shift; }
+case $1 in
+  is-active)
+    s=$(cat "$SYSTEMCTL_STATE" 2> /dev/null || echo inactive)
+    [[ -n ${q:-} ]] || echo "$s"
+    [[ $s == active ]]
+    ;;
+  stop) echo inactive > "$SYSTEMCTL_STATE" ;;
+esac

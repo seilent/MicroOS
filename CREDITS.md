@@ -22,11 +22,12 @@ Projects MicroOS builds, with their authors and license.
 | `mangohud` mangoapp render per game frame | MangoHud `2c1dc5283c04` | Matthew Schwartz | MIT |
 | `mangohud` msm_dpu GPU memory | MangoHud `f7d778a5e702` | 17314642 | MIT |
 | `mangohud` msm_dpu GPU rows | MangoHud `7c95b67656d6`, `e57fa15`, `abc561d` | flightlessmango, Matthew Schwartz | MIT |
+| `hexagonrpc` | [linux-msm/hexagonrpc](https://github.com/linux-msm/hexagonrpc) `da7a3742ab` | Richard Acayan and hexagonrpc contributors | GPL-3.0-or-later, BSD-3-Clause (FastRPC error tables, The Linux Foundation and The Sensor Shell Contributors) |
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
 carries Fedora's packaging patches and `mangohud` carries nine upstream MangoHud patches, five of them backported by
 me, and three of mine (`PATCHES.md` in each package); the others are built as is. License texts in `packages/gamescope/`,
-`packages/gamescope-session/`, `packages/inputplumber/`, `packages/mangohud/` and `packages/steamos-manager/`.
+`packages/gamescope-session/`, `packages/hexagonrpc/`, `packages/inputplumber/`, `packages/mangohud/` and `packages/steamos-manager/`.
 
 ## Kernel
 
@@ -63,5 +64,6 @@ Retroid kernel is [lineageos-on-retroid/android_kernel_retroid_sm8250_ack](https
 | PM2 UCM layout and the `Speakers Volume` remap | [alsa-ucm-conf](https://github.com/alsa-project/alsa-ucm-conf) `Qualcomm/sm8250/HiFi.conf` `f4f0a97eb3`, `codecs/wsa883x/init.conf` `489b9a1406` | Srinivas Kandagatla (Linaro) | BSD-3-Clause |
 | Steam client and Steam Runtime (steamrt3c arm64) | Valve `steam_client_steamdeck_stable_linuxarm64` `1788652215`, `steam-runtime-steamrt-arm64` `3c.0.20260729.253765` | Valve Corporation | Steam Subscriber Agreement |
 | SDDM `TZ=UTC0` drop-in (idea, written new) | Armada `cf87a12` | virtudude | GPL-2.0-or-later |
+| hexagonrpcd stopped across suspend (idea, written new) | [postmarketOS pmaports](https://gitlab.postmarketos.org/postmarketOS/pmaports) `fe0002784` | Richard Acayan | GPL-3.0 |
 | Selawik font in `microset-recovery` | [microsoft/Selawik](https://github.com/microsoft/Selawik) `1.01` | Microsoft Corporation | OFL-1.1 |
 | `mkbootimg`, `unpack_bootimg` | AOSP `platform/system/tools/mkbootimg`, Fedora `android-tools` | The Android Open Source Project | Apache-2.0 |

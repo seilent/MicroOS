@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+unit=microos-hexagonrpcd.service
+run_dir=${MICROOS_RUN_DIR:-/run/microos}
+marker=$run_dir/hexagonrpcd-sleep
+
+case "${2:-}" in
+  suspend|suspend-then-hibernate|hybrid-sleep) ;;
+  *) exit 0 ;;
+esac
+
+case "${1:-}" in
+  pre)
+    case "$(systemctl is-active "$unit" 2> /dev/null)" in
+      active|activating|reloading) ;;
+      *) exit 0 ;;
+    esac
+    if ! { mkdir -p "$run_dir" && : > "$marker"; } 2> /dev/null; then
+      printf 'microos-hexagonrpcd-sleep: writing %s failed, %s left running\n' "$marker" "$unit" >&2
+      exit 0
+    fi
+    systemctl stop "$unit" ||
+      printf 'microos-hexagonrpcd-sleep: stopping %s failed\n' "$unit" >&2
+    ;;
+  post)
+    [[ -e $marker ]] || exit 0
+    systemctl reset-failed "$unit" 2> /dev/null || true
+    systemctl --no-block start "$unit" ||
+      printf 'microos-hexagonrpcd-sleep: starting %s failed\n' "$unit" >&2
+    rm -f -- "$marker"
+    ;;
+esac
+exit 0

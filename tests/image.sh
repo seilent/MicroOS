@@ -162,6 +162,27 @@ while IFS='|' read -r path digest mode; do
 done < <(rpm -qp --qf '[%{FILENAMES}|%{FILEDIGESTS}|%{FILEMODES:octal}\n]' "${seedrpm[0]}")
 [[ $(find /usr/share/microos-seed -mindepth 1 | sort) == "$(rpm -qlp "${seedrpm[0]}" | grep '^/usr/share/microos-seed/' | sort)" ]] \
   || fail "/usr/share/microos-seed holds files outside the seed RPM"
+for f in /usr/libexec/microos/microos-slpi-sensors /usr/lib/systemd/system-sleep/microos-hexagonrpcd; do
+  [[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f missing, mode or owner"
+done
+command -v hexagonrpcd >/dev/null || fail "hexagonrpcd is not on PATH"
+slpirules=/usr/lib/udev/rules.d/70-microos-slpi.rules
+for r in 'SUBSYSTEM=="remoteproc", ATTR{name}=="slpi", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-slpi-sensors.service"' \
+  'SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp", GROUP="hexagonrpc", MODE="0660", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-hexagonrpcd.service"'; do
+  grep -qxF "$r" "$slpirules" || fail "$slpirules lacks $r"
+done
+grep -qx 'ExecStart=/usr/bin/hexagonrpcd -f /dev/fastrpc-sdsp -d sdsp -s -R /var/lib/microos/slpi/current/hexagonfs' \
+  /usr/lib/systemd/system/microos-hexagonrpcd.service || fail "microos-hexagonrpcd.service ExecStart"
+grep -qx 'DynamicUser=yes' /usr/lib/systemd/system/microos-hexagonrpcd.service || fail "microos-hexagonrpcd.service is not DynamicUser"
+grep -qx 'd /var/lib/microos/slpi 0755 root root -' /usr/lib/tmpfiles.d/microos.conf || fail "tmpfiles lacks /var/lib/microos/slpi"
+while read -r u p; do
+  [[ $p == -* ]] && continue
+  grep -qE "^d $p [0-7]+ " /usr/lib/tmpfiles.d/*.conf || fail "${u##*/} ReadWritePaths=$p has no tmpfiles line"
+done < <(awk -F= '/^ReadWritePaths=/ { n = split($2, a, " "); for (i = 1; i <= n; i++) print FILENAME, a[i] }' \
+  /usr/lib/systemd/system/microos-*)
+leak=$(find / -xdev \( -path '*/qcom/sm8250/ayaneo/*' -o -type d \( -name slpi -o -name hexagonfs \) \
+  -o -name slpi.mdt -o -name 'slpi.b[0-9][0-9]' \) -print -quit 2>/dev/null || true)
+[[ -z $leak ]] || fail "SLPI firmware or HexagonFS tree in the image: $leak"
 SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "${units[@]}" /usr/lib/systemd/system/steamos-manager.service \
   /usr/lib/systemd/system/sshd.service /usr/lib/systemd/system/bootc-generic-growpart.service \
   /usr/lib/systemd/system/ostree-finalize-staged.service || fail "systemd-analyze verify"
@@ -223,6 +244,8 @@ done
 microset=$(getent passwd microset) || fail "user microset missing"
 (( $(cut -d: -f3 <<< "$microset") < 1000 )) || fail "microset is not a system user"
 [[ $(cut -d: -f7 <<< "$microset") == */nologin ]] || fail "microset has a login shell"
+hexgid=$(getent group hexagonrpc | cut -d: -f3) || fail "group hexagonrpc missing"
+(( hexgid < 1000 )) || fail "hexagonrpc is not a system group"
 rules=$(sudo -l -U micro)
 grep -q '(ALL) ALL' <<< "$rules" || fail "micro has no wheel sudo rule"
 ! grep -q NOPASSWD <<< "$rules" || fail "micro has a NOPASSWD rule"

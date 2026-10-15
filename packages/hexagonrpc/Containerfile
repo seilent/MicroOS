@@ -1,0 +1,5 @@
+FROM localhost/microos-pkg-builder
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+      meson ninja-build gcc \
+ && dnf clean all

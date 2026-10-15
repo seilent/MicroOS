@@ -1,0 +1,18 @@
+[Unit]
+Description=SLPI sensor DSP firmware and HexagonFS from the UFS partitions
+Wants=sys-kernel-debug.mount
+After=sys-kernel-debug.mount
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=60
+ExecStart=/usr/libexec/microos/microos-slpi-sensors
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/microos/slpi /run/microos
+ProtectKernelTunables=no
+PrivateMounts=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_RAWIO CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER

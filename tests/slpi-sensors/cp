@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+if [[ -n ${CP_FAIL:-} && " $* " == *" --parents "* && " $* " == *"/hexagonfs/sensors/registry "* ]]; then
+  exit 1
+fi
+exec /usr/bin/cp "$@"

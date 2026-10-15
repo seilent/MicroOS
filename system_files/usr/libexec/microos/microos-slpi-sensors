@@ -1,0 +1,233 @@
+#!/usr/bin/env bash
+set -euo pipefail
+shopt -s nullglob inherit_errexit
+export LC_ALL=C
+
+me=microos-slpi-sensors
+root=${MICROOS_SLPI_ROOT:-}
+state=$root/var/lib/microos/slpi
+fwdir=firmware/qcom/sm8250/ayaneo/pocketmicro2
+unit=microos-hexagonrpcd.service
+layout=1
+excluded=(wigig_sensing.so sns_bring_to_ear.so)
+nosource=75
+
+log() { echo "$me: $*"; }
+
+ufs_part() {
+  local link=$root/dev/disk/by-partlabel/$1 dev name parent id
+  why="no $1 partition"
+  [[ -e $link ]] || return 1
+  dev=$(readlink -f "$link")
+  name=${dev##*/}
+  why="$1 is $name, not a partition"
+  [[ -e $root/sys/class/block/$name/partition ]] || return 1
+  parent=$(realpath -e "$root/sys/class/block/$name/..") || return 1
+  why="$1 is on ${parent##*/}, which has no ID_PATH"
+  id=$(udevadm info --query=property --property=ID_PATH --value --name="/dev/${parent##*/}") || return 1
+  why="$1 is on ${parent##*/} ($id), not UFS"
+  [[ $id == platform-1d84000.ufshc-scsi-* ]] || return 1
+  part=$dev
+}
+
+pick() {
+  local s
+  ufs_part persist || return 1
+  persist=$part
+  for s in _a _b; do
+    ufs_part "modem$s" || continue
+    modem=$part
+    ufs_part "dsp$s" || continue
+    dsp=$part
+    slot=$s
+    return 0
+  done
+  return 1
+}
+
+copy_tree() {
+  local src=$1 dst=$2
+  shift 2
+  mkdir -p "$dst"
+  (cd -- "$src" && find . -mindepth 1 -type d -print0) | (cd -- "$dst" && xargs -0 -r mkdir -p)
+  (cd -- "$src" && find . -type f "$@" -print0 | xargs -0 -r cp --no-preserve=all --parents -t "$dst")
+}
+
+sum_tree() {
+  (
+    cd -- "$2"
+    printf '%s\n' "$1"
+    find . \( -type d -o -type f \) "${@:3}" -printf '%y %p\n' | sort
+    find . -type f "${@:3}" -print0 | sort -z | xargs -0 -r sha256sum
+  )
+}
+
+provision() {
+  found=0 mounted=() tmp= skip=()
+
+  for _ in {1..100}; do
+    if pick; then
+      found=1
+      break
+    fi
+    sleep 0.1
+  done
+  if (( ! found )); then
+    log "$why, SLPI not started"
+    exit "$nosource"
+  fi
+  log "using slot $slot"
+
+  mkdir -p "$root/run/microos"
+  work=$(mktemp -d "$root/run/microos/slpi.XXXXXX")
+  work=$(realpath -e "$work")
+  cleanup() {
+    local m
+    for m in "${mounted[@]}"; do umount "$m" || true; done
+    rm -rf --one-file-system -- "$work"
+    [[ -z $tmp ]] || rm -rf --one-file-system -- "$tmp"
+  }
+  trap cleanup EXIT
+
+  mount_ro() {
+    local dev=$1 type=$2 dir=$work/$3 opts=ro,nosuid,nodev,noexec
+    [[ $type == ext4 ]] && opts=$opts,noload
+    blockdev --setro "$dev"
+    mkdir "$dir"
+    mount -t "$type" -o "$opts" "$dev" "$dir"
+    mounted+=("$dir")
+  }
+  mount_ro "$modem" vfat modem
+  mount_ro "$dsp" ext4 dsp
+  mount_ro "$persist" ext4 persist
+
+  image=$work/modem/image
+  sdsp=$work/dsp/sdsp
+  registry=$work/persist/sensors/registry/registry
+  missing=
+  [[ -f $image/slpi.mdt && ! -L $image/slpi.mdt && $(realpath -e -- "$image") == "$image" ]] ||
+    missing="slpi.mdt on modem$slot"
+  [[ -d $sdsp && $(realpath -e -- "$sdsp") == "$sdsp" ]] || missing="sdsp on dsp$slot"
+  [[ -d $registry && $(realpath -e -- "$registry") == "$registry" ]] || missing="sensors registry on persist"
+  if [[ -n $missing ]]; then
+    log "no $missing, SLPI not started"
+    exit "$nosource"
+  fi
+
+  gen=$work/gen
+  mkdir -p "$gen/socinfo" "$gen/sensors"
+  for f in family machine revision soc_id serial_number; do
+    cat "$root/sys/devices/soc0/$f" > "$gen/socinfo/$f"
+  done
+  dbg=$root/sys/kernel/debug/qcom_socinfo
+  read -r subtype 2> /dev/null < "$dbg/hardware_platform_subtype" || subtype=0
+  read -r version 2> /dev/null < "$dbg/platform_version" || version=65536
+  printf 'QRD\n' > "$gen/socinfo/hw_platform"
+  printf 'QRD\n' > "$gen/socinfo/platform_subtype"
+  printf '%s\n' "$subtype" > "$gen/socinfo/platform_subtype_id"
+  printf '%s\n' "$version" > "$gen/socinfo/platform_version"
+  cat > "$gen/sensors/sns_reg.conf" << 'EOF'
+version=1
+file=hw_platform=/sys/devices/soc0/hw_platform
+file=platform_subtype=/sys/devices/soc0/platform_subtype
+file=platform_subtype_id=/sys/devices/soc0/platform_subtype_id
+file=platform_version=/sys/devices/soc0/platform_version
+file=soc_id=/sys/devices/soc0/soc_id
+file=revision=/sys/devices/soc0/revision
+file=output=/mnt/vendor/persist/sensors/registry/registry
+property=persist.vendor.sensors.enable.property=/mnt/vendor/persist/sensors/registry/file1
+property=persist.vendor.sensors.enable.property1=/mnt/vendor/persist/sensors/registry/file2
+EOF
+
+  fw=$work/fw
+  mkdir "$fw"
+  for f in "$image"/slpi.mdt "$image"/slpi.b[0-9][0-9]; do
+    if [[ -f $f && ! -L $f ]]; then
+      cp --no-preserve=all "$f" "$fw/"
+    fi
+  done
+
+  for f in "${excluded[@]}"; do skip+=(! -path "./$f"); done
+  hash=$(
+    {
+      printf 'layout %s\n' "$layout"
+      sum_tree firmware "$fw"
+      sum_tree sdsp "$sdsp" "${skip[@]}"
+      sum_tree registry "$registry"
+      sum_tree gen "$gen"
+    } | sha256sum | cut -d' ' -f1
+  )
+
+  if [[ $(readlink "$state/current" 2> /dev/null) == "$hash" && -d $state/$hash ]]; then
+    log "tree $hash in place"
+  else
+    tmp=$state/.$hash.tmp
+    rm -rf --one-file-system -- "$tmp" "${state:?}/$hash"
+    copy_tree "$fw" "$tmp/$fwdir"
+    copy_tree "$sdsp" "$tmp/hexagonfs/dsp/sdsp" "${skip[@]}"
+    copy_tree "$registry" "$tmp/hexagonfs/sensors/registry"
+    copy_tree "$gen" "$tmp/hexagonfs"
+    chown -R 0:0 "$tmp"
+    find "$tmp" -type d -exec chmod 0755 {} +
+    find "$tmp" -type f -exec chmod 0644 {} +
+    mv -T "$tmp" "$state/$hash"
+    tmp=
+
+    active=0
+    if systemctl -q is-active "$unit"; then
+      systemctl stop "$unit"
+      active=1
+    fi
+    rc=0
+    ln -sfn "$hash" "$state/.current.tmp"
+    mv -T "$state/.current.tmp" "$state/current" || rc=$?
+    if (( active )); then
+      systemctl --no-block start "$unit" || log "starting $unit failed"
+    fi
+    (( rc == 0 )) || exit "$rc"
+    log "tree $hash installed"
+  fi
+
+  for f in "$state"/* "$state"/.*.tmp; do
+    [[ ${f##*/} == current || ${f##*/} == "$hash" ]] && continue
+    rm -rf --one-file-system -- "$f"
+  done
+}
+
+set +e
+(set -e; provision)
+rc=$?
+set -e
+if (( rc == nosource )); then
+  exit 0
+elif (( rc != 0 )); then
+  if [[ -d $state/current/firmware && -d $state/current/hexagonfs ]]; then
+    log "provisioning failed ($rc), starting from the tree in place ($(readlink "$state/current"))"
+  else
+    log "provisioning failed ($rc) and no tree in place, SLPI not started"
+    exit "$rc"
+  fi
+fi
+
+param=$root/sys/module/firmware_class/parameters/path
+want=$state/current/firmware
+cur=$(< "$param")
+if [[ -z $cur ]]; then
+  printf '%s' "$want" > "$param"
+elif [[ $cur != "$want" ]]; then
+  log "firmware path is $cur, left as is"
+fi
+
+started=0
+for r in "$root"/sys/class/remoteproc/remoteproc*; do
+  [[ $(< "$r/name") == slpi ]] || continue
+  started=1
+  s=$(< "$r/state")
+  if [[ $s == offline ]]; then
+    echo start > "$r/state"
+    log "started ${r##*/}"
+  else
+    log "${r##*/} is $s"
+  fi
+done
+(( started )) || { log "no slpi remoteproc"; exit 1; }

@@ -1,0 +1,24 @@
+[Unit]
+Description=FastRPC file server for the SLPI sensor DSP
+BindsTo=dev-fastrpc\x2dsdsp.device
+After=dev-fastrpc\x2dsdsp.device microos-slpi-sensors.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+ExecStart=/usr/bin/hexagonrpcd -f /dev/fastrpc-sdsp -d sdsp -s -R /var/lib/microos/slpi/current/hexagonfs
+Restart=always
+RestartSec=3
+TimeoutStopSec=5s
+DynamicUser=yes
+SupplementaryGroups=hexagonrpc
+ProtectSystem=strict
+ProtectHome=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+DeviceAllow=/dev/fastrpc-sdsp rw
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+SystemCallArchitectures=native
+LockPersonality=yes
+MemoryDenyWriteExecute=yes

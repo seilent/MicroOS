@@ -13,6 +13,7 @@ own=(
   mangohud/mangohud
   microset/microset
   microset/microset-recovery
+  hexagonrpc/hexagonrpc
 )
 
 rpms=()

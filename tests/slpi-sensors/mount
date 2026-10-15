@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+printf 'mount %s\n' "$*" >> "$STUB_LOG"
+dev=${@: -2:1}
+dir=${@: -1}
+[[ ${dev##*/} != "${MOUNT_FAIL:-}" ]] || exit 32
+cp -a "$SLPI_FIX/${dev##*/}/." "$dir/"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+for a in "$@"; do
+  [[ $a == --name=/dev/* ]] && exec cat "$SLPI_UDEV/${a#--name=/dev/}"
+done
+exit 1
