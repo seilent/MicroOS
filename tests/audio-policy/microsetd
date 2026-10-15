@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+import os
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+PATH = "/net/seilent/MicroSet"
+IFACE = "net.seilent.MicroSet1"
+XML = f"""
+<node>
+  <interface name="{IFACE}">
+    <method name="Get"><arg type="s" direction="in"/><arg type="v" direction="out"/></method>
+    <method name="Set"><arg type="s" direction="in"/><arg type="v" direction="in"/></method>
+    <signal name="Changed"><arg type="s"/><arg type="v"/></signal>
+  </interface>
+  <interface name="test.Stub">
+    <method name="Poke"><arg type="s" direction="in"/><arg type="v" direction="in"/></method>
+  </interface>
+</node>
+"""
+LOG = sys.argv[1]
+FAIL_GET = os.path.join(os.path.dirname(LOG), "get-fails")
+store = {"audio.output": GLib.Variant("s", sys.argv[2])}
+
+
+def record(line):
+    with open(LOG, "a") as f:
+        f.write(line + "\n")
+
+
+def change(conn, key, value):
+    if store.get(key) == value:
+        return
+    store[key] = value
+    conn.emit_signal(None, PATH, IFACE, "Changed", GLib.Variant("(sv)", (key, value)))
+
+
+def method(conn, _sender, _path, _iface, name, params, invocation):
+    if name == "Get":
+        key = params.get_child_value(0).get_string()
+        if os.path.exists(FAIL_GET):
+            record(f"get {key} failed")
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.Failed", "get fails in the stub")
+        elif key in store:
+            invocation.return_value(GLib.Variant("(v)", (store[key],)))
+        else:
+            invocation.return_dbus_error("net.seilent.MicroSet1.Error.UnknownKey", key)
+        return
+    key = params.get_child_value(0).get_string()
+    value = params.get_child_value(1).get_variant()
+    if name == "Set":
+        record(f"set {key} {value.unpack()}")
+    change(conn, key, value)
+    invocation.return_value(None)
+
+
+bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+for info in Gio.DBusNodeInfo.new_for_xml(XML).interfaces:
+    bus.register_object_with_closures2(PATH, info, method, None, None)
+Gio.bus_own_name_on_connection(bus, "net.seilent.MicroSet", Gio.BusNameOwnerFlags.NONE,
+                               lambda *_: record("ready"), None)
+GLib.MainLoop().run()

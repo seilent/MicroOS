@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+import glob
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-audio"
+MICROSET = ("net.seilent.MicroSet", "/net/seilent/MicroSet", "net.seilent.MicroSet1")
+KEY = "default.configured.audio.sink"
+SPEAKER = "alsa_output.platform-sound.HiFi__Speaker__sink"
+HEADPHONES = "alsa_output.platform-sound.HiFi__Headphones__sink"
+CARD_ID = "PocketMICRO2"
+CARD = "alsa_card.platform-sound"
+SYSFS = os.environ.get("MICROOS_AUDIO_SYSFS", "/sys/class/sound")
+SETTLE_S = float(os.environ.get("MICROOS_AUDIO_SETTLE", "5"))
+APPLY = {"audio.hp_amp": HEADPHONES, "audio.speaker_gain": SPEAKER}
+OUTPUTS = ("auto", "speaker", "headphones", "usb", "bt")
+PMDOWN_MS = 5000
+ECHO_S = 2
+DEBOUNCE_MS = 200
+RETRY_MS = 1000
+PACTL_TIMEOUT = 3
+ERRORS = (subprocess.SubprocessError, OSError, ValueError)
+UPDATE = re.compile(r"update: id:0 key:'default\.configured\.audio\.sink' value:'(.*)' type:'[^']*'")
+REMOVE = re.compile(r"remove: id:0 (key:'default\.configured\.audio\.sink'|all keys)")
+
+
+def log(msg):
+    print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+
+
+def run(*argv):
+    return subprocess.run(argv, capture_output=True, text=True, check=True, timeout=PACTL_TIMEOUT).stdout
+
+
+def classify(name):
+    if name == SPEAKER:
+        return "speaker"
+    if name == HEADPHONES:
+        return "headphones"
+    if name.startswith("alsa_output.usb-"):
+        return "usb"
+    if name.startswith("bluez_output."):
+        return "bt"
+    return None
+
+
+def available(sink):
+    ports = sink.get("ports") or []
+    if not ports:
+        return True
+    active = [p for p in ports if p.get("name") == sink.get("active_port")] or ports
+    return any(p.get("availability") != "not available" for p in active)
+
+
+def priority(sink):
+    try:
+        return int((sink.get("properties") or {}).get("priority.session", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def list_sinks():
+    return {s["name"]: s for s in json.loads(run("pactl", "--format=json", "list", "sinks")) if s.get("name")}
+
+
+def pmdown_ms():
+    for path in sorted(glob.glob(os.path.join(glob.escape(SYSFS), "card*", "id"))):
+        try:
+            with open(path) as f:
+                if f.read().strip() != CARD_ID:
+                    continue
+        except OSError:
+            continue
+        values = []
+        for p in glob.glob(os.path.join(glob.escape(os.path.dirname(path)), "device", "*", "pmdown_time")):
+            try:
+                with open(p) as f:
+                    values.append(int(f.read().strip()))
+            except (OSError, ValueError):
+                continue
+        if values:
+            return max(values)
+    return PMDOWN_MS
+
+
+def card_off():
+    try:
+        cards = json.loads(run("pactl", "--format=json", "list", "cards"))
+    except ERRORS as err:
+        log(f"listing cards failed: {err}")
+        return False
+    return any(c.get("name") == CARD and c.get("active_profile") == "off" for c in cards)
+
+
+def configured_name(value):
+    try:
+        name = json.loads(value).get("name")
+    except (ValueError, AttributeError):
+        return None
+    return name if isinstance(name, str) and name else None
+
+
+class Audio:
+    def __init__(self, bus, loop):
+        self.bus = bus
+        self.loop = loop
+        self.output = None
+        self.configured = None
+        self.sent = []
+        self.settling = True
+        self.pending = None
+        self.retry = None
+        self.cycles = {}
+        self.dirty = set()
+
+    def watch(self, argv, handler):
+        proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE)
+        stream = Gio.DataInputStream.new(proc.get_stdout_pipe())
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.line, (argv[0], stream, handler))
+        return proc
+
+    def line(self, stream, result, data):
+        name, _, handler = data
+        try:
+            text, _ = stream.read_line_finish_utf8(result)
+        except GLib.Error as err:
+            text = None
+            log(f"reading {name} failed: {err.message}")
+        if text is None:
+            log(f"{name} exited")
+            self.loop.quit()
+            return
+        handler(text)
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.line, data)
+
+    def metadata(self, text):
+        m = UPDATE.fullmatch(text)
+        if m:
+            name = configured_name(m.group(1))
+        elif REMOVE.fullmatch(text):
+            name = None
+        else:
+            return
+        now = time.monotonic()
+        self.sent = [(n, t) for n, t in self.sent if now - t < ECHO_S]
+        names = [n for n, _ in self.sent]
+        if name in names:
+            del self.sent[:names.index(name) + 1]
+            if self.sent:
+                return
+        elif name is not None and not self.settling:
+            self.foreign(name)
+        self.configured = name
+        if not self.settling:
+            self.schedule()
+
+    def foreign(self, name):
+        output = classify(name) or "auto"
+        log(f"configured default {name} set elsewhere, storing audio.output {output}")
+        self.output = output
+        self.bus.call(
+            *MICROSET, "Set", GLib.Variant("(sv)", ("audio.output", GLib.Variant("s", output))),
+            None, Gio.DBusCallFlags.NONE, 5000, None, self.stored, output,
+        )
+
+    def stored(self, bus, result, output):
+        try:
+            bus.call_finish(result)
+        except GLib.Error as err:
+            log(f"storing audio.output {output} failed: {err.message}")
+
+    def sinks(self, text):
+        if " on sink " in text or " on card " in text:
+            self.schedule()
+
+    def schedule(self):
+        if self.pending is None:
+            self.pending = GLib.timeout_add(DEBOUNCE_MS, self.refresh)
+
+    def settled(self):
+        self.settling = False
+        self.schedule()
+        return GLib.SOURCE_REMOVE
+
+    def refresh(self):
+        self.pending = None
+        sinks = None
+        if self.cycles or (not self.settling and self.output not in (None, "auto")):
+            try:
+                sinks = list_sinks()
+            except ERRORS as err:
+                log(f"listing sinks failed: {err}")
+                if self.retry is None:
+                    self.retry = GLib.timeout_add(RETRY_MS, self.retried)
+                return GLib.SOURCE_REMOVE
+        self.reconcile(sinks)
+        self.step(sinks)
+        return GLib.SOURCE_REMOVE
+
+    def retried(self):
+        self.retry = None
+        self.schedule()
+        return GLib.SOURCE_REMOVE
+
+    def reconcile(self, sinks):
+        if self.settling or self.output is None:
+            return
+        current = self.configured
+        if self.output == "auto":
+            if current is None or classify(current) is None:
+                return
+            want = None
+        else:
+            usable = [s for n, s in sorted(sinks.items()) if classify(n) == self.output and available(s)]
+            if current in sinks and sinks[current] in usable:
+                return
+            want = max(usable, key=priority)["name"] if usable else None
+        if want == current:
+            return
+        if want is None and self.output in ("speaker", "headphones") and card_off():
+            return
+        self.sent = self.sent[-7:] + [(want, time.monotonic())]
+        try:
+            if want is None:
+                run("pw-metadata", "-n", "default", "-d", "0", KEY)
+                log(f"audio.output {self.output}: configured default removed")
+            else:
+                run("pactl", "set-default-sink", want)
+                log(f"audio.output {self.output}: configured default {want}")
+            self.configured = want
+        except ERRORS as err:
+            self.sent.pop()
+            log(f"setting the configured default failed: {err}")
+
+    def load(self):
+        self.bus.call(
+            *MICROSET, "Get", GLib.Variant("(s)", ("audio.output",)),
+            GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 5000, None, self.loaded, None,
+        )
+
+    def loaded(self, bus, result, _data):
+        try:
+            value = bus.call_finish(result).unpack()[0]
+        except GLib.Error as err:
+            log(f"reading audio.output failed: {err.message}")
+            return
+        self.set_output(value)
+
+    def set_output(self, value):
+        if value not in OUTPUTS:
+            log(f"audio.output {value!r} unknown, using auto")
+            value = "auto"
+        self.output = value
+        self.schedule()
+
+    def changed(self, _conn, _sender, _path, _iface, _signal, params):
+        key, value = params.unpack()
+        if key == "audio.output":
+            self.set_output(value)
+        elif key in APPLY:
+            self.dirty.add(APPLY[key])
+            self.cycles.setdefault(APPLY[key], ["wait", None])
+            self.schedule()
+
+    def appeared(self, _conn, _name, _owner):
+        self.load()
+
+    def step(self, sinks):
+        for sink, (stage, timer) in list(self.cycles.items()):
+            state = sinks.get(sink, {}).get("state")
+            if state is None:
+                log(f"apply cycle: {sink} is gone, dropped")
+                self.drop(sink)
+            elif stage == "hold" and timer is None and state == "SUSPENDED":
+                log(f"apply cycle: {sink} closed for its pmdown_time, it opens on the next stream")
+                if sink in self.dirty:
+                    self.cycles[sink] = ["wait", None]
+                    self.suspend(sink)
+                else:
+                    del self.cycles[sink]
+            elif stage == "hold" and state != "SUSPENDED":
+                log(f"apply cycle: {sink} opened during the hold, waiting again")
+                if timer is not None:
+                    GLib.source_remove(timer)
+                self.cycles[sink] = ["wait", None]
+                if state != "RUNNING":
+                    self.suspend(sink)
+            elif stage == "wait" and state != "RUNNING":
+                self.suspend(sink)
+
+    def suspend(self, sink):
+        self.dirty.discard(sink)
+        wait = pmdown_ms() + 1000
+        try:
+            run("pactl", "suspend-sink", sink, "1")
+        except ERRORS as err:
+            log(f"apply cycle: suspending {sink} failed: {err}")
+            del self.cycles[sink]
+            return
+        log(f"apply cycle: {sink} suspended, holding {wait} ms")
+        self.cycles[sink] = ["hold", GLib.timeout_add(wait, self.held, sink)]
+
+    def held(self, sink):
+        if sink in self.cycles:
+            self.cycles[sink][1] = None
+            self.schedule()
+        return GLib.SOURCE_REMOVE
+
+    def drop(self, sink):
+        timer = self.cycles.pop(sink)[1]
+        if timer is not None:
+            GLib.source_remove(timer)
+        self.dirty.discard(sink)
+
+
+def main():
+    os.environ["LC_ALL"] = "C"
+    loop = GLib.MainLoop()
+    bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    audio = Audio(bus, loop)
+    bus.signal_subscribe(
+        MICROSET[0], MICROSET[2], "Changed", MICROSET[1], None, Gio.DBusSignalFlags.NONE, audio.changed,
+    )
+    Gio.bus_watch_name_on_connection(bus, MICROSET[0], Gio.BusNameWatcherFlags.NONE, audio.appeared, None)
+    procs = [
+        audio.watch(["pw-metadata", "-n", "default", "-m", "0", KEY], audio.metadata),
+        audio.watch(["pactl", "subscribe"], audio.sinks),
+    ]
+    GLib.timeout_add(int(SETTLE_S * 1000), audio.settled)
+    loop.run()
+    for proc in procs:
+        proc.force_exit()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,12 @@
+[Unit]
+Description=Default audio output and gain apply from MicroSET
+After=wireplumber.service pipewire-pulse.service pipewire-pulse.socket
+BindsTo=wireplumber.service
+
+[Service]
+ExecStart=/usr/libexec/microos/microos-audio
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target wireplumber.service

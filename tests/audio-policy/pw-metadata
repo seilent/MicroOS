@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+case "$*" in
+  "-n default -m 0 default.configured.audio.sink")
+    echo 'Found "default" metadata 38'
+    exec tail -n +1 -F "$STUB_DIR/meta.feed" 2> /dev/null
+    ;;
+  "-n default -d 0 default.configured.audio.sink")
+    echo "remove" >> "$STUB_DIR/log"
+    echo "remove: id:0 key:'default.configured.audio.sink'" >> "$STUB_DIR/meta.feed"
+    ;;
+  *)
+    echo "pw-metadata stub: $*" >&2
+    exit 1
+    ;;
+esac

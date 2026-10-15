@@ -58,6 +58,40 @@ else
   echo "audio: $(wc -l < "$tmp/names") control names unchecked, $(basename "$fixture") is empty"
 fi
 
+declare -A boot=(
+  ['RX HPH Mode']=CLS_H_LOHIFI ['RX_HPH PWR Mode']=LOHIFI ['HPHL Volume']=24 ['HPHR Volume']=24
+  ['WSA_RX0 Digital Volume']=102 ['WSA_RX1 Digital Volume']=102 ['SpkrLeft PA Volume']=12 ['SpkrRight PA Volume']=12
+)
+for f in "${srcs[@]}"; do
+  awk -v f="${f##*/}" '
+    /^[ \t]*BootSequence[ \t]*\[/ { b = 1 }
+    /cset "name=/ { n = $0; sub(/.*name=\047/, "", n); v = n; sub(/\047.*/, "", n); sub(/.*\047 */, "", v); sub(/" *$/, "", v)
+      print (b ? "boot" : "seq") "\t" f ":" NR "\t" n "\t" v }
+    b && /^[ \t]*\]/ { b = 0 }
+  ' "$f"
+done > "$tmp/csets"
+for n in "${!boot[@]}"; do
+  while IFS=$'\t' read -r where at name value; do
+    [[ $name == "$n" ]] || continue
+    if [[ $where == seq ]]; then
+      fail "$at: a sequence writes '$n', microsetd owns it"
+    elif [[ $value != "${boot[$n]}" ]]; then
+      fail "$at: boot writes '$n' $value, the default is ${boot[$n]}"
+    fi
+  done < "$tmp/csets"
+  [[ $(grep -cP "^boot\t[^\t]*\t\Q$n\E\t" "$tmp/csets") == 1 ]] || fail "the boot sequence does not write '$n' once"
+done
+
+soft=$tree/usr/share/wireplumber/wireplumber.conf.d/50-microos-soft-mixer.conf
+if spa-json-dump "$soft" > "$tmp/soft.json" 2> "$tmp/soft.err"; then
+  grep -q '"api.alsa.soft-mixer": true' "$tmp/soft.json" || fail "${soft##*/} does not set api.alsa.soft-mixer"
+  mapfile -t devs < <(sed -n 's/^ *"device.name": "\(.*\)",\{0,1\}$/\1/p' "$tmp/soft.json")
+  [[ ${devs[*]} == alsa_card.platform-sound ]] || fail "${soft##*/} matches '${devs[*]}', not alsa_card.platform-sound"
+  ! grep -q '"node.name"\|"alsa.card_name"' "$tmp/soft.json" || fail "${soft##*/} matches nodes, the soft mixer is a device property"
+else
+  fail "${soft##*/}: $(cat "$tmp/soft.err")"
+fi
+
 wp=$tree/usr/share/wireplumber/wireplumber.conf.d/52-microos-pm2.conf
 if spa-json-dump "$wp" > "$tmp/wp.json" 2> "$tmp/wp.err"; then
   grep -q '"session.suspend-timeout-seconds": 0' "$tmp/wp.json" || fail "${wp##*/} lacks the suspend timeout"

@@ -61,6 +61,9 @@ for kv in Type=dbus BusName=net.seilent.MicroSet User=microset StateDirectory=mi
 done
 if ! grep -qx 'CapabilityBoundingSet=' "$unit"; then fail "microsetd.service CapabilityBoundingSet not empty"; fi
 if ! grep -qx 'PrivateNetwork=yes' "$unit"; then fail "microsetd.service lacks PrivateNetwork=yes"; fi
+if ! grep -qx 'DeviceAllow=char-alsa rw' "$unit"; then fail "microsetd.service lacks DeviceAllow=char-alsa rw"; fi
+if ! grep -qx 'After=.*alsa-restore\.service.*' "$unit"; then fail "microsetd.service not after alsa-restore.service"; fi
+if ! grep -qx 'After=.*alsa-state\.service.*' "$unit"; then fail "microsetd.service not after alsa-state.service"; fi
 
 if ! grep -qE '^u[[:space:]]+microset[[:space:]]' "$tmp/usr/lib/sysusers.d/microset.conf"; then fail "sysusers: no user microset"; fi
 

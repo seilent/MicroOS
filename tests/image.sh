@@ -64,6 +64,8 @@ for r in 'RUN+="/usr/bin/chgrp wheel /sys%p/brightness"' 'RUN+="/usr/bin/chmod g
 done
 grep -qE 'session\.dont-restore-off-profile"? *[=:] *true' /usr/share/wireplumber/wireplumber.conf.d/52-microos-pm2.conf \
   || fail "52-microos-pm2.conf does not set session.dont-restore-off-profile"
+grep -qE 'api\.alsa\.soft-mixer"? *[=:] *true' /usr/share/wireplumber/wireplumber.conf.d/50-microos-soft-mixer.conf \
+  || fail "50-microos-soft-mixer.conf does not set api.alsa.soft-mixer"
 
 rpm -q python3-gobject python3-evdev upower >/dev/null || fail "steam service rpms missing"
 [[ $(rpm -q --qf '%{VENDOR}' steamos-manager) == MicroOS ]] || fail "steamos-manager is not the MicroOS build"
@@ -71,7 +73,7 @@ rpm -q python3-gobject python3-evdev upower >/dev/null || fail "steam service rp
 for u in steamos-manager.service upower.service microos-powerd.service microos-vpower.service microsetd.service; do
   [[ $(systemctl is-enabled "$u") == enabled ]] || fail "$u is not enabled"
 done
-for u in steamos-manager.service microos-audio-sleep.service; do
+for u in steamos-manager.service microos-audio-sleep.service microos-audio.service; do
   [[ $(systemctl --global is-enabled "$u") == enabled ]] || fail "user $u is not enabled"
 done
 [[ $(systemctl --global is-enabled steamos-manager-session-cleanup.service) != enabled ]] \
