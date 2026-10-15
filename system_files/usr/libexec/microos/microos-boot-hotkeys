@@ -26,7 +26,7 @@ next() {
 ids || log "no user $user"
 end=$(( $(ms) + find_ms ))
 mapfile -t nodes < <(pad_node)
-while (( ! ${#nodes[@]} )) && (( $(ms) < end )); do
+while (( ! ${#nodes[@]} )) && (( $(ms) <= end )); do
   sleep 0.1
   mapfile -t nodes < <(pad_node)
 done
@@ -65,7 +65,7 @@ put "$rundir/session-current" "$target $unit $(new_serial)" || log "cannot write
 rm -f "$statedir/session/attempt"
 log "$held held at boot, $target for this boot"
 ready
-while (( $(ms) - t0 < hold_ms )); do
+while (( $(ms) - t0 <= hold_ms )); do
   started "$unit" && exit 0
   held=$(next)
   if [[ -z $held ]]; then

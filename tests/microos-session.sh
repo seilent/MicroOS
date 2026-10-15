@@ -827,4 +827,18 @@ for u in microos-session-giveup microos-session-rollback; do
   done
   ! grep -q '^ProtectSystem' "$units/system/$u.service" || fail "$u.service has ProtectSystem"
 done
+
+step_up=$tmp/uptime-step
+set_step() { echo "$1 0" > "$step_up.new" && mv -f "$step_up.new" "$step_up"; }
+set_step 100.00
+(MICROOS_UPTIME=$step_up; . "$session"; within 1 false) &
+pid=$!
+sleep 0.3
+set_step 100.60
+sleep 1.4
+kill -0 "$pid" 2> /dev/null || fail "within ended at 1.7 s wall time, 0.6 s uptime"
+set_step 101.01
+r=0
+wait "$pid" || r=$?
+(( r == 1 )) || fail "within after the bound: exit $r"
 exit $rc
