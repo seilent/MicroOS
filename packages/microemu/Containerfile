@@ -2,4 +2,5 @@ FROM localhost/microos-pkg-builder
 
 RUN dnf -y --setopt=install_weak_deps=False install \
       just unzip python3-gobject python3-cairo gtk3 pango gobject-introspection libxml2 zip dbus-daemon \
+      retroarch libretro-mgba libretro-pcsx-rearmed xorriso \
  && dnf clean all

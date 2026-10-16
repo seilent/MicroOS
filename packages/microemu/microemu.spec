@@ -12,6 +12,7 @@ Source0:        %{url}/archive/%{commit}/%{name}-%{commit}.tar.gz
 Source1:        %{name}-assets-%{commit}.tar.gz
 Vendor:         MicroOS
 BuildArch:      noarch
+BuildRequires:  gcc
 BuildRequires:  just
 BuildRequires:  python3
 BuildRequires:  python3-gobject
@@ -22,6 +23,10 @@ BuildRequires:  gobject-introspection
 BuildRequires:  libxml2
 BuildRequires:  unzip
 BuildRequires:  zip
+BuildRequires:  retroarch
+BuildRequires:  libretro-mgba
+BuildRequires:  libretro-pcsx-rearmed
+BuildRequires:  xorriso
 Requires:       es-de
 Requires:       retroarch
 Requires:       libretro-beetle-ngp
@@ -46,6 +51,7 @@ Requires:       gtk3
 Requires:       pango
 Requires:       gobject-introspection
 Requires:       xprop
+Requires:       util-linux-core
 Requires:       pulseaudio-utils
 Requires:       wireplumber
 
