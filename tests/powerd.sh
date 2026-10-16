@@ -78,7 +78,11 @@ root() { as 0::/system.slice/sshd.service "$@"; }
 spawn() { exec sh -c "$enter" 0::/system.slice/sshd.service "$@"; }
 wheel() { as "$user_cg" setpriv --reuid 1000 --regid 1000 --groups 10 "$@"; }
 nowheel() { as "$user_cg" setpriv --reuid 1000 --regid 1000 --clear-groups "$@"; }
+emu_cg=0::/user.slice/user-1000.slice/user@1000.service/app.slice/microemu-game.scope
+emu_like_cg=0::/user.slice/user-1000.slice/user@1000.service/app.slice/microemu-game.scope-x.service
 game() { as "$game_cg" setpriv --reuid 1000 --regid 1000 --groups 10 "$@"; }
+emu() { as "$emu_cg" setpriv --reuid 1000 --regid 1000 --groups 10 "$@"; }
+emu_like() { as "$emu_like_cg" setpriv --reuid 1000 --regid 1000 --groups 10 "$@"; }
 
 S=com.steampowered.SteamOSManager1
 P1=net.seilent.MicroOs.Power1
@@ -223,7 +227,10 @@ want "$pol/policy7/scaling_max_freq" 2073600 "wheel set"
   fail "uid 1000 without wheel allowed"
 [[ $(game python3 "$bus" set $S.PerformanceProfile1 PerformanceProfile s low-power) == org.freedesktop.DBus.Error.AccessDenied ]] ||
   fail "a game cgroup allowed"
+[[ $(emu python3 "$bus" set $P1 Profile s low-power) == org.freedesktop.DBus.Error.AccessDenied ]] ||
+  fail "a MicroEMU game scope allowed"
 [[ $(get $P1 Profile) == balanced ]] || fail "a refused set changed the profile"
+[[ $(emu_like python3 "$bus" set $P1 Profile s balanced) == "" ]] || fail "a unit named like the MicroEMU game scope refused"
 grep -q "refused: not in wheel" "$tmp/log" || fail "no wheel refusal line"
 long=$(printf 'x%.0s' $(seq 5000))
 [[ $(nowheel python3 "$bus" set $P1 Profile s "$long") == org.freedesktop.DBus.Error.AccessDenied ]] || fail "a long value without wheel allowed"

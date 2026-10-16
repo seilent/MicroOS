@@ -395,7 +395,8 @@ class Power:
                 cgroup = f.read()
         except OSError:
             return uid, f"cannot read the cgroup of pid {pid}"
-        if "/app-steam-app" in cgroup:
+        path = cgroup.strip()
+        if "/app-steam-app" in path or path.endswith("/microemu-game.scope") or "/microemu-game.scope/" in path:
             return uid, "called from a game"
         return uid, None
 
