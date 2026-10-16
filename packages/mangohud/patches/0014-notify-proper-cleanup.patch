@@ -1,0 +1,115 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: flightlessmango <flightlessmangoyt@gmail.com>
+Date: Tue, 8 Sep 2026 10:00:02 +0200
+Subject: [PATCH] notify: proper cleanup
+
+---
+ src/gl/gl_hud.cpp |  4 ----
+ src/notify.cpp    | 20 +++++++++++---------
+ src/notify.h      |  6 ++++--
+ src/vulkan.cpp    |  4 ----
+ 4 files changed, 15 insertions(+), 19 deletions(-)
+
+diff --git a/src/gl/gl_hud.cpp b/src/gl/gl_hud.cpp
+index 2ef688d..e4f18f1 100644
+--- a/src/gl/gl_hud.cpp
++++ b/src/gl/gl_hud.cpp
+@@ -64,10 +64,6 @@ static ImVec2 window_size;
+ static bool inited = false;
+ overlay_params params {};
+ 
+-// seems to quit by itself though
+-static std::unique_ptr<notify_thread, std::function<void(notify_thread *)>>
+-    stop_it(&notifier, [](notify_thread *n){ stop_notifier(*n); });
+-
+ void imgui_init()
+ {
+     if (cfg_inited)
+diff --git a/src/notify.cpp b/src/notify.cpp
+index 0e07c71..2d0f5b0 100644
+--- a/src/notify.cpp
++++ b/src/notify.cpp
+@@ -15,7 +15,7 @@ static void fileChanged(notify_thread *nt) {
+     char buffer[EVENT_BUF_LEN];
+     overlay_params local_params = *nt->params;
+ 
+-    while (!nt->quit) {
++    while (!nt->quit.load()) {
+         length = read( nt->fd, buffer, EVENT_BUF_LEN );
+         while (i < length) {
+             struct inotify_event *event =
+@@ -42,6 +42,7 @@ static void fileChanged(notify_thread *nt) {
+ 
+ bool start_notifier(notify_thread& nt)
+ {
++    nt.quit.store(false);
+     nt.fd = inotify_init1(IN_NONBLOCK);
+     if (nt.fd < 0) {
+         SPDLOG_ERROR("inotify_init1 failed: {}", strerror(errno));
+@@ -61,15 +62,16 @@ bool start_notifier(notify_thread& nt)
+     return true;
+ }
+ 
+-void stop_notifier(notify_thread& nt)
++notify_thread::~notify_thread()
+ {
+-    if (nt.fd < 0)
++    quit.store(true);
++    if (thread.joinable())
++        thread.join();
++
++    if (fd < 0)
+         return;
+ 
+-    nt.quit = true;
+-    if (nt.thread.joinable())
+-        nt.thread.join();
+-    inotify_rm_watch(nt.fd, nt.wd);
+-    close(nt.fd);
+-    nt.fd = -1;
++    inotify_rm_watch(fd, wd);
++    close(fd);
++    fd = -1;
+ }
+diff --git a/src/notify.h b/src/notify.h
+index 559bda4..20f9b93 100644
+--- a/src/notify.h
++++ b/src/notify.h
+@@ -4,18 +4,20 @@
+ 
+ #include <thread>
+ #include <mutex>
++#include <atomic>
+ #include "overlay_params.h"
+ 
+ struct notify_thread
+ {
++    ~notify_thread();
++
+     int fd = -1, wd = -1;
+     overlay_params *params = nullptr;
+-    bool quit = false;
++    std::atomic_bool quit = false;
+     std::mutex mutex;
+     std::thread thread;
+ };
+ 
+ bool start_notifier(notify_thread& nt);
+-void stop_notifier(notify_thread& nt);
+ 
+ #endif //MANGOHUD_NOTIFY_H
+diff --git a/src/vulkan.cpp b/src/vulkan.cpp
+index 7030d29..89576c0 100644
+--- a/src/vulkan.cpp
++++ b/src/vulkan.cpp
+@@ -2125,10 +2125,6 @@ static void overlay_DestroyInstance(
+    struct instance_data *instance_data = FIND(struct instance_data, instance);
+    instance_data_map_physical_devices(instance_data, false);
+    instance_data->vtable.DestroyInstance(instance, pAllocator);
+-#ifdef __linux__
+-   if (!is_blacklisted())
+-      stop_notifier(instance_data->notifier);
+-#endif
+    destroy_instance_data(instance_data);
+ }
+ 

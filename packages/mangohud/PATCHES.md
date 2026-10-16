@@ -23,9 +23,11 @@ and no `%changelog`.
 | `0011-params-hide-msm_dpu-gpu-rows-without-a-source.patch` | backport of MangoHud `7c95b67656d6`, `e57fa15`, `abc561d` | flightlessmango, Matthew Schwartz |
 | `0012-params-hide-more-msm_dpu-rows-without-a-source.patch` | mine | seilent |
 | `0013-mangoapp-skip-the-window-resize-until-the-size-is-known.patch` | mine | seilent |
+| `0014-notify-proper-cleanup.patch` | MangoHud `0c16392297ff` | flightlessmango |
+| `0015-gpu_fdinfo-wake-the-paused-thread-on-stop.patch` | mine | seilent |
 
-`0001`, `0002`, `0004` and `0007` are the upstream commits as is; `0001` and `0002` keep PR 2073's order. PR 2073
-was closed unmerged; the other commits are on master after `v0.8.4`.
+`0001`, `0002`, `0004`, `0007` and `0014` are the upstream commits as is; `0001` and `0002` keep PR 2073's order.
+PR 2073 was closed unmerged; the other commits are on master after `v0.8.4`.
 
 The backports are mine and keep the upstream author:
 
@@ -51,3 +53,6 @@ Mine:
   rows too and show the battery draw.
 - `0013`: mangoapp started hidden has no output size until a frame message arrives, so the horizontal preset skips
   the window resize while the size is 0, and the size is stored before the render thread is woken.
+- `0015`: the GPU thread paused while mangoapp is hidden never woke at exit, so the join hung. The destructor, pause
+  and resume set their flag under the lock before the notify, the thread holds the lock only for its waits, and the
+  wait between samples is a timed wait that a stop ends at once.
