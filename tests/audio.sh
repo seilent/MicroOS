@@ -8,11 +8,11 @@ ucm=$tree/usr/share/alsa/ucm2
 card=$ucm/Qualcomm/sm8250/PocketMICRO2.conf
 hifi=$ucm/Qualcomm/sm8250/PocketMICRO2-HiFi.conf
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'kill $(jobs -p) 2>/dev/null; wait; rm -rf "$tmp"' EXIT
 rc=0
 fail() { echo "FAIL: $*" >&2; rc=1; }
 
-for t in alsaucm spa-json-dump; do
+for t in alsaucm spa-json-dump pipewire pipewire-pulse wireplumber wpctl pactl pacat pw-cat pw-link; do
   command -v "$t" >/dev/null || { echo "FAIL: $t missing" >&2; exit 1; }
 done
 [[ -d /usr/share/alsa/ucm2 ]] || { echo "FAIL: no alsa-ucm tree" >&2; exit 1; }
@@ -119,6 +119,128 @@ if spa-json-dump "$wp" > "$tmp/wp.json" 2> "$tmp/wp.err"; then
   done < <(sed -n 's/^ *"node.name": "~\(.*\)",\{0,1\}$/\1/p' "$tmp/wp.json")
 else
   fail "${wp##*/}: $(cat "$tmp/wp.err")"
+fi
+
+pins=$here/../packages/pipewire-aptx/SOURCE.env
+if [[ -f $pins ]]; then
+  for p in pipewire:PIPEWIRE_EVR pipewire-pulseaudio:PIPEWIRE_EVR wireplumber:WIREPLUMBER_EVR; do
+    want=$(sed -n "s/^${p#*:}=//p" "$pins")
+    [[ $(rpm -q --qf '%{VERSION}-%{RELEASE}' "${p%%:*}") == "$want" ]] || fail "${p%%:*} is not the pinned $want"
+  done
+fi
+
+eq=$tree/usr/share/wireplumber/wireplumber.conf.d/54-microos-eq.conf
+bypass=$tree/usr/share/wireplumber/scripts/microos/eq-bypass.lua
+[[ -f $bypass ]] || fail "eq-bypass.lua missing"
+if spa-json-dump "$eq" > "$tmp/eq.json" 2> "$tmp/eq.err"; then
+  grep -q '"name": "microos/eq-bypass.lua"' "$tmp/eq.json" || fail "${eq##*/} does not load microos/eq-bypass.lua"
+  grep -q '"provides": "hooks.linking.microos-eq-bypass"' "$tmp/eq.json" || fail "${eq##*/} does not provide hooks.linking.microos-eq-bypass"
+  grep -q '"hooks.linking.microos-eq-bypass": "required"' "$tmp/eq.json" || fail "${eq##*/} does not require the bypass in the main profile"
+  grep -q '"device.restore-profile": false' "$tmp/eq.json" || fail "${eq##*/} does not turn device.restore-profile off"
+  ! grep -q 'allowed-rates' "$tmp/eq.json" || fail "${eq##*/} sets allowed rates"
+else
+  fail "${eq##*/}: $(cat "$tmp/eq.err")"
+fi
+
+export XDG_RUNTIME_DIR=$tmp/run XDG_CONFIG_HOME=$tmp/config XDG_DATA_HOME=$tmp/data XDG_STATE_HOME=$tmp/state HOME=$tmp/home
+mkdir -p "$XDG_RUNTIME_DIR" "$HOME" "$XDG_CONFIG_HOME/wireplumber" "$XDG_DATA_HOME/wireplumber"
+chmod 700 "$XDG_RUNTIME_DIR"
+if [[ $tree != / ]]; then
+  cp -a "$tree/usr/share/wireplumber/wireplumber.conf.d" "$XDG_CONFIG_HOME/wireplumber/"
+  cp -a "$tree/usr/share/wireplumber/scripts" "$XDG_DATA_HOME/wireplumber/"
+fi
+until_true() {
+  local n
+  for ((n = 0; n < 100; n++)); do
+    "$@" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+linked() {
+  local n
+  for ((n = 0; n < 100; n++)); do
+    pw-link -l > "$tmp/links"
+    grep -A1 -x "$1:output_FL" "$tmp/links" | grep -qxF "  |-> $2:playback_FL" && return 0
+    sleep 0.1
+  done
+  return 1
+}
+pipewire > "$tmp/pw.log" 2>&1 &
+until_true test -S "$XDG_RUNTIME_DIR/pipewire-0" || fail "pipewire did not start: $(tail -3 "$tmp/pw.log")"
+wireplumber > "$tmp/wp.log" 2>&1 &
+wp=$!
+pipewire-pulse > "$tmp/pp.log" 2>&1 &
+if until_true pactl info >/dev/null 2>&1 && until_true wpctl settings device.restore-profile >/dev/null 2>&1; then
+  kill -0 "$wp" 2>/dev/null || fail "wireplumber exited: $(tail -3 "$tmp/wp.log")"
+  [[ $(wpctl settings device.restore-profile 2>/dev/null) == 'Value: false' ]] || fail "device.restore-profile is not false in WirePlumber"
+  hp=alsa_output.platform-sound.HiFi__Headphones__sink
+  spk=alsa_output.platform-sound.HiFi__Speaker__sink
+  chain=microos-eq.headphones.0123456789ab
+  pactl load-module module-null-sink sink_name=$hp sink_properties=priority.session=1100 >/dev/null
+  pactl load-module module-null-sink sink_name=$spk sink_properties=priority.session=1000 >/dev/null
+  until_true sh -c "[ \"\$(pactl get-default-sink)\" = $hp ]" || fail "default sink is not $hp"
+  cat > "$tmp/eq.conf" <<EOF
+context.spa-libs = {
+  audio.convert.* = audioconvert/libspa-audioconvert
+  support.* = support/libspa-support
+}
+context.modules = [
+  { name = libpipewire-module-protocol-native }
+  { name = libpipewire-module-client-node }
+  { name = libpipewire-module-adapter }
+  {
+    name = libpipewire-module-filter-chain
+    args = {
+      node.description = "Headphones EQ"
+      audio.channels = 2
+      audio.position = [ FL FR ]
+      filter.graph = {
+        nodes = [
+          { type = builtin name = f0 label = bq_highshelf control = { Freq = 0 Q = 1 Gain = -3 } }
+          { type = builtin name = f1 label = bq_peaking control = { Freq = 1000 Q = 1 Gain = 6 } }
+        ]
+        links = [
+          { output = "f0:Out" input = "f1:In" }
+        ]
+      }
+      capture.props = {
+        node.name = "$chain"
+        media.class = Audio/Sink
+        filter.smart = true
+        filter.smart.name = "$chain"
+        filter.smart.target = { node.name = "$hp" }
+        filter.smart.targetable = false
+        state.restore-props = false
+      }
+      playback.props = {
+        node.name = "$chain.out"
+        target.object = "$hp"
+        node.dont-fallback = true
+        node.passive = true
+        node.linger = true
+      }
+    }
+  }
+]
+EOF
+  pipewire -c "$tmp/eq.conf" > "$tmp/eq.log" 2>&1 &
+  linked "$chain.out" "$hp" || fail "the chain is not linked to $hp: $(tail -3 "$tmp/eq.log")"
+  pacat --property=node.name=t-default /dev/zero 2>/dev/null &
+  pacat --device=$hp --property=node.name=t-device /dev/zero 2>/dev/null &
+  pacat --device=$hp --property=node.name=t-pulse-bitperfect --property=node.dont-reconnect=true /dev/zero 2>/dev/null &
+  pw-cat -p --raw --target $hp -P '{ node.name = t-bitperfect node.dont-fallback = true node.dont-reconnect = true }' - < /dev/zero 2>/dev/null &
+  pacat --device=$spk --property=node.name=t-speaker /dev/zero 2>/dev/null &
+  while read -r node to; do
+    linked "$node" "$to" || fail "$node is not linked to $to: $(grep -A1 -x "$node:output_FL" "$tmp/links" | tail -1)"
+  done <<< "t-default $chain
+t-device $chain
+t-pulse-bitperfect $hp
+t-bitperfect $hp
+t-speaker $spk"
+  [[ $(pactl get-default-sink) == "$hp" ]] || fail "the chain took the default sink"
+else
+  fail "pipewire-pulse or wireplumber did not come up: $(tail -3 "$tmp/wp.log")"
 fi
 
 if command -v udevadm >/dev/null; then
