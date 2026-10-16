@@ -1,0 +1,173 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 16 Oct 2026 22:32:46 +0900
+Subject: [PATCH] gamelist: keep unknown data of rewritten entries
+
+A rewritten entry keeps the attributes and elements of its old node that ES-DE does not know, so ROCKNIX's id, media paths, md5 and scrap data survive a launch or an edit. With LegacyGamelistFileLocation on, a ROCKNIX absolute path under /storage/roms/<system>/ is read relative to the system folder.
+---
+ es-app/src/GamelistFileParser.cpp | 28 +++++++++++++++++++--------
+ es-app/src/RocknixGamelist.cpp    | 32 +++++++++++++++++++++++++++++++
+ es-app/src/RocknixGamelist.h      |  6 ++++++
+ 3 files changed, 58 insertions(+), 8 deletions(-)
+
+diff --git a/es-app/src/GamelistFileParser.cpp b/es-app/src/GamelistFileParser.cpp
+index c2c83d7..d207d5b 100644
+--- a/es-app/src/GamelistFileParser.cpp
++++ b/es-app/src/GamelistFileParser.cpp
+@@ -133,6 +133,7 @@ namespace GamelistFileParser
+     void parseGamelist(SystemData* system)
+     {
+         const bool trustGamelist {Settings::getInstance()->getBool("ParseGamelistOnly")};
++        const bool legacy {Settings::getInstance()->getBool("LegacyGamelistFileLocation")};
+         const std::string& xmlpath {system->getGamelistPath(false)};
+ 
+         if (!Utils::FileSystem::exists(xmlpath)) {
+@@ -240,8 +241,10 @@ namespace GamelistFileParser
+             FileType type {typeList[i]};
+             for (pugi::xml_node fileNode {root.child(tag.c_str())}; fileNode;
+                  fileNode = fileNode.next_sibling(tag.c_str())) {
++                const std::string nodePath {fileNode.child("path").text().get()};
+                 const std::string& path {Utils::FileSystem::resolveRelativePath(
+-                    fileNode.child("path").text().get(), relativeTo, false)};
++                    legacy ? RocknixGamelist::normalizeRomPath(nodePath, relativeTo) : nodePath,
++                    relativeTo, false)};
+ 
+                 if (!trustGamelist && !Utils::FileSystem::exists(path)) {
+ #if defined(_WIN64)
+@@ -347,7 +350,8 @@ namespace GamelistFileParser
+     void addFileDataNode(pugi::xml_node& parent,
+                          const FileData* file,
+                          const std::string& tag,
+-                         SystemData* system)
++                         SystemData* system,
++                         const pugi::xml_node& oldNode)
+     {
+         // Create game and add to parent node.
+         pugi::xml_node newNode {parent.append_child(tag.c_str())};
+@@ -355,10 +359,12 @@ namespace GamelistFileParser
+         // Write metadata.
+         file->metadata.appendToXML(newNode, true, system->getStartPath());
+ 
+-        // First element is "name", there's only one element and the name is the default.
+-        if (newNode.children().begin() == newNode.child("name") &&
+-            ++newNode.children().begin() == newNode.children().end() &&
+-            newNode.child("name").text().get() == file->getDisplayName()) {
++        std::vector<std::string> declNames;
++        for (const MetaDataDecl& decl : file->metadata.getMDD())
++            declNames.emplace_back(decl.key);
++        RocknixGamelist::keepUnknown(oldNode, newNode, declNames);
++
++        if (RocknixGamelist::defaultNameOnly(newNode, file->getDisplayName())) {
+ 
+             // If the only info is the default name, don't bother
+             // with this node, delete it and ultimately do nothing.
+@@ -507,6 +513,7 @@ namespace GamelistFileParser
+ 
+                 // Check if the file already exists in the XML file.
+                 // If it does, remove the entry before adding it back.
++                pugi::xml_document removed;
+                 for (pugi::xml_node fileNode {root.child(tag.c_str())}; fileNode;
+                      fileNode = fileNode.next_sibling(tag.c_str())) {
+                     const pugi::xml_node& pathNode {fileNode.child("path")};
+@@ -515,14 +522,19 @@ namespace GamelistFileParser
+                         continue;
+                     }
+ 
++                    const std::string pathText {pathNode.text().get()};
+                     const std::string& nodePath {
+                         Utils::FileSystem::getCanonicalPath(Utils::FileSystem::resolveRelativePath(
+-                            pathNode.text().get(), system->getStartPath(), true))};
++                            legacy ? RocknixGamelist::normalizeRomPath(pathText,
++                                                                       system->getStartPath()) :
++                                     pathText,
++                            system->getStartPath(), true))};
+                     const std::string& gamePath {
+                         Utils::FileSystem::getCanonicalPath((*fit)->getPath())};
+ 
+                     if (nodePath == gamePath) {
+                         // Found it
++                        removed.append_copy(fileNode);
+                         root.remove_child(fileNode);
+                         if ((*fit)->getDeletionFlag())
+                             ++numUpdated;
+@@ -532,7 +544,7 @@ namespace GamelistFileParser
+ 
+                 // Add the game to the file, unless it's flagged for deletion.
+                 if (!(*fit)->getDeletionFlag()) {
+-                    addFileDataNode(root, *fit, tag, system);
++                    addFileDataNode(root, *fit, tag, system, removed.first_child());
+                     (*fit)->metadata.resetChangedFlag();
+                     ++numUpdated;
+                 }
+diff --git a/es-app/src/RocknixGamelist.cpp b/es-app/src/RocknixGamelist.cpp
+index 31cb382..b489893 100644
+--- a/es-app/src/RocknixGamelist.cpp
++++ b/es-app/src/RocknixGamelist.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "utils/FileSystemUtil.h"
+ 
++#include <algorithm>
+ #include <cstdio>
+ #include <fcntl.h>
+ #include <unistd.h>
+@@ -49,4 +50,35 @@ namespace RocknixGamelist
+         Utils::FileSystem::removeFile(tempPath);
+         return false;
+     }
++
++    void keepUnknown(const pugi::xml_node& oldNode,
++                     pugi::xml_node& newNode,
++                     const std::vector<std::string>& declNames)
++    {
++        for (const pugi::xml_attribute& attribute : oldNode.attributes()) {
++            if (!newNode.attribute(attribute.name()))
++                newNode.append_copy(attribute);
++        }
++        for (const pugi::xml_node& child : oldNode.children()) {
++            const std::string name {child.name()};
++            if (child.type() == pugi::node_element && name != "path" &&
++                std::find(declNames.cbegin(), declNames.cend(), name) == declNames.cend())
++                newNode.append_copy(child);
++        }
++    }
++
++    bool defaultNameOnly(const pugi::xml_node& node, const std::string& displayName)
++    {
++        return !node.first_attribute() && node.children().begin() == node.child("name") &&
++               ++node.children().begin() == node.children().end() &&
++               node.child("name").text().get() == displayName;
++    }
++
++    std::string normalizeRomPath(const std::string& value, const std::string& root)
++    {
++        const std::string prefix {"/storage/roms/" + Utils::FileSystem::getFileName(root) + "/"};
++        if (value.compare(0, prefix.size(), prefix) == 0)
++            return "./" + value.substr(prefix.size());
++        return value;
++    }
+ }
+diff --git a/es-app/src/RocknixGamelist.h b/es-app/src/RocknixGamelist.h
+index b861cb0..d579342 100644
+--- a/es-app/src/RocknixGamelist.h
++++ b/es-app/src/RocknixGamelist.h
+@@ -3,6 +3,7 @@
+ 
+ #include <pugixml.hpp>
+ #include <string>
++#include <vector>
+ 
+ namespace RocknixGamelist
+ {
+@@ -16,6 +17,11 @@ namespace RocknixGamelist
+                                 const std::string& appdataGamelist,
+                                 const bool legacy);
+     bool saveGamelist(const pugi::xml_document& doc, const std::string& path);
++    void keepUnknown(const pugi::xml_node& oldNode,
++                     pugi::xml_node& newNode,
++                     const std::vector<std::string>& declNames);
++    bool defaultNameOnly(const pugi::xml_node& node, const std::string& displayName);
++    std::string normalizeRomPath(const std::string& value, const std::string& root);
+ }
+ 
+ #endif

@@ -1,0 +1,220 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 16 Oct 2026 22:32:16 +0900
+Subject: [PATCH] gamelist: read and write rocknix gamelists in the system
+ folder
+
+With LegacyGamelistFileLocation on, a system whose folder is under ROMDirectory reads gamelist.xml only from its system folder and writes it there, as ROCKNIX does, and never uses the appdata gamelist. Systems outside ROMDirectory keep the appdata gamelist. The system folder file is written to gamelist.xml.tmp and renamed over gamelist.xml.
+---
+ es-app/CMakeLists.txt             |  2 ++
+ es-app/src/GamelistFileParser.cpp |  5 ++-
+ es-app/src/RocknixGamelist.cpp    | 52 +++++++++++++++++++++++++++++++
+ es-app/src/RocknixGamelist.h      | 21 +++++++++++++
+ es-app/src/SystemData.cpp         | 41 +++++++++++-------------
+ 5 files changed, 98 insertions(+), 23 deletions(-)
+ create mode 100644 es-app/src/RocknixGamelist.cpp
+ create mode 100644 es-app/src/RocknixGamelist.h
+
+diff --git a/es-app/CMakeLists.txt b/es-app/CMakeLists.txt
+index fdebe01..a3497c5 100644
+--- a/es-app/CMakeLists.txt
++++ b/es-app/CMakeLists.txt
+@@ -21,6 +21,7 @@ set(ES_HEADERS
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/MiximageGenerator.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/PlatformId.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/PDFViewer.h
++    ${CMAKE_CURRENT_SOURCE_DIR}/src/RocknixGamelist.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/Screensaver.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/SystemData.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/UIModeController.h
+@@ -74,6 +75,7 @@ set(ES_SOURCES
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/MiximageGenerator.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/PlatformId.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/PDFViewer.cpp
++    ${CMAKE_CURRENT_SOURCE_DIR}/src/RocknixGamelist.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/Screensaver.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/SystemData.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/src/UIModeController.cpp
+diff --git a/es-app/src/GamelistFileParser.cpp b/es-app/src/GamelistFileParser.cpp
+index fe8f8a1..c2c83d7 100644
+--- a/es-app/src/GamelistFileParser.cpp
++++ b/es-app/src/GamelistFileParser.cpp
+@@ -10,6 +10,7 @@
+ 
+ #include "FileData.h"
+ #include "Log.h"
++#include "RocknixGamelist.h"
+ #include "Settings.h"
+ #include "SystemData.h"
+ #include "utils/FileSystemUtil.h"
+@@ -390,6 +391,7 @@ namespace GamelistFileParser
+         pugi::xml_document doc;
+         pugi::xml_node root;
+         const std::string& xmlReadPath {system->getGamelistPath(false)};
++        const bool legacy {Settings::getInstance()->getBool("LegacyGamelistFileLocation")};
+         bool hasAlternativeEmulatorTag {false};
+         bool hasLaunchOnOtherScreenTag {false};
+ 
+@@ -582,7 +584,8 @@ namespace GamelistFileParser
+ #if defined(_WIN64)
+                 if (!doc.save_file(Utils::String::stringToWideString(xmlWritePath).c_str())) {
+ #else
+-                if (!doc.save_file(xmlWritePath.c_str())) {
++                if (!(legacy ? RocknixGamelist::saveGamelist(doc, xmlWritePath) :
++                               doc.save_file(xmlWritePath.c_str()))) {
+ #endif
+                     LOG(LogError) << "Error saving gamelist.xml to \"" << xmlWritePath
+                                   << "\" (for system " << system->getName() << ")";
+diff --git a/es-app/src/RocknixGamelist.cpp b/es-app/src/RocknixGamelist.cpp
+new file mode 100644
+index 0000000..31cb382
+--- /dev/null
++++ b/es-app/src/RocknixGamelist.cpp
+@@ -0,0 +1,52 @@
++#include "RocknixGamelist.h"
++
++#include "utils/FileSystemUtil.h"
++
++#include <cstdio>
++#include <fcntl.h>
++#include <unistd.h>
++
++namespace RocknixGamelist
++{
++    GamelistPaths gamelistPaths(const std::string& root,
++                                const std::string& romDirectory,
++                                const std::string& appdataGamelist,
++                                const bool legacy)
++    {
++        if (legacy) {
++            const std::string canonicalRoot {Utils::FileSystem::getCanonicalPath(root)};
++            const std::string canonicalRoms {Utils::FileSystem::getCanonicalPath(romDirectory)};
++            if (!canonicalRoms.empty() &&
++                (canonicalRoot == canonicalRoms ||
++                 canonicalRoot.compare(0, canonicalRoms.size() + 1, canonicalRoms + "/") == 0)) {
++                const std::string systemGamelist {root + "/gamelist.xml"};
++                return {Utils::FileSystem::exists(systemGamelist) ? systemGamelist : "",
++                        systemGamelist};
++            }
++        }
++        return {Utils::FileSystem::exists(appdataGamelist) ? appdataGamelist : "", appdataGamelist};
++    }
++
++    bool saveGamelist(const pugi::xml_document& doc, const std::string& path)
++    {
++        const std::string tempPath {path + ".tmp"};
++        const int fd {
++            open(tempPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644)};
++        if (fd < 0)
++            return false;
++        FILE* file {fdopen(fd, "wb")};
++        if (file == nullptr) {
++            close(fd);
++            Utils::FileSystem::removeFile(tempPath);
++            return false;
++        }
++        pugi::xml_writer_file writer {file};
++        doc.save(writer);
++        const bool written {std::fflush(file) == 0 && !std::ferror(file) &&
++                            fsync(fileno(file)) == 0};
++        if (std::fclose(file) == 0 && written && std::rename(tempPath.c_str(), path.c_str()) == 0)
++            return true;
++        Utils::FileSystem::removeFile(tempPath);
++        return false;
++    }
++}
+diff --git a/es-app/src/RocknixGamelist.h b/es-app/src/RocknixGamelist.h
+new file mode 100644
+index 0000000..b861cb0
+--- /dev/null
++++ b/es-app/src/RocknixGamelist.h
+@@ -0,0 +1,21 @@
++#ifndef ES_APP_ROCKNIX_GAMELIST_H
++#define ES_APP_ROCKNIX_GAMELIST_H
++
++#include <pugixml.hpp>
++#include <string>
++
++namespace RocknixGamelist
++{
++    struct GamelistPaths {
++        std::string read;
++        std::string write;
++    };
++
++    GamelistPaths gamelistPaths(const std::string& root,
++                                const std::string& romDirectory,
++                                const std::string& appdataGamelist,
++                                const bool legacy);
++    bool saveGamelist(const pugi::xml_document& doc, const std::string& path);
++}
++
++#endif
+diff --git a/es-app/src/SystemData.cpp b/es-app/src/SystemData.cpp
+index ee9feba..a7b7ea1 100644
+--- a/es-app/src/SystemData.cpp
++++ b/es-app/src/SystemData.cpp
+@@ -17,6 +17,7 @@
+ #include "GamelistFileParser.h"
+ #include "InputManager.h"
+ #include "Log.h"
++#include "RocknixGamelist.h"
+ #include "Settings.h"
+ #include "ThemeData.h"
+ #include "UIModeController.h"
+@@ -1718,37 +1719,33 @@ SystemData* SystemData::getPrev() const
+ 
+ std::string SystemData::getGamelistPath(bool forWrite) const
+ {
+-    std::string filePath {mRootFolder->getPath() + "/gamelist.xml"};
++    const std::string filePath {mRootFolder->getPath() + "/gamelist.xml"};
+     const std::string gamelistPath {Utils::FileSystem::getAppDataDirectory() + "/gamelists/" +
+                                     mName};
++    const bool legacy {Settings::getInstance()->getBool("LegacyGamelistFileLocation")};
+ 
+-    if (Utils::FileSystem::exists(filePath)) {
+-        if (Settings::getInstance()->getBool("LegacyGamelistFileLocation")) {
+-            return filePath;
+-        }
+-        else {
++    if (!legacy && Utils::FileSystem::exists(filePath)) {
+ #if defined(_WIN64)
+-            LOG(LogWarning) << "Found a gamelist.xml file in \""
+-                            << Utils::String::replace(mRootFolder->getPath(), "/", "\\")
+-                            << "\\\" which will not get loaded, move it to \"" << gamelistPath
+-                            << "\\\" or otherwise delete it";
++        LOG(LogWarning) << "Found a gamelist.xml file in \""
++                        << Utils::String::replace(mRootFolder->getPath(), "/", "\\")
++                        << "\\\" which will not get loaded, move it to \"" << gamelistPath
++                        << "\\\" or otherwise delete it";
+ #else
+-            LOG(LogWarning) << "Found a gamelist.xml file in \"" << mRootFolder->getPath()
+-                            << "/\" which will not get loaded, move it to \"" << gamelistPath
+-                            << "/\" or otherwise delete it";
++        LOG(LogWarning) << "Found a gamelist.xml file in \"" << mRootFolder->getPath()
++                        << "/\" which will not get loaded, move it to \"" << gamelistPath
++                        << "/\" or otherwise delete it";
+ #endif
+-        }
+     }
+ 
+-    filePath = gamelistPath + "/gamelist.xml";
++    const RocknixGamelist::GamelistPaths paths {
++        RocknixGamelist::gamelistPaths(mRootFolder->getPath(), FileData::getROMDirectory(),
++                                       gamelistPath + "/gamelist.xml", legacy)};
+ 
+-    // Make sure the directory exists if we're going to write to it, or crashes will happen.
+-    if (forWrite)
+-        Utils::FileSystem::createDirectory(Utils::FileSystem::getParent(filePath));
+-    if (forWrite || Utils::FileSystem::exists(filePath))
+-        return filePath;
+-
+-    return "";
++    if (forWrite) {
++        Utils::FileSystem::createDirectory(Utils::FileSystem::getParent(paths.write));
++        return paths.write;
++    }
++    return paths.read;
+ }
+ 
+ std::string SystemData::getThemePath() const

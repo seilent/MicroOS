@@ -26,7 +26,9 @@ if [[ $(rpm -qp --qf '%{SOURCERPM}' "$rpm") != "${srpm##*/}" ]]; then fail "SOUR
 listed=$(grep -o '`[0-9]\{4\}-[^`]*\.patch`' "$dir/PATCHES.md" | tr -d '`' | sort -u)
 carried=$(rpm -qp --qf '[%{PATCH}\n]' "$srpm" | sort -u)
 if [[ -z $listed || $listed != "$carried" ]]; then fail "SRPM patches differ from PATCHES.md: $carried"; fi
-if ! rpm -qp --qf '[%{SOURCE}\n]' "$srpm" | grep -qx escape-test.cpp; then fail "SRPM lacks escape-test.cpp"; fi
+for t in escape-test.cpp rocknix-test.cpp; do
+  if ! rpm -qp --qf '[%{SOURCE}\n]' "$srpm" | grep -qx "$t"; then fail "SRPM lacks $t"; fi
+done
 
 writable=$(rpm -qp --qf '[%{FILEMODES:perms} %{FILENAMES}\n]' "$rpm" | awk 'substr($1, 1, 1) != "l" && (substr($1, 6, 1) == "w" || substr($1, 9, 1) == "w")')
 if [[ -n $writable ]]; then fail "group or other writable: $writable"; fi

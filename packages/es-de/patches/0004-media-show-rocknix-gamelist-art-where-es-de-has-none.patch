@@ -1,0 +1,701 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 16 Oct 2026 22:33:32 +0900
+Subject: [PATCH] media: show rocknix gamelist art where es-de has none
+
+With LegacyGamelistFileLocation on, the ROCKNIX media paths of each entry (image, thumbnail, marquee, wheel, video, fanart, titleshot, boxback, manual) are kept from the gamelist. The gamelist and system views, the media viewer, the PDF viewer and the launch screen show that file when ES-DE has no media of the type and the file is inside the system folder. The scraper and media removal still use the ES-DE media directory only.
+---
+ es-app/src/FileData.cpp             | 27 ++++++++++++++++
+ es-app/src/FileData.h               |  4 +++
+ es-app/src/GamelistFileParser.cpp   |  2 ++
+ es-app/src/MediaViewer.cpp          | 46 ++++++++++++++-------------
+ es-app/src/PDFViewer.cpp            |  2 +-
+ es-app/src/RocknixGamelist.cpp      | 48 +++++++++++++++++++++++++++++
+ es-app/src/RocknixGamelist.h        |  6 ++++
+ es-app/src/guis/GuiLaunchScreen.cpp |  4 +--
+ es-app/src/views/GamelistView.cpp   | 29 ++++++++---------
+ es-app/src/views/SystemView.cpp     | 46 ++++++++++++++-------------
+ es-app/src/views/ViewController.cpp | 22 ++++++-------
+ 11 files changed, 164 insertions(+), 72 deletions(-)
+
+diff --git a/es-app/src/FileData.cpp b/es-app/src/FileData.cpp
+index 67bd3c5..d73ffe8 100644
+--- a/es-app/src/FileData.cpp
++++ b/es-app/src/FileData.cpp
+@@ -16,6 +16,7 @@
+ #include "FileSorts.h"
+ #include "Log.h"
+ #include "MameNames.h"
++#include "RocknixGamelist.h"
+ #include "Scripting.h"
+ #include "SystemData.h"
+ #include "SystemStatus.h"
+@@ -484,6 +485,32 @@ const std::string FileData::getManualPath() const
+     return "";
+ }
+ 
++const std::string FileData::getDisplayMediaPath(const std::string& type)
++{
++    static const std::map<std::string, const std::string (FileData::*)() const> getters {
++        {"image", &FileData::getImagePath},
++        {"miximage", &FileData::getMiximagePath},
++        {"marquee", &FileData::getMarqueePath},
++        {"screenshot", &FileData::getScreenshotPath},
++        {"titlescreen", &FileData::getTitleScreenPath},
++        {"cover", &FileData::getCoverPath},
++        {"backcover", &FileData::getBackCoverPath},
++        {"3dbox", &FileData::get3DBoxPath},
++        {"physicalmedia", &FileData::getPhysicalMediaPath},
++        {"fanart", &FileData::getFanArtPath},
++        {"video", &FileData::getVideoPath},
++        {"manual", &FileData::getManualPath}};
++    const auto getter {getters.find(type)};
++    if (getter == getters.cend())
++        return "";
++    const std::string path {(this->*getter->second)()};
++    if (!path.empty())
++        return path;
++    FileData* source {getSourceFileData()};
++    return RocknixGamelist::displayMedia(source->getSystemEnvData()->mStartPath,
++                                         source->mRocknixMedia, type);
++}
++
+ const std::vector<FileData*>& FileData::getChildrenListToDisplay()
+ {
+     FileFilterIndex* idx {mSystem->getIndex()};
+diff --git a/es-app/src/FileData.h b/es-app/src/FileData.h
+index fd63713..f47e96b 100644
+--- a/es-app/src/FileData.h
++++ b/es-app/src/FileData.h
+@@ -18,6 +18,7 @@
+ #include "utils/StringUtil.h"
+ 
+ #include <functional>
++#include <map>
+ #include <unordered_map>
+ 
+ enum FileType {
+@@ -96,6 +97,8 @@ public:
+     const std::string getCustomImagePath() const;
+     const std::string getVideoPath() const;
+     const std::string getManualPath() const;
++    const std::string getDisplayMediaPath(const std::string& type);
++    void setRocknixMedia(const std::map<std::string, std::string>& media) { mRocknixMedia = media; }
+ 
+     const bool getDeletionFlag() const { return mDeletionFlag; }
+     void setDeletionFlag(bool setting) { mDeletionFlag = setting; }
+@@ -189,6 +192,7 @@ private:
+     // Used for flagging a game for deletion from its gamelist.xml file.
+     bool mDeletionFlag;
+     bool mNoLoad;
++    std::map<std::string, std::string> mRocknixMedia;
+ };
+ 
+ class CollectionFileData : public FileData
+diff --git a/es-app/src/GamelistFileParser.cpp b/es-app/src/GamelistFileParser.cpp
+index d207d5b..0af0128 100644
+--- a/es-app/src/GamelistFileParser.cpp
++++ b/es-app/src/GamelistFileParser.cpp
+@@ -302,6 +302,8 @@ namespace GamelistFileParser
+                         file->metadata =
+                             MetaDataList::createFromXML(GAME_METADATA, fileNode, relativeTo);
+                     }
++                    if (legacy)
++                        file->setRocknixMedia(RocknixGamelist::rocknixMedia(fileNode));
+ 
+                     // Make sure a name gets set if one doesn't exist.
+                     if (file->metadata.get("name").empty())
+diff --git a/es-app/src/MediaViewer.cpp b/es-app/src/MediaViewer.cpp
+index 8074cdd..431f12a 100644
+--- a/es-app/src/MediaViewer.cpp
++++ b/es-app/src/MediaViewer.cpp
+@@ -14,6 +14,8 @@
+ #include "utils/LocalizationUtil.h"
+ #include "views/ViewController.h"
+ 
++#include <algorithm>
++
+ #define KEY_REPEAT_START_DELAY 600
+ #define KEY_REPEAT_SPEED 250
+ 
+@@ -61,7 +63,7 @@ bool MediaViewer::startMediaViewer(FileData* game, bool fromPDFViewer)
+         mFrameHeight = Font::get(FONT_SIZE_MINI)->getLetterHeight() * 1.9f;
+ 
+     mGame = game;
+-    mHasManual = (mGame->getManualPath() != "");
++    mHasManual = (mGame->getDisplayMediaPath("manual") != "");
+ 
+     initiateViewer();
+ 
+@@ -283,41 +285,41 @@ void MediaViewer::initiateViewer()
+ void MediaViewer::findMedia()
+ {
+     std::string mediaFile;
+-
+-    if ((mediaFile = mGame->getVideoPath()) != "") {
++    auto addImage = [this](const std::string& path, const ImageInfo& info) {
++        if (path.empty() ||
++            std::find_if(mImageFiles.cbegin(), mImageFiles.cend(), [&path](const auto& entry) {
++                return entry.first == path;
++            }) != mImageFiles.cend())
++            return false;
++        mImageFiles.push_back(std::make_pair(path, info));
++        return true;
++    };
++
++    if ((mediaFile = mGame->getDisplayMediaPath("video")) != "") {
+         mVideoFile = mediaFile;
+         mHasVideo = true;
+     }
+ 
+-    if (!mHasVideo && (mediaFile = mGame->getScreenshotPath()) != "") {
+-        mImageFiles.push_back(std::make_pair(mediaFile, ImageInfo(_("SCREENSHOT"), false)));
++    if (!mHasVideo &&
++        addImage(mGame->getDisplayMediaPath("screenshot"), ImageInfo(_("SCREENSHOT"), false)))
+         mScreenshotIndex = 0;
+-    }
+ 
+-    if ((mediaFile = mGame->getCoverPath()) != "")
+-        mImageFiles.push_back(std::make_pair(mediaFile, ImageInfo(_("BOX COVER"), true)));
++    addImage(mGame->getDisplayMediaPath("cover"), ImageInfo(_("BOX COVER"), true));
+ 
+-    if ((mediaFile = mGame->getBackCoverPath()) != "")
+-        mImageFiles.push_back(std::make_pair(mediaFile, ImageInfo(_("BOX BACK COVER"), true)));
++    addImage(mGame->getDisplayMediaPath("backcover"), ImageInfo(_("BOX BACK COVER"), true));
+ 
+-    if ((mediaFile = mGame->getTitleScreenPath()) != "") {
+-        mImageFiles.push_back(std::make_pair(mediaFile, ImageInfo(_("TITLE SCREEN"), false)));
++    if (addImage(mGame->getDisplayMediaPath("titlescreen"), ImageInfo(_("TITLE SCREEN"), false)))
+         mTitleScreenIndex = static_cast<int>(mImageFiles.size() - 1);
+-    }
+ 
+-    if (mHasVideo && (mediaFile = mGame->getScreenshotPath()) != "") {
+-        mImageFiles.push_back(std::make_pair(mediaFile, ImageInfo(_("SCREENSHOT"), false)));
++    if (mHasVideo &&
++        addImage(mGame->getDisplayMediaPath("screenshot"), ImageInfo(_("SCREENSHOT"), false)))
+         mScreenshotIndex = static_cast<int>(mImageFiles.size() - 1);
+-    }
+ 
+-    if ((mediaFile = mGame->getFanArtPath()) != "")
+-        mImageFiles.push_back(std::make_pair(mediaFile, ImageInfo(_("FAN ART"), true)));
++    addImage(mGame->getDisplayMediaPath("fanart"), ImageInfo(_("FAN ART"), true));
+ 
+-    if ((mediaFile = mGame->getMiximagePath()) != "")
+-        mImageFiles.push_back(std::make_pair(mediaFile, ImageInfo(_("MIXIMAGE"), true)));
++    addImage(mGame->getDisplayMediaPath("miximage"), ImageInfo(_("MIXIMAGE"), true));
+ 
+-    if ((mediaFile = mGame->getCustomImagePath()) != "")
+-        mImageFiles.push_back(std::make_pair(mediaFile, ImageInfo(_("CUSTOM"), true)));
++    addImage(mGame->getCustomImagePath(), ImageInfo(_("CUSTOM"), true));
+ 
+     if (!mImageFiles.empty())
+         mHasImages = true;
+diff --git a/es-app/src/PDFViewer.cpp b/es-app/src/PDFViewer.cpp
+index dcc9a49..60cedd1 100644
+--- a/es-app/src/PDFViewer.cpp
++++ b/es-app/src/PDFViewer.cpp
+@@ -80,7 +80,7 @@ bool PDFViewer::startPDFViewer(FileData* game)
+ #endif // !__ANDROID__
+ 
+     mGame = game;
+-    mManualPath = mGame->getManualPath();
++    mManualPath = mGame->getDisplayMediaPath("manual");
+ 
+     if (!Utils::FileSystem::exists(mManualPath)) {
+         LOG(LogError) << "No PDF manual found for game \"" << mGame->getName() << "\"";
+diff --git a/es-app/src/RocknixGamelist.cpp b/es-app/src/RocknixGamelist.cpp
+index b489893..d68655f 100644
+--- a/es-app/src/RocknixGamelist.cpp
++++ b/es-app/src/RocknixGamelist.cpp
+@@ -81,4 +81,52 @@ namespace RocknixGamelist
+             return "./" + value.substr(prefix.size());
+         return value;
+     }
++
++    std::map<std::string, std::string> rocknixMedia(const pugi::xml_node& node)
++    {
++        std::map<std::string, std::string> media;
++        for (const char* tag : {"image", "thumbnail", "marquee", "wheel", "video", "fanart",
++                                "titleshot", "boxback", "manual"}) {
++            const std::string value {node.child(tag).text().get()};
++            if (!value.empty())
++                media[tag] = value;
++        }
++        return media;
++    }
++
++    std::string resolveTag(const std::string& root, const std::string& value)
++    {
++        const std::string path {Utils::FileSystem::isAbsolute(value) ? value : root + "/" + value};
++        if (!Utils::FileSystem::isRegularFile(path))
++            return "";
++        const std::string canonicalRoot {Utils::FileSystem::getCanonicalPath(root)};
++        const std::string canonicalPath {Utils::FileSystem::getCanonicalPath(path)};
++        if (canonicalRoot.empty() ||
++            canonicalPath.compare(0, canonicalRoot.size() + 1, canonicalRoot + "/") != 0)
++            return "";
++        return canonicalPath;
++    }
++
++    std::string displayMedia(const std::string& root,
++                             const std::map<std::string, std::string>& media,
++                             const std::string& type)
++    {
++        static const std::map<std::string, std::vector<std::string>> tags {
++            {"image", {"image"}},     {"miximage", {"image"}},           {"screenshot", {"image"}},
++            {"cover", {"thumbnail"}}, {"marquee", {"marquee", "wheel"}}, {"video", {"video"}},
++            {"fanart", {"fanart"}},   {"titlescreen", {"titleshot"}},    {"backcover", {"boxback"}},
++            {"manual", {"manual"}}};
++        const auto typeTags {tags.find(type)};
++        if (typeTags == tags.cend())
++            return "";
++        for (const std::string& tag : typeTags->second) {
++            const auto value {media.find(tag)};
++            if (value == media.cend())
++                continue;
++            const std::string path {resolveTag(root, normalizeRomPath(value->second, root))};
++            if (!path.empty())
++                return path;
++        }
++        return "";
++    }
+ }
+diff --git a/es-app/src/RocknixGamelist.h b/es-app/src/RocknixGamelist.h
+index d579342..7df1874 100644
+--- a/es-app/src/RocknixGamelist.h
++++ b/es-app/src/RocknixGamelist.h
+@@ -1,6 +1,7 @@
+ #ifndef ES_APP_ROCKNIX_GAMELIST_H
+ #define ES_APP_ROCKNIX_GAMELIST_H
+ 
++#include <map>
+ #include <pugixml.hpp>
+ #include <string>
+ #include <vector>
+@@ -22,6 +23,11 @@ namespace RocknixGamelist
+                      const std::vector<std::string>& declNames);
+     bool defaultNameOnly(const pugi::xml_node& node, const std::string& displayName);
+     std::string normalizeRomPath(const std::string& value, const std::string& root);
++    std::map<std::string, std::string> rocknixMedia(const pugi::xml_node& node);
++    std::string resolveTag(const std::string& root, const std::string& value);
++    std::string displayMedia(const std::string& root,
++                             const std::map<std::string, std::string>& media,
++                             const std::string& type);
+ }
+ 
+ #endif
+diff --git a/es-app/src/guis/GuiLaunchScreen.cpp b/es-app/src/guis/GuiLaunchScreen.cpp
+index 5880883..ee8a223 100644
+--- a/es-app/src/guis/GuiLaunchScreen.cpp
++++ b/es-app/src/guis/GuiLaunchScreen.cpp
+@@ -33,7 +33,7 @@ GuiLaunchScreen::~GuiLaunchScreen()
+ 
+ void GuiLaunchScreen::displayLaunchScreen(FileData* game)
+ {
+-    mImagePath = game->getMarqueePath();
++    mImagePath = game->getDisplayMediaPath("marquee");
+ 
+     // We need to unload the image first as it may be cached at a modified resolution
+     // which would lead to the wrong size when using the image here.
+@@ -170,7 +170,7 @@ void GuiLaunchScreen::displayLaunchScreen(FileData* game)
+     if (mImagePath != "") {
+         const float multiplier {mRenderer->getIsVerticalOrientation() ? 0.20f : 0.25f};
+         mMarquee->setLinearInterpolation(true);
+-        mMarquee->setImage(game->getMarqueePath(), false);
++        mMarquee->setImage(game->getDisplayMediaPath("marquee"), false);
+         mMarquee->cropTransparentPadding(
+             mRenderer->getScreenWidth() *
+                 (multiplier * (1.778f / mRenderer->getScreenAspectRatio())),
+diff --git a/es-app/src/views/GamelistView.cpp b/es-app/src/views/GamelistView.cpp
+index 4d94c35..76e71c3 100644
+--- a/es-app/src/views/GamelistView.cpp
++++ b/es-app/src/views/GamelistView.cpp
+@@ -801,7 +801,7 @@ void GamelistView::updateView(const CursorState& state)
+ 
+                     if (video->hasStaticVideo())
+                         video->setStaticVideo();
+-                    else if (!video->setVideo(mRandomGame->getVideoPath()))
++                    else if (!video->setVideo(mRandomGame->getDisplayMediaPath("video")))
+                         video->setDefaultVideo();
+ 
+                     video->startVideoPlayer();
+@@ -839,7 +839,7 @@ void GamelistView::updateView(const CursorState& state)
+ 
+                 if (video->hasStaticVideo())
+                     video->setStaticVideo();
+-                else if (!video->setVideo(file->getVideoPath()))
++                else if (!video->setVideo(file->getDisplayMediaPath("video")))
+                     video->setDefaultVideo();
+ 
+                 video->startVideoPlayer();
+@@ -952,7 +952,7 @@ void GamelistView::updateView(const CursorState& state)
+                         badgeSlots.emplace_back(badgeInfo);
+                 }
+                 else if (badge == "manual") {
+-                    if (file->getManualPath() != "")
++                    if (file->getDisplayMediaPath("manual") != "")
+                         badgeSlots.emplace_back(badgeInfo);
+                 }
+                 else {
+@@ -1033,7 +1033,8 @@ void GamelistView::updateView(const CursorState& state)
+                 return file->metadata.get("broken") == "true" ? _p("theme", "yes") :
+                                                                 _p("theme", "no");
+             else if (metadata == "manual")
+-                return file->getManualPath() != "" ? _p("theme", "yes") : _p("theme", "no");
++                return file->getDisplayMediaPath("manual") != "" ? _p("theme", "yes") :
++                                                                   _p("theme", "no");
+             else if (metadata == "playcount")
+                 return file->metadata.get("playcount");
+             else if (metadata == "playtime")
+@@ -1257,70 +1258,70 @@ void GamelistView::setGameImage(FileData* file, GuiComponent* comp)
+     std::string path;
+     for (auto& imageType : comp->getThemeImageTypes()) {
+         if (imageType == "image") {
+-            path = file->getImagePath();
++            path = file->getDisplayMediaPath("image");
+             if (path != "") {
+                 comp->setImage(path);
+                 return;
+             }
+         }
+         else if (imageType == "miximage") {
+-            path = file->getMiximagePath();
++            path = file->getDisplayMediaPath("miximage");
+             if (path != "") {
+                 comp->setImage(path);
+                 return;
+             }
+         }
+         else if (imageType == "marquee") {
+-            path = file->getMarqueePath();
++            path = file->getDisplayMediaPath("marquee");
+             if (path != "") {
+                 comp->setImage(path);
+                 return;
+             }
+         }
+         else if (imageType == "screenshot") {
+-            path = file->getScreenshotPath();
++            path = file->getDisplayMediaPath("screenshot");
+             if (path != "") {
+                 comp->setImage(path);
+                 return;
+             }
+         }
+         else if (imageType == "titlescreen") {
+-            path = file->getTitleScreenPath();
++            path = file->getDisplayMediaPath("titlescreen");
+             if (path != "") {
+                 comp->setImage(path);
+                 return;
+             }
+         }
+         else if (imageType == "cover") {
+-            path = file->getCoverPath();
++            path = file->getDisplayMediaPath("cover");
+             if (path != "") {
+                 comp->setImage(path);
+                 return;
+             }
+         }
+         else if (imageType == "backcover") {
+-            path = file->getBackCoverPath();
++            path = file->getDisplayMediaPath("backcover");
+             if (path != "") {
+                 comp->setImage(path);
+                 return;
+             }
+         }
+         else if (imageType == "3dbox") {
+-            path = file->get3DBoxPath();
++            path = file->getDisplayMediaPath("3dbox");
+             if (path != "") {
+                 comp->setImage(path);
+                 return;
+             }
+         }
+         else if (imageType == "physicalmedia") {
+-            path = file->getPhysicalMediaPath();
++            path = file->getDisplayMediaPath("physicalmedia");
+             if (path != "") {
+                 comp->setImage(path);
+                 return;
+             }
+         }
+         else if (imageType == "fanart") {
+-            path = file->getFanArtPath();
++            path = file->getDisplayMediaPath("fanart");
+             if (path != "") {
+                 comp->setImage(path);
+                 return;
+diff --git a/es-app/src/views/SystemView.cpp b/es-app/src/views/SystemView.cpp
+index edf65e8..dd4cfba 100644
+--- a/es-app/src/views/SystemView.cpp
++++ b/es-app/src/views/SystemView.cpp
+@@ -1078,70 +1078,70 @@ void SystemView::updateGameSelectors()
+             std::string path;
+             for (auto& imageType : image->getThemeImageTypes()) {
+                 if (imageType == "image") {
+-                    path = games.at(gameSelectorEntry)->getImagePath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("image");
+                     if (path != "") {
+                         image->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "miximage") {
+-                    path = games.at(gameSelectorEntry)->getMiximagePath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("miximage");
+                     if (path != "") {
+                         image->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "marquee") {
+-                    path = games.at(gameSelectorEntry)->getMarqueePath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("marquee");
+                     if (path != "") {
+                         image->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "screenshot") {
+-                    path = games.at(gameSelectorEntry)->getScreenshotPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("screenshot");
+                     if (path != "") {
+                         image->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "titlescreen") {
+-                    path = games.at(gameSelectorEntry)->getTitleScreenPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("titlescreen");
+                     if (path != "") {
+                         image->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "cover") {
+-                    path = games.at(gameSelectorEntry)->getCoverPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("cover");
+                     if (path != "") {
+                         image->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "backcover") {
+-                    path = games.at(gameSelectorEntry)->getBackCoverPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("backcover");
+                     if (path != "") {
+                         image->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "3dbox") {
+-                    path = games.at(gameSelectorEntry)->get3DBoxPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("3dbox");
+                     if (path != "") {
+                         image->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "physicalmedia") {
+-                    path = games.at(gameSelectorEntry)->getPhysicalMediaPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("physicalmedia");
+                     if (path != "") {
+                         image->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "fanart") {
+-                    path = games.at(gameSelectorEntry)->getFanArtPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("fanart");
+                     if (path != "") {
+                         image->setImage(path);
+                         break;
+@@ -1194,7 +1194,7 @@ void SystemView::updateGameSelectors()
+         gameSelector->refreshGames();
+         std::vector<FileData*> games {gameSelector->getGames()};
+         if (games.size() > gameSelectorEntry) {
+-            if (!video->setVideo(games.at(gameSelectorEntry)->getVideoPath()))
++            if (!video->setVideo(games.at(gameSelectorEntry)->getDisplayMediaPath("video")))
+                 video->setDefaultVideo();
+         }
+     }
+@@ -1239,70 +1239,70 @@ void SystemView::updateGameSelectors()
+             std::string path;
+             for (auto& imageType : video->getThemeImageTypes()) {
+                 if (imageType == "image") {
+-                    path = games.at(gameSelectorEntry)->getImagePath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("image");
+                     if (path != "") {
+                         video->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "miximage") {
+-                    path = games.at(gameSelectorEntry)->getMiximagePath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("miximage");
+                     if (path != "") {
+                         video->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "marquee") {
+-                    path = games.at(gameSelectorEntry)->getMarqueePath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("marquee");
+                     if (path != "") {
+                         video->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "screenshot") {
+-                    path = games.at(gameSelectorEntry)->getScreenshotPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("screenshot");
+                     if (path != "") {
+                         video->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "titlescreen") {
+-                    path = games.at(gameSelectorEntry)->getTitleScreenPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("titlescreen");
+                     if (path != "") {
+                         video->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "cover") {
+-                    path = games.at(gameSelectorEntry)->getCoverPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("cover");
+                     if (path != "") {
+                         video->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "backcover") {
+-                    path = games.at(gameSelectorEntry)->getBackCoverPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("backcover");
+                     if (path != "") {
+                         video->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "3dbox") {
+-                    path = games.at(gameSelectorEntry)->get3DBoxPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("3dbox");
+                     if (path != "") {
+                         video->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "physicalmedia") {
+-                    path = games.at(gameSelectorEntry)->getPhysicalMediaPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("physicalmedia");
+                     if (path != "") {
+                         video->setImage(path);
+                         break;
+                     }
+                 }
+                 else if (imageType == "fanart") {
+-                    path = games.at(gameSelectorEntry)->getFanArtPath();
++                    path = games.at(gameSelectorEntry)->getDisplayMediaPath("fanart");
+                     if (path != "") {
+                         video->setImage(path);
+                         break;
+@@ -1421,7 +1421,9 @@ void SystemView::updateGameSelectors()
+                 text->setValue(
+                     games.at(gameSelectorEntry)->metadata.get("broken") == "true" ? "yes" : "no");
+             else if (metadata == "manual")
+-                text->setValue(games.at(gameSelectorEntry)->getManualPath() != "" ? "yes" : "no");
++                text->setValue(games.at(gameSelectorEntry)->getDisplayMediaPath("manual") != "" ?
++                                   "yes" :
++                                   "no");
+             else if (metadata == "playcount")
+                 text->setValue(games.at(gameSelectorEntry)->metadata.get("playcount"));
+             else if (metadata == "playtime")
+diff --git a/es-app/src/views/ViewController.cpp b/es-app/src/views/ViewController.cpp
+index a9af826..054b6e6 100644
+--- a/es-app/src/views/ViewController.cpp
++++ b/es-app/src/views/ViewController.cpp
+@@ -1121,7 +1121,7 @@ std::shared_ptr<GamelistView> ViewController::getGamelistView(SystemData* system
+                 noVideosTriggerType = ThemeTriggers::TriggerType::NO_VIDEOS;
+ 
+                 for (auto it = files.cbegin(); it != files.cend(); ++it) {
+-                    if (!(*it)->getVideoPath().empty()) {
++                    if (!(*it)->getDisplayMediaPath("video").empty()) {
+                         noVideosTriggerType = ThemeTriggers::TriggerType::NONE;
+                         break;
+                     }
+@@ -1134,61 +1134,61 @@ std::shared_ptr<GamelistView> ViewController::getGamelistView(SystemData* system
+                 for (auto imageType : overrides.at(ThemeTriggers::TriggerType::NO_MEDIA).second) {
+                     for (auto it = files.cbegin(); it != files.cend(); ++it) {
+                         if (imageType == "miximage") {
+-                            if (!(*it)->getMiximagePath().empty()) {
++                            if (!(*it)->getDisplayMediaPath("miximage").empty()) {
+                                 noMediaTriggerType = ThemeTriggers::TriggerType::NONE;
+                                 goto BREAK;
+                             }
+                         }
+                         else if (imageType == "marquee") {
+-                            if (!(*it)->getMarqueePath().empty()) {
++                            if (!(*it)->getDisplayMediaPath("marquee").empty()) {
+                                 noMediaTriggerType = ThemeTriggers::TriggerType::NONE;
+                                 goto BREAK;
+                             }
+                         }
+                         else if (imageType == "screenshot") {
+-                            if (!(*it)->getScreenshotPath().empty()) {
++                            if (!(*it)->getDisplayMediaPath("screenshot").empty()) {
+                                 noMediaTriggerType = ThemeTriggers::TriggerType::NONE;
+                                 goto BREAK;
+                             }
+                         }
+                         else if (imageType == "titlescreen") {
+-                            if (!(*it)->getTitleScreenPath().empty()) {
++                            if (!(*it)->getDisplayMediaPath("titlescreen").empty()) {
+                                 noMediaTriggerType = ThemeTriggers::TriggerType::NONE;
+                                 goto BREAK;
+                             }
+                         }
+                         else if (imageType == "cover") {
+-                            if (!(*it)->getCoverPath().empty()) {
++                            if (!(*it)->getDisplayMediaPath("cover").empty()) {
+                                 noMediaTriggerType = ThemeTriggers::TriggerType::NONE;
+                                 goto BREAK;
+                             }
+                         }
+                         else if (imageType == "backcover") {
+-                            if (!(*it)->getBackCoverPath().empty()) {
++                            if (!(*it)->getDisplayMediaPath("backcover").empty()) {
+                                 noMediaTriggerType = ThemeTriggers::TriggerType::NONE;
+                                 goto BREAK;
+                             }
+                         }
+                         else if (imageType == "3dbox") {
+-                            if (!(*it)->get3DBoxPath().empty()) {
++                            if (!(*it)->getDisplayMediaPath("3dbox").empty()) {
+                                 noMediaTriggerType = ThemeTriggers::TriggerType::NONE;
+                                 goto BREAK;
+                             }
+                         }
+                         else if (imageType == "physicalmedia") {
+-                            if (!(*it)->getPhysicalMediaPath().empty()) {
++                            if (!(*it)->getDisplayMediaPath("physicalmedia").empty()) {
+                                 noMediaTriggerType = ThemeTriggers::TriggerType::NONE;
+                                 goto BREAK;
+                             }
+                         }
+                         else if (imageType == "fanart") {
+-                            if (!(*it)->getFanArtPath().empty()) {
++                            if (!(*it)->getDisplayMediaPath("fanart").empty()) {
+                                 noMediaTriggerType = ThemeTriggers::TriggerType::NONE;
+                                 goto BREAK;
+                             }
+                         }
+                         else if (imageType == "video") {
+-                            if (!(*it)->getVideoPath().empty()) {
++                            if (!(*it)->getDisplayMediaPath("video").empty()) {
+                                 noMediaTriggerType = ThemeTriggers::TriggerType::NONE;
+                                 goto BREAK;
+                             }

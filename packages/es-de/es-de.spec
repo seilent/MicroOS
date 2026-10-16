@@ -10,8 +10,12 @@ License:        MIT AND BSL-1.0 AND CECILL-C AND Apache-2.0 AND Bitstream-Vera A
 URL:            https://gitlab.com/es-de/emulationstation-de
 Source0:        %{url}/-/archive/%{commit}/emulationstation-de-%{commit}.tar.gz
 Source1:        escape-test.cpp
+Source2:        rocknix-test.cpp
 
 Patch0001:      0001-escape-every-shell-special-byte-in-unix-launch-paths.patch
+Patch0002:      0002-gamelist-read-and-write-rocknix-gamelists-in-the-sys.patch
+Patch0003:      0003-gamelist-keep-unknown-data-of-rewritten-entries.patch
+Patch0004:      0004-media-show-rocknix-gamelist-art-where-es-de-has-none.patch
 
 Vendor:         MicroOS
 BuildRequires:  cmake
@@ -56,6 +60,12 @@ g++ -std=c++17 -O1 -ffunction-sections -fdata-sections -I es-core/src -I externa
   -Wl,--gc-sections -o escape-test
 mkdir escape-dir
 ./escape-test "$PWD/escape-dir"
+g++ -std=c++17 -O1 -ffunction-sections -fdata-sections -I es-app/src -I es-core/src -I external/glm \
+  -I external/rapidjson/include -I external/utfcpp/source $(pkg-config --cflags sdl2 pugixml) %{SOURCE2} \
+  es-app/src/RocknixGamelist.cpp es-core/src/utils/FileSystemUtil.cpp es-core/src/utils/TimeUtil.cpp \
+  es-core/src/Log.cpp $(pkg-config --libs pugixml) -Wl,--gc-sections -o rocknix-test
+mkdir rocknix-dir
+./rocknix-test "$PWD/rocknix-dir"
 
 %files
 %license LICENSE

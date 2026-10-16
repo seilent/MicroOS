@@ -15,7 +15,7 @@ version=$(rpmspec -q --srpm --qf '%{VERSION}' --define "commit $ESDE_REF" "$src/
 tarball=$top/SOURCES/emulationstation-de-$ESDE_REF.tar.gz
 curl -fsSL --retry 3 -o "$tarball" "$ESDE_URL/-/archive/$ESDE_REF/emulationstation-de-$ESDE_REF.tar.gz"
 echo "$ESDE_SHA256  $tarball" | sha256sum -c -
-cp "$src"/patches/*.patch "$src/escape-test.cpp" "$top/SOURCES/"
+cp "$src"/patches/*.patch "$src/escape-test.cpp" "$src/rocknix-test.cpp" "$top/SOURCES/"
 
 launcher=()
 if [[ -n ${CCACHE_DIR:-} ]] && command -v ccache >/dev/null; then
