@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 16 Oct 2026 12:14:17 +0900
+Subject: [PATCH] Escape every shell special byte in Unix launch paths
+
+getEscapedPath left backtick, |, newline, tab, # and ~ unescaped, and skipped a character that already followed a backslash, so a ROM named with a backtick or $( ) ran commands through /bin/sh. Every byte outside [A-Za-z0-9/._-+,:@%] and below 0x80 now gets a backslash, and a newline goes in double quotes. Callers that strip the backslashes to get the plain path still work.
+---
+ es-core/src/utils/FileSystemUtil.cpp | 30 +++++++++++-----------------
+ 1 file changed, 12 insertions(+), 18 deletions(-)
+
+diff --git a/es-core/src/utils/FileSystemUtil.cpp b/es-core/src/utils/FileSystemUtil.cpp
+index ba0a43f..17b7ee3 100644
+--- a/es-core/src/utils/FileSystemUtil.cpp
++++ b/es-core/src/utils/FileSystemUtil.cpp
+@@ -23,6 +23,8 @@
+ #include "utils/PlatformUtil.h"
+ #include "utils/StringUtil.h"
+ 
++#include <cctype>
++#include <cstring>
+ #include <fstream>
+ #include <regex>
+ #include <string>
+@@ -488,25 +490,17 @@ namespace Utils
+             else
+                 return getPreferredPath(escapedPath);
+ #else
+-            // Insert a backslash before most characters that would mess up a bash path.
+-            const char* invalidChars {"\\ '\"!$^&*(){}[]?;<>"};
+-            const char* invalidChar {invalidChars};
+-
+-            while (*invalidChar) {
+-                size_t start {0};
+-                size_t offset {0};
+-
+-                while ((offset = escapedPath.find(*invalidChar, start)) != std::string::npos) {
+-                    start = offset + 1;
+-
+-                    if ((offset == 0) || (escapedPath[offset - 1] != '\\')) {
+-                        escapedPath.insert(offset, 1, '\\');
+-                        ++start;
+-                    }
+-                }
+-                ++invalidChar;
++            std::string shellPath;
++            for (const char c : escapedPath) {
++                const unsigned char u {static_cast<unsigned char>(c)};
++                if (c == '\n')
++                    shellPath.append("\"\n\"");
++                else if (u >= 0x80 || std::isalnum(u) || (c != '\0' && std::strchr("/._-+,:@%", c)))
++                    shellPath.push_back(c);
++                else
++                    shellPath.append(1, '\\').push_back(c);
+             }
+-            return escapedPath;
++            return shellPath;
+ #endif
+         }
+ 

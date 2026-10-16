@@ -87,6 +87,13 @@ jobs:
             manifest=$(jq -r '.manifests[0].digest' "$oci/index.json")
             mapfile -t layers < <(jq -r '.layers[].digest' "$oci/blobs/sha256/${manifest#sha256:}")
             [[ ${#layers[@]} == 1 && ${layers[0]} =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::$repo@$digest has ${#layers[@]} layers"; exit 1; }
+            config=$(jq -r '.config.digest' "$oci/blobs/sha256/${manifest#sha256:}")
+            dirty=$(jq -r '.config.Labels["microos.dirty"] // "none"' "$oci/blobs/sha256/${config#sha256:}")
+            if [[ $dirty == 1 && $GITHUB_REF == refs/heads/main ]]; then
+              echo "::error::$repo@$digest was built from uncommitted inputs (microos.dirty=1); main takes only clean packages"
+              exit 1
+            fi
+            [[ $dirty == 0 ]] || echo "::warning::$repo@$digest has microos.dirty=$dirty"
             blob=$oci/blobs/sha256/${layers[0]#sha256:}
             bad=$(tar -tvf "$blob" | awk '$1 !~ /^[-d]/ { print; next } { p = $NF; sub(/^\.\//, "", p) } p != "rpms/" && p !~ /^rpms\/[^\/]+$/ { print }')
             [[ -z $bad ]] || { echo "::error::$repo@$digest has entries other than files in rpms/: $bad"; exit 1; }

@@ -188,6 +188,63 @@ for f in /etc/subuid /etc/subgid; do
   [[ $(stat -c '%a %U %G' "$f") == '644 root root' ]] || fail "$f mode or owner"
 done
 
+for p in es-de microemu; do
+  [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
+done
+for b in /usr/bin/es-de /usr/bin/es-pdf-convert /usr/bin/retroarch; do
+  ! ldd "$b" | grep -q 'not found' || fail "$b has unresolved libraries"
+done
+[[ $(rpm -qf --qf '%{VENDOR}' /usr/bin/retroarch) == 'Fedora Project' ]] || fail "retroarch is not Fedora's"
+rpm -q gtk3 python3-gobject python3-cairo pango xprop >/dev/null || fail "MicroEMU OSD rpms missing"
+[[ $(stat -c '%a %U' /usr/libexec/microos/microos-openh264) == '755 root' ]] || fail "microos-openh264 mode"
+for c in curl rpmkeys rpm rpm2cpio cpio python3; do
+  command -v "$c" >/dev/null || fail "$c is not on PATH (microos-openh264)"
+done
+python3 -c 'from compression import zstd' || fail "python3 has no compression.zstd (microos-openh264)"
+grep -qx 'ExecStart=/usr/libexec/microos/microos-openh264' /usr/lib/systemd/system/microos-openh264.service || fail "microos-openh264.service ExecStart"
+for kv in User=microos-openh264 Group=microos-openh264 StateDirectory=microos/openh264 StateDirectoryMode=0755 MemoryMax=512M; do
+  grep -qx "$kv" /usr/lib/systemd/system/microos-openh264.service || fail "microos-openh264.service lacks $kv"
+done
+grep -qx 'u microos-openh264 - "MicroOS openh264 fetch" /var/lib/microos/openh264 /usr/sbin/nologin' /usr/lib/sysusers.d/microos-openh264.conf \
+  || fail "sysusers has no microos-openh264"
+grep -qx 'CapabilityBoundingSet=' /usr/lib/systemd/system/microos-openh264.service || fail "microos-openh264.service keeps capabilities"
+[[ $(systemctl is-enabled microos-openh264.timer) == enabled ]] || fail "microos-openh264.timer is not enabled"
+h264db=$(mktemp -d)
+rpmkeys --dbpath "$h264db" --import /usr/share/microos/openh264/RPM-GPG-KEY-fedora-44-primary || fail "openh264 key does not import"
+[[ $(rpm --dbpath "$h264db" -q gpg-pubkey --qf '%{VERSION}\n') == 36f612dcf27f7d1a48a835e4dbfcf71c6d9f90a6 ]] \
+  || fail "openh264 key is not the Fedora 44 primary key"
+cmp -s /usr/share/microos/openh264/RPM-GPG-KEY-fedora-44-primary /etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-44-primary \
+  || fail "openh264 key differs from fedora-gpg-keys"
+rm -rf "$h264db"
+[[ ! -e /usr/lib/microemu && ! -e /usr/lib/armada && ! -e /usr/lib/extension-release.d/extension-release.microemu ]] \
+  || fail "MicroEMU sysext or bundled tree left"
+elf=$(rpm -ql microemu | python3 -c '
+import os, sys
+for p in sys.stdin.read().splitlines():
+    if os.path.isfile(p) and not os.path.islink(p) and open(p, "rb").read(4) == b"\x7fELF":
+        print(p)
+')
+[[ -z $elf ]] || fail "microemu ships ELF files: $elf"
+emucores=$(python3 - <<'PY'
+import xml.etree.ElementTree as ET
+text = open("/usr/share/microemu/es-de/es_systems.xml").read()
+for c in ET.fromstring("<root>" + text.split("?>", 1)[-1] + "</root>").iter("command"):
+    w = (c.text or "").split()
+    if w and w[0] == "/usr/libexec/microemu/bin/retroarch" and "-L" in w:
+        print(w[w.index("-L") + 1])
+    elif w:
+        print(w[0])
+PY
+) || fail "cannot read es_systems.xml"
+[[ -n $emucores ]] || fail "es_systems.xml has no commands"
+while read -r f; do
+  [[ -f $f && ( $f == *.so || -x $f ) ]] || fail "es_systems.xml runs $f, which is missing"
+  [[ $f != /usr/lib64/libretro/* || $(rpm -qf --qf '%{VENDOR}' "$f") == 'Fedora Project' ]] || fail "$f is not from a Fedora core package"
+done < <(sort -u <<< "$emucores")
+hits=$(grep -rlE 'armada|/run/armada|session-control|date \+%s|EPOCHREALTIME' /usr/libexec/microemu /usr/lib/microos/sessions.d/microemu.conf \
+  /usr/lib/microos/hotkeys.d/microemu.conf /usr/share/gamescope-session-plus/sessions.d/microemu /usr/share/microemu/retroarch || true)
+[[ -z $hits ]] || fail "Armada names or wall clock waits in MicroEMU files: $hits"
+
 seedrpm=(/seed-rpm/microos-steam-seed-*.aarch64.rpm)
 [[ ${#seedrpm[@]} -eq 1 && -f ${seedrpm[0]} ]] || fail "expected one microos-steam-seed RPM in /seed-rpm"
 ! rpm -q microos-steam-seed >/dev/null 2>&1 || fail "microos-steam-seed is installed as an RPM"
@@ -265,6 +322,9 @@ grep -qx 'BindsTo=gamescope-session-plus@%i.service' /usr/lib/systemd/user/micro
 grep -qx 'After=gamescope-session-plus@%i.service' /usr/lib/systemd/user/microos-hotkeyd@.service || fail "hotkeyd unit After"
 [[ -f /usr/lib/microos/hotkeys.d/steam.conf && -f /usr/lib/microos/hotkeys.d/recovery.conf ]] || fail "hotkeys.d tables missing"
 [[ -f /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf ]] || fail "gamescope-session-plus@steam drop-in missing"
+grep -qx 'ExecStartPre=-/usr/libexec/microos/microos-pad-target deck-uhid keyboard' \
+  /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/30-microos-pad.conf || fail "steam pad target drop-in"
+[[ $(stat -c '%a %U' /usr/libexec/microos/microos-pad-target) == '755 root' ]] || fail "microos-pad-target mode"
 
 [[ $(grep '^ExecStop=' /usr/lib/systemd/system/ostree-finalize-staged.service) == 'ExecStop=/usr/bin/ostree admin finalize-staged' ]] \
   || fail "ostree-finalize-staged.service ExecStop changed"
@@ -306,6 +366,9 @@ for g in wheel systemd-journal input video render audio; do
   [[ " $groups " == *" $g "* ]] || fail "micro is not in $g"
 done
 [[ $(getent passwd micro | cut -d: -f6,7) == /var/home/micro:/bin/bash ]] || fail "micro home or shell"
+h264user=$(getent passwd microos-openh264) || fail "user microos-openh264 missing"
+(( $(cut -d: -f3 <<< "$h264user") < 1000 )) || fail "microos-openh264 is not a system user"
+[[ $(cut -d: -f7 <<< "$h264user") == */nologin ]] || fail "microos-openh264 has a login shell"
 microset=$(getent passwd microset) || fail "user microset missing"
 (( $(cut -d: -f3 <<< "$microset") < 1000 )) || fail "microset is not a system user"
 [[ $(cut -d: -f7 <<< "$microset") == */nologin ]] || fail "microset has a login shell"

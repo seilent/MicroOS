@@ -1,0 +1,9 @@
+[Unit]
+Description=Fetch Cisco's openh264 after boot and weekly
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=7d
+
+[Install]
+WantedBy=timers.target

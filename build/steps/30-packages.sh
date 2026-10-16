@@ -16,6 +16,8 @@ own=(
   microset/microset-recovery
   microset/microset-fonts
   hexagonrpc/hexagonrpc
+  es-de/es-de
+  microemu/microemu
 )
 
 own_rpm() {
@@ -125,6 +127,23 @@ if ! dnf -y install \
   python3-evdev \
   upower \
   rsync \
+  retroarch \
+  libretro-beetle-ngp \
+  libretro-beetle-pce-fast \
+  libretro-beetle-vb \
+  libretro-beetle-wswan \
+  libretro-bsnes-mercury \
+  libretro-gambatte \
+  libretro-gw \
+  libretro-handy \
+  libretro-mgba \
+  libretro-nestopia \
+  libretro-pcsx-rearmed \
+  libretro-prosystem \
+  libretro-stella2014 \
+  gtk3 \
+  python3-cairo \
+  xprop \
   "${rpms[@]}"; then
   echo "30-packages: pipewire is pinned at $PIPEWIRE_EVR and wireplumber at $WIREPLUMBER_EVR; if a package needs newer ones, run packages/pipewire-aptx/bump.sh <pipewire EVR> <wireplumber EVR>" >&2
   exit 1

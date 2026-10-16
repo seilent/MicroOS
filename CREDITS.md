@@ -26,11 +26,17 @@ Projects MicroOS builds, with their authors and license.
 | `pipewire-codec-aptx` | PipeWire `spa/plugins/bluez5/a2dp-codec-aptx.c` from Fedora's `pipewire-1.6.9-1.fc44.src.rpm` | Wim Taymans and PipeWire contributors | MIT |
 | `pipewire-codec-aptx` build of the aptX target only (idea, spec written new) | [RPM Fusion pipewire-codec-aptx](https://github.com/rpmfusion/pipewire-codec-aptx) | Pauli Virtanen, Gergely Gombos | MIT |
 | `hexagonrpc` | [linux-msm/hexagonrpc](https://github.com/linux-msm/hexagonrpc) `da7a3742ab` | Richard Acayan and hexagonrpc contributors | GPL-3.0-or-later, BSD-3-Clause (FastRPC error tables, The Linux Foundation and The Sensor Shell Contributors) |
+| `es-de` | [ES-DE](https://gitlab.com/es-de/emulationstation-de) `v3.5.0` `50e4b600ae`, from RetroPie EmulationStation and EmulationStation | Leon Styhre, Northwestern Software AB, the RetroPie community, Alec Lofquist | MIT; built in from `external/`: CImg (CeCILL-C), glm (MIT), LunaSVG (MIT), RapidJSON (MIT), rlottie (MIT), UTF8-CPP (BSL-1.0); fonts, sounds and themes under their own licenses in `/usr/share/es-de/licenses/` |
+| Art Book Next theme in `microemu` | [anthonycaccese/art-book-next-es-de](https://github.com/anthonycaccese/art-book-next-es-de) `d772d07109` | Anthony Caccese; system logos from Dan Patrick, ChangaOne font by Eduardo Tunni, artwork by nautipuss, tenlevels (with f8less), Joppa Fallston and theUnBurn, Phosphor Icons | CC-BY-NC-SA-2.0 |
+| Mulish font in the Art Book Next theme, the `microemu` OSD text | [googlefonts/mulish](https://github.com/googlefonts/mulish) 3.603, carried in Art Book Next `_inc/fonts/` | Vernon Adams, The Mulish Project Authors | OFL-1.1 |
+| `microemu` OSD speaker glyph | `_inc/images/menu-icon-sound.svg` of Art Book Next (Batocera Edition) [anthonycaccese/art-book-next-es](https://github.com/anthonycaccese/art-book-next-es) `9a50ef366e`; no earlier origin stated | Anthony Caccese | CC-BY-NC-SA-2.0 |
+| CRT shaders in `microemu` (`crt-guest-advanced` fast and NTSC, `reshade` LUT) | [libretro/slang-shaders](https://github.com/libretro/slang-shaders) `e1d75632a2`, per file list and license in `/usr/share/licenses/microemu/slang-shaders/AUDIT` | guest(r), Dr. Venom, libretro slang-shaders contributors | GPL (version not stated) for the guest(r) files; 13 files state no license |
+| Retro Crisis GDV-NTSC presets in `microemu` | [RetroCrisis/Retro-Crisis-GDV-NTSC](https://github.com/RetroCrisis/Retro-Crisis-GDV-NTSC) `20260321` `b7e2e26e1a`, presets for guest(r)'s Guest Advanced NTSC | Retro Crisis | GPL-3.0 |
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
 carries Fedora's packaging patches and `mangohud` carries nine upstream MangoHud patches, five of them backported by
-me, and three of mine (`PATCHES.md` in each package); the others are built as is. License texts in `packages/gamescope/`,
-`packages/gamescope-session/`, `packages/hexagonrpc/`, `packages/inputplumber/`, `packages/mangohud/` and `packages/steamos-manager/`.
+me, and three of mine, `es-de` carries my launch path escape patch (`PATCHES.md` in each package); the others are built as is. License texts in `packages/gamescope/`,
+`packages/gamescope-session/`, `packages/es-de/`, `packages/hexagonrpc/`, `packages/inputplumber/`, `packages/mangohud/` and `packages/steamos-manager/`.
 
 ## Kernel
 
@@ -75,3 +81,4 @@ Retroid kernel is [lineageos-on-retroid/android_kernel_retroid_sm8250_ack](https
 | Selawik font in `microset-fonts` | [microsoft/Selawik](https://github.com/microsoft/Selawik) `1.01` | Microsoft Corporation | OFL-1.1 |
 | Doto font, rendered into the boot splash wordmark (font not shipped) | [oliverlalan/Doto](https://github.com/oliverlalan/Doto) `1.000` | Óliver Lalan | OFL-1.1 |
 | `mkbootimg`, `unpack_bootimg` | AOSP `platform/system/tools/mkbootimg`, Fedora `android-tools` | The Android Open Source Project | Apache-2.0 |
+| OpenH264, fetched on the device by `microos-openh264`, not in the image | Cisco's `openh264` RPM from Fedora's `fedora-cisco-openh264` repo, binary built and served by Cisco | Cisco Systems | BSD-2-Clause |

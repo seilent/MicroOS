@@ -29,8 +29,10 @@ pkg name:
       podman rm "$ctr" >/dev/null
     done
     (( ${#deps[@]} == 0 )) || mounts=(-v "$PWD/$depdir:/deps:ro,Z")
-    if [[ $1 == microset && -n ${MICROSET_SRC:-} ]]; then
-      mounts+=(-v "$(realpath "$MICROSET_SRC"):/microset-src:ro,Z" -e MICROSET_SRC=/microset-src)
+    srcvar=${1^^}_SRC
+    srcvar=${srcvar//-/_}
+    if [[ " microset microdap microemu " == *" $1 "* && -n ${!srcvar:-} ]]; then
+      mounts+=(-v "$(realpath "${!srcvar}"):/$1-src:ro,Z" -e "$srcvar=/$1-src")
     fi
     podman build -t {{builder}} -f build/pkg.Containerfile build
     img={{builder}}
@@ -164,6 +166,7 @@ test-services:
     run "$fedora" sh -c "$dnf alsa-ucm alsa-ucm-utils alsa-utils pipewire-utils systemd-udev && /repo/tests/audio.sh"
     run "$fedora" sh -c "$dnf jq util-linux systemd-udev && /repo/tests/storage.sh"
     run "$fedora" sh -c "$dnf jq python3 util-linux systemd && /repo/tests/microos-session.sh"
+    run "$fedora" sh -c "$dnf python3 rpm-build rpm-sign gnupg2 cpio && /repo/tests/openh264.sh"
     run "$fedora" sh -c "$dnf git-core && /repo/tests/pkg-hash.sh"
     just pkg microset
     just pkg gamescope-session
