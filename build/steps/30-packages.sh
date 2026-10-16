@@ -15,6 +15,7 @@ own=(
   microset/microset-recovery
   microset/microset-fonts
   hexagonrpc/hexagonrpc
+  microdap/microdap
 )
 
 own_rpm() {
