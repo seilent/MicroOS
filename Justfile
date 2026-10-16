@@ -29,8 +29,10 @@ pkg name:
       podman rm "$ctr" >/dev/null
     done
     (( ${#deps[@]} == 0 )) || mounts=(-v "$PWD/$depdir:/deps:ro,Z")
-    if [[ $1 == microset && -n ${MICROSET_SRC:-} ]]; then
-      mounts+=(-v "$(realpath "$MICROSET_SRC"):/microset-src:ro,Z" -e MICROSET_SRC=/microset-src)
+    srcvar=${1^^}_SRC
+    srcvar=${srcvar//-/_}
+    if [[ " microset microdap microemu " == *" $1 "* && -n ${!srcvar:-} ]]; then
+      mounts+=(-v "$(realpath "${!srcvar}"):/$1-src:ro,Z" -e "$srcvar=/$1-src")
     fi
     podman build -t {{builder}} -f build/pkg.Containerfile build
     img={{builder}}
