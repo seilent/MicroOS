@@ -32,11 +32,17 @@ Projects MicroOS builds, with their authors and license.
 | `microemu` OSD speaker glyph | `_inc/images/menu-icon-sound.svg` of Art Book Next (Batocera Edition) [anthonycaccese/art-book-next-es](https://github.com/anthonycaccese/art-book-next-es) `9a50ef366e`; no earlier origin stated | Anthony Caccese | CC-BY-NC-SA-2.0 |
 | CRT shaders in `microemu` (`crt-guest-advanced` fast and NTSC, `reshade` LUT) | [libretro/slang-shaders](https://github.com/libretro/slang-shaders) `e1d75632a2`, per file list and license in `/usr/share/licenses/microemu/slang-shaders/AUDIT` | guest(r), Dr. Venom, libretro slang-shaders contributors | GPL (version not stated) for the guest(r) files; 13 files state no license |
 | Retro Crisis GDV-NTSC presets in `microemu` | [RetroCrisis/Retro-Crisis-GDV-NTSC](https://github.com/RetroCrisis/Retro-Crisis-GDV-NTSC) `20260321` `b7e2e26e1a`, presets for guest(r)'s Guest Advanced NTSC | Retro Crisis | GPL-3.0 |
+| `plymouth` | [plymouth/plymouth](https://gitlab.freedesktop.org/plymouth/plymouth) `24.004.60` | Ray Strode, Kristian Høgsberg, Peter Jones and plymouth contributors | GPL-2.0-or-later |
+| `plymouth` RPM spec | Fedora [rpms/plymouth](https://src.fedoraproject.org/rpms/plymouth) `1541161014` | Fedora packagers | MIT |
+| `plymouth` Fedora only patches | Fedora rpms/plymouth, `e6f09b0570`, `36f45f9d11` | Adam Williamson, Hans de Goede | GPL-2.0-or-later |
+| `plymouth` CloseFB on retain | SteamOS plymouth `22.02.122-7.7` `0010` | Robert Beckett (Collabora) | GPL-2.0-or-later |
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
-carries Fedora's packaging patches and `mangohud` carries nine upstream MangoHud patches, five of them backported by
-me, and three of mine, `es-de` carries my launch path escape patch (`PATCHES.md` in each package); the others are built as is. License texts in `packages/gamescope/`,
-`packages/gamescope-session/`, `packages/es-de/`, `packages/hexagonrpc/`, `packages/inputplumber/`, `packages/mangohud/` and `packages/steamos-manager/`.
+carries Fedora's packaging patches, `mangohud` carries nine upstream MangoHud patches, five of them backported by
+me, and three of mine, `plymouth` carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine,
+and `es-de` carries my launch path escape patch (`PATCHES.md` in each package); the others are built as is. License
+texts in `packages/gamescope/`, `packages/gamescope-session/`, `packages/es-de/`, `packages/hexagonrpc/`,
+`packages/inputplumber/`, `packages/mangohud/`, `packages/plymouth/` and `packages/steamos-manager/`.
 
 ## Kernel
 

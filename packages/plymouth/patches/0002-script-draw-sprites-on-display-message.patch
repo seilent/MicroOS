@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 16 Oct 2026 09:05:41 +0900
+Subject: [PATCH] script: draw sprites on display message
+
+A sprite change from the display message callback only reached the
+screen on the next refresh tick. Refresh the sprites before the
+displays are unpaused, so the frame is on the screen before the
+client gets its reply.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ src/plugins/splash/script/plugin.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/plugins/splash/script/plugin.c b/src/plugins/splash/script/plugin.c
+index 2ff1029..58df480 100644
+--- a/src/plugins/splash/script/plugin.c
++++ b/src/plugins/splash/script/plugin.c
+@@ -553,6 +553,7 @@ display_message (ply_boot_splash_plugin_t *plugin,
+         script_lib_plymouth_on_display_message (plugin->script_state,
+                                                 plugin->script_plymouth_lib,
+                                                 message);
++        script_lib_sprite_refresh (plugin->script_sprite_lib);
+         unpause_displays (plugin);
+ }
+ 
+-- 
+2.55.0
+

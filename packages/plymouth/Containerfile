@@ -1,0 +1,6 @@
+FROM localhost/microos-pkg-builder
+
+COPY plymouth.spec /tmp/plymouth/
+RUN dnf -y --setopt=install_weak_deps=False builddep /tmp/plymouth/plymouth.spec \
+ && dnf clean all \
+ && rm -rf /tmp/plymouth

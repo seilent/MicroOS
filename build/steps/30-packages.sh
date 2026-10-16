@@ -19,6 +19,11 @@ own=(
   microdap/microdap
   es-de/es-de
   microemu/microemu
+  plymouth/plymouth
+  plymouth/plymouth-core-libs
+  plymouth/plymouth-graphics-libs
+  plymouth/plymouth-plugin-script
+  plymouth/plymouth-scripts
 )
 
 own_rpm() {
@@ -95,9 +100,6 @@ if ! dnf -y install \
   alsa-utils \
   sddm \
   sddm-wayland-generic \
-  plymouth \
-  plymouth-scripts \
-  plymouth-plugin-script \
   steam-devices \
   gtk2 \
   openal-soft \

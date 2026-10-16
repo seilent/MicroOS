@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 16 Oct 2026 09:35:31 +0900
+Subject: [PATCH] drm: skip retain on a head without a scanout buffer
+
+A head that was never flushed has no scanout buffer, and the retain
+assert aborted plymouthd in the middle of a quit. Leave such a head
+alone.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ src/plugins/renderers/drm/plugin.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/plugins/renderers/drm/plugin.c b/src/plugins/renderers/drm/plugin.c
+index bb94127..3f92bf8 100644
+--- a/src/plugins/renderers/drm/plugin.c
++++ b/src/plugins/renderers/drm/plugin.c
+@@ -787,7 +787,10 @@ ply_renderer_head_retain (ply_renderer_backend_t *backend,
+ 
+         buffer = ply_hashtable_lookup (backend->output_buffers,
+                                        (void *) (uintptr_t) head->scan_out_buffer_id);
+-        assert (buffer != NULL);
++        if (buffer == NULL) {
++                ply_trace ("No scanout FB on head, nothing to retain");
++                return;
++        }
+ 
+         ply_trace("Closing FB %u (retaining)", buffer->id);
+         ret = drmModeCloseFB (backend->device_fd, buffer->id);
+-- 
+2.43.0
+
