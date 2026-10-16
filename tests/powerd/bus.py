@@ -58,6 +58,15 @@ def main(cmd, *args):
             except GLib.Error as e:
                 print(Gio.dbus_error_get_remote_error(e))
         return 0
+    if cmd == "holder":
+        for line in sys.stdin:
+            method, _, mode = line.strip().partition(":")
+            try:
+                call(bus, POWER, method, GLib.Variant("(s)", (mode,)))
+                print("ok", flush=True)
+            except GLib.Error as e:
+                print(Gio.dbus_error_get_remote_error(e), flush=True)
+        return 0
     if cmd == "hold-gone":
         msg = Gio.DBusMessage.new_method_call(NAME, PATH, POWER, "Hold")
         msg.set_body(GLib.Variant("(s)", (args[0],)))

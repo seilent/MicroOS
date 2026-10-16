@@ -21,7 +21,7 @@ SETS = {
     "tdp": (TDP, "TdpLimit", "u"),
 }
 USAGE = ("usage: microos-power get | reload | set-profile <name> | gpu-level auto|manual | gpu-clock <MHz> | "
-         "governor <name> | tdp <W> | hold dap")
+         "governor <name> | tdp <W> | hold dap | hold dap-off")
 
 
 def call(bus, iface, method, args=None, reply=None):

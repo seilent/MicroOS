@@ -32,7 +32,7 @@ CLOCK_MIN = 305
 CLOCK_MAX = 587
 GPU_LEVELS = ["auto", "manual"]
 STOCK_PROFILES = ["low-power", "balanced", "performance"]
-HOLD_MODES = ("dap",)
+HOLD_MODES = ("dap", "dap-off")
 HOLD_MAX = 4
 DAP_CPUS = range(4, 8)
 DAP_CPU_MAX = 787200
@@ -262,14 +262,20 @@ class Power:
         for _, base, lo, hi in self.policies():
             self.set_policy(base, "schedutil", lo, hi)
 
+    def held(self):
+        modes = {mode for _, mode in self.holds.values()}
+        return [m for m in HOLD_MODES if m in modes]
+
     def apply(self):
         self.online()
+        held = self.held()
+        dap = "dap" in held
         profile = self.profiles[self.state["profile"]]
         row = self.tdp_row()
         caps = []
         for policy, base, lo, hi in self.policies():
             top = min(hi, profile.get(policy, hi), row[POLICIES.index(policy)] if row else hi)
-            if self.holds and policy == "policy0":
+            if dap and policy == "policy0":
                 top = min(top, DAP_CPU_MAX)
             top = max(lo, top)
             self.set_policy(base, self.state["governor"], lo, top)
@@ -277,9 +283,9 @@ class Power:
         freqs = [int(v) for v in (read(f"{DEVFREQ}/available_frequencies") or "").split() if v.isdigit()]
         floor = min(freqs) if freqs else GPU_FLOOR
         gpu_max = min(GPU_CAP, max(freqs) if freqs else GPU_CAP, profile.get("gpu", GPU_CAP), row[3] if row else GPU_CAP)
-        if self.holds:
+        if dap:
             gpu_max = min(gpu_max, DAP_GPU_MAX)
-        if self.state["gpu_level"] == "manual" and not self.holds:
+        if self.state["gpu_level"] == "manual" and not dap:
             want = self.state["gpu_clock"] * 1000000
             clock = max(floor, min(want, gpu_max))
             opps = [f for f in freqs if floor <= f <= gpu_max]
@@ -299,7 +305,7 @@ class Power:
             write(f"{DEVFREQ}/min_freq", floor)
             caps.append(f"gpu={gpu_max}")
         tdp = f" tdp={self.tdp_watts()}" if self.tdp else ""
-        hold = " hold=dap" if self.holds else ""
+        hold = f" hold={held[0]}" if held else ""
         log(f"applied profile={self.state['profile']} governor={self.state['governor']}{tdp}{hold} {' '.join(caps)}")
 
     def values(self):
@@ -314,7 +320,7 @@ class Power:
                 "ManualGpuClock": ("u", s["gpu_clock"]),
                 "CpuGovernor": ("s", governor),
                 "AvailableCpuGovernors": ("as", governors),
-                "Holds": ("as", list(HOLD_MODES) if self.holds else []),
+                "Holds": ("as", self.held()),
             },
             PROFILE: {
                 "AvailablePerformanceProfiles": ("as", self.names),
@@ -406,12 +412,20 @@ class Power:
         self.apply()
         self.publish()
 
-    def hold(self, name):
+    def hold(self, name, mode):
         if name in self.holds:
+            sub, old = self.holds[name]
+            if mode == old:
+                return
+            before = self.held()[:1]
+            self.holds[name] = (sub, mode)
+            log(f"{mode} hold by {name}, was {old}")
+            self.settle(before)
             return
-        self.holds[name] = self.conn.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
-                                                      "/org/freedesktop/DBus", name, Gio.DBusSignalFlags.NONE,
-                                                      self.on_owner)
+        before = self.held()[:1]
+        sub = self.conn.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+                                         "/org/freedesktop/DBus", name, Gio.DBusSignalFlags.NONE, self.on_owner)
+        self.holds[name] = (sub, mode)
         try:
             reply = self.conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
                                         "NameHasOwner", GLib.Variant("(s)", (name,)), GLib.VariantType("(b)"),
@@ -421,21 +435,26 @@ class Power:
             log(f"NameHasOwner {name}: {e.message}")
             present = False
         if not present:
-            self.conn.signal_unsubscribe(self.holds.pop(name))
+            self.conn.signal_unsubscribe(self.holds.pop(name)[0])
             log(f"Hold by {name} dropped: name gone")
             return
-        log(f"dap hold by {name}")
-        if len(self.holds) == 1:
-            self.changed()
+        log(f"{mode} hold by {name}")
+        self.settle(before)
 
     def release(self, name):
-        sub = self.holds.pop(name, None)
-        if sub is None:
+        if name not in self.holds:
             return
+        before = self.held()[:1]
+        sub, mode = self.holds.pop(name)
         self.conn.signal_unsubscribe(sub)
-        log(f"dap hold of {name} released")
-        if not self.holds:
+        log(f"{mode} hold of {name} released")
+        self.settle(before)
+
+    def settle(self, before):
+        if self.held()[:1] != before:
             self.changed()
+        else:
+            self.publish()
 
     def on_owner(self, conn, sender, path, iface, signal, params):
         name, _, new = params.unpack()
@@ -494,7 +513,7 @@ class Power:
                 inv.return_dbus_error("org.freedesktop.DBus.Error.LimitsExceeded", f"{HOLD_MAX} holders already")
                 return
             if method == "Hold":
-                self.hold(sender)
+                self.hold(sender, args[0])
             else:
                 self.release(sender)
             inv.return_value(None)

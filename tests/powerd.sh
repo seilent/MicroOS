@@ -466,7 +466,10 @@ out=$(root python3 "$bus" calls Hold:dap holds Hold:dap holds Release:dap holds 
 online "Release"
 want "$gpu/governor" userspace "manual after Release"
 [[ $(root python3 "$bus" calls Hold:x Release:x | paste -sd ' ') == "org.freedesktop.DBus.Error.InvalidArgs org.freedesktop.DBus.Error.InvalidArgs" ]] ||
-  fail "a mode other than dap accepted"
+  fail "a mode other than dap or dap-off accepted"
+out=$(root python3 "$bus" calls Hold:dap-off holds Hold:dap holds Hold:dap-off holds Release:dap holds | paste -sd ' ')
+[[ $out == "ok ['dap-off'] ok ['dap'] ok ['dap-off'] ok []" ]] || fail "one name dap-off, dap, dap-off, Release: $out"
+online "Release of a replaced mode"
 [[ $(nowheel python3 "$bus" calls Hold:dap) == org.freedesktop.DBus.Error.AccessDenied ]] || fail "Hold without wheel allowed"
 [[ $(game python3 "$bus" calls Hold:dap) == org.freedesktop.DBus.Error.AccessDenied ]] || fail "Hold from a game allowed"
 [[ $(holds) == "[]" ]] || fail "a refused Hold held: $(holds)"
@@ -531,6 +534,78 @@ h1=""
 stop
 kill "$mon"
 mon=""
+
+off() {
+  local c
+  for c in 1 2 3; do want "$cpu/cpu$c/online" 1 "$1"; done
+  for c in 4 5 6 7; do want "$cpu/cpu$c/online" 0 "$1"; done
+  want "$pol/policy0/scaling_max_freq" 1804800 "$1"
+  want "$gpu/governor" userspace "$1"
+  want "$gpu/min_freq" 525000000 "$1"
+  want "$gpu/max_freq" 525000000 "$1"
+}
+send() {
+  local n _
+  n=$(wc -l < "$tmp/hout")
+  echo "$1" >&3
+  for _ in $(seq 100); do (( $(wc -l < "$tmp/hout") > n )) && break; sleep 0.05; done
+  [[ $(tail -n 1 "$tmp/hout") == ok ]] || fail "$1: $(tail -n 1 "$tmp/hout")"
+}
+settled() {
+  local _
+  for _ in $(seq 100); do [[ $(holds) == "$1" ]] && (( $(applies) == $2 )) && break; sleep 0.05; done
+  [[ $(holds) == "$1" ]] || fail "$3: holds $(holds), expected $1"
+  (( $(applies) == $2 )) || fail "$3: applied $(( $(applies) - a )) times, expected $(( $2 - a ))"
+}
+
+mktree
+start
+set_ $S.PerformanceProfile1 PerformanceProfile s performance
+set_ $P1 GpuLevel s manual
+set_ $P1 ManualGpuClock u 525
+a=$(applies)
+mkfifo "$tmp/hin"
+: > "$tmp/hout"
+root python3 "$bus" holder < "$tmp/hin" > "$tmp/hout" &
+h2=$!
+exec 3> "$tmp/hin"
+send Hold:dap
+settled "['dap']" $(( a + 1 )) "dap by one name"
+dap "dap by one name"
+send Hold:dap-off
+settled "['dap-off']" $(( a + 2 )) "dap to dap-off by one name"
+off "dap to dap-off by one name"
+send Hold:dap-off
+settled "['dap-off']" $(( a + 2 )) "dap-off again by the same name"
+spawn "$cli" hold dap &
+h1=$!
+settled "['dap', 'dap-off']" $(( a + 3 )) "dap next to dap-off"
+dap "dap wins over dap-off"
+send Hold:dap
+settled "['dap']" $(( a + 3 )) "dap-off to dap under another dap"
+send Hold:dap-off
+settled "['dap', 'dap-off']" $(( a + 3 )) "dap to dap-off under another dap"
+dap "dap still wins"
+exited "$h1" "dap next to dap-off"
+h1=""
+settled "['dap-off']" $(( a + 4 )) "dap holder gone"
+off "dap holder gone"
+send Release:dap-off
+settled "[]" $(( a + 5 )) "Release of dap-off"
+online "Release of dap-off"
+want "$gpu/governor" userspace "manual after dap-off"
+want "$gpu/max_freq" 525000000 "manual after dap-off"
+send Hold:dap-off
+settled "['dap-off']" $(( a + 6 )) "dap-off hold"
+off "dap-off hold"
+exec 3>&-
+code=0
+wait "$h2" || code=$?
+h2=""
+(( code == 0 )) || fail "dap-off holder exited $code"
+settled "[]" $(( a + 7 )) "dap-off name loss"
+online "dap-off name loss"
+stop
 
 if (( rc == 0 )); then
   echo "powerd: ok"
