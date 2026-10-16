@@ -312,6 +312,32 @@ rules=$(sudo -l -U micro)
 grep -q '(ALL) ALL' <<< "$rules" || fail "micro has no wheel sudo rule"
 ! grep -q NOPASSWD <<< "$rules" || fail "micro has a NOPASSWD rule"
 
+[[ $(rpm -q --qf '%{VENDOR}' microdap) == MicroOS ]] || fail "microdap is not the MicroOS build"
+[[ ! -e /usr/lib/extension-release.d && ! -e /var/lib/extensions ]] || fail "sysext tree in the image"
+for p in microdap microemu; do
+  rpm -q "$p" >/dev/null 2>&1 || continue
+  while IFS= read -r f; do
+    [[ -f $f && ! -L $f ]] || continue
+    owners=$(rpm -qf --qf '%{NAME}\n' "$f" | sort -u | paste -sd' ')
+    [[ $owners == "$p" ]] || fail "$f is owned by $owners"
+    ! grep -qiI armada "$f" || fail "text file $f names armada"
+    ! grep -q set-default-sink "$f" || fail "$f runs set-default-sink"
+  done < <(rpm -ql "$p")
+done
+sessions=$(microos-session list) || fail "microos-session list"
+grep -qxF $'microdap\tMicroDAP\tyes' <<< "$sessions" || fail "microos-session list lacks microdap: $(tr '\n' ' ' <<< "$sessions")"
+for u in microdap-radio.service microdap-usb-audio.service; do
+  [[ $(systemctl is-enabled "$u") == enabled ]] || fail "$u is not enabled"
+done
+for u in microdap-overlay.service microdap-bt.service; do
+  [[ $(systemctl --global is-enabled "$u") == enabled ]] || fail "user $u is not enabled"
+done
+SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no /usr/lib/systemd/system/microdap-radio.service \
+  /usr/lib/systemd/system/microdap-usb-audio.service || fail "systemd-analyze verify microdap system units"
+mkdir -p "$tmp/xdg-microdap"
+XDG_RUNTIME_DIR=$tmp/xdg-microdap SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no \
+  /usr/lib/systemd/user/microdap-*.service gamescope-session-plus@microdap.service || fail "systemd-analyze verify --user microdap units"
+
 img=/usr/lib/modules/$kver/initramfs.img
 list=$(lsinitrd "$img")
 for m in erofs overlay btrfs sdhci-msm ufs-qcom; do

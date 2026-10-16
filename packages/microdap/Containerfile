@@ -1,0 +1,7 @@
+FROM localhost/microos-pkg-builder
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+      cmake gcc-c++ qt6-qtbase-devel qt6-qtdeclarative-devel gstreamer1-devel gstreamer1-plugins-base \
+      gstreamer1-plugins-good gstreamer1-plugin-libav taglib-devel libxcb-devel pulseaudio-libs-devel alsa-lib-devel \
+      dbus-daemon dbus-tools fontconfig python3-dbus python3-gobject util-linux \
+ && dnf clean all
