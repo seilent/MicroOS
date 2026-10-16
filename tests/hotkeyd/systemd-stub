@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+import os
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+XML = """
+<node>
+  <interface name="org.freedesktop.systemd1.Manager">
+    <method name="GetUnit"><arg type="s" direction="in"/><arg type="o" direction="out"/></method>
+  </interface>
+  <interface name="org.freedesktop.systemd1.Unit">
+    <property name="ActiveState" type="s" access="read"/>
+  </interface>
+</node>
+"""
+DIR = sys.argv[1]
+INFO = {i.name: i for i in Gio.DBusNodeInfo.new_for_xml(XML).interfaces}
+UNIT = "/org/freedesktop/systemd1/unit/game"
+name = [""]
+
+
+def record(line):
+    with open(os.path.join(DIR, "systemd.log"), "a") as f:
+        f.write(line + "\n")
+
+
+def method(_conn, _sender, _path, _iface, _name, params, invocation):
+    unit = params.unpack()[0]
+    record(f"GetUnit {unit}")
+    try:
+        with open(os.path.join(DIR, "delay")) as f:
+            delay = int(f.read())
+    except (OSError, ValueError):
+        delay = 0
+    GLib.timeout_add(delay, answer, unit, invocation)
+
+
+def answer(unit, invocation):
+    if not os.path.exists(os.path.join(DIR, unit)):
+        invocation.return_dbus_error("org.freedesktop.systemd1.NoSuchUnit", f"Unit {unit} not loaded.")
+        return GLib.SOURCE_REMOVE
+    name[0] = unit
+    invocation.return_value(GLib.Variant("(o)", (UNIT,)))
+    return GLib.SOURCE_REMOVE
+
+
+def get_property(_conn, _sender, _path, _iface, _prop):
+    try:
+        with open(os.path.join(DIR, name[0])) as f:
+            return GLib.Variant("s", f.read().strip())
+    except OSError:
+        return GLib.Variant("s", "inactive")
+
+
+def main():
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    bus.register_object_with_closures2("/org/freedesktop/systemd1", INFO["org.freedesktop.systemd1.Manager"], method, None, None)
+    bus.register_object_with_closures2(UNIT, INFO["org.freedesktop.systemd1.Unit"], None, get_property, None)
+    bus.call_sync(
+        "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName",
+        GLib.Variant("(su)", ("org.freedesktop.systemd1", 4)), None, Gio.DBusCallFlags.NONE, 5000, None,
+    )
+    record("ready")
+    GLib.MainLoop().run()
+
+
+if __name__ == "__main__":
+    main()

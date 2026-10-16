@@ -39,7 +39,7 @@ done
 export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$tmp/system DBUS_SESSION_BUS_ADDRESS=unix:path=$tmp/session
 for _ in {1..50}; do [[ -S $tmp/system && -S $tmp/session ]] && break; sleep 0.1; done
 
-mkdir -p "$tmp/bin" "$tmp/home/.steam" "$tmp/input" "$tmp/t/t.conf.d"
+mkdir -p "$tmp/bin" "$tmp/home/.steam" "$tmp/input" "$tmp/t/t.conf.d" "$tmp/g" "$tmp/sd" "$tmp/units"
 for t in steam systemctl microos-session wpctl; do
   cat > "$tmp/bin/$t" <<EOF
 #!/usr/bin/env bash
@@ -110,7 +110,7 @@ start() {
   rm -f "$tmp/calls.log"
   coproc KEYS { exec python3 "$here/hotkeyd/keys" "$tmp/input" 3<&- 4<&-; }
   pids+=("$KEYS_PID")
-  HOME=$tmp/home MICROOS_HOTKEYD_INPUT=$tmp/input MICROOS_HOTKEYD_TABLES=${2:-$tables} \
+  HOME=$tmp/home MICROOS_HOTKEYD_INPUT=$tmp/input MICROOS_HOTKEYD_TABLES=${2:-$tables} MICROOS_HOTKEYD_SESSIONS=$tmp/sd \
     MICROOS_HOTKEYD_STEAM=$tmp/bin/steam python3 "$hotkeyd" "$1" 2> "$tmp/hotkeyd.err" 3<&- 4<&- & hk=$!
   pids+=("$hk")
   until_ok is_holder "" || fail "$1: no Intercept arbiter: $(cat "$tmp/hotkeyd.err")"
@@ -250,6 +250,10 @@ grep -qx suspend "$tmp/logind.log" || fail "recovery: power tap did not suspend:
 hold
 (( $(count "$tmp/logind.log" suspend) == 1 )) || fail "recovery: power hold suspended"
 grep -q "^rumble" "$tmp/ip.log" && fail "recovery: rumble on a hold without a row"
+rm -f "$tmp/calls.log"
+k volup.down wait:0.2
+calls_are "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+" || fail "recovery: volume up at key down: $(calls)"
+k volup.up wait:0.2
 
 cat > "$tmp/t/t.conf" <<EOF
 power tap steam-uri steam://a
@@ -407,6 +411,127 @@ start t "$tmp/t"
 until_ok want_modes 0 2 || fail "InterceptMode 0 after a restart while held: $(modes)"
 is_holder "" || fail "holder after a restart: $(holder)"
 
+kill -0 "$hk" 2> /dev/null || fail "hotkeyd died: $(cat "$tmp/hotkeyd.err")"
+
+python3 "$here/hotkeyd/systemd-stub" "$tmp/units" 3<&- 4<&- & sd=$!
+pids+=("$sd")
+until_ok grep -qsx ready "$tmp/units/systemd.log" || fail "systemd stub did not start"
+cat > "$tmp/g/g.conf" <<EOF
+volup press volume up
+volup tap volume down
+voldown hold volume up
+voldown press volume down
+lc tap unit microemu-leave.service
+lc hold unit microemu-stop@x.service
+rc tap unit Bad.service
+rc hold unit microemu-game.scope
+guide press steam-uri steam://x
+guide hold switch steam
+guide tap back
+power hold switch recovery confirm-in-game
+EOF
+printf 'LABEL=G\nGAME_SCOPE = "microemu-game.scope"\n' > "$tmp/sd/g.conf"
+boot g "$tmp/g"
+waitfor "$tmp/logind.log" "inhibit handle-power-key:handle-suspend-key block" || fail "g: no block inhibitor"
+(( $(grep -c ": ignored: " "$tmp/hotkeyd.err") == 3 )) || fail "g: bad rows not ignored: $(cat "$tmp/hotkeyd.err")"
+{ grep -qx "microos-hotkeyd: volup tap: ignored, volup has a press row" "$tmp/hotkeyd.err" &&
+  grep -qx "microos-hotkeyd: voldown hold: ignored, voldown has a press row" "$tmp/hotkeyd.err"; } ||
+  fail "g: tap or hold rows next to a press row: $(cat "$tmp/hotkeyd.err")"
+ups() { grep -c "5%+$" "$tmp/calls.log" 2> /dev/null || true; }
+
+k volup.down wait:0.25
+calls_are "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+" || fail "press did not fire once at key down: $(calls)"
+k wait:0.57 volup.up wait:0.4
+(( $(ups) == 6 )) || fail "an 850 ms press did not step at 0, 400, 500, 600, 700, 800 ms: $(calls)"
+k wait:0.3
+(( $(ups) == 6 )) || fail "a press repeated after the release: $(calls)"
+grep -q "%-$" "$tmp/calls.log" && fail "the tap row next to a press row fired: $(calls)"
+rm -f "$tmp/calls.log"
+k volup.down volup.repeat wait:0.1 volup.repeat volup.up wait:0.3
+(( $(ups) == 1 )) || fail "kernel repeats stepped: $(calls)"
+rm -f "$tmp/calls.log"
+: > "$tmp/ip.log"
+k voldown.down wait:1.15 voldown.up wait:0.3
+(( $(grep -c "5%-$" "$tmp/calls.log") == 9 )) || fail "a 1150 ms voldown press: $(calls)"
+grep -q "5%+$" "$tmp/calls.log" && fail "the hold row next to a press row fired: $(calls)"
+grep -q "^rumble" "$tmp/ip.log" && fail "rumble on a press"
+rm -f "$tmp/calls.log"
+k sleep:true sleep:false wait:0.5
+press volup
+[[ -z $(calls) ]] || fail "press 500 ms after (false): $(calls)"
+k wait:1.5
+press volup
+(( $(ups) == 1 )) || fail "press 2000 ms after (false): $(calls)"
+
+rm -f "$tmp/calls.log"
+press lc
+[[ $(calls) == "systemctl --user start --no-block microemu-leave.service" ]] || fail "unit tap: $(calls)"
+rm -f "$tmp/calls.log"
+: > "$tmp/ip.log"
+hold lc
+[[ $(calls) == "systemctl --user start --no-block microemu-stop@x.service" ]] || fail "unit hold: $(calls)"
+rumbles 2 || fail "unit hold rumble: $(grep rumble "$tmp/ip.log")"
+
+rm -f "$tmp/calls.log"
+hold guide
+[[ $(calls) == "systemctl start --no-block microos-session-switch@steam.service" ]] || fail "switch with the scope not loaded: $(calls)"
+grep -qx "GetUnit microemu-game.scope" "$tmp/units/systemd.log" || fail "no GetUnit for the game scope: $(cat "$tmp/units/systemd.log")"
+echo 700 > "$tmp/units/delay"
+rm -f "$tmp/calls.log"
+press guide
+press guide
+k wait:1
+[[ $(calls) == "microos-session back" ]] || fail "two backs while GetUnit is pending: $(calls)"
+rm -f "$tmp/calls.log"
+press guide
+k sleep:true sleep:false wait:1
+[[ -z $(calls) ]] || fail "back acted after a sleep while GetUnit was pending: $(calls)"
+rm -f "$tmp/units/delay"
+k wait:1.5
+echo active > "$tmp/units/microemu-game.scope"
+rm -f "$tmp/calls.log"
+: > "$tmp/ip.log"
+hold guide
+[[ -z $(calls) ]] || fail "a switch row without confirm-in-game switched with the game scope active: $(calls)"
+rumbles 4 || fail "first hold with the game scope active: no double rumble: $(grep rumble "$tmp/ip.log")"
+hold guide
+[[ $(calls) == "systemctl start --no-block microos-session-switch@steam.service" ]] || fail "second hold with the game scope active: $(calls)"
+rm -f "$tmp/calls.log"
+press guide
+[[ -z $(calls) ]] || fail "back with the game scope active: $(calls)"
+press guide
+[[ $(calls) == "microos-session back" ]] || fail "second back with the game scope active: $(calls)"
+rm -f "$tmp/calls.log"
+hold power
+[[ -z $(calls) ]] || fail "confirm-in-game with the game scope active: $(calls)"
+hold power
+[[ $(calls) == "systemctl start --no-block microos-session-switch@recovery.service" ]] || fail "second confirm-in-game hold: $(calls)"
+echo deactivating > "$tmp/units/microemu-game.scope"
+rm -f "$tmp/calls.log"
+hold guide
+[[ -z $(calls) ]] || fail "switch with the game scope deactivating: $(calls)"
+k wait:3.2
+echo inactive > "$tmp/units/microemu-game.scope"
+hold guide
+[[ $(calls) == "systemctl start --no-block microos-session-switch@steam.service" ]] || fail "switch with the game scope inactive: $(calls)"
+echo active > "$tmp/units/microemu-game.scope"
+stop "$sd"
+rm -f "$tmp/calls.log"
+hold guide
+[[ -z $(calls) ]] || fail "switch with the user manager gone: $(calls)"
+grep -q "microemu-game.scope state unknown" "$tmp/hotkeyd.err" || fail "no unknown state line: $(cat "$tmp/hotkeyd.err")"
+
+printf 'GAME_SCOPE=../x.scope\n' > "$tmp/sd/b.conf"
+printf 'guide hold switch steam\n' > "$tmp/g/b.conf"
+: > "$tmp/units/systemd.log"
+python3 "$here/hotkeyd/systemd-stub" "$tmp/units" 3<&- 4<&- & sd=$!
+pids+=("$sd")
+until_ok grep -qsx ready "$tmp/units/systemd.log" || fail "systemd stub did not restart"
+boot b "$tmp/g"
+grep -q "GAME_SCOPE ignored: ../x.scope" "$tmp/hotkeyd.err" || fail "a bad GAME_SCOPE not refused: $(cat "$tmp/hotkeyd.err")"
+hold guide
+[[ $(calls) == "systemctl start --no-block microos-session-switch@steam.service" ]] || fail "switch with a refused GAME_SCOPE: $(calls)"
+grep -q GetUnit "$tmp/units/systemd.log" && fail "GetUnit with a refused GAME_SCOPE"
 kill -0 "$hk" 2> /dev/null || fail "hotkeyd died: $(cat "$tmp/hotkeyd.err")"
 
 if (( rc == 0 )); then

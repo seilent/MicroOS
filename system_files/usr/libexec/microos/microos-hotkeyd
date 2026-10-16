@@ -23,6 +23,7 @@ IP_ROOT = "/org/shadowblip/InputPlumber"
 COMPOSITE = "org.shadowblip.Input.CompositeDevice"
 PROPS = "org.freedesktop.DBus.Properties"
 OM = "org.freedesktop.DBus.ObjectManager"
+SYSTEMD = ("org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager")
 XML = f"""
 <node>
   <interface name="{INTERCEPT[2]}">
@@ -35,12 +36,15 @@ XML = f"""
 EVENT = struct.Struct("llHHi")
 EVIOCSCLOCKID = 0x400445A0
 LONG_MS = 1000
+REPEAT_DELAY_MS = 400
+REPEAT_MS = 100
 RUMBLE_MS = 60
 CONFIRM_S = 3
 REOPEN_S = 2
 WAKE_GRACE = 1.5
 INPUT = os.environ.get("MICROOS_HOTKEYD_INPUT")
 TABLES = os.environ.get("MICROOS_HOTKEYD_TABLES", "/usr/lib/microos/hotkeys.d")
+SESSIONS = os.environ.get("MICROOS_HOTKEYD_SESSIONS", "/usr/lib/microos/sessions.d")
 STEAM = os.environ.get("MICROOS_HOTKEYD_STEAM", "/usr/bin/steam")
 PIPE = os.path.expanduser("~/.steam/steam.pipe")
 E = evdev.ecodes
@@ -53,8 +57,15 @@ KEYS = {
     "voldown": ("pm8941_resin", E.KEY_VOLUMEDOWN),
 }
 PWR = KEYS["power"][0]
-ARGS = {"steam-uri": (1, 1), "suspend": (0, 0), "switch": (1, 2), "back": (0, 0), "call": (4, 4), "volume": (1, 1), "none": (0, 0)}
+ARGS = {
+    "steam-uri": (1, 1), "suspend": (0, 0), "switch": (1, 2), "back": (0, 0), "call": (4, 4), "volume": (1, 1),
+    "unit": (1, 1), "none": (0, 0),
+}
+GESTURES = ("tap", "hold", "press")
 NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+UNIT = re.compile(r"[a-z0-9][a-z0-9@._-]*\.service")
+SCOPE = re.compile(r"[a-z0-9][a-z0-9@._-]*\.scope")
+STOPPED = ("inactive", "failed")
 NO_AUTO_START = Gio.DBusCallFlags.NO_AUTO_START
 
 
@@ -72,6 +83,8 @@ def valid(action, args):
         return args[0] in ("up", "down")
     if action == "steam-uri":
         return args[0].startswith("steam://")
+    if action == "unit":
+        return UNIT.fullmatch(args[0]) is not None
     if action == "call":
         return (Gio.dbus_is_name(args[0]) and GLib.Variant.is_object_path(args[1])
                 and Gio.dbus_is_interface_name(args[2]) and Gio.dbus_is_member_name(args[3]))
@@ -94,11 +107,42 @@ def load_table(session):
             words = line.split()
             if not words or words[0].startswith("#"):
                 continue
-            if len(words) < 3 or words[0] not in KEYS or words[1] not in ("tap", "hold") or not valid(words[2], words[3:]):
+            if (len(words) < 3 or words[0] not in KEYS or words[1] not in GESTURES or not valid(words[2], words[3:])
+                    or (words[1] == "press" and words[2] not in ("volume", "none"))):
                 log(f"{path}:{n}: ignored: {line.strip()}")
                 continue
             table[(words[0], words[1])] = tuple(words[2:])
+    for key, gesture in sorted(table):
+        if gesture != "press" and (key, "press") in table:
+            log(f"{key} {gesture}: ignored, {key} has a press row")
+            del table[(key, gesture)]
     return table
+
+
+def game_scope(session):
+    path = os.path.join(SESSIONS, f"{session}.conf")
+    scope = None
+    try:
+        with open(path) as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        return None
+    except OSError as err:
+        log(f"cannot read {path}: {err}")
+        return None
+    for line in lines:
+        line = line.strip()
+        if line.startswith("#") or "=" not in line[1:]:
+            continue
+        k, v = (w.strip() for w in line.split("=", 1))
+        if len(v) >= 2 and v[0] in "\"'" and v[-1] == v[0]:
+            v = v[1:-1]
+        if k == "GAME_SCOPE":
+            scope = v
+    if scope is not None and not SCOPE.fullmatch(scope):
+        log(f"{path}: GAME_SCOPE ignored: {scope}")
+        return None
+    return scope
 
 
 def node_paths(name):
@@ -185,6 +229,7 @@ class Hotkeyd:
         self.system = system
         self.user = user
         self.table = load_table(session)
+        self.scope = game_scope(session)
         keys = {"power"} | {k for (k, _), row in self.table.items() if row[0] != "none"}
         self.codes = {KEYS[k]: k for k in keys}
         self.wanted = sorted({KEYS[k][0] for k in keys})
@@ -199,6 +244,7 @@ class Hotkeyd:
         self.slept = None
         self.woke = None
         self.confirm = {}
+        self.pending = set()
         self.stack = []
         self.watches = {}
         self.composites = set()
@@ -327,14 +373,63 @@ class Hotkeyd:
         self.drain()
         if (key == "power" and self.block_fd is None) or self.dropped(down_at, sleeps):
             return
-        if row[0] == "switch" and row[2:]:
+        if (row[0] == "switch" and row[2:]) or (self.scope and row[0] in ("switch", "back")):
+            if (key, gesture) in self.pending:
+                return
             first = self.confirm.pop((key, gesture), None)
             now = time.monotonic()
-            if game_running() and (first is None or now - first > CONFIRM_S):
-                self.confirm[(key, gesture)] = now
-                log(f"{key} {gesture} in a game, again within {CONFIRM_S} s to switch")
-                self.buzz(2)
-                return
+            if first is not None and now - first <= CONFIRM_S:
+                self.run(key, gesture, row)
+            elif game_running():
+                self.ask(key, gesture, now)
+            elif self.scope:
+                self.pending.add((key, gesture))
+                self.user.call(
+                    *SYSTEMD, "GetUnit", GLib.Variant("(s)", (self.scope,)), GLib.VariantType("(o)"),
+                    NO_AUTO_START, 1000, None, self.scope_unit, (key, gesture, row, now, down_at, sleeps),
+                )
+            else:
+                self.run(key, gesture, row)
+            return
+        self.run(key, gesture, row)
+
+    def ask(self, key, gesture, now):
+        self.confirm[(key, gesture)] = now
+        log(f"{key} {gesture} in a game, again within {CONFIRM_S} s to switch")
+        self.buzz(2)
+
+    def scope_unit(self, bus, result, pending):
+        try:
+            path = bus.call_finish(result).unpack()[0]
+        except GLib.Error as err:
+            self.scope_state(pending, None if "NoSuchUnit" in (Gio.DBusError.get_remote_error(err) or "") else err)
+            return
+        bus.call(
+            SYSTEMD[0], path, PROPS, "Get", GLib.Variant("(ss)", ("org.freedesktop.systemd1.Unit", "ActiveState")),
+            GLib.VariantType("(v)"), NO_AUTO_START, 1000, None, self.scope_active, pending,
+        )
+
+    def scope_active(self, bus, result, pending):
+        try:
+            state = bus.call_finish(result).unpack()[0]
+        except GLib.Error as err:
+            self.scope_state(pending, err)
+            return
+        self.scope_state(pending, None if state in STOPPED else state)
+
+    def scope_state(self, pending, game):
+        key, gesture, row, now, down_at, sleeps = pending
+        self.pending.discard((key, gesture))
+        if self.dropped(down_at, sleeps):
+            return
+        if isinstance(game, GLib.Error):
+            log(f"{self.scope} state unknown, taking it as a game: {game.message}")
+        if game is None:
+            self.run(key, gesture, row)
+        else:
+            self.ask(key, gesture, now)
+
+    def run(self, key, gesture, row):
         if gesture == "hold":
             self.buzz(1)
         self.act(key, gesture, row)
@@ -356,6 +451,8 @@ class Hotkeyd:
             self.spawn(["systemctl", "start", "--no-block", f"microos-session-switch@{args[0]}.service"])
         elif action == "back":
             self.spawn(["microos-session", "back"])
+        elif action == "unit":
+            self.spawn(["systemctl", "--user", "start", "--no-block", args[0]])
         elif action == "call":
             self.user.call(*args, None, None, Gio.DBusCallFlags.NONE, -1, None, self.done, " ".join(args))
         elif action == "volume":
@@ -517,6 +614,15 @@ class Hotkeyd:
 
     def key(self, key, at, value):
         st = self.state[key]
+        if (key, "press") in self.table:
+            if value in (0, 1):
+                if st[1] is not None:
+                    GLib.source_remove(st[1])
+                    st[1] = None
+                st[0] = (at, self.sleeps) if value == 1 else None
+                if value == 1:
+                    self.pressed(key, st[0], 0)
+            return
         if value == 1:
             if st[1] is not None:
                 GLib.source_remove(st[1])
@@ -529,6 +635,22 @@ class Hotkeyd:
                 if st[0] is not None:
                     self.fire(key, "tap")
             st[0] = None
+
+    def pressed(self, key, down, n):
+        st = self.state[key]
+        st[1] = None
+        if n == 0:
+            self.drain()
+        if st[0] is not down:
+            return GLib.SOURCE_REMOVE
+        if self.dropped(*down):
+            st[0] = None
+            return GLib.SOURCE_REMOVE
+        self.act(key, "press", self.table[(key, "press")])
+        due = down[0] + (REPEAT_DELAY_MS + n * REPEAT_MS) / 1000
+        wait = min(max(0, round((due - time.monotonic()) * 1000)), REPEAT_DELAY_MS)
+        st[1] = GLib.timeout_add(wait, self.pressed, key, down, n + 1)
+        return GLib.SOURCE_REMOVE
 
     def held(self, key):
         st = self.state[key]
