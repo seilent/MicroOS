@@ -39,7 +39,7 @@ Projects MicroOS builds, with their authors and license.
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
 carries Fedora's packaging patches, `mangohud` carries nine upstream MangoHud patches, five of them backported by
-me, and three of mine, `plymouth` carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine,
+me, and four of mine, `plymouth` carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine,
 and `es-de` carries my launch path escape patch (`PATCHES.md` in each package); the others are built as is. License
 texts in `packages/gamescope/`, `packages/gamescope-session/`, `packages/es-de/`, `packages/hexagonrpc/`,
 `packages/inputplumber/`, `packages/mangohud/`, `packages/plymouth/` and `packages/steamos-manager/`.

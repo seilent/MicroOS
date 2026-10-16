@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 16 Oct 2026 16:36:28 +0900
+Subject: [PATCH] mangoapp: skip the window resize until the size is known
+
+The horizontal preset resized the window to the gamescope output size
+even before a frame message had set it, so mangoapp started hidden
+aborted on a 0x0 ConfigureWindow when shown with that preset. The
+resize now waits for a known size, and the size is stored under the
+frame lock before the render thread is woken.
+---
+ src/app/main.cpp | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/src/app/main.cpp b/src/app/main.cpp
+index 19c465f..5f79e34 100644
+--- a/src/app/main.cpp
++++ b/src/app/main.cpp
+@@ -226,11 +226,11 @@ static void msg_read_thread(){
+                     {
+                         {
+                             std::unique_lock<std::mutex> lk(mangoapp_m);
++                            screenWidth = mangoapp_v1->outputWidth;
++                            screenHeight = mangoapp_v1->outputHeight;
+                             new_frame = true;
+                         }
+                         mangoapp_cv.notify_one();
+-                        screenWidth = mangoapp_v1->outputWidth;
+-                        screenHeight = mangoapp_v1->outputHeight;
+                     }
+                 }
+             } else {
+@@ -307,7 +307,7 @@ static bool render(GLFWwindow* window, overlay_params& real_params) {
+     int w, h;
+     glfwGetWindowSize(window, &w, &h);
+     window_size_changed = w != window_size.x || h != window_size.y;
+-    if (real_params.enabled[OVERLAY_PARAM_ENABLED_horizontal])
++    if (real_params.enabled[OVERLAY_PARAM_ENABLED_horizontal] && screenWidth && screenHeight)
+     // trying to reduce height will break direct scanout in some cases
+     // just leave it for now, we'll revisit it in server
+     glfwSetWindowSize(window, screenWidth, screenHeight);
