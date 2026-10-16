@@ -38,12 +38,20 @@ Headers and the CMake package to build against libmicroset.
 
 %package recovery
 Summary:        MicroOS recovery screen
-License:        GPL-2.0-or-later AND OFL-1.1
 Requires:       qt6-qtdeclarative
+Requires:       %{name}-fonts = %{version}-%{release}
 
 %description recovery
 The Qt Quick screen of the MicroOS recovery session. It shows the failing
 session with its journal and switches, rolls back or powers off.
+
+%package fonts
+Summary:        Selawik font for the MicroSET and MicroDAP screens
+License:        OFL-1.1
+BuildArch:      noarch
+
+%description fonts
+Selawik 1.01, the font of the MicroSET and MicroDAP screens.
 
 %prep
 %autosetup -n MicroSET-%{commit}
@@ -91,6 +99,9 @@ install -pm644 fonts/*.ttf %{buildroot}%{_datadir}/fonts/microset/
 %{_libdir}/cmake/MicroSet/
 
 %files recovery
-%license LICENSE Selawik.txt
+%license LICENSE
 %{_bindir}/microset-recovery
+
+%files fonts
+%license Selawik.txt
 %{_datadir}/fonts/microset/

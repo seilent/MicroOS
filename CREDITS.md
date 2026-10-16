@@ -22,6 +22,9 @@ Projects MicroOS builds, with their authors and license.
 | `mangohud` mangoapp render per game frame | MangoHud `2c1dc5283c04` | Matthew Schwartz | MIT |
 | `mangohud` msm_dpu GPU memory | MangoHud `f7d778a5e702` | 17314642 | MIT |
 | `mangohud` msm_dpu GPU rows | MangoHud `7c95b67656d6`, `e57fa15`, `abc561d` | flightlessmango, Matthew Schwartz | MIT |
+| `libfreeaptx` | [regularhunter/libfreeaptx](https://github.com/regularhunter/libfreeaptx) `0.2.2` `6dee419f93`, a fork of libopenaptx 0.2.0, from the FFmpeg aptX codec | Aurelien Jacobs (FFmpeg aptX), Pali Rohár (libopenaptx), Hunter Wardlaw | LGPL-2.1-or-later |
+| `pipewire-codec-aptx` | PipeWire `spa/plugins/bluez5/a2dp-codec-aptx.c` from Fedora's `pipewire-1.6.9-1.fc44.src.rpm` | Wim Taymans and PipeWire contributors | MIT |
+| `pipewire-codec-aptx` build of the aptX target only (idea, spec written new) | [RPM Fusion pipewire-codec-aptx](https://github.com/rpmfusion/pipewire-codec-aptx) | Pauli Virtanen, Gergely Gombos | MIT |
 | `hexagonrpc` | [linux-msm/hexagonrpc](https://github.com/linux-msm/hexagonrpc) `da7a3742ab` | Richard Acayan and hexagonrpc contributors | GPL-3.0-or-later, BSD-3-Clause (FastRPC error tables, The Linux Foundation and The Sensor Shell Contributors) |
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
@@ -69,6 +72,6 @@ Retroid kernel is [lineageos-on-retroid/android_kernel_retroid_sm8250_ack](https
 | Bluetooth address from the SoC serial (idea, written new) | [ROCKNIX/distribution-old](https://github.com/ROCKNIX/distribution-old) `779c788321` | spycat88 | GPL-2.0 |
 | Stick LED frame in `microsetd` (format, written new) | [ROCKNIX](https://github.com/ROCKNIX/distribution) `57cf10c23e` AYANEO Pocket EVO `analog_sticks_ledcontrol` (MCU envelope); AYANEO RGB app on stock Android (PM2 frame body) | tiopex, AYANEO | GPL-2.0 (ROCKNIX); format only from the app |
 | SSC wire format in the InputPlumber SSC source and `microsetd` (format, written new) | [libssc](https://codeberg.org/DylanVanAssche/libssc) `54dd13e` | Dylan Van Assche | GPL-3.0-or-later |
-| Selawik font in `microset-recovery` | [microsoft/Selawik](https://github.com/microsoft/Selawik) `1.01` | Microsoft Corporation | OFL-1.1 |
+| Selawik font in `microset-fonts` | [microsoft/Selawik](https://github.com/microsoft/Selawik) `1.01` | Microsoft Corporation | OFL-1.1 |
 | Doto font, rendered into the boot splash wordmark (font not shipped) | [oliverlalan/Doto](https://github.com/oliverlalan/Doto) `1.000` | Óliver Lalan | OFL-1.1 |
 | `mkbootimg`, `unpack_bootimg` | AOSP `platform/system/tools/mkbootimg`, Fedora `android-tools` | The Android Open Source Project | Apache-2.0 |

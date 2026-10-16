@@ -13,24 +13,58 @@ own=(
   mangohud/mangohud
   microset/microset
   microset/microset-recovery
+  microset/microset-fonts
   hexagonrpc/hexagonrpc
 )
 
-rpms=()
-for p in "${own[@]}"; do
-  dir=/pkgs/${p%%/*}
-  name=${p#*/}
-  found=()
+own_rpm() {
+  local dir=/pkgs/${1%%/*} name=${1#*/} f found=()
   for f in "$dir"/*.rpm; do
     if [[ -f $f && $f != *.src.rpm && $(rpm -qp --qf '%{NAME}' "$f") == "$name" ]]; then
       found+=("$f")
     fi
   done
   (( ${#found[@]} == 1 )) || { echo "30-packages: expected one $name RPM in $dir, found ${#found[@]}" >&2; exit 1; }
-  rpms+=("${found[0]}")
+  echo "${found[0]}"
+}
+
+rpms=()
+for p in "${own[@]}"; do
+  rpms+=("$(own_rpm "$p")")
 done
 
-dnf -y install \
+pin=$(mktemp -d)
+. /ctx/pins/pipewire-aptx.env
+arch=$(uname -m)
+
+pinned=("$(own_rpm pipewire-aptx/libfreeaptx)" "$(own_rpm pipewire-aptx/pipewire-codec-aptx)")
+pin_rpms() {
+  local pkg=$1 evr=$2 list=$3 name sum f have
+  local -a want=()
+  while read -r name sum; do
+    if [[ -n $name ]]; then want+=("$name-$evr.$arch"); fi
+  done <<<"$list"
+  have=$(dnf -q repoquery --qf '%{name}-%{evr}.%{arch}\n' "${want[@]}")
+  while read -r name sum; do
+    [[ -n $name ]] || continue
+    if grep -qxF "$name-$evr.$arch" <<<"$have"; then
+      pinned+=("$name-$evr.$arch")
+      continue
+    fi
+    [[ $arch == aarch64 ]] || { echo "30-packages: $name-$evr.$arch is not in the repos and SOURCE.env pins aarch64 RPMs only" >&2; exit 1; }
+    f=$pin/$name-$evr.$arch.rpm
+    curl -fsSL --retry 5 --retry-all-errors -o "$f" "$KOJI_URL/$pkg/${evr%%-*}/${evr#*-}/data/signed/$KOJI_KEY/$arch/$name-$evr.$arch.rpm"
+    echo "$sum  $f" | sha256sum -c --quiet - || { echo "30-packages: $name-$evr.$arch from koji fails sha256" >&2; exit 1; }
+    pinned+=("$f")
+  done <<<"$list"
+}
+pin_rpms pipewire "$PIPEWIRE_EVR" "$PIPEWIRE_RPMS"
+pin_rpms wireplumber "$WIREPLUMBER_EVR" "$WIREPLUMBER_RPMS"
+dnf -y install "${pinned[@]}"
+rm -rf "$pin"
+printf '[main]\nexcludepkgs=pipewire*,wireplumber*\n' > /etc/dnf/libdnf5.conf.d/20-microos-pipewire.conf
+
+if ! dnf -y install \
   android-tools \
   NetworkManager-wifi \
   wpa_supplicant \
@@ -50,12 +84,7 @@ dnf -y install \
   mesa-libGL \
   vulkan-loader \
   vulkan-tools \
-  pipewire \
-  pipewire-alsa \
-  pipewire-pulseaudio \
-  pipewire-utils \
   pulseaudio-utils \
-  wireplumber \
   alsa-ucm \
   alsa-ucm-utils \
   alsa-utils \
@@ -94,4 +123,7 @@ dnf -y install \
   python3-evdev \
   upower \
   rsync \
-  "${rpms[@]}"
+  "${rpms[@]}"; then
+  echo "30-packages: pipewire is pinned at $PIPEWIRE_EVR and wireplumber at $WIREPLUMBER_EVR; if a package needs newer ones, run packages/pipewire-aptx/bump.sh <pipewire EVR> <wireplumber EVR>" >&2
+  exit 1
+fi

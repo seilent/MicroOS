@@ -10,7 +10,7 @@ if [[ -z $srpm || $(wc -l <<<"$srpm") -ne 1 ]]; then fail "expected one SRPM in 
 if [[ -n $(find "$dir" -maxdepth 1 \( -name '*-debuginfo-*' -o -name '*-debugsource-*' \)) ]]; then fail "debug RPM present"; fi
 
 declare -A rpms
-for name in microset microset-devel; do
+for name in microset microset-devel microset-fonts; do
   rpm=$(find "$dir" -maxdepth 1 -name "$name-0^*.rpm" ! -name '*.src.rpm')
   if [[ -z $rpm || $(wc -l <<<"$rpm") -ne 1 ]]; then
     echo "FAIL: expected one $name RPM in $dir" >&2
@@ -47,6 +47,14 @@ for f in $libdir/libmicroset.so $libdir/cmake/MicroSet; do
 done
 if ! grep -q '^/usr/include/microset/.*\.h$' <<<"$devfiles"; then fail "devel: no headers"; fi
 if ! grep -q "^$libdir/cmake/MicroSet/.*Config\.cmake$" <<<"$devfiles"; then fail "devel: no CMake config"; fi
+
+fontfiles=$(rpm -qlp "${rpms[microset-fonts]}")
+for f in selawk selawkb selawkl selawksb selawksl; do
+  if ! grep -qx "/usr/share/fonts/microset/$f.ttf" <<<"$fontfiles"; then fail "fonts: missing $f.ttf"; fi
+done
+if ! grep -qx /usr/share/licenses/microset-fonts/Selawik.txt <<<"$fontfiles"; then fail "fonts: missing Selawik.txt"; fi
+if [[ $(grep -c '\.ttf$' <<<"$fontfiles") -ne 5 ]]; then fail "fonts: expected five TTFs"; fi
+if [[ $(rpm -qp --qf '%{ARCH}' "${rpms[microset-fonts]}") != noarch ]]; then fail "fonts: not noarch"; fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

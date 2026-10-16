@@ -42,6 +42,20 @@ done
 rpm -q mesa-dri-drivers mesa-vulkan-drivers mesa-libgbm mesa-libEGL mesa-libGL vulkan-loader vulkan-tools pipewire \
   pipewire-alsa pipewire-pulseaudio pipewire-utils pulseaudio-utils wireplumber alsa-ucm alsa-ucm-utils alsa-utils >/dev/null || fail "base stack rpms missing"
 [[ -f /usr/share/vulkan/icd.d/freedreno_icd.aarch64.json ]] || fail "Turnip ICD missing"
+for p in libfreeaptx pipewire-codec-aptx; do
+  [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
+done
+[[ -f /usr/lib64/spa-0.2/bluez5/libspa-codec-bluez5-aptx.so ]] || fail "aptX codec module missing"
+! ldd /usr/lib64/spa-0.2/bluez5/libspa-codec-bluez5-aptx.so | grep -q 'not found' || fail "aptX codec module has unresolved libraries"
+pwevr=$(rpm -q --requires pipewire-codec-aptx | awk '$1 == "pipewire-libs(aarch-64)" && $2 == "=" { print $3 }')
+[[ -n $pwevr ]] || fail "pipewire-codec-aptx has no exact pipewire-libs(aarch-64) Requires"
+while read -r p evr; do
+  [[ $p == pipewire-codec-aptx || $evr == "$pwevr" ]] || fail "$p is $evr, pipewire is pinned at $pwevr"
+done < <(rpm -qa --qf '%{NAME} %{VERSION}-%{RELEASE}\n' 'pipewire*')
+[[ $(rpm -q --qf '%{VERSION}-%{RELEASE}\n' wireplumber) == "$(rpm -q --qf '%{VERSION}-%{RELEASE}\n' wireplumber-libs)" ]] \
+  || fail "wireplumber and wireplumber-libs differ"
+grep -qx 'excludepkgs=pipewire\*,wireplumber\*' /etc/dnf/libdnf5.conf.d/20-microos-pipewire.conf \
+  || fail "20-microos-pipewire.conf does not exclude pipewire and wireplumber"
 [[ $(rpm -q --qf '%{VENDOR}' inputplumber) == MicroOS ]] || fail "inputplumber is not the MicroOS build"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 [[ $(systemctl is-enabled inputplumber.service) == enabled ]] || fail "inputplumber.service is not enabled"
@@ -59,7 +73,8 @@ steamrules=/usr/share/polkit-1/rules.d/50-microos-steam.rules
 for a in inhibit-handle-power-key inhibit-handle-suspend-key suspend reboot power-off; do
   grep -qF "\"org.freedesktop.login1.$a\"" "$steamrules" || fail "$steamrules lacks org.freedesktop.login1.$a"
 done
-for r in 'RUN+="/usr/bin/chgrp wheel /sys%p/brightness"' 'RUN+="/usr/bin/chmod g+w /sys%p/brightness"'; do
+for r in 'RUN+="/usr/bin/chgrp wheel /sys%p/brightness"' 'RUN+="/usr/bin/chmod g+w /sys%p/brightness"' \
+  'RUN+="/usr/bin/chgrp wheel /sys%p/bl_power"' 'RUN+="/usr/bin/chmod g+w /sys%p/bl_power"'; do
   grep -qF "$r" /usr/lib/udev/rules.d/60-microos-backlight.rules || fail "60-microos-backlight.rules lacks $r"
 done
 grep -qE 'session\.dont-restore-off-profile"? *[=:] *true' /usr/share/wireplumber/wireplumber.conf.d/52-microos-pm2.conf \
@@ -133,6 +148,7 @@ done
 ! grep -qE 'pwm|hwmon|thermal' /usr/libexec/microos/microos-powerd || fail "microos-powerd names a pwm, hwmon or thermal path"
 [[ $(rpm -q --qf '%{VENDOR}' microset) == MicroOS ]] || fail "microset is not the MicroOS build"
 ! rpm -q microset-devel >/dev/null 2>&1 || fail "microset-devel is installed"
+[[ $(rpm -qf /usr/share/fonts/microset/selawk.ttf) == microset-fonts-* ]] || fail "Selawik is not in microset-fonts"
 schema=/usr/share/microset/schema.d/10-microset.json
 enum() { jq -er --arg k "$1" '.keys[$k].enum | sort | join(" ")' "$schema" || fail "$schema has no enum for $1"; }
 profiles=$(sed -n 's/^\[\(.*\)\]$/\1/p' /usr/lib/microos/power-profiles.conf | grep -vx tdp | sort | paste -sd' ')

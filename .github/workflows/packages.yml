@@ -60,6 +60,41 @@ jobs:
           echo "without DEPS $packages"
           echo "with DEPS $deps"
 
+  pipewire-drift:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      FEDORA: registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Compare
+        run: |
+          . packages/pipewire-aptx/SOURCE.env
+          if ! got=$(podman run --rm "$FEDORA" dnf -q repoquery --qf '%{name} %{evr}\n' --latest-limit 1 pipewire wireplumber); then
+            echo "::warning::dnf repoquery failed, pipewire drift not checked"
+            exit 0
+          fi
+          pw=$(awk '$1 == "pipewire" { print $2 }' <<< "$got")
+          wp=$(awk '$1 == "wireplumber" { print $2 }' <<< "$got")
+          if [[ -z $pw || -z $wp ]]; then
+            echo "::warning::Fedora 44 lists no pipewire or wireplumber: $got"
+          elif [[ $pw != "$PIPEWIRE_EVR" || $wp != "$WIREPLUMBER_EVR" ]]; then
+            echo "::error::pipewire $PIPEWIRE_EVR and wireplumber $WIREPLUMBER_EVR are pinned, Fedora 44 has $pw and $wp; bump with packages/pipewire-aptx/bump.sh $pw $wp"
+            exit 1
+          else
+            echo "pipewire $pw, wireplumber $wp: the pin is Fedora 44's"
+          fi
+
   build:
     needs: list
     runs-on: ubuntu-24.04-arm

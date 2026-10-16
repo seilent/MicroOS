@@ -1,0 +1,5 @@
+FROM localhost/microos-pkg-builder
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+      meson ninja-build 'pkgconfig(bluez)' 'pkgconfig(dbus-1)' 'pkgconfig(glib-2.0)' 'pkgconfig(sbc)' \
+ && dnf clean all

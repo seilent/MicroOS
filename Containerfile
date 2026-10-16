@@ -5,6 +5,7 @@ FROM ${KERNEL_REF} AS kernel
 FROM scratch AS ctx
 COPY build/steps /steps
 COPY system_files /system_files
+COPY packages/pipewire-aptx/SOURCE.env /pins/pipewire-aptx.env
 
 FROM registry.fedoraproject.org/fedora-bootc:44@sha256:a2789aaa615504ac9dd039a6ac0cc75343ceca89416e38441d739dbffe6557c9
 
