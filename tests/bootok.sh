@@ -241,13 +241,18 @@ wait
 is_pinned "$B" || fail "booted not pinned after session-current came up"
 reset
 st "$B b"
+echo "steam $S 1 2" > "$MICROOS_RUNDIR/session-current"
+run || fail "session-current with the monotonic stamp: $(cat "$tmp/out")"
+is_pinned "$B" || fail "booted not pinned with the monotonic stamp"
+reset
+st "$B b"
 echo "steam $S 1" > "$tmp/current-target"
 ln -sf "$tmp/current-target" "$MICROOS_RUNDIR/session-current"
 run_rc
 (( r == 1 )) || fail "symlinked session-current: exit $r"
 grep -q "not confirmed: no session-current after 2 s" "$tmp/out" || fail "symlinked session-current message: $(cat "$tmp/out")"
 [[ ! -e $FAKE_STATE/user-reads ]] || fail "symlinked session-current followed"
-for bad in "steam ../x.service 1" "steam $S" "steam $S 1 x" "Steam $S 1"; do
+for bad in "steam ../x.service 1" "steam $S" "steam $S 1 x" "steam $S 1 2 3" "Steam $S 1"; do
   reset
   st "$B b"
   echo "$bad" > "$MICROOS_RUNDIR/session-current"

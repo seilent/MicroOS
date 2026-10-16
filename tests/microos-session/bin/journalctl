@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 echo "journalctl $*" >> "$FAKE/calls"
-pid=""
+pid="" boot=""
 for a; do
   [[ $a != _PID=* ]] || pid=${a#_PID=}
+  [[ $a != _BOOT_ID=* ]] || boot=${a#_BOOT_ID=}
 done
 [[ -f $FAKE/journal ]] || exit 0
-if [[ -n $pid ]]; then
-  grep -F "systemd[$pid]:" "$FAKE/journal"
-else
-  cat "$FAKE/journal"
-fi
+while read -r b line; do
+  [[ -z $boot || $b == "$boot" ]] || continue
+  [[ -z $pid || $line == *" systemd[$pid]: "* ]] || continue
+  printf '%s\n' "$line"
+done < "$FAKE/journal"
 exit 0

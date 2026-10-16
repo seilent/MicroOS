@@ -57,7 +57,7 @@ if ! load "$target"; then
 fi
 put "$rundir/sddm-autologin.conf" "[Autologin]" "Session=${DESKTOP:-gamescope-session-steam.desktop}" ||
   log "cannot write sddm-autologin.conf"
-put "$rundir/session-current" "$target ${UNIT:-gamescope-session-plus@steam.service} $(new_serial)" ||
+put "$rundir/session-current" "$target ${UNIT:-gamescope-session-plus@steam.service} $(stamp)" ||
   log "cannot write session-current"
 log "$target for this boot"
 exit 0

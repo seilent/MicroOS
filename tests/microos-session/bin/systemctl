@@ -26,7 +26,15 @@ seat() {
 }
 
 ustart() {
-  local u=$1 i w
+  local u=$1 i w b
+  for b in "$MICROOS_SYSFS"/class/backlight/*/bl_power; do
+    [[ ! -e $b ]] || rec "panel $u ${b%/bl_power} $(< "$b")"
+  done
+  if [[ -e $F/darken/$u ]]; then
+    for b in "$MICROOS_SYSFS"/class/backlight/*/bl_power; do
+      echo 1 > "$b"
+    done
+  fi
   echo active > "$F/units/$u"
   mono > "$F/enter/$u"
   [[ $u =~ ^gamescope-session-plus@(.+)\.service$ ]] || return 0
@@ -192,6 +200,11 @@ case $1 in
   restart)
     rec "restart $2"
     rm -f "$F/stale"
+    if [[ -e $F/panel-off ]]; then
+      for b in "$MICROOS_SYSFS"/class/backlight/*/bl_power; do
+        echo 1 > "$b"
+      done
+    fi
     d=$(sed -n 's/^Session=//p' "$MICROOS_RUNDIR/sddm-autologin.conf" 2> /dev/null)
     echo "$d" > "$F/sddm-loaded"
     touch "$F/sddm-up"

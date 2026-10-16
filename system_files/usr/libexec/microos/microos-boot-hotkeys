@@ -61,7 +61,7 @@ if [[ -f $statedir/session/attempt ]]; then
   mapfile -t attempt < "$statedir/session/attempt"
 fi
 put "$rundir/sddm-autologin.conf" "[Autologin]" "Session=$DESKTOP" || log "cannot write sddm-autologin.conf"
-put "$rundir/session-current" "$target $unit $(new_serial)" || log "cannot write session-current"
+put "$rundir/session-current" "$target $unit $(stamp)" || log "cannot write session-current"
 rm -f "$statedir/session/attempt"
 log "$held held at boot, $target for this boot"
 ready

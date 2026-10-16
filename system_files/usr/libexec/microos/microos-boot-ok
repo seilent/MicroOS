@@ -131,7 +131,7 @@ read_current() {
   local line
   [[ -f $rundir/session-current ]] || return 1
   line=$(dd if="$rundir/session-current" iflag=nofollow bs=4096 count=1 status=none 2> /dev/null) || return 1
-  [[ $line =~ ^[a-z0-9-]+\ [A-Za-z0-9@._-]+\.service\ [0-9]+$ ]] || return 1
+  [[ $line =~ ^[a-z0-9-]+\ [A-Za-z0-9@._-]+\.service\ [0-9]+(\ [0-9]+)?$ ]] || return 1
   session=$line
 }
 

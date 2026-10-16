@@ -24,7 +24,9 @@ export MICROOS_SESSION_BIN=$session TREE=$tree MICROOS_UPTIME=$tmp/uptime
 export MICROOS_SESSION_SHORT_TRACKER=$tmp/short-tracker
 export MICROOS_SESSION_STEP=0.1 MICROOS_SESSION_SHUTDOWN_WAIT=2 MICROOS_SESSION_STOP_WAIT=2 MICROOS_SESSION_GAMES_WAIT=1
 export MICROOS_SESSION_RATE_MS=0 MICROOS_SESSION_SEAT_WAIT=1 MICROOS_SESSION_START_WAIT=2 MICROOS_SESSION_RESTART_WAIT=2 MICROOS_SESSION_WATCH_WAIT=2 MICROOS_SESSION_WATCH_PENDING=8
-export PATH=$here/microos-session/bin:$PATH
+export PATH=$here/microos-session/bin:$PATH MICROOS_BOOT_ID=$tmp/boot_id
+boot=0123456789abcdef0123456789abcdef
+echo 01234567-89ab-cdef-0123-456789abcdef > "$tmp/boot_id"
 tick() { awk '{ printf "%.2f 0\n", $1 + 100000 }' /proc/uptime > "$tmp/uptime.new" && mv -f "$tmp/uptime.new" "$tmp/uptime"; }
 tick
 while :; do tick; sleep 0.05; done &
@@ -73,6 +75,7 @@ desk_of() {
   esac
 }
 mono() { python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000)'; }
+mnow() { echo $(( $(mono) / 1000000 )); }
 bt() { cut -d. -f1 "$tmp/uptime"; }
 serial() { echo $(( $(bt) * 1000000 )); }
 settle() {
@@ -109,7 +112,8 @@ reset() {
   mkdir -p "$FAKE/keys"
 }
 cur() {
-  printf '%s %s %s\n' "$1" "$(unit_of "$1")" "${2:-$(serial)}" > "$run/session-current"
+  local s=${2:-$(serial)}
+  printf '%s %s %s %s\n' "$1" "$(unit_of "$1")" "$s" "${3:-$(( $(mono) - $(bt) * 1000000 + s ))}" > "$run/session-current"
   printf '[Autologin]\nSession=%s\n' "$(desk_of "$1")" > "$run/sddm-autologin.conf"
   desk_of "$1" > "$FAKE/sddm-loaded"
   echo active > "$FAKE/units/$(unit_of "$1")"
@@ -191,8 +195,9 @@ echo microdap > "$FAKE/default"
 status "$B b" "$P"
 echo "$P" > "$state/confirmed"
 "$libexec/microos-session-boot" 2> /dev/null
-read -r n u s < "$run/session-current"
-[[ $n == microdap && $u == gamescope-session-plus@microdap.service && $s =~ ^[0-9]+$ ]] && (( s / 1000000 >= 100000 )) || fail "boot session-current: $n $u $s"
+read -r n u s m < "$run/session-current"
+[[ $n == microdap && $u == gamescope-session-plus@microdap.service && $s =~ ^[0-9]+$ && $m =~ ^[0-9]+$ ]] &&
+  (( s / 1000000 >= 100000 && m <= $(mono) && s - m >= 99000000000 )) || fail "boot session-current: $n $u $s $m"
 [[ $(login) == microdap.desktop ]] || fail "boot autologin: $(login)"
 [[ $(< "$run/sddm-autologin.conf") == $'[Autologin]\nSession=microdap.desktop' ]] || fail "autologin file: $(< "$run/sddm-autologin.conf")"
 [[ $(< "$run/deployments") == "booted=$B"$'\nconfirmed=no\nrollback=yes' ]] || fail "deployments: $(< "$run/deployments")"
@@ -239,7 +244,7 @@ cur steam
 reader
 printf 'name=steam\ncount=1\n' > "$state/session/attempt"
 touch "$FAKE/scopes/app-steam-app570-1.scope"
-prev=$(< "$run/session-current")
+prev=$(cut -d' ' -f1-3 "$run/session-current")
 sw microdap
 [[ $(< "$run/session-previous") == "$prev requested" ]] || fail "session-previous: $(cat "$run/session-previous" 2> /dev/null)"
 [[ $(stat -c %a "$run/session-previous") == 644 ]] || fail "session-previous mode"
@@ -430,9 +435,9 @@ export FAKE_RUN_SWITCH=1
 systemctl start --no-block microos-session-fallback@recovery.service
 settle
 ! has "start --no-block microos-session-giveup.service" || fail "a unit fallback to recovery started the giveup without root evidence"
-now=$(date +%s)
+now=$(mnow)
 : > "$FAKE/journal"
-for _ in 1 2 3; do echo "$now.000000 pm2 systemd[4242]: Started" >> "$FAKE/journal"; done
+for _ in 1 2 3; do printf '%s [%5d.000000] pm2 systemd[4242]: Started\n' "$boot" "$now" >> "$FAKE/journal"; done
 systemctl start --no-block microos-session-fallback@recovery.service
 settle
 has "start --no-block microos-session-giveup.service" || fail "a unit fallback to recovery with 3 trusted starts did not start the giveup"
@@ -513,19 +518,22 @@ giveup() { r=0; "$libexec/microos-session-giveup" "$1" > "$tmp/out" 2>&1 || r=$?
 starts() {
   local t
   : > "$FAKE/journal"
-  for t; do echo "$t.000000 pm2 systemd[${pid:-4242}]: Started gamescope-session-plus@recovery.service." >> "$FAKE/journal"; done
+  for t; do
+    printf '%s [%5d.000000] pm2 systemd[%s]: Started gamescope-session-plus@recovery.service.\n' "${jboot:-$boot}" "$t" "${pid:-4242}" \
+      >> "$FAKE/journal"
+  done
 }
 reset
 cur steam
 status "$B b" "$P"
-starts "$(date +%s)" "$(date +%s)" "$(date +%s)"
+starts "$(mnow)" "$(mnow)" "$(mnow)"
 giveup giveup
 [[ $r == 1 ]] && ! hasre '^(bootc|stop|reboot)' || fail "giveup while steam is current: $r $(calls)"
 giveup rollback
 [[ $r == 1 ]] && ! hasre '^bootc' || fail "rollback while steam is current: $r"
 cur recovery $(( ($(bt) - 100) * 1000000 ))
 echo "$P" > "$state/confirmed"
-now=$(date +%s)
+now=$(mnow)
 starts $(( now - 200 )) $(( now - 50 )) "$now"
 giveup giveup
 [[ $r == 1 ]] && ! hasre '^(bootc|stop)' || fail "giveup with 2 starts since the serial: $r $(calls)"
@@ -567,7 +575,7 @@ reset
 cur recovery $(( ($(bt) - 10) * 1000000 ))
 echo "$B" > "$state/confirmed"
 status "$B b" "$P"
-now=$(date +%s)
+now=$(mnow)
 starts "$now" "$now" "$now"
 giveup giveup
 [[ $r == 0 ]] && ! has "bootc rollback" && has "stop display-manager.service" || fail "confirmed giveup: $(calls)"
@@ -578,7 +586,7 @@ reset
 cur recovery $(( ($(bt) - 10) * 1000000 ))
 echo "$P" > "$state/confirmed"
 status "$B b" "$P"
-now=$(date +%s)
+now=$(mnow)
 starts "$now" "$now" "$now"
 touch "$FAKE/bootc-fails"
 giveup giveup
@@ -812,6 +820,10 @@ for u in microos-session-boot microos-session-switch@ microos-session-fallback@ 
     grep -qxF "$k" "$units/system/$u.service" || fail "$u.service lacks $k"
   done
 done
+for u in microos-session-switch@ microos-session-fallback@ microos-session-switcher; do
+  ! grep -qE '^(ProtectKernelTunables=yes|(ReadOnlyPaths|InaccessiblePaths)=.*/sys)' "$units/system/$u.service" \
+    || fail "$u.service makes /sys read only, the panel reset needs bl_power"
+done
 for u in microos-session-boot microos-session-switch@ microos-session-fallback@ microos-session-switcher microos-session-up@ \
   microos-session-attempt microos-session-watch microos-boot-hotkeys microos-session-giveup microos-session-rollback; do
   for k in NoNewPrivileges=yes PrivateTmp=yes ProtectHome=read-only RestrictSUIDSGID=yes; do
@@ -830,6 +842,89 @@ for u in microos-session-giveup microos-session-rollback; do
   done
   ! grep -q '^ProtectSystem' "$units/system/$u.service" || fail "$u.service has ProtectSystem"
 done
+
+bl=$MICROOS_SYSFS/class/backlight
+dark() {
+  local d
+  for d in ae94000.dsi.0 backlight-1; do
+    mkdir -p "$bl/$d"
+    echo 1 > "$bl/$d/bl_power"
+  done
+}
+lit() {
+  local d
+  for d in ae94000.dsi.0 backlight-1; do
+    has "panel $(unit_of "$1") $bl/$d 0" || return 1
+  done
+  ! hasre '^panel .* 1$'
+}
+reset
+dark
+cur microdap
+sw steam
+[[ $r == 0 && $(current) == steam && $(ustate steam) == active ]] || fail "panel: microdap to steam: $r $(cat "$tmp/out")"
+lit steam || fail "panel: bl_power before steam started: $(calls)"
+reset
+dark
+cur steam
+touch "$FAKE/never/$(unit_of microdap)" "$FAKE/panel-off"
+sw microdap
+[[ $(current) == recovery && $(ustate recovery) == active && $(count "restart sddm.service") == 1 ]] ||
+  fail "panel: failed microdap start: $(current) $(calls)"
+lit recovery || fail "panel: bl_power before the recovery fallback started: $(calls)"
+reset
+dark
+cur steam
+mkdir -p "$FAKE/darken"
+touch "$FAKE/stale" "$FAKE/darken/$(unit_of steam)"
+sw microdap
+[[ $r == 0 && $(ustate microdap) == active && $(count "restart sddm.service") == 1 ]] || fail "panel: stale relogin: $(calls)"
+lit microdap || fail "panel: bl_power before the sddm restart started microdap: $(calls)"
+reset
+sw microdap
+read -r _ _ s m < "$run/session-current"
+(( m <= $(mono) && $(mono) - m < 30000000 && s - m >= 99000000000 )) || fail "switch session-current stamps: $s $m"
+
+jl() {
+  printf '%s [%5d.000000] pm2 systemd[4242]: Started gamescope-session-plus@recovery.service.\n' "$1" "$2" >> "$FAKE/journal"
+}
+mkdir -p "$tmp/stepped"
+printf '#!/usr/bin/env bash\necho "date $*" >> "$FAKE/calls"\necho 1790000000\n' > "$tmp/stepped/date"
+chmod +x "$tmp/stepped/date"
+stepped() { PATH=$tmp/stepped:$PATH giveup giveup; }
+reset
+cur recovery $(( ($(bt) - 100) * 1000000 ))
+echo "$B" > "$state/confirmed"
+status "$B b" "$P"
+now=$(mnow)
+: > "$FAKE/journal"
+for t in $(( now - 30 )) $(( now - 20 )) "$now"; do jl fedcba9876543210fedcba9876543210 "$t"; done
+jl "$boot" $(( now - 150 ))
+cur recovery $(( ($(bt) - 1100) * 1000000 )) $(( (now - 100) * 1000000 ))
+jl "$boot" $(( now - 50 ))
+jl "$boot" "$now"
+stepped
+[[ $r == 1 ]] && ! hasre '^(bootc|stop)' || fail "giveup counted starts of another boot or before the serial: $r $(calls)"
+grep -q "recovery started 2 times" "$tmp/out" || fail "recovery count across a stepped clock: $(cat "$tmp/out")"
+hasre "^journalctl .*_BOOT_ID=$boot _PID=4242 _UID=1000" || fail "journal read without the boot id: $(calls)"
+jl "$boot" "$now"
+stepped
+[[ $r == 0 ]] && has "stop display-manager.service" || fail "giveup with 3 starts across a stepped clock: $r $(calls)"
+! hasre '^date' || fail "the recovery count read the wall clock"
+reset
+cur recovery $(( ($(bt) - 1000) * 1000000 ))
+echo "$B" > "$state/confirmed"
+status "$B b" "$P"
+now=$(mnow)
+: > "$FAKE/journal"
+for t in $(( now - 700 )) $(( now - 500 )) "$now"; do jl "$boot" "$t"; done
+stepped
+[[ $r == 1 ]] && grep -q "recovery started 2 times" "$tmp/out" || fail "a start older than the window counted: $(cat "$tmp/out")"
+echo garbage > "$tmp/boot_id"
+jl "$boot" "$now"
+stepped
+[[ $r == 1 ]] && grep -q "recovery started 0 times" "$tmp/out" || fail "starts counted without a boot id: $(cat "$tmp/out")"
+echo 01234567-89ab-cdef-0123-456789abcdef > "$tmp/boot_id"
 
 step_up=$tmp/uptime-step
 set_step() { echo "$1 0" > "$step_up.new" && mv -f "$step_up.new" "$step_up"; }

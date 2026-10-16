@@ -17,6 +17,7 @@ t_up=${MICROOS_SESSION_UP_HOLD:-60}
 window=${MICROOS_SESSION_WINDOW:-600}
 rate=${MICROOS_SESSION_RATE_MS:-5000}
 uptime=${MICROOS_UPTIME:-/proc/uptime}
+bootid=${MICROOS_BOOT_ID:-/proc/sys/kernel/random/boot_id}
 sysfs=${MICROOS_SYSFS:-/sys}
 devroot=${MICROOS_DEV:-/dev}
 padstate=${MICROOS_PAD_STATE:-}
@@ -100,24 +101,33 @@ unit_trusted() {
 }
 
 recovery_starts() {
-  local now since t n=0 mgr
+  local boot="" since line n=0 mgr
   mgr=$(systemctl show -p MainPID --value "user@$uid.service" 2> /dev/null)
-  if [[ ! $mgr =~ ^[1-9][0-9]*$ ]]; then
+  read -r boot < "$bootid" 2> /dev/null || boot=""
+  boot=${boot//-/}
+  if [[ ! $mgr =~ ^[1-9][0-9]*$ || ! $boot =~ ^[0-9a-f]{32}$ ]]; then
     echo 0
     return
   fi
   read_current
-  now=$(date +%s)
-  since=$(( now - ($(boottime_us) - cur_serial) / 1000000 ))
-  (( since > now - window )) || since=$(( now - window ))
-  while read -r t _; do
-    t=${t%%.*}
-    if [[ $t =~ ^[0-9]+$ ]] && (( t >= since )); then
+  since=$(( $(mono) - window * 1000000 ))
+  (( cur_mono <= since )) || since=$cur_mono
+  while IFS= read -r line; do
+    if [[ $line =~ ^\[\ *([0-9]+)\.([0-9]{6})\] ]] &&
+      (( 10#${BASH_REMATCH[1]} * 1000000 + 10#${BASH_REMATCH[2]} >= since )); then
       n=$(( n + 1 ))
     fi
-  done < <(journalctl -q -o short-unix --since "@$since" _PID="$mgr" _UID="$uid" USER_UNIT=gamescope-session-plus@recovery.service \
-    MESSAGE_ID=39f53479d3a045ac8e11786248231fbf 2> /dev/null)
+  done < <(journalctl -q -o short-monotonic _BOOT_ID="$boot" _PID="$mgr" _UID="$uid" \
+    USER_UNIT=gamescope-session-plus@recovery.service MESSAGE_ID=39f53479d3a045ac8e11786248231fbf 2> /dev/null)
   echo "$n"
+}
+
+panel_on() {
+  local f
+  for f in "$sysfs"/class/backlight/*/bl_power; do
+    [[ -e $f ]] || continue
+    echo 0 > "$f" || log "bl_power 0 on ${f%/bl_power} failed"
+  done
 }
 
 usage() {
@@ -180,24 +190,27 @@ get_default() {
 }
 
 read_current() {
-  cur_name="" cur_unit="" cur_serial=""
+  cur_name="" cur_unit="" cur_serial="" cur_mono=""
   if [[ -f $rundir/session-current ]]; then
-    read -r cur_name cur_unit cur_serial < "$rundir/session-current" || true
+    read -r cur_name cur_unit cur_serial cur_mono < "$rundir/session-current" || true
   fi
   [[ $cur_serial =~ ^[0-9]+$ ]] || cur_serial=0
+  [[ $cur_mono =~ ^[0-9]+$ ]] || cur_mono=0
 }
 
 new_serial() {
   local s c=0
   s=$(boottime_us)
   if [[ -f $rundir/session-current ]]; then
-    read -r _ _ c < "$rundir/session-current" || true
+    read -r _ _ c _ < "$rundir/session-current" || true
   fi
   if [[ $c =~ ^[0-9]+$ ]] && (( s <= c )); then
     s=$(( c + 1 ))
   fi
   echo "$s"
 }
+
+stamp() { echo "$(new_serial) $(mono)"; }
 
 put() {
   local f=$1 t
@@ -399,16 +412,18 @@ switch_once() {
   if [[ -n $cur_name ]]; then
     put "$rundir/session-previous" "$cur_name $cur_unit $cur_serial $wwhy" || log "cannot write session-previous"
   fi
-  put "$rundir/session-current" "$want $target_unit $serial" || log "cannot write session-current"
+  put "$rundir/session-current" "$want $target_unit $serial $(mono)" || log "cannot write session-current"
   if ! grep -qx "target=$want" "$statedir/session/attempt" 2> /dev/null; then
     rm -f "$statedir/session/attempt"
   fi
   seat=$(seat_session)
   log "switch from ${src_name:-none} to $want"
+  panel_on
   if [[ -n $src_unit && $src_unit != "$target_unit" ]]; then
     stop_source "$src_unit" "$src_stop"
   fi
   stop_games
+  panel_on
   if [[ -n $seat ]] && ! within "$t_seat" seat_closed "$seat"; then
     log "seat0 session $seat still open"
   fi
@@ -419,6 +434,7 @@ switch_once() {
     if source_back; then
       as_user systemctl --user stop "$src_unit" || log "stop of $src_unit failed"
     fi
+    panel_on
     systemctl reset-failed sddm.service || true
     systemctl restart sddm.service || log "sddm restart failed"
     within "$t_restart" started "$target_unit" || true
