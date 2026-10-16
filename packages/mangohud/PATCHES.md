@@ -22,6 +22,7 @@ and no `%changelog`.
 | `0010-params-drop-the-frame-timing-graph-from-preset-2.patch` | mine | seilent |
 | `0011-params-hide-msm_dpu-gpu-rows-without-a-source.patch` | backport of MangoHud `7c95b67656d6`, `e57fa15`, `abc561d` | flightlessmango, Matthew Schwartz |
 | `0012-params-hide-more-msm_dpu-rows-without-a-source.patch` | mine | seilent |
+| `0013-mangoapp-skip-the-window-resize-until-the-size-is-known.patch` | mine | seilent |
 
 `0001`, `0002`, `0004` and `0007` are the upstream commits as is; `0001` and `0002` keep PR 2073's order. PR 2073
 was closed unmerged; the other commits are on master after `v0.8.4`.
@@ -48,3 +49,5 @@ Mine:
 - `0010`: preset 2 is the horizontal bar, wider than the PM2 screen with the frame timing graph in it.
 - `0012`: msm_dpu has no CPU power, GPU memory clock, junction or memory temperature either, so presets hide those
   rows too and show the battery draw.
+- `0013`: mangoapp started hidden has no output size until a frame message arrives, so the horizontal preset skips
+  the window resize while the size is 0, and the size is stored before the render thread is woken.
