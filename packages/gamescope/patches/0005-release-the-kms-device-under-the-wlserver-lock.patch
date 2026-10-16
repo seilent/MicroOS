@@ -1,0 +1,31 @@
+From 870faef6644ed78deb58a97afad7394ad107b825 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Sat, 17 Oct 2026 08:09:03 +0900
+Subject: [PATCH] Release the KMS device under the wlserver lock
+
+---
+ src/wlserver.cpp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/src/wlserver.cpp b/src/wlserver.cpp
+index be1baf2..6e789cf 100644
+--- a/src/wlserver.cpp
++++ b/src/wlserver.cpp
+@@ -1994,12 +1994,14 @@ int wlsession_open_kms( const char *device_name ) {
+ 
+ void wlsession_close_kms()
+ {
++	wlserver_lock();
+ 	if ( wlserver.wlr.device )
+ 	{
+ 		wl_list_remove( &wlserver.wlr.device_change_listener.link );
+ 	}
+ 	wlr_session_close_file( wlserver.wlr.session, wlserver.wlr.device );
+ 	wlserver.wlr.device = nullptr;
++	wlserver_unlock( false );
+ }
+ 
+ #endif
+-- 
+2.43.0
+
