@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+(( $# )) || { echo "usage: microos-pad-target <target>..." >&2; exit 2; }
+ip=org.shadowblip.InputPlumber
+rc=0
+for p in $(busctl tree --list "$ip" 2> /dev/null | grep -E '^/org/shadowblip/InputPlumber/CompositeDevice[0-9]+$'); do
+  busctl call "$ip" "$p" org.shadowblip.Input.CompositeDevice SetTargetDevices as "$#" "$@" ||
+    { echo "microos-pad-target: $p failed" >&2; rc=1; }
+done
+exit "$rc"

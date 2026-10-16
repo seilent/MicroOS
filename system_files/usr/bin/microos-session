@@ -543,7 +543,7 @@ main() {
       echo "$cur_name"
       ;;
     get-default) (( $# == 1 )) || usage; get_default ;;
-    set-default) (( $# == 2 )) || usage; exec microset set session.default "$2" ;;
+    set-default) (( $# == 2 )) && [[ $2 =~ $namere ]] || usage; exec microset set session.default "$2" ;;
     switch) (( $# == 2 || $# == 3 )) || usage; switch "$2" "${3:-}" ;;
     request) (( $# == 3 )) || usage; request "$2" "$3" ;;
     switcher) (( $# == 1 )) || usage; switcher ;;

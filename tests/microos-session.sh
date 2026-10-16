@@ -186,6 +186,11 @@ for d in nope ../steam recovery nodesk "" Bad; do
   [[ $(current) == steam && $(login) == gamescope-session-steam.desktop ]] || fail "default '$d' did not boot steam: $(cat "$run/session-current")"
   [[ $("$session" get-default) == steam ]] || fail "get-default for '$d'"
 done
+for d in '../steam' 'a;b' 'x y' '$(id)' Bad; do
+  reset
+  if "$session" set-default "$d" 2> /dev/null; then fail "set-default took '$d'"; fi
+  ! grep -q "microset set" "$FAKE/calls" 2> /dev/null || fail "set-default '$d' reached microset"
+done
 reset
 touch "$FAKE/microset-down"
 "$libexec/microos-session-boot" 2> /dev/null
@@ -925,6 +930,37 @@ jl "$boot" "$now"
 stepped
 [[ $r == 1 ]] && grep -q "recovery started 0 times" "$tmp/out" || fail "starts counted without a boot id: $(cat "$tmp/out")"
 echo 01234567-89ab-cdef-0123-456789abcdef > "$tmp/boot_id"
+
+padt=$libexec/microos-pad-target
+dropin=$units/user/gamescope-session-plus@steam.service.d/30-microos-pad.conf
+[[ $(< "$dropin") == $'[Service]\nExecStartPre=-/usr/libexec/microos/microos-pad-target deck-uhid keyboard' ]] ||
+  fail "steam pad drop-in: $(cat "$dropin")"
+: > "$FAKE/calls"
+r=0
+"$padt" deck-uhid keyboard > "$tmp/out" 2>&1 || r=$?
+[[ $r == 0 ]] || fail "pad target: exit $r $(cat "$tmp/out")"
+for d in 0 1; do
+  has "busctl call org.shadowblip.InputPlumber /org/shadowblip/InputPlumber/CompositeDevice$d org.shadowblip.Input.CompositeDevice SetTargetDevices as 2 deck-uhid keyboard" ||
+    fail "pad target not set on CompositeDevice$d: $(calls)"
+done
+[[ $(calls | grep -c ' SetTargetDevices ') == 2 ]] || fail "pad target touched another path: $(calls)"
+! hasre '^(date|sleep)' || fail "pad target waited on a clock"
+mkdir -p "$tmp/padbin"
+printf '#!/usr/bin/env bash\necho "busctl $*" >> "$FAKE/calls"\n[[ $1 == tree ]] && printf "/org/shadowblip/InputPlumber/CompositeDevice0\\n/org/shadowblip/InputPlumber/CompositeDevice1\\n" && exit 0\n[[ $3 == */CompositeDevice0 ]] && exit 1\nexit 0\n' > "$tmp/padbin/busctl"
+chmod 755 "$tmp/padbin/busctl"
+: > "$FAKE/calls"
+r=0
+PATH=$tmp/padbin:$PATH "$padt" deck-uhid keyboard > "$tmp/out" 2>&1 || r=$?
+[[ $r == 1 ]] || fail "pad target with a failing device: exit $r"
+has "busctl call org.shadowblip.InputPlumber /org/shadowblip/InputPlumber/CompositeDevice1 org.shadowblip.Input.CompositeDevice SetTargetDevices as 2 deck-uhid keyboard" ||
+  fail "pad target stopped at the failing device: $(calls)"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/padbin/busctl"
+r=0
+PATH=$tmp/padbin:$PATH "$padt" deck-uhid keyboard > "$tmp/out" 2>&1 || r=$?
+[[ $r == 0 ]] || fail "pad target without InputPlumber: exit $r"
+r=0
+"$padt" > /dev/null 2>&1 || r=$?
+[[ $r == 2 ]] || fail "pad target without targets: exit $r"
 
 step_up=$tmp/uptime-step
 set_step() { echo "$1 0" > "$step_up.new" && mv -f "$step_up.new" "$step_up"; }
