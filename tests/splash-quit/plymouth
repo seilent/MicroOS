@@ -13,5 +13,6 @@ case $1 in
       [[ ! -e $STUB_DIR/quit-fails ]]
     fi
     ;;
+  display-message) [[ ! -e $STUB_DIR/send-fails ]] ;;
   *) exit 1 ;;
 esac

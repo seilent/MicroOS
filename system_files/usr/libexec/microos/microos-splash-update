@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-splash-update
+root=${MICROOS_SPLASH_ROOT:-}
+staged=$root/run/ostree/staged-deployment
+locked=$root/run/ostree/staged-deployment-locked
+marker=$root/run/microos/finalizing
+
+log() { echo "$me: $*"; }
+
+send() {
+  if timeout 2 plymouth display-message --text=microos-updating; then
+    log "$1, showing Updating"
+  else
+    log "$1, plymouth display-message failed"
+  fi
+}
+
+pending=0
+if [[ -e $staged && ! -e $locked ]]; then
+  pending=1
+fi
+
+if [[ ${1:-} == --finalize ]]; then
+  if ((!pending)); then
+    log "no staged deployment"
+    exit 0
+  fi
+  what="staged deployment, marker written"
+  if ! { : > "$marker"; } 2> /dev/null; then
+    what="staged deployment, cannot write $marker"
+  fi
+  if plymouth --ping; then
+    send "$what"
+  else
+    log "$what, plymouthd is not running"
+  fi
+  exit 0
+fi
+
+if [[ -e $marker ]]; then
+  send "finalize marker"
+elif ((pending)); then
+  send "staged deployment"
+else
+  log "no staged deployment"
+fi
+exit 0
