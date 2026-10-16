@@ -14,6 +14,11 @@ own=(
   microset/microset
   microset/microset-recovery
   hexagonrpc/hexagonrpc
+  plymouth/plymouth
+  plymouth/plymouth-core-libs
+  plymouth/plymouth-graphics-libs
+  plymouth/plymouth-plugin-script
+  plymouth/plymouth-scripts
 )
 
 rpms=()
@@ -61,9 +66,6 @@ dnf -y install \
   alsa-utils \
   sddm \
   sddm-wayland-generic \
-  plymouth \
-  plymouth-scripts \
-  plymouth-plugin-script \
   steam-devices \
   gtk2 \
   openal-soft \

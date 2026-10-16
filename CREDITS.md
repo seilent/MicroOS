@@ -23,11 +23,17 @@ Projects MicroOS builds, with their authors and license.
 | `mangohud` msm_dpu GPU memory | MangoHud `f7d778a5e702` | 17314642 | MIT |
 | `mangohud` msm_dpu GPU rows | MangoHud `7c95b67656d6`, `e57fa15`, `abc561d` | flightlessmango, Matthew Schwartz | MIT |
 | `hexagonrpc` | [linux-msm/hexagonrpc](https://github.com/linux-msm/hexagonrpc) `da7a3742ab` | Richard Acayan and hexagonrpc contributors | GPL-3.0-or-later, BSD-3-Clause (FastRPC error tables, The Linux Foundation and The Sensor Shell Contributors) |
+| `plymouth` | [plymouth/plymouth](https://gitlab.freedesktop.org/plymouth/plymouth) `24.004.60` | Ray Strode, Kristian Høgsberg, Peter Jones and plymouth contributors | GPL-2.0-or-later |
+| `plymouth` RPM spec | Fedora [rpms/plymouth](https://src.fedoraproject.org/rpms/plymouth) `1541161014` | Fedora packagers | MIT |
+| `plymouth` Fedora only patches | Fedora rpms/plymouth, `e6f09b0570`, `36f45f9d11` | Adam Williamson, Hans de Goede | GPL-2.0-or-later |
+| `plymouth` CloseFB on retain | SteamOS plymouth `22.02.122-7.7` `0010` | Robert Beckett (Collabora) | GPL-2.0-or-later |
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
-carries Fedora's packaging patches and `mangohud` carries nine upstream MangoHud patches, five of them backported by
-me, and three of mine (`PATCHES.md` in each package); the others are built as is. License texts in `packages/gamescope/`,
-`packages/gamescope-session/`, `packages/hexagonrpc/`, `packages/inputplumber/`, `packages/mangohud/` and `packages/steamos-manager/`.
+carries Fedora's packaging patches, `mangohud` carries nine upstream MangoHud patches, five of them backported by
+me, and three of mine, and `plymouth` carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine
+(`PATCHES.md` in each package); the others are built as is. License texts in `packages/gamescope/`,
+`packages/gamescope-session/`, `packages/hexagonrpc/`, `packages/inputplumber/`, `packages/mangohud/`, `packages/plymouth/`
+and `packages/steamos-manager/`.
 
 ## Kernel
 
