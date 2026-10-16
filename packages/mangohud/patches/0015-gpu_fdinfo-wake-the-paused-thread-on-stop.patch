@@ -1,0 +1,88 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Sat, 17 Oct 2026 08:08:01 +0900
+Subject: [PATCH] gpu_fdinfo: wake the paused thread on stop
+
+The destructor set stop_thread without notifying the condition
+variable, so a thread paused while mangoapp was hidden never woke and
+the join at exit hung. The stop and pause flags are now set under the
+metrics lock before the notify, so no wakeup is lost, and the thread
+holds the lock only for its waits. The wait between samples is a timed
+wait on the stop flag, so a stop ends it at once.
+---
+ src/gpu_fdinfo.cpp | 15 +++++++++++----
+ src/gpu_fdinfo.h   | 16 +++++++++++++---
+ 2 files changed, 24 insertions(+), 7 deletions(-)
+
+diff --git a/src/gpu_fdinfo.cpp b/src/gpu_fdinfo.cpp
+index b91efe8..bc56dcd 100644
+--- a/src/gpu_fdinfo.cpp
++++ b/src/gpu_fdinfo.cpp
+@@ -736,8 +736,13 @@ int GPU_fdinfo::get_kgsl_temp() {
+ void GPU_fdinfo::main_thread()
+ {
+     while (!stop_thread) {
+-        std::unique_lock<std::mutex> lock(metrics_mutex);
+-        cond_var.wait(lock, [this]() { return !paused || stop_thread; });
++        {
++            std::unique_lock<std::mutex> lock(metrics_mutex);
++            cond_var.wait(lock, [this]() { return !paused || stop_thread; });
++        }
++
++        if (stop_thread)
++            break;
+ 
+ #ifndef TEST_ONLY
+         if (HUDElements.g_gamescopePid > 0 && HUDElements.g_gamescopePid != pid)
+@@ -797,8 +802,10 @@ void GPU_fdinfo::main_thread()
+             metrics.voltage
+         );
+ 
+-        std::this_thread::sleep_for(
+-            std::chrono::milliseconds(METRICS_UPDATE_PERIOD_MS)
++        std::unique_lock<std::mutex> lock(metrics_mutex);
++        cond_var.wait_for(
++            lock, std::chrono::milliseconds(METRICS_UPDATE_PERIOD_MS),
++            [this]() { return stop_thread.load(); }
+         );
+     }
+ }
+diff --git a/src/gpu_fdinfo.h b/src/gpu_fdinfo.h
+index 23159ff..fe98232 100644
+--- a/src/gpu_fdinfo.h
++++ b/src/gpu_fdinfo.h
+@@ -221,7 +221,11 @@ public:
+     }
+ 
+     ~GPU_fdinfo() {
+-        stop_thread = true;
++        {
++            std::lock_guard<std::mutex> lock(metrics_mutex);
++            stop_thread = true;
++        }
++        cond_var.notify_one();
+         if (thread.joinable())
+             thread.join();
+     }
+@@ -233,13 +237,19 @@ public:
+ 
+     void pause()
+     {
+-        paused = true;
++        {
++            std::lock_guard<std::mutex> lock(metrics_mutex);
++            paused = true;
++        }
+         cond_var.notify_one();
+     }
+ 
+     void resume()
+     {
+-        paused = false;
++        {
++            std::lock_guard<std::mutex> lock(metrics_mutex);
++            paused = false;
++        }
+         cond_var.notify_one();
+     }
+ 

@@ -22,6 +22,7 @@ Projects MicroOS builds, with their authors and license.
 | `mangohud` mangoapp render per game frame | MangoHud `2c1dc5283c04` | Matthew Schwartz | MIT |
 | `mangohud` msm_dpu GPU memory | MangoHud `f7d778a5e702` | 17314642 | MIT |
 | `mangohud` msm_dpu GPU rows | MangoHud `7c95b67656d6`, `e57fa15`, `abc561d` | flightlessmango, Matthew Schwartz | MIT |
+| `mangohud` notifier cleanup | MangoHud `0c16392297ff` | flightlessmango | MIT |
 | `libfreeaptx` | [regularhunter/libfreeaptx](https://github.com/regularhunter/libfreeaptx) `0.2.2` `6dee419f93`, a fork of libopenaptx 0.2.0, from the FFmpeg aptX codec | Aurelien Jacobs (FFmpeg aptX), Pali Rohár (libopenaptx), Hunter Wardlaw | LGPL-2.1-or-later |
 | `pipewire-codec-aptx` | PipeWire `spa/plugins/bluez5/a2dp-codec-aptx.c` from Fedora's `pipewire-1.6.9-1.fc44.src.rpm` | Wim Taymans and PipeWire contributors | MIT |
 | `pipewire-codec-aptx` build of the aptX target only (idea, spec written new) | [RPM Fusion pipewire-codec-aptx](https://github.com/rpmfusion/pipewire-codec-aptx) | Pauli Virtanen, Gergely Gombos | MIT |
@@ -38,8 +39,8 @@ Projects MicroOS builds, with their authors and license.
 | `plymouth` CloseFB on retain | SteamOS plymouth `22.02.122-7.7` `0010` | Robert Beckett (Collabora) | GPL-2.0-or-later |
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
-carries Fedora's packaging patches, `mangohud` carries nine upstream MangoHud patches, five of them backported by
-me, and four of mine, `plymouth` carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine,
+carries Fedora's packaging patches, `mangohud` carries ten upstream MangoHud patches, five of them backported by
+me, and five of mine, `plymouth` carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine,
 and `es-de` carries my launch path escape patch (`PATCHES.md` in each package); the others are built as is. License
 texts in `packages/gamescope/`, `packages/gamescope-session/`, `packages/es-de/`, `packages/hexagonrpc/`,
 `packages/inputplumber/`, `packages/mangohud/`, `packages/plymouth/` and `packages/steamos-manager/`.
