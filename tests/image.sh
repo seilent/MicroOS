@@ -143,8 +143,20 @@ done
 grep -qF 'udisks.indexOf(action.id) >= 0 && device && device.indexOf("/dev/mmcblk") == 0' \
   /usr/share/polkit-1/rules.d/50-microos-storage.rules || fail "50-microos-storage.rules udisks2 actions not limited to /dev/mmcblk"
 rpm -q f3 udisks2 exfatprogs dosfstools e2fsprogs >/dev/null || fail "storage rpms missing"
-for c in f3probe pkexec wipefs sfdisk mkfs.ext4 mkfs.exfat fsck.ext4 fstrim flock jq busctl blkid findmnt; do
+for c in f3probe pkexec wipefs sfdisk mkfs.ext4 mkfs.exfat fsck.ext4 fstrim flock jq busctl blkid findmnt iconv; do
   command -v "$c" >/dev/null || fail "$c is not on PATH"
+done
+cu=/usr/lib/systemd/system/microos-content.service
+[[ $(systemctl is-enabled microos-content.service) == enabled ]] || fail "microos-content.service is not enabled"
+grep -qxF 'ExecStartPre=/usr/libexec/microos/microos-storage content' "$cu" || fail "microos-content.service ExecStartPre is not content"
+grep -qxF 'ExecStart=/usr/libexec/microos/microos-storage content-watch' "$cu" || fail "microos-content.service ExecStart is not content-watch"
+SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "$cu" || fail "systemd-analyze verify microos-content.service"
+for l in ProtectSystem=strict ReadWritePaths=/run/microos ProtectHome=yes PrivateNetwork=yes RestrictAddressFamilies=AF_UNIX \
+  NoNewPrivileges=yes CapabilityBoundingSet=; do
+  grep -qxF "$l" "$cu" || fail "microos-content.service lacks $l"
+done
+for d in ROMs BIOS BIOS/retroarch Saves States Screenshots Media Music PC; do
+  grep -qxF "d %h/$d 0755 - - -" /usr/share/user-tmpfiles.d/microos-content.conf || fail "microos-content.conf lacks $d 0755"
 done
 [[ -x /usr/libexec/microos/microos-powerd ]] || fail "microos-powerd missing"
 [[ -x /usr/libexec/microos/microos-vpower ]] || fail "microos-vpower missing"

@@ -27,6 +27,15 @@ EOF
 for n in lsblk udevadm fsck.ext4 f3probe wipefs sfdisk mkfs.ext4 mkfs.exfat fstrim systemd-run umount; do
   ln -s stub "$bin/$n"
 done
+cat > "$bin/passthru" <<'EOF'
+#!/usr/bin/env bash
+n=${0##*/}
+{ printf '%s' "$n"; printf ' %q' "$@"; echo; } >> "$CALLS"
+exec "/usr/bin/$n" "$@"
+EOF
+for n in mv ln stat realpath readlink; do
+  ln -s passthru "$bin/$n"
+done
 cat > "$bin/logger" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$LOGGER_LOG"
@@ -60,6 +69,20 @@ case "$*" in
   "-rnv -t ext4,btrfs -O rw -o SOURCE,TARGET,FSTYPE")
     awk '($3 == "ext4" || $3 == "btrfs") && ($4 == "rw" || $4 ~ /^rw,/) { print $1, $2, $3; f = 1 } END { exit !f }' "$MOUNTS"
     ;;
+  "-rno SOURCE,TARGET")
+    if flock -n "$CONTENT_LOCK" true; then lock=free; else lock=held; fi
+    echo "content lock=$lock" >> "$FINDMNT_CALLS"
+    [[ -z ${FINDMNT_TABLE_FAIL:-} ]] || exit 1
+    awk '{ print $1, $2 }' "$MOUNTS"
+    ;;
+  *--poll*)
+    n=$(( $(cat "$POLL_COUNT" 2> /dev/null || echo 0) + 1 ))
+    echo "$n" > "$POLL_COUNT"
+    [[ $* == "--poll --first-only --timeout 5000" ]] || echo "bad poll $*" >> "$POLL_LOG"
+    echo "$n $(wc -l < "$BLKID_CALLS") $(/usr/bin/stat -c %y "$CONTENT_LINK" 2> /dev/null || echo none)" >> "$POLL_LOG"
+    [[ $n != "${POLL_ADD:-}" ]] || printf '%s\n' "$POLL_ROW" >> "$MOUNTS"
+    (( n < ${POLL_KILL:-1} )) || kill -TERM "$PPID"
+    ;;
   *)
     echo "findmnt stub: unexpected $*" >&2
     exit 99
@@ -71,6 +94,10 @@ cat > "$bin/blkid" <<'EOF'
 { printf 'blkid'; printf ' %q' "$@"; echo; } >> "$BLKID_CALLS"
 [[ $# == 4 && $1 == -p && $2 == -o && $3 == export ]] || exit 4
 [[ ${BLKID_FAIL:-} != "$4" ]] || exit 8
+if [[ -n ${BLKID_FAIL_ONCE:-} && -e $BLKID_FAIL_ONCE ]]; then
+  rm "$BLKID_FAIL_ONCE"
+  exit 8
+fi
 out=$(jq -r --arg p "$4" '.. | objects | select(.path? == $p) |
   (if .fstype then "TYPE=\(.fstype)" else empty end),
   (if .label then "LABEL=\(.label)" else empty end),
@@ -170,6 +197,8 @@ setup() {
   cp "$t/findmnt" "$tmp/findmnt"
   cp "$t/lsblk.json" "$tmp/lsblk.json"
   : > "$tmp/mounts"
+  rm -rf "$tmp/run"
+  mkdir -p "$tmp/run/lock"
 }
 
 run() {
@@ -182,12 +211,15 @@ run() {
   : > "$tmp/log"
   : > "$tmp/fcalls"
   : > "$tmp/bcalls"
-  rm -f "$tmp/buscount"
+  rm -f "$tmp/buscount" "$tmp/pollcount"
+  : > "$tmp/poll"
   r=0
   env -i PATH="${STUB_PATH:-$bin}:${SYS_PATH:-/usr/bin:/bin}" CALLS="$tmp/calls" LOGGER_LOG="$tmp/log" FINDMNT_CALLS="$tmp/fcalls" \
     BLKID_CALLS="$tmp/bcalls" FINDMNT_ROWS="$tmp/findmnt" MOUNTS="$tmp/mounts" BLKID_JSON="$tmp/lsblk.json" \
     MICROOS_SYSFS="$sys" MICROOS_DEV="$dev" MICROOS_STORAGE_LOCK_WAIT=2 BUS_COUNT="$tmp/buscount" SEQ_FILE="$sys/block/mmcblk0/diskseq" \
-    LOCK_NODE="$dev/mmcblk0" BUS_NAME=e8ea5deb-1451-4895-9312-7f169786ad58 "${vars[@]}" "$storage" "$@" > "$tmp/out" 2>&1 ||
+    LOCK_NODE="$dev/mmcblk0" BUS_NAME=e8ea5deb-1451-4895-9312-7f169786ad58 MICROOS_RUN="$tmp/run" \
+    CONTENT_LOCK="$tmp/run/lock/content" CONTENT_LINK="$tmp/run/content" POLL_COUNT="$tmp/pollcount" POLL_LOG="$tmp/poll" \
+    "${vars[@]}" "$storage" "$@" > "$tmp/out" 2>&1 ||
     r=$?
 }
 code() { checks=$(( checks + 1 )); (( r == $1 )) || fail "$2: exit $r, want $1: $(cat "$tmp/out")"; }
@@ -198,6 +230,25 @@ writers='^\(f3probe\|wipefs\|sfdisk\|mkfs\.ext4\|mkfs\.exfat\) '
 no_writer() { checks=$(( checks + 1 )); ! grep -q "$writers" "$tmp/calls" || fail "$1: writer called: $(grep "$writers" "$tmp/calls")"; }
 logged() { checks=$(( checks + 1 )); grep -q -- "$1" "$tmp/log" || fail "$2: no log line matching '$1' in: $(cat "$tmp/log")"; }
 log_lines() { checks=$(( checks + 1 )); (( $(wc -l < "$tmp/log") == $1 )) || fail "$2: $(wc -l < "$tmp/log") log lines, want $1: $(cat "$tmp/log")"; }
+link_is() {
+  local l
+  checks=$(( checks + 1 ))
+  l=$(readlink "$tmp/run/content") || l=""
+  [[ $l == "$1" ]] || fail "$2: link '$l', want '$1'"
+  [[ -n $1 || ! -e $tmp/run/content && ! -L $tmp/run/content ]] || fail "$2: $tmp/run/content left"
+}
+content_locked() {
+  checks=$(( checks + 1 ))
+  grep -qxF "content lock=held" "$tmp/fcalls" || fail "$1: mount table not read: $(cat "$tmp/fcalls")"
+  ! grep -qxF "content lock=free" "$tmp/fcalls" || fail "$1: mount table read without the content lock"
+}
+card_untouched() {
+  checks=$(( checks + 1 ))
+  ! grep -E '/run/media/' "$tmp/calls" | grep -qvE '^ln -sfn -- ' ||
+    fail "$1: path under the card used: $(grep -E '/run/media/' "$tmp/calls" | grep -vE '^ln -sfn -- ')"
+  ! grep -qE '^(stat|realpath) .*/run/media/' "$tmp/calls" || fail "$1: stat or realpath under the card"
+}
+mtime() { /usr/bin/stat -c %y "$tmp/run/content" 2> /dev/null || echo none; }
 line_of() {
   local n
   n=$(grep -n -- "$1" "$tmp/calls" | head -n 1 | cut -d: -f1)
@@ -701,6 +752,236 @@ logged 'no size' "trim without a partition size"
 run trim
 code 0 "trim nothing mounted"
 not_called '^fstrim' "trim nothing mounted"
+
+probe=$fixtures/internal/mounts
+setup internal
+cp "$probe" "$tmp/mounts"
+run content
+code 0 "content rw card"
+link_is "$media" "content rw card"
+content_locked "content rw card"
+card_untouched "content rw card"
+called "^mv -T -- $tmp/run/content.new $tmp/run/content\$" "content rw card"
+not_called "^ln -sfn -- [^ ]* $tmp/run/content\$" "content rw card"
+log_lines 1 "content rw card"
+logged "mmcblk0p1 at $media is the content card" "content rw card"
+grep -q 'blkid -p -o export /dev/mmcblk0p1' "$tmp/bcalls" || fail "content rw card: is_data did not probe mmcblk0p1"
+grep -qvE '/dev/mmcblk' "$tmp/bcalls" && fail "content rw card: blkid on a non card device: $(cat "$tmp/bcalls")"
+before=$(mtime)
+run content
+code 0 "content unchanged"
+link_is "$media" "content unchanged"
+[[ $(mtime) == "$before" ]] || fail "content unchanged: link rewritten"
+not_called '^mv ' "content unchanged"
+log_lines 0 "content unchanged"
+
+setup internal
+sed 's|^\(/dev/mmcblk0p1 [^ ]* ext4 \)rw,|\1ro,|' "$probe" > "$tmp/mounts"
+grep -q '^/dev/mmcblk0p1 .* ro,' "$tmp/mounts" || fail "content ro card: fixture not ro"
+run content
+code 0 "content ro card"
+link_is "$media" "content ro card"
+
+setup internal
+ln -s "$media" "$tmp/run/content"
+grep -v '^/dev/mmcblk' "$probe" > "$tmp/mounts"
+run content
+code 0 "content no card"
+link_is "" "content no card"
+logged 'no content card' "content no card"
+grep -q blkid "$tmp/bcalls" && fail "content no card: blkid ran"
+run content
+code 0 "content no card again"
+log_lines 0 "content no card again"
+
+setup microos-sd
+grep -v '^/dev/mmcblk' "$probe" > "$tmp/mounts"
+echo "/dev/mmcblk0p2 /run/media/micro/MICROOS_ROOT ext4 rw,nosuid,nodev" >> "$tmp/mounts"
+run content
+code 0 "content MicroOS SD"
+link_is "" "content MicroOS SD"
+logged 'mmcblk0p2 is on a system disk' "content MicroOS SD"
+
+setup internal
+grep -v '^/dev/mmcblk' "$probe" > "$tmp/mounts"
+printf '%s\n' "/dev/mmcblk0p10 /run/media/micro/ten ext4 rw" "/dev/mmcblk0p2 /run/media/micro/two ext4 rw" \
+  "/dev/mmcblk0p1 $media ext4 rw" >> "$tmp/mounts"
+run content
+code 0 "content two partitions"
+link_is "$media" "content two partitions"
+logged 'mmcblk0p2 not used, /dev/mmcblk0p1 is the content card' "content two partitions"
+logged 'mmcblk0p10 not used, /dev/mmcblk0p1 is the content card' "content two partitions"
+(( $(grep -c 'blkid -p -o export /dev/mmcblk0p1$' "$tmp/bcalls") == 1 )) || fail "content two partitions: is_data ran per partition"
+
+setup internal
+grep -v '^/dev/mmcblk' "$probe" > "$tmp/mounts"
+printf '%s\n' '/dev/mmcblk0p1 /run/media/micro/Steam\x20Deck exfat rw' >> "$tmp/mounts"
+run content
+code 0 "content label with a space"
+link_is "/run/media/micro/Steam Deck" "content label with a space"
+
+for row in "/dev/loop0 /run/media/micro/disk ext4 rw|no content card" \
+  "/dev/mmcblk0p1[/sub] $media btrfs rw|no content card" \
+  "/dev/mmcblk10p1 $media ext4 rw|no content card" \
+  "/dev/mmcblk0p1 /mnt/card ext4 rw|refused" \
+  "/dev/mmcblk0p1 /run/media/micro ext4 rw|refused" \
+  "/dev/mmcblk0p1 /run/media/micro/a/b ext4 rw|refused" \
+  "/dev/mmcblk0p1 /run/media/micro/.. ext4 rw|refused" \
+  "/dev/mmcblk0p1 /run/media/micro/. ext4 rw|refused" \
+  "/dev/mmcblk0p1 /run/media/other/$card ext4 rw|refused" \
+  '/dev/mmcblk0p1 /run/media/micro/a\x22b ext4 rw|refused' \
+  '/dev/mmcblk0p1 /run/media/micro/a\x0ab ext4 rw|refused' \
+  '/dev/mmcblk0p1 /run/media/micro/a\x0a ext4 rw|refused' \
+  '/dev/mmcblk0p1 /run/media/micro/a\x0db ext4 rw|refused' \
+  '/dev/mmcblk0p1 /run/media/micro/a\x09b ext4 rw|refused' \
+  '/dev/mmcblk0p1 /run/media/micro/a\xffb ext4 rw|refused' \
+  '/dev/mmcblk0p1 /run/media/micro/a\xc3 ext4 rw|refused'; do
+  setup internal
+  ln -s "$media" "$tmp/run/content"
+  grep -v '^/dev/mmcblk' "$probe" > "$tmp/mounts"
+  echo "${row%|*}" >> "$tmp/mounts"
+  run content
+  code 0 "content ${row%|*}"
+  link_is "" "content ${row%|*}"
+  logged "${row##*|}" "content ${row%|*}"
+  grep -q blkid "$tmp/bcalls" && fail "content ${row%|*}: blkid ran before the target checks"
+done
+
+setup internal
+grep -v '^/dev/mmcblk' "$probe" > "$tmp/mounts"
+{ run POLL_ADD=1 POLL_ROW="/dev/mmcblk0p1 $media ext4 rw,nosuid,nodev,noatime,errors=remount-ro" POLL_KILL=3 content-watch; } 2> /dev/null
+code 143 "content-watch"
+link_is "$media" "content-watch late mount"
+! grep -q '^bad poll' "$tmp/poll" || fail "content-watch: $(grep '^bad poll' "$tmp/poll")"
+grep -qxF 'findmnt --poll --first-only --timeout 5000' "$tmp/fcalls" || fail "content-watch: poll argv: $(grep poll "$tmp/fcalls")"
+mapfile -t ticks < "$tmp/poll"
+(( ${#ticks[@]} == 3 )) || fail "content-watch: ${#ticks[@]} ticks: ${ticks[*]}"
+[[ ${ticks[0]} == "1 0 none" ]] || fail "content-watch: first tick '${ticks[0]}'"
+read -r b2 m2 <<< "${ticks[1]#* }"
+read -r b3 m3 <<< "${ticks[2]#* }"
+(( b2 > 0 )) || fail "content-watch: no blkid after the mount: ${ticks[*]}"
+(( b3 == b2 )) || fail "content-watch: blkid on an unchanged candidate set: ${ticks[*]}"
+[[ $m2 != none && $m3 == "$m2" ]] || fail "content-watch: link mtime changed on an unchanged set: ${ticks[*]}"
+content_locked "content-watch"
+card_untouched "content-watch"
+(( $(grep -c '^mv -T ' "$tmp/calls") == 1 )) || fail "content-watch: link written $(grep -c '^mv -T ' "$tmp/calls") times"
+
+setup internal
+cp "$probe" "$tmp/mounts"
+: > "$tmp/blkid-once"
+{ run BLKID_FAIL_ONCE="$tmp/blkid-once" POLL_KILL=2 content-watch; } 2> /dev/null
+code 143 "content-watch blkid error"
+link_is "$media" "content-watch blkid error"
+mapfile -t ticks < "$tmp/poll"
+[[ ${ticks[0]} == "1 1 none" ]] || fail "content-watch blkid error: first tick '${ticks[0]}'"
+[[ ${ticks[1]} == "2 2 "* && ${ticks[1]} != *none ]] || fail "content-watch blkid error: second tick '${ticks[1]}'"
+logged 'mmcblk0 not readable, /dev/mmcblk0p1 checked again at the next tick' "content-watch blkid error"
+
+setup internal
+ln -s "$media" "$tmp/run/content"
+cp "$probe" "$tmp/mounts"
+{ run BLKID_FAIL=/dev/mmcblk0p1 POLL_KILL=3 content-watch; } 2> /dev/null
+code 143 "content-watch lasting blkid error"
+link_is "$media" "content-watch lasting blkid error"
+(( $(grep -c 'not readable' "$tmp/log") == 1 )) ||
+  fail "content-watch lasting blkid error: logged $(grep -c 'not readable' "$tmp/log") times"
+(( $(grep -c '^blkid ' "$tmp/bcalls") == 3 )) ||
+  fail "content-watch lasting blkid error: $(grep -c '^blkid ' "$tmp/bcalls") blkid runs, want one per tick"
+
+setup internal
+cp "$probe" "$tmp/mounts"
+echo "/dev/loop0 /run/media/micro/disk ext4 rw" >> "$tmp/mounts"
+{ run POLL_KILL=3 POLL_ADD=1 POLL_ROW="/dev/loop1 /run/media/micro/disk2 ext4 rw" content-watch; } 2> /dev/null
+code 143 "content-watch loop mounts"
+link_is "$media" "content-watch loop mounts"
+(( $(grep -c '^blkid ' "$tmp/bcalls") == 1 )) ||
+  fail "content-watch loop mounts: $(grep -c '^blkid ' "$tmp/bcalls") blkid runs, want 1"
+log_lines 1 "content-watch loop mounts"
+setup internal
+ln -s "$media" "$tmp/run/content"
+cp "$probe" "$tmp/mounts"
+run BLKID_FAIL=/dev/mmcblk0p1 content
+code 0 "content blkid error keeps the link"
+link_is "$media" "content blkid error keeps the link"
+
+setup internal
+ln -s "$media" "$tmp/run/content"
+cp "$probe" "$tmp/mounts"
+run FINDMNT_TABLE_FAIL=1 content
+code 1 "content mount table error keeps the link"
+link_is "$media" "content mount table error keeps the link"
+logged 'mount table not read' "content mount table error keeps the link"
+: > "$tmp/mounts"
+run content
+code 0 "content empty mount table"
+link_is "" "content empty mount table"
+
+setup internal
+run mount mmcblk0p1
+code 0 "content after mount"
+link_is "$media" "content after mount"
+content_locked "content after mount"
+(( $(line_of '^busctl call .* Mount ') < $(line_of '^mv -T ') )) || fail "content after mount: link before the mount"
+run mount mmcblk0p1
+code 0 "content after mount, already mounted"
+link_is "$media" "content after mount, already mounted"
+run unmount mmcblk0p1
+code 0 "content after unmount"
+link_is "" "content after unmount"
+content_locked "content after unmount"
+logged 'no content card' "content after unmount"
+setup internal
+ln -s "$media" "$tmp/run/content"
+rm "$dev/mmcblk0"
+run unmount mmcblk0p1
+code 0 "content after a pulled card"
+link_is "" "content after a pulled card"
+setup internal
+run BUS_MODE=fail mount mmcblk0p1
+code 1 "content after a failed mount"
+link_is "" "content after a failed mount"
+
+setup internal
+cp "$probe" "$tmp/mounts"
+flock -o -x "$tmp/run/lock/content" sleep 1 &
+holder=$!
+sleep 0.3
+run content
+code 0 "content behind a held lock"
+link_is "$media" "content behind a held lock"
+wait "$holder" || true
+rm "$tmp/run/content"
+flock -o -x "$tmp/run/lock/content" sleep 6 &
+holder=$!
+sleep 0.3
+run content
+code 1 "content lock timeout"
+link_is "" "content lock timeout"
+logged 'lock not taken' "content lock timeout"
+: > "$tmp/mounts"
+run mount mmcblk0p1
+code 0 "mount with the content lock held"
+logged 'lock not taken' "mount with the content lock held"
+kill "$holder" 2> /dev/null || true
+wait "$holder" 2> /dev/null || true
+holder=""
+setup internal
+rmdir "$tmp/run/lock"
+cp "$probe" "$tmp/mounts"
+run content
+code 1 "content without the lock dir"
+link_is "" "content without the lock dir"
+
+cunit=$tree/usr/lib/systemd/system/microos-content.service
+for l in 'Type=simple' 'ExecStartPre=/usr/libexec/microos/microos-storage content' \
+  'ExecStart=/usr/libexec/microos/microos-storage content-watch' 'Before=display-manager.service' 'Restart=always' \
+  'RestartSec=1' 'StartLimitIntervalSec=120' 'StartLimitBurst=30' 'WantedBy=multi-user.target'; do
+  grep -qxF -- "$l" "$cunit" || fail "content unit lacks $l"
+done
+after=$(sed -n 's/^After=//p' "$cunit")
+for a in local-fs.target udisks2.service; do
+  [[ " $after " == *" $a "* ]] || fail "content unit After= lacks $a: $after"
+done
 
 rules=$tree/usr/lib/udev/rules.d/61-microos-automount.rules
 unit=$tree/usr/lib/systemd/system/microos-automount@.service

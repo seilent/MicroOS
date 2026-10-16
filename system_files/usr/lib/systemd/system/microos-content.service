@@ -1,0 +1,23 @@
+[Unit]
+Description=Publish the microSD content card
+After=local-fs.target udisks2.service
+Before=display-manager.service
+StartLimitIntervalSec=120
+StartLimitBurst=30
+
+[Service]
+Type=simple
+ExecStartPre=/usr/libexec/microos/microos-storage content
+ExecStart=/usr/libexec/microos/microos-storage content-watch
+Restart=always
+RestartSec=1
+ProtectSystem=strict
+ReadWritePaths=/run/microos
+ProtectHome=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

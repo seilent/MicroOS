@@ -10,7 +10,10 @@ lockwait=${MICROOS_STORAGE_LOCK_WAIT:-30}
 [[ $lockwait =~ ^[0-9]+$ ]] || lockwait=30
 retry=${MICROOS_STORAGE_MOUNT_RETRY:-5}
 [[ $retry =~ ^[0-9]+$ ]] || retry=5
+rundir=${MICROOS_RUN:-/run/microos}
 user=micro
+seen=-
+errseen=-
 targets=(/ /sysroot /var /etc /boot /boot/efi)
 chunk=1073741824
 
@@ -23,7 +26,7 @@ quit() {
   exit "$code"
 }
 usage() {
-  echo "usage: $me classify <disk> | mount <part> | unmount <part> | format ... | trim" >&2
+  echo "usage: $me classify <disk> | mount <part> | unmount <part> | content | content-watch | format ... | trim" >&2
   exit 1
 }
 
@@ -82,12 +85,12 @@ is_data() {
   [[ $disk =~ ^mmcblk[0-9]$ ]] || return 1
   type=$(cat "$sysfs/block/$disk/device/type" 2> /dev/null) || return 1
   [[ $type == SD ]] || return 1
-  sys=$(system_disks) || return 1
+  sys=$(system_disks) || return 2
   ! grep -qxF "$disk" <<< "$sys" || return 1
   for c in $(children "$disk"); do
     r=0
     out=$(blkid -p -o export "/dev/$c") || r=$?
-    (( r == 0 || r == 2 )) || return 1
+    (( r == 0 || r == 2 )) || return 2
     ! grep -qxE 'LABEL=MICROOS|PART_ENTRY_NAME=ARMADA(_BOOT|_ROOT)?' <<< "$out" || return 1
   done
 }
@@ -234,6 +237,105 @@ cmd_unmount() {
     fi
   done < <(mount_targets "$part")
   exit "$r"
+}
+
+safe_target() {
+  local n=${1##*/}
+  [[ $1 =~ ^/run/media/$user/[^/]+$ && $n != . && $n != .. ]] || return 1
+  [[ $1 != *[[:cntrl:]\"]* ]] || return 1
+  iconv -f UTF-8 -t UTF-8 <<< "$1" > /dev/null 2>&1
+}
+
+content_update() {
+  local cached=$1 rows src raw t n disk best="" bestn="" bestsrc="" cur r err=0 quiet=0
+  local -A data=()
+  local -a other=()
+  if ! rows=$(findmnt -rno SOURCE,TARGET); then
+    log "content: mount table not read"
+    return 1
+  fi
+  rows=$(awk '$1 ~ /^\/dev\/mmcblk[0-9]p[0-9]+$/' <<< "$rows")
+  if (( cached )) && [[ $rows == "$seen" ]]; then
+    return 0
+  fi
+  if (( cached )) && [[ $rows == "$errseen" ]]; then
+    quiet=1
+  fi
+  while read -r src raw; do
+    [[ $src =~ ^/dev/(mmcblk[0-9])p([0-9]+)$ ]] || continue
+    disk=${BASH_REMATCH[1]}
+    n=${BASH_REMATCH[2]}
+    t=$(printf '%bx' "$raw")
+    t=${t%x}
+    if ! safe_target "$t"; then
+      (( quiet )) || log "content: $src at $raw refused"
+      continue
+    fi
+    if [[ -z ${data[$disk]:-} ]]; then
+      r=0
+      is_data "$disk" || r=$?
+      data[$disk]=$r
+    fi
+    if (( data[$disk] == 2 )); then
+      (( quiet )) || log "content: $disk not readable, $src checked again at the next tick"
+      err=1
+      continue
+    fi
+    if (( data[$disk] )); then
+      (( quiet )) || log "content: $src is on a system disk, not used"
+      continue
+    fi
+    if [[ -z $best ]] || (( 10#$n < 10#$bestn )); then
+      [[ -z $bestsrc ]] || other+=("$bestsrc")
+      best=$t bestn=$n bestsrc=$src
+    else
+      other+=("$src")
+    fi
+  done <<< "$rows"
+  for src in "${other[@]}"; do
+    (( quiet )) || log "content: $src not used, $bestsrc is the content card"
+  done
+  if (( err )); then
+    (( ! cached )) || errseen=$rows
+    return 0
+  fi
+  cur=$(readlink "$rundir/content") || cur=""
+  if [[ -z $best ]]; then
+    if [[ -L $rundir/content ]]; then
+      rm -f "$rundir/content" || return 1
+      log "content: no content card"
+    fi
+  elif [[ $cur != "$best" ]]; then
+    if ! ln -sfn -- "$best" "$rundir/content.new" || ! mv -T -- "$rundir/content.new" "$rundir/content"; then
+      log "content: $rundir/content not written"
+      return 1
+    fi
+    log "content: $bestsrc at $best is the content card"
+  fi
+  (( ! cached )) || seen=$rows
+}
+
+content() {
+  local fd r=0
+  if ! exec {fd}>> "$rundir/lock/content"; then
+    log "content: no lock file $rundir/lock/content"
+    return 1
+  fi
+  if ! flock -w "$lockwait" "$fd"; then
+    log "content: lock not taken within $lockwait s"
+    exec {fd}>&-
+    return 1
+  fi
+  content_update "${1:-0}" || r=$?
+  exec {fd}>&-
+  return "$r"
+}
+
+content_watch() {
+  while :; do
+    content 1 || true
+    findmnt --poll --first-only --timeout 5000 > /dev/null || sleep 1
+  done
 }
 
 trim_safe() {
@@ -460,11 +562,21 @@ case $1 in
     ;;
   mount)
     (( $# == 2 )) || usage
+    trap 'content || true' EXIT
     cmd_mount "$2"
     ;;
   unmount)
     (( $# == 2 )) || usage
+    trap 'content || true' EXIT
     cmd_unmount "$2"
+    ;;
+  content)
+    (( $# == 1 )) || usage
+    content
+    ;;
+  content-watch)
+    (( $# == 1 )) || usage
+    content_watch
     ;;
   format)
     shift
