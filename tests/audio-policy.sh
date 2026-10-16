@@ -5,6 +5,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 tree=${MICROOS_TREE:-$here/../system_files}
 audio=$tree/usr/libexec/microos/microos-audio
 unit=$tree/usr/lib/systemd/user/microos-audio.service
+equnit=$tree/usr/lib/systemd/user/microos-eq@.service
 tmp=$(mktemp -d)
 pids=()
 cleanup() {
@@ -23,6 +24,10 @@ for l in 'After=wireplumber.service pipewire-pulse.service pipewire-pulse.socket
   ExecStart=/usr/libexec/microos/microos-audio; do
   grep -qxF "$l" "$unit" || fail "${unit##*/} lacks $l"
 done
+for l in ExecStart=/usr/bin/pipewire\ -c\ %t/microos-audio/eq/%i.conf Restart=on-failure PartOf=pipewire.service After=pipewire.service; do
+  grep -qxF "$l" "$equnit" || fail "${equnit##*/} lacks $l"
+done
+grep -qE '^(BindsTo|Requires|PartOf)=.*microos-audio' "$equnit" && fail "${equnit##*/} is bound to microos-audio"
 grep -qxF "enable microos-audio.service" "$tree/usr/lib/systemd/user-preset/60-microos-steam.preset" ||
   fail "microos-audio.service is not in the user preset"
 
@@ -61,19 +66,24 @@ echo 1200 > "$sys/card0/device/WSA Playback/pmdown_time"
 echo Other > "$sys/card1/id"
 echo 9000 > "$sys/card1/device/MultiMedia1/pmdown_time"
 
-declare -A state=([$spk]=IDLE [$hp]=IDLE) avail=([$spk]=available [$hp]=available)
+declare -A state=([$spk]=IDLE [$hp]=IDLE) avail=([$spk]=available [$hp]=available) vol=() mute=() target=() oid=()
 write_sinks() {
-  local n sep=
+  local n props sep="" out=${1:-$STUB_DIR/sinks.json}
   {
     printf '['
     for n in "${!state[@]}"; do
-      printf '%s{"name":"%s","state":"%s","ports":[{"name":"p","availability":"%s"}],"active_port":"p","properties":{"priority.session":"%s"}}' \
-        "$sep" "$n" "${state[$n]}" "${avail[$n]}" "$([[ $n == "$hp" ]] && echo 1100 || echo 1000)"
+      if [[ -n ${target[$n]:-} ]]; then
+        props=$(printf '"object.id":"%s","filter.smart.target":"{ node.name = \\"%s\\" }"' "${oid[$n]}" "${target[$n]}")
+      else
+        props=$(printf '"priority.session":"%s"' "$([[ $n == "$hp" ]] && echo 1100 || echo 1000)")
+      fi
+      printf '%s{"name":"%s","state":"%s","description":"%s desc","mute":%s,"volume":{"front-left":{"value":%s},"front-right":{"value":%s}},"ports":[{"name":"p","availability":"%s"}],"active_port":"p","properties":{%s}}' \
+        "$sep" "$n" "${state[$n]}" "$n" "${mute[$n]:-false}" "${vol[$n]:-65536}" "${vol[$n]:-65536}" "${avail[$n]:-available}" "$props"
       sep=,
     done
     printf ']\n'
-  } > "$STUB_DIR/sinks.json.new"
-  mv "$STUB_DIR/sinks.json.new" "$STUB_DIR/sinks.json"
+  } > "$out.new"
+  mv "$out.new" "$out"
 }
 sinks_changed() { write_sinks; echo "Event 'change' on sink #$RANDOM" >> "$STUB_DIR/pactl.feed"; }
 meta() {
@@ -95,10 +105,17 @@ quiet() {
 }
 sets() { grep -c '^set ' "$set_log" || true; }
 
+readies() {
+  local c
+  c=$(grep -cx ready "$set_log" 2> /dev/null) || true
+  echo "${c:-0}"
+}
 start_microsetd() {
+  local ready
+  ready=$(readies)
   python3 "$here/audio-policy/microsetd" "$set_log" speaker & msd=$!
   pids+=("$msd")
-  for _ in {1..50}; do grep -qx ready "$set_log" 2> /dev/null && return 0; sleep 0.1; done
+  for _ in {1..50}; do (($(readies) > ready)) && return 0; sleep 0.1; done
   echo "FAIL: fake microsetd did not start" >&2
   exit 1
 }
@@ -115,6 +132,9 @@ write_sinks
 echo HiFi > "$STUB_DIR/profile"
 meta default.configured.audio.sink "$hp"
 
+export XDG_RUNTIME_DIR=$tmp/xdg
+eqdir=$XDG_RUNTIME_DIR/microos-audio/eq
+mkdir -p "$XDG_RUNTIME_DIR"
 PATH=$here/audio-policy:$PATH MICROOS_AUDIO_SYSFS=$sys MICROOS_AUDIO_SETTLE=2 \
   setsid python3 "$audio" 2>> "$tmp/audio.err" & as=$!
 pids+=("$as")
@@ -296,12 +316,265 @@ errline "apply cycle: $hp is gone, dropped" || fail "a sink gone mid cycle was n
 state[$hp]=IDLE avail[$hp]=available
 write_sinks
 
+eqhash() { printf '%s\n%s' "$1" "$2" | sha256sum | cut -c1-12; }
+count() { since "$1" | grep -cxF "$2" || true; }
+params() {
+  local out='{ params = [ "f0:Gain"' n=1 b
+  out+=" $1"
+  shift
+  for b in "$@"; do
+    read -r f q g <<< "$b"
+    out+=" \"f$n:Freq\" $f \"f$n:Q\" $q \"f$n:Gain\" $g"
+    n=$((n + 1))
+  done
+  echo "$out ] }"
+}
+m=$(mark)
+poke audio.eq.headphones.filters "<['preamp -3', 'peak 1000 6 1']>"
+quiet "$m" 0.5 || fail "EQ filters with the slot off acted: $(since "$m")"
+poke audio.eq.headphones.on "<true>"
+h1=$(eqhash "$hp" peak)
+i1=headphones-$h1 n1=microos-eq.headphones.$h1
+waitlog "$m" "start microos-eq@$i1.service" || fail "EQ on: no chain unit for $hp: $(since "$m")"
+conf=$eqdir/$i1.conf
+for want in "node.name = \"$n1\"" "node.name = \"$n1.out\"" "filter.smart.name = \"$n1\"" \
+  "filter.smart.target = { node.name = \"$hp\" }" "target.object = \"$hp\"" "node.description = \"$hp desc EQ\"" \
+  "media.class = Audio/Sink" "filter.smart = true" "filter.smart.targetable = false" "state.restore-props = false" \
+  "node.dont-fallback = true" "node.passive = true" "node.linger = true" "name = libpipewire-module-filter-chain" \
+  '{ type = builtin name = f0 label = bq_highshelf control = { "Freq" = 0.0 "Q" = 1.0 "Gain" = -3.0 } }' \
+  '{ type = builtin name = f1 label = bq_peaking control = { "Freq" = 1000.0 "Q" = 1.0 "Gain" = 6.0 } }' \
+  '{ output = "f0:Out" input = "f1:In" }'; do
+  grep -qF -- "$want" "$conf" 2> /dev/null || fail "$i1.conf lacks $want"
+done
+(($(wc -l < "$conf") > 40)) || fail "$i1.conf is not written with newlines"
+[[ $(stat -c %a "$eqdir") == 700 ]] || fail "EQ conf dir mode $(stat -c %a "$eqdir")"
+since "$m" | grep -q "microos-eq@speaker" && fail "the speaker slot is off and got a chain"
+
+m=$(mark)
+state[$n1]=IDLE target[$n1]=$hp oid[$n1]=70
+sinks_changed
+sleep 1
+sinks_changed
+sleep 1
+since "$m" | grep -q "^props $n1 " && fail "values sent to a chain that loaded them from its conf: $(since "$m")"
+
+m=$(mark)
+poke audio.eq.headphones.filters "<['preamp -3', 'peak 2000 4 2']>"
+p=$(params -3.0 "2000.0 2.0 4.0")
+waitlog "$m" "props $n1 $p" || fail "a band edit was not sent live: $(since "$m")"
+grep -qF '"Freq" = 2000.0 "Q" = 2.0 "Gain" = 4.0' "$conf" || fail "a live edit did not reach $i1.conf"
+since "$m" | grep -qE '^(start|stop) ' && fail "a band edit restarted a chain: $(since "$m")"
+
+m=$(mark)
+poke audio.eq.headphones.filters "<['preamp -3', 'lowshelf 100 3 0.7']>"
+h2=$(eqhash "$hp" lowshelf)
+i2=headphones-$h2 n2=microos-eq.headphones.$h2
+waitlog "$m" "start microos-eq@$i2.service" || fail "a type change did not start a new chain: $(since "$m")"
+sleep 0.5
+poke audio.eq.headphones.filters "<['preamp -2', 'lowshelf 200 5 0.7']>"
+sleep 1
+since "$m" | grep -qxF "stop microos-eq@$i1.service" && fail "the old chain stopped before the new one was up"
+since "$m" | grep -q "^props $n2 " && fail "values sent to a chain that is not up: $(since "$m")"
+grep -qF '"Freq" = 200.0 "Q" = 0.7 "Gain" = 5.0' "$eqdir/$i2.conf" || fail "an edit during the rebuild missed $i2.conf"
+state[$n2]=IDLE target[$n2]=$hp oid[$n2]=71
+sinks_changed
+p=$(params -2.0 "200.0 0.7 5.0")
+waitlog "$m" "props $n2 $p" || fail "the newest edit was not applied once the new chain was up: $(since "$m")"
+waitlog "$m" "stop microos-eq@$i1.service" || fail "the old chain was not stopped: $(since "$m")"
+(($(since "$m" | grep -c "^props $n2 ") == 1)) || fail "the rebuild sent more than one set of values: $(since "$m")"
+[[ ! -e $conf ]] || fail "$i1.conf left after its chain stopped"
+unset "state[$n1]" "target[$n1]" "oid[$n1]"
+sinks_changed
+
+m=$(mark)
+oid[$n2]=72
+sinks_changed
+sleep 1
+since "$m" | grep -q "^props $n2 " && fail "values sent to a restarted chain that loads its conf: $(since "$m")"
+since "$m" | grep -q '^volume ' && fail "a chain restart changed a volume: $(since "$m")"
+
+m=$(mark)
+vol[$hp]=39321 vol[$n2]=32768
+sinks_changed
+waitlog "$m" "volume $n2 65536" || fail "a chain below 100 % was not set back: $(since "$m")"
+[[ $(since "$m" | grep '^volume ') == "volume $hp 19660 19660"$'\n'"volume $n2 65536" ]] ||
+  fail "chain volume not folded into the hardware first: $(since "$m")"
+vol[$hp]=19660 vol[$n2]=65536
+write_sinks
+m=$(mark)
+vol[$n2]=70000
+sinks_changed
+waitlog "$m" "volume $n2 65536" || fail "a chain above 100 % was not set back: $(since "$m")"
+since "$m" | grep -q "^volume $hp " && fail "a chain above 100 % changed the hardware: $(since "$m")"
+vol[$n2]=65536
+write_sinks
+m=$(mark)
+mute[$n2]=true
+sinks_changed
+waitlog "$m" "mute $n2 0" || fail "a muted chain was not unmuted: $(since "$m")"
+[[ $(since "$m" | grep '^mute ') == "mute $hp 1"$'\n'"mute $n2 0" ]] || fail "chain mute not moved to the hardware first: $(since "$m")"
+mute[$n2]=false
+write_sinks
+
+m=$(mark)
+vol[$hp]=20000 vol[$n2]=32768
+write_sinks "$STUB_DIR/sinks.after"
+vol[$hp]=39321
+sinks_changed
+waitlog "$m" "volume $n2 65536" || fail "fold with a fresh hardware read: chain not set back: $(since "$m")"
+[[ $(since "$m" | grep "^volume $hp ") == "volume $hp 10000 10000" ]] ||
+  fail "fold did not use the lower of the fresh and the listed hardware volume: $(since "$m")"
+vol[$hp]=10000 vol[$n2]=65536
+write_sinks
+m=$(mark)
+: > "$tmp/audio.err"
+vol[$hp]=40000 vol[$n2]=32768
+: > "$STUB_DIR/chainvol-fails"
+sinks_changed
+errline "folding the volume of $n2 failed" || fail "a failed chain reset was not logged"
+waitlog "$m" "volume $n2 65536" || fail "a failed chain reset was not retried: $(since "$m")"
+[[ $(since "$m" | grep -c "^volume $hp ") == 1 ]] || fail "a retried fold lowered the hardware twice: $(since "$m")"
+vol[$hp]=20000 vol[$n2]=65536
+write_sinks
+nb=microos-eq.speaker.000000000bad
+m=$(mark)
+: > "$tmp/audio.err"
+state[$nb]=IDLE target[$nb]='a\\q' oid[$nb]=80 vol[$nb]=32768 vol[$n2]=32768
+sinks_changed
+waitlog "$m" "volume $n2 65536" || fail "a chain with an unreadable target stopped the fold of another chain: $(since "$m")"
+vol[$hp]=10000 vol[$n2]=65536
+sinks_changed
+sleep 0.5
+sinks_changed
+sleep 0.5
+(($(grep -c "$nb is not at 100 %" "$tmp/audio.err") == 1)) || fail "an unfoldable chain was not logged once: $(cat "$tmp/audio.err")"
+since "$m" | grep -q "^volume $nb" && fail "a chain with an unreadable target was changed"
+unset "state[$nb]" "target[$nb]" "oid[$nb]" "vol[$nb]"
+sinks_changed
+
+n=$(sets)
+m=$(mark)
+meta default.configured.audio.sink "$n2"
+waitlog "$m" "default $hp" || fail "a picked chain was not mapped to its hardware sink: $(since "$m")"
+grep -qx "set audio.output headphones" <(tail -n "+$((n + 1))" <(grep '^set ' "$set_log")) ||
+  fail "a picked chain was not stored as its slot: $(cat "$set_log")"
+
+m=$(mark)
+avail[$hp]="not available"
+sinks_changed
+waitlog "$m" "stop microos-eq@$i2.service" || fail "a chain outlived its route: $(since "$m")"
+[[ ! -e $eqdir/$i2.conf ]] || fail "$i2.conf left after its route went"
+unset "state[$n2]"
+avail[$hp]=available
+sinks_changed
+waitlog "$m" "start microos-eq@$i2.service" || fail "the chain did not come back with its route: $(since "$m")"
+m=$(mark)
+state[$n2]=IDLE oid[$n2]=73
+sinks_changed
+sleep 1
+since "$m" | grep -q "^props $n2 " && fail "values sent to a fresh chain: $(since "$m")"
+grep -qF '"Freq" = 200.0 "Q" = 0.7 "Gain" = 5.0' "$eqdir/$i2.conf" || fail "the chain back with its route has no current conf"
+
+m=$(mark)
+state[$bt]=IDLE avail[$bt]=available
+sinks_changed
+sleep 1
+since "$m" | grep -q "microos-eq@bt" && fail "the bt slot is off by default and got a chain: $(since "$m")"
+poke audio.eq.bt.on "<true>"
+hb=$(eqhash "$bt" "")
+waitlog "$m" "start microos-eq@bt-$hb.service" || fail "bt EQ on: no chain: $(since "$m")"
+grep -qF '"Gain" = 0.0 } }' "$eqdir/bt-$hb.conf" || fail "the default bt profile is not a preamp only chain"
+since "$m" | grep -q "start microos-eq@headphones" && fail "turning on bt touched the headphones chain"
+m=$(mark)
+unset "state[$bt]" "avail[$bt]"
+sinks_changed
+waitlog "$m" "stop microos-eq@bt-$hb.service" || fail "a bt chain outlived its sink: $(since "$m")"
+poke audio.eq.bt.on "<false>"
+
+m=$(mark)
+poke audio.eq.headphones.filters "<['peak 1000 6 1']>"
+errline "audio.eq.headphones.filters" || fail "invalid filters were not logged"
+waitlog "$m" "stop microos-eq@$i2.service" || fail "invalid filters kept the chain: $(since "$m")"
+poke audio.eq.headphones.filters "<['preamp -2', 'lowshelf 200 5 0.7']>"
+waitlog "$m" "start microos-eq@$i2.service" || fail "valid filters again: no chain: $(since "$m")"
+m=$(mark)
+poke audio.eq.headphones.on "<false>"
+waitlog "$m" "stop microos-eq@$i2.service" || fail "EQ off kept the chain: $(since "$m")"
+unset "state[$n2]" "target[$n2]" "oid[$n2]"
+sinks_changed
+grep -q "^default microos-eq" "$log" && fail "a chain was set as the default sink"
+
+m=$(mark)
+: > "$tmp/audio.err"
+poke audio.eq.speaker.on "<true>"
+hs=$(eqhash "$spk" "")
+waitlog "$m" "start microos-eq@speaker-$hs.service" || fail "speaker EQ on: no chain: $(since "$m")"
+for _ in {1..200}; do (($(count "$m" "start microos-eq@speaker-$hs.service") >= 2)) && break; sleep 0.1; done
+(($(count "$m" "start microos-eq@speaker-$hs.service") == 2)) || fail "a chain with no node was not started again: $(since "$m")"
+grep -qF "EQ chain speaker-$hs has no node after 10 refreshes" "$tmp/audio.err" || fail "no log line for the chain with no node"
+(($(count "$m" "reset microos-eq@speaker-$hs.service") == 2)) || fail "start did not reset the failed state: $(since "$m")"
+m=$(mark)
+poke audio.eq.speaker.on "<false>"
+waitlog "$m" "stop microos-eq@speaker-$hs.service" || fail "speaker EQ off kept the chain: $(since "$m")"
+
+card() {
+  printf ',{"name":"%s","index":%s,"properties":{"object.serial":"%s"},"active_profile":"%s","profiles":{%s}}' \
+    "$1" "$2" "$2" "${4:-a2dp-sink-sbc}" "$3"
+}
+prof() { printf '"%s":{"description":"High Fidelity Playback (A2DP Sink, codec %s)","available":%s}' "$1" "$2" "${3:-true}"; }
+cardA=bluez_card.00_1B_66_00_00_01 cardB=bluez_card.00_1B_66_00_00_02
+cards() { echo "$*" > "$STUB_DIR/cards.json"; echo "Event '${EVENT:-new}' on card #$RANDOM" >> "$STUB_DIR/pactl.feed"; }
+a_profiles="$(prof a2dp-sink "aptX HD"),$(prof a2dp-sink-aptx aptX),$(prof a2dp-sink-sbc SBC),$(prof a2dp-sink-ldac LDAC false)"
+m=$(mark)
+cards "$(card $cardA 80 "$a_profiles")"
+sleep 1
+since "$m" | grep -q '^profile ' && fail "audio.bt_codec auto changed a profile: $(since "$m")"
+poke audio.bt_codec "<'aptx'>"
+waitlog "$m" "profile $cardA a2dp-sink-aptx" || fail "aptx not applied: $(since "$m")"
+(($(since "$m" | grep -c '^profile ') == 1)) || fail "aptx applied more than once: $(since "$m")"
+m=$(mark)
+poke audio.bt_codec "<'ldac'>"
+errline "audio.bt_codec ldac: $cardA offers no profile for it" || fail "an unavailable codec was not logged"
+EVENT=change cards "$(card $cardA 80 "$a_profiles")"
+sleep 1
+(($(grep -c "audio.bt_codec ldac: $cardA offers no profile" "$tmp/audio.err") == 1)) || fail "a missing codec was logged more than once"
+since "$m" | grep -q '^profile ' && fail "a missing codec changed the profile: $(since "$m")"
+m=$(mark)
+poke audio.bt_codec "<'aac'>"
+cards "$(card $cardA 81 "$a_profiles")$(card $cardB 82 "$(prof a2dp-sink AAC),$(prof a2dp-sink-sbc SBC)")"
+waitlog "$m" "profile $cardB a2dp-sink" || fail "aac by the bare a2dp-sink description not applied: $(since "$m")"
+since "$m" | grep -q "^profile $cardA" && fail "a card without aac got a profile: $(since "$m")"
+m=$(mark)
+state[$bt]=RUNNING avail[$bt]=available
+write_sinks
+EVENT=change cards "$(card $cardA 81 "$a_profiles")$(card $cardB 82 "$(prof a2dp-sink AAC),$(prof a2dp-sink-sbc SBC)" a2dp-sink)"
+poke audio.bt_codec "<'sbc'>"
+waitlog "$m" "profile $cardA a2dp-sink-sbc" && fail "a card already on sbc was switched again"
+waitlog "$m" "profile $cardB a2dp-sink-sbc" || fail "a codec change with a stream playing not applied: $(since "$m")"
+m=$(mark)
+poke audio.bt_codec "<'aptx'>"
+waitlog "$m" "profile $cardA a2dp-sink-aptx" || fail "aptx not applied again: $(since "$m")"
+m=$(mark)
+cards "$(card $cardA 83 "$a_profiles")$(card $cardB 82 "$(prof a2dp-sink AAC),$(prof a2dp-sink-sbc SBC)" a2dp-sink)"
+waitlog "$m" "profile $cardA a2dp-sink-aptx" || fail "a reconnected card did not get the codec again: $(since "$m")"
+sleep 0.5
+(($(since "$m" | grep -c '^profile ') == 1)) || fail "a card that stayed got the codec again: $(since "$m")"
+grep -qi wireplumber "$tmp/audio.err" && fail "a codec change touched wireplumber: $(grep -i wireplumber "$tmp/audio.err")"
+m=$(mark)
+poke audio.bt_codec "<'auto'>"
+sleep 0.5
+poke audio.bt_codec "<'aptx'>"
+waitlog "$m" "profile $cardA a2dp-sink-aptx" || fail "aptx after auto was not applied again: $(since "$m")"
+unset "state[$bt]" "avail[$bt]"
+rm "$STUB_DIR/cards.json"
+sinks_changed
+
 : > "$STUB_DIR/get-fails"
 kill "$msd"
 wait "$msd" 2> /dev/null || true
 start_microsetd
-errline "reading audio.output failed" || fail "a failing Get was not logged"
-kill -0 "$as" 2> /dev/null || fail "microos-audio died on a failing Get: $(cat "$tmp/audio.err")"
+errline "reading the audio keys failed" || fail "a failing List was not logged"
+kill -0 "$as" 2> /dev/null || fail "microos-audio died on a failing List: $(cat "$tmp/audio.err")"
 
 kill "$(cat "$STUB_DIR/subscribe.pid")"
 for _ in {1..30}; do kill -0 "$as" 2> /dev/null || break; sleep 0.1; done
@@ -312,6 +585,67 @@ else
   ((arc == 1)) || fail "microos-audio exited $arc after pactl subscribe exited"
   grep -qF "pactl exited" "$tmp/audio.err" || fail "no log line for the watcher exit"
 fi
+
+rm "$STUB_DIR/get-fails"
+kill "$msd"
+wait "$msd" 2> /dev/null || true
+start_microsetd
+poke audio.output "<'headphones'>"
+poke audio.eq.headphones.on "<true>"
+poke audio.eq.headphones.filters "<['preamp -1', 'highshelf 8000 -5 0.7']>"
+ha=$(eqhash "$hp" highshelf)
+ia=headphones-$ha na=microos-eq.headphones.$ha
+stray=speaker-000000000000
+rm -rf "$STUB_DIR/units"
+mkdir -p "$STUB_DIR/units" "$eqdir"
+echo active > "$STUB_DIR/units/microos-eq@$ia.service"
+echo active > "$STUB_DIR/units/microos-eq@$stray.service"
+echo inactive > "$STUB_DIR/units/microos-eq@usb-111111111111.service"
+: > "$eqdir/$stray.conf"
+state[$na]=IDLE target[$na]=$hp oid[$na]=90
+write_sinks
+dump() {
+  printf '[{"id":7,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"node.name":"%s.out"},"params":{"Format":%s}}},{"id":8,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"node.name":"%s"},"params":{}}},{"id":9,"type":"PipeWire:Interface:Link","info":{"output-node-id":7,"input-node-id":8,"state":"active"}}]\n' \
+    "$na" "$1" "$hp" > "$STUB_DIR/dump.json"
+}
+dump '[]'
+n=$(sets)
+m=$(mark)
+: > "$tmp/audio.err"
+PATH=$here/audio-policy:$PATH MICROOS_AUDIO_SYSFS=$sys MICROOS_AUDIO_SETTLE=2 \
+  setsid python3 "$audio" 2>> "$tmp/audio.err" & as=$!
+pids+=("$as")
+sleep 0.5
+meta default.configured.audio.sink "microos-eq.speaker.000000000000"
+errline "running EQ chains: $ia $stray" || fail "running chains not listed at start: $(cat "$tmp/audio.err")"
+waitlog "$m" "stop microos-eq@$stray.service" || fail "a chain that is not wanted was not stopped at start: $(since "$m")"
+waitlog "$m" "props $na $(params -1.0 "8000.0 0.7 -5.0")" || fail "the adopted chain did not get the current values: $(since "$m")"
+waitlog "$m" "default $spk" || fail "a saved chain default was not mapped to the hardware sink: $(since "$m")"
+since "$m" | grep -qxF "start microos-eq@$ia.service" && fail "a running chain was started again"
+since "$m" | grep -q "microos-eq@usb-111111111111" && fail "an inactive unit was touched"
+[[ ! -e $eqdir/$stray.conf ]] || fail "the stray chain conf was left"
+errline "EQ chain $ia output has no format, suspending its sink" || fail "no log line for the output suspend"
+waitlog "$m" "resume $na" || fail "an adopted chain whose output has no format was not suspended and resumed: $(since "$m")"
+for _ in {1..250}; do grep -qF "EQ chain $ia output has no format after 3 suspends, left as is" "$tmp/audio.err" && break; sleep 0.1; done
+grep -qF "EQ chain $ia output has no format after 3 suspends, left as is" "$tmp/audio.err" || fail "the output suspends did not give up"
+sleep 1.5
+(($(suspends "$m" "$na") == 3 && $(since "$m" | grep -cxF "resume $na") == 3)) ||
+  fail "the output suspends are not bounded to 3: $(since "$m")"
+grep -qx "set audio.output speaker" <(tail -n "+$((n + 1))" <(grep '^set ' "$set_log")) ||
+  fail "a saved chain default was not stored as its slot: $(cat "$set_log")"
+kill "$as"
+wait "$as" 2> /dev/null || true
+dump '[{"mediaType":"audio"}]'
+m=$(mark)
+: > "$tmp/audio.err"
+PATH=$here/audio-policy:$PATH MICROOS_AUDIO_SYSFS=$sys MICROOS_AUDIO_SETTLE=2 \
+  setsid python3 "$audio" 2>> "$tmp/audio.err" & as=$!
+pids+=("$as")
+errline "running EQ chains: $ia" || fail "the chain was not listed at the second start: $(cat "$tmp/audio.err")"
+sleep 1.5
+since "$m" | grep -q "^props $na " && fail "values sent to an adopted chain whose conf already holds them: $(since "$m")"
+since "$m" | grep -qE "^(start|stop) microos-eq@$ia" && fail "the adopted chain was restarted: $(since "$m")"
+since "$m" | grep -q "^suspend $na" && fail "an adopted chain whose output has a format was suspended: $(since "$m")"
 
 if ((rc != 0)); then
   cat "$tmp/audio.err" >&2

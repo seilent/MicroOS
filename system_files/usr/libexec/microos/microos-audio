@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import glob
+import hashlib
 import json
 import os
 import re
@@ -29,6 +30,21 @@ DEBOUNCE_MS = 200
 RETRY_MS = 1000
 PACTL_TIMEOUT = 3
 ERRORS = (subprocess.SubprocessError, OSError, ValueError)
+SLOTS = ("headphones", "speaker", "usb", "bt")
+EQ_PREFIX = "microos-eq."
+EQ_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "microos-audio", "eq")
+EQ_UNIT = re.compile(r"microos-eq@([a-z]+-[0-9a-f]{12})\.service")
+EQ_TARGET = re.compile(r'node\.name = "((?:[^"\\]|\\.)*)"')
+EQ_LABELS = {
+    "peak": "bq_peaking", "lowshelf": "bq_lowshelf", "highshelf": "bq_highshelf", "bandpass": "bq_bandpass",
+    "lowpass": "bq_lowpass", "highpass": "bq_highpass", "allpass": "bq_allpass",
+}
+EQ_BANDS = 10
+EQ_WAITS = 10
+EQ_KICKS = 3
+EQ_RESUME_MS = 300
+FULL = 65536
+CODECS = {"aptx": "aptX", "aac": "AAC", "ldac": "LDAC", "sbc": "SBC"}
 UPDATE = re.compile(r"update: id:0 key:'default\.configured\.audio\.sink' value:'(.*)' type:'[^']*'")
 REMOVE = re.compile(r"remove: id:0 (key:'default\.configured\.audio\.sink'|all keys)")
 
@@ -50,6 +66,14 @@ def classify(name):
         return "usb"
     if name.startswith("bluez_output."):
         return "bt"
+    return None
+
+
+def eq_slot(name):
+    if isinstance(name, str) and name.startswith(EQ_PREFIX):
+        slot = name[len(EQ_PREFIX):].split(".")[0]
+        if slot in SLOTS:
+            return slot
     return None
 
 
@@ -101,6 +125,157 @@ def card_off():
     return any(c.get("name") == CARD and c.get("active_profile") == "off" for c in cards)
 
 
+def parse_filters(items):
+    try:
+        kind, preamp = items[0].split(" ")
+        if kind != "preamp":
+            raise ValueError(kind)
+        bands = []
+        for item in items[1:]:
+            kind, freq, gain, q = item.split(" ")
+            if kind not in EQ_LABELS:
+                raise ValueError(kind)
+            bands.append((kind, float(freq), float(gain), float(q)))
+        if len(bands) > EQ_BANDS:
+            raise ValueError("too many bands")
+        return float(preamp), tuple(bands)
+    except (IndexError, ValueError, AttributeError, TypeError):
+        return None
+
+
+def eq_instance(slot, hw, filters):
+    key = hw + "\n" + " ".join(b[0] for b in filters[1])
+    return f"{slot}-{hashlib.sha256(key.encode()).hexdigest()[:12]}"
+
+
+def eq_node(instance):
+    slot, digest = instance.split("-")
+    return f"{EQ_PREFIX}{slot}.{digest}"
+
+
+def eq_conf(instance, hw, description, filters):
+    node = eq_node(instance)
+    name = json.dumps(node)
+    target = json.dumps(hw, ensure_ascii=False)
+    desc = json.dumps(f"{description} EQ", ensure_ascii=False)
+    preamp, bands = filters
+    nodes = [f'{{ type = builtin name = f0 label = bq_highshelf control = {{ "Freq" = 0.0 "Q" = 1.0 "Gain" = {preamp!r} }} }}']
+    links = []
+    for n, (kind, freq, gain, q) in enumerate(bands, 1):
+        nodes.append(f'{{ type = builtin name = f{n} label = {EQ_LABELS[kind]} '
+                     f'control = {{ "Freq" = {freq!r} "Q" = {q!r} "Gain" = {gain!r} }} }}')
+        links.append(f'{{ output = "f{n - 1}:Out" input = "f{n}:In" }}')
+    lines = [
+        "context.properties = {",
+        "    log.level = 0",
+        "}",
+        "context.spa-libs = {",
+        "    audio.convert.* = audioconvert/libspa-audioconvert",
+        "    support.* = support/libspa-support",
+        "}",
+        "context.modules = [",
+        "    { name = libpipewire-module-rt flags = [ ifexists nofail ] }",
+        "    { name = libpipewire-module-protocol-native }",
+        "    { name = libpipewire-module-client-node }",
+        "    { name = libpipewire-module-adapter }",
+        "    {",
+        "        name = libpipewire-module-filter-chain",
+        "        args = {",
+        f"            node.description = {desc}",
+        f"            media.name = {desc}",
+        "            audio.channels = 2",
+        "            audio.position = [ FL FR ]",
+        "            filter.graph = {",
+        "                nodes = [",
+        *[f"                    {n}" for n in nodes],
+        "                ]",
+        "                links = [",
+        *[f"                    {link}" for link in links],
+        "                ]",
+        "            }",
+        "            capture.props = {",
+        f"                node.name = {name}",
+        f"                node.description = {desc}",
+        "                media.class = Audio/Sink",
+        "                filter.smart = true",
+        f"                filter.smart.name = {name}",
+        f"                filter.smart.target = {{ node.name = {target} }}",
+        "                filter.smart.targetable = false",
+        "                state.restore-props = false",
+        "            }",
+        "            playback.props = {",
+        f"                node.name = {json.dumps(node + '.out')}",
+        f"                target.object = {target}",
+        "                node.dont-fallback = true",
+        "                node.passive = true",
+        "                node.linger = true",
+        "            }",
+        "        }",
+        "    }",
+        "]",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def eq_params(filters):
+    preamp, bands = filters
+    params = [f'"f0:Gain" {preamp!r}']
+    for n, (_kind, freq, gain, q) in enumerate(bands, 1):
+        params += [f'"f{n}:Freq" {freq!r}', f'"f{n}:Q" {q!r}', f'"f{n}:Gain" {gain!r}']
+    return "{ params = [ " + " ".join(params) + " ] }"
+
+
+def pw_dump():
+    try:
+        return json.loads(run("pw-dump"))
+    except ERRORS as err:
+        log(f"pw-dump failed: {err}")
+        return []
+
+
+def describe(hw, sink):
+    desc = sink.get("description")
+    return desc if desc and desc != "(null)" else hw
+
+
+def write_conf(instance, text):
+    os.makedirs(EQ_DIR, mode=0o700, exist_ok=True)
+    path = os.path.join(EQ_DIR, f"{instance}.conf")
+    with open(path + ".new", "w") as f:
+        f.write(text)
+    os.replace(path + ".new", path)
+
+
+def read_conf(instance):
+    try:
+        with open(os.path.join(EQ_DIR, f"{instance}.conf")) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def remove_conf(instance):
+    try:
+        os.unlink(os.path.join(EQ_DIR, f"{instance}.conf"))
+    except FileNotFoundError:
+        pass
+
+
+def channels(sink):
+    return [int(c["value"]) for c in (sink.get("volume") or {}).values()]
+
+
+def codec_profile(card, codec):
+    profiles = card.get("profiles") or {}
+    suffix = f"codec {CODECS[codec]})"
+    for name, info in profiles.items():
+        if info.get("available") is False:
+            continue
+        if name == f"a2dp-sink-{codec}" or (name == "a2dp-sink" and str(info.get("description", "")).endswith(suffix)):
+            return name
+    return None
+
+
 def configured_name(value):
     try:
         name = json.loads(value).get("name")
@@ -121,6 +296,13 @@ class Audio:
         self.retry = None
         self.cycles = {}
         self.dirty = set()
+        self.eq = None
+        self.units = None
+        self.codec = None
+        self.codec_done = {}
+        self.cards_dirty = True
+        self.reset_pending = {}
+        self.fold_logged = set()
 
     def watch(self, argv, handler):
         proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE)
@@ -164,7 +346,7 @@ class Audio:
             self.schedule()
 
     def foreign(self, name):
-        output = classify(name) or "auto"
+        output = classify(name) or eq_slot(name) or "auto"
         log(f"configured default {name} set elsewhere, storing audio.output {output}")
         self.output = output
         self.bus.call(
@@ -179,6 +361,8 @@ class Audio:
             log(f"storing audio.output {output} failed: {err.message}")
 
     def sinks(self, text):
+        if " on card " in text and text.startswith("Event 'new'"):
+            self.cards_dirty = True
         if " on sink " in text or " on card " in text:
             self.schedule()
 
@@ -194,17 +378,25 @@ class Audio:
     def refresh(self):
         self.pending = None
         sinks = None
-        if self.cycles or (not self.settling and self.output not in (None, "auto")):
+        if self.cycles or (not self.settling and (self.output not in (None, "auto") or self.eq_wanted()
+                                                  or eq_slot(self.configured))):
             try:
                 sinks = list_sinks()
             except ERRORS as err:
                 log(f"listing sinks failed: {err}")
-                if self.retry is None:
-                    self.retry = GLib.timeout_add(RETRY_MS, self.retried)
+                self.again()
                 return GLib.SOURCE_REMOVE
+        if sinks is not None:
+            self.fold(sinks)
         self.reconcile(sinks)
+        self.equalize(sinks)
+        self.codecs()
         self.step(sinks)
         return GLib.SOURCE_REMOVE
+
+    def again(self):
+        if self.retry is None:
+            self.retry = GLib.timeout_add(RETRY_MS, self.retried)
 
     def retried(self):
         self.retry = None
@@ -215,6 +407,11 @@ class Audio:
         if self.settling or self.output is None:
             return
         current = self.configured
+        slot = eq_slot(current)
+        if slot is not None and self.output != slot:
+            self.foreign(current)
+            self.schedule()
+            return
         if self.output == "auto":
             if current is None or classify(current) is None:
                 return
@@ -241,19 +438,289 @@ class Audio:
             self.sent.pop()
             log(f"setting the configured default failed: {err}")
 
+    def eq_wanted(self):
+        return self.eq is not None and (bool(self.units) or any(v["on"] for v in self.eq.values()))
+
+    def fold(self, sinks):
+        present = set()
+        for name, sink in sinks.items():
+            if eq_slot(name) is None:
+                continue
+            key = (name, (sink.get("properties") or {}).get("object.id"))
+            present.add(key)
+            chain = channels(sink)
+            muted = bool(sink.get("mute"))
+            if chain and all(c == FULL for c in chain) and not muted:
+                self.reset_pending.pop(key, None)
+                self.fold_logged.discard(key)
+                continue
+            try:
+                if key not in self.reset_pending:
+                    self.fold_hw(name, sink, sinks, chain, key)
+                hw = self.reset_pending.get(key)
+                if hw is None:
+                    continue
+                if muted:
+                    run("pactl", "set-sink-mute", hw, "1")
+                run("pactl", "set-sink-volume", name, str(FULL))
+                if muted:
+                    run("pactl", "set-sink-mute", name, "0")
+                del self.reset_pending[key]
+                log(f"{name} volume {chain} mute {muted} folded into {hw}")
+            except ERRORS as err:
+                log(f"folding the volume of {name} failed: {err}")
+                self.again()
+        self.reset_pending = {k: v for k, v in self.reset_pending.items() if k in present}
+        self.fold_logged &= present
+
+    def fold_hw(self, name, sink, sinks, chain, key):
+        m = EQ_TARGET.search(str((sink.get("properties") or {}).get("filter.smart.target", "")))
+        try:
+            hw = sinks.get(json.loads(f'"{m.group(1)}"')) if m else None
+        except ValueError:
+            hw = None
+        if hw is None:
+            if key not in self.fold_logged:
+                log(f"{name} is not at 100 % and its hardware sink is gone or unknown, left as is")
+                self.fold_logged.add(key)
+            return
+        factor = min(min(chain) / FULL, 1.0) if chain else 1.0
+        if factor < 1.0:
+            fresh = list_sinks().get(hw["name"])
+            if fresh is None:
+                raise ValueError(f"{hw['name']} is gone")
+            levels = [int(min(a, b) * factor) for a, b in zip(channels(hw), channels(fresh))]
+            if levels:
+                run("pactl", "set-sink-volume", hw["name"], *map(str, levels))
+        self.reset_pending[key] = hw["name"]
+
+    def equalize(self, sinks):
+        if self.settling or self.eq is None:
+            return
+        if self.units is None:
+            try:
+                listed = run("systemctl", "--user", "list-units", "--all", "--plain", "--no-legend", "--full",
+                             "microos-eq@*.service")
+            except ERRORS as err:
+                log(f"listing EQ units failed: {err}")
+                self.again()
+                return
+            self.units = {}
+            for line in listed.splitlines():
+                cols = line.split()
+                m = EQ_UNIT.fullmatch(cols[0]) if len(cols) >= 3 else None
+                if m and cols[2] in ("active", "activating", "reloading"):
+                    self.units[m.group(1)] = {"hw": None, "conf": None, "live": None,
+                                              "out": {"checks": 0, "stuck": 0, "kicks": 0, "timer": None}}
+            if self.units:
+                log(f"running EQ chains: {' '.join(sorted(self.units))}")
+        want = {}
+        for name, sink in sorted((sinks or {}).items()):
+            slot = classify(name)
+            if slot is None or not self.eq[slot]["on"] or self.eq[slot]["filters"] is None:
+                continue
+            if slot in ("headphones", "speaker") and not available(sink):
+                continue
+            filters = self.eq[slot]["filters"]
+            want[eq_instance(slot, name, filters)] = (name, sink, filters)
+        up = {i for i in want if eq_node(i) in sinks}
+        dump = None
+        for instance, (hw, sink, filters) in want.items():
+            unit = self.units.get(instance)
+            if unit is None:
+                if not self.start(instance, hw, sink, filters):
+                    continue
+                unit = self.units[instance]
+            unit["hw"] = hw
+            node = sinks.get(eq_node(instance))
+            if unit["conf"] != filters:
+                text = eq_conf(instance, hw, describe(hw, sink), filters)
+                if unit["conf"] is None and read_conf(instance) == text:
+                    unit["conf"] = unit["live"] = filters
+                else:
+                    try:
+                        write_conf(instance, text)
+                        unit["conf"] = filters
+                        if node is None:
+                            unit["live"] = None
+                    except OSError as err:
+                        log(f"writing the EQ conf of {instance} failed: {err}")
+            if node is None:
+                unit["waits"] = unit.get("waits", 0) + 1
+                if unit["waits"] >= EQ_WAITS:
+                    log(f"EQ chain {instance} has no node after {unit['waits']} refreshes, starting it again")
+                    del self.units[instance]
+                self.again()
+                continue
+            unit["waits"] = 0
+            if unit["live"] != filters:
+                self.props(instance, unit, filters)
+            if "out" in unit and unit["out"]["timer"] is None:
+                if dump is None:
+                    dump = pw_dump()
+                self.check_out(instance, unit, hw, dump)
+        busy = {want[i][0] for i in want if i not in up}
+        for instance, unit in list(self.units.items()):
+            if instance in want or (unit["hw"] in busy and eq_node(instance) in (sinks or {})):
+                continue
+            self.stop(instance)
+
+    def start(self, instance, hw, sink, filters):
+        try:
+            write_conf(instance, eq_conf(instance, hw, describe(hw, sink), filters))
+            try:
+                run("systemctl", "--user", "reset-failed", f"microos-eq@{instance}.service")
+            except ERRORS:
+                pass
+            run("systemctl", "--user", "start", "--no-block", f"microos-eq@{instance}.service")
+        except ERRORS as err:
+            log(f"starting the EQ chain {instance} for {hw} failed: {err}")
+            self.again()
+            return False
+        log(f"EQ chain {instance} started for {hw}")
+        self.units[instance] = {"hw": hw, "conf": filters, "live": filters}
+        return True
+
+    def props(self, instance, unit, filters):
+        try:
+            proc = subprocess.run(["pw-cli", "s", eq_node(instance), "Props", eq_params(filters)],
+                                  capture_output=True, text=True, timeout=PACTL_TIMEOUT)
+            if proc.returncode != 0 or "Error" in proc.stderr or "Error" in proc.stdout:
+                raise ValueError((proc.stderr or proc.stdout).strip())
+        except ERRORS as err:
+            log(f"sending EQ values to {instance} failed: {err}")
+            self.again()
+            return
+        unit["live"] = filters
+        log(f"EQ values sent to {instance}")
+
+    def check_out(self, instance, unit, hw, dump):
+        out = unit["out"]
+        nodes = {o.get("id"): o["info"] for o in dump if o.get("type") == "PipeWire:Interface:Node" and o.get("info")}
+        ids = {(info.get("props") or {}).get("node.name"): n for n, info in nodes.items()}
+        oid = ids.get(eq_node(instance) + ".out")
+        info = nodes.get(oid) or {}
+        fmt = (info.get("params") or {}).get("Format")
+        if fmt:
+            del unit["out"]
+            return
+        linked = oid is not None and any(
+            o.get("type") == "PipeWire:Interface:Link" and (o.get("info") or {}).get("output-node-id") == oid
+            and o["info"].get("input-node-id") == ids.get(hw) and o["info"].get("state") == "active" for o in dump)
+        out["checks"] += 1
+        out["stuck"] = out["stuck"] + 1 if fmt == [] and linked and info.get("state") == "running" else 0
+        if out["stuck"] == 0 and out["checks"] >= EQ_WAITS:
+            del unit["out"]
+            return
+        if out["stuck"] >= 2:
+            if out["kicks"] >= EQ_KICKS:
+                log(f"EQ chain {instance} output has no format after {out['kicks']} suspends, left as is")
+                del unit["out"]
+                return
+            self.kick(instance, out)
+            return
+        self.again()
+
+    def kick(self, instance, out):
+        sink = eq_node(instance)
+        out["stuck"] = 0
+        out["kicks"] += 1
+        log(f"EQ chain {instance} output has no format, suspending its sink")
+        try:
+            run("pactl", "suspend-sink", sink, "1")
+        except ERRORS as err:
+            log(f"suspending {sink} failed: {err}")
+            self.again()
+            return
+        out["timer"] = GLib.timeout_add(EQ_RESUME_MS, self.resume, sink, out)
+
+    def resume(self, sink, out):
+        out["timer"] = None
+        try:
+            run("pactl", "suspend-sink", sink, "0")
+        except ERRORS as err:
+            log(f"resuming {sink} failed: {err}")
+        self.again()
+        return GLib.SOURCE_REMOVE
+
+    def stop(self, instance):
+        try:
+            run("systemctl", "--user", "stop", "--no-block", f"microos-eq@{instance}.service")
+        except ERRORS as err:
+            log(f"stopping the EQ chain {instance} failed: {err}")
+            self.again()
+            return
+        log(f"EQ chain {instance} stopped")
+        del self.units[instance]
+        remove_conf(instance)
+
+    def codecs(self):
+        if self.settling or self.codec is None or not self.cards_dirty:
+            return
+        self.cards_dirty = False
+        if self.codec == "auto":
+            self.codec_done = {}
+            return
+        try:
+            cards = json.loads(run("pactl", "--format=json", "list", "cards"))
+        except ERRORS as err:
+            log(f"listing cards failed: {err}")
+            self.cards_dirty = True
+            self.again()
+            return
+        done = {}
+        for card in cards:
+            name = card.get("name") or ""
+            if not name.startswith("bluez_card."):
+                continue
+            key = (name, (card.get("properties") or {}).get("object.serial", card.get("index")))
+            done[key] = self.codec
+            if self.codec_done.get(key) == self.codec:
+                continue
+            profile = codec_profile(card, self.codec)
+            if profile is None:
+                log(f"audio.bt_codec {self.codec}: {name} offers no profile for it, left as is")
+            elif card.get("active_profile") != profile:
+                try:
+                    run("pactl", "set-card-profile", name, profile)
+                    log(f"audio.bt_codec {self.codec}: {name} profile {profile}")
+                except ERRORS as err:
+                    log(f"audio.bt_codec {self.codec}: setting {name} profile {profile} failed: {err}")
+        self.codec_done = done
+
     def load(self):
         self.bus.call(
-            *MICROSET, "Get", GLib.Variant("(s)", ("audio.output",)),
-            GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 5000, None, self.loaded, None,
+            *MICROSET, "List", GLib.Variant("(s)", ("audio.",)),
+            GLib.VariantType("(a{sv})"), Gio.DBusCallFlags.NONE, 5000, None, self.loaded, None,
         )
 
     def loaded(self, bus, result, _data):
         try:
-            value = bus.call_finish(result).unpack()[0]
+            values = bus.call_finish(result).unpack()[0]
         except GLib.Error as err:
-            log(f"reading audio.output failed: {err.message}")
+            log(f"reading the audio keys failed: {err.message}")
             return
-        self.set_output(value)
+        self.eq = {slot: {"on": False, "filters": None} for slot in SLOTS}
+        for key, value in values.items():
+            if key.startswith("audio.eq.") or key == "audio.bt_codec":
+                self.set_key(key, value)
+        self.set_output(values.get("audio.output"))
+
+    def set_key(self, key, value):
+        if key == "audio.bt_codec":
+            self.codec = value
+            self.cards_dirty = True
+            return
+        parts = key.split(".")
+        if self.eq is None or len(parts) != 4 or parts[2] not in SLOTS:
+            return
+        if parts[3] == "on":
+            self.eq[parts[2]]["on"] = bool(value)
+        elif parts[3] == "filters":
+            filters = parse_filters(value)
+            if filters is None:
+                log(f"{key} {value!r} not valid, EQ off for {parts[2]}")
+            self.eq[parts[2]]["filters"] = filters
 
     def set_output(self, value):
         if value not in OUTPUTS:
@@ -266,6 +733,9 @@ class Audio:
         key, value = params.unpack()
         if key == "audio.output":
             self.set_output(value)
+        elif key.startswith("audio.eq.") or key == "audio.bt_codec":
+            self.set_key(key, value)
+            self.schedule()
         elif key in APPLY:
             self.dirty.add(APPLY[key])
             self.cycles.setdefault(APPLY[key], ["wait", None])

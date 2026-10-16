@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+units=$STUB_DIR/units
+mkdir -p "$units"
+[[ -e $STUB_DIR/systemctl-fails ]] && { echo "systemctl stub: fails" >&2; exit 1; }
+case "$*" in
+  "--user list-units --all --plain --no-legend --full microos-eq@*.service")
+    for u in "$units"/*; do
+      if [[ -e $u ]]; then echo "${u##*/} loaded $(cat "$u") running EQ chain"; fi
+    done
+    ;;
+  "--user start --no-block $4")
+    echo "start $4" >> "$STUB_DIR/log"
+    echo active > "$units/$4"
+    ;;
+  "--user reset-failed $3")
+    echo "reset $3" >> "$STUB_DIR/log"
+    ;;
+  "--user stop --no-block $4")
+    echo "stop $4" >> "$STUB_DIR/log"
+    rm -f "$units/$4"
+    ;;
+  *)
+    echo "systemctl stub: $*" >&2
+    exit 1
+    ;;
+esac

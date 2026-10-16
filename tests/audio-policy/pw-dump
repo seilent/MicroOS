@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+cat "$STUB_DIR/dump.json" 2> /dev/null || echo '[]'

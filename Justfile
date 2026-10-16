@@ -161,7 +161,9 @@ test-services:
     run "$fedora" sh -c "$dnf python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/steamos-manager-config.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/splash-quit.sh"
     run -v "$PWD/system_files/usr/bin/steamos-update:/usr/bin/steamos-update:ro,Z" "$fedora" \
       sh -c "$dnf systemd-udev && /repo/tests/helpers.sh"
-    run "$fedora" sh -c "$dnf alsa-ucm alsa-ucm-utils alsa-utils pipewire-utils systemd-udev && /repo/tests/audio.sh"
+    pin="/repo/build/pin-pipewire.sh /repo/packages/pipewire-aptx/SOURCE.env"
+    run "$fedora" sh -c "$pin alsa-ucm alsa-ucm-utils alsa-utils systemd-udev pulseaudio-utils && /repo/tests/audio.sh"
+    run "$fedora" sh -c "$pin pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ util-linux && /repo/tests/audio-eq.sh"
     run "$fedora" sh -c "$dnf jq util-linux systemd-udev && /repo/tests/storage.sh"
     run "$fedora" sh -c "$dnf jq python3 util-linux systemd && /repo/tests/microos-session.sh"
     run "$fedora" sh -c "$dnf git-core && /repo/tests/pkg-hash.sh"
