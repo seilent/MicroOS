@@ -56,6 +56,9 @@ done < <(rpm -qa --qf '%{NAME} %{VERSION}-%{RELEASE}\n' 'pipewire*')
   || fail "wireplumber and wireplumber-libs differ"
 grep -qx 'excludepkgs=pipewire\*,wireplumber\*' /etc/dnf/libdnf5.conf.d/20-microos-pipewire.conf \
   || fail "20-microos-pipewire.conf does not exclude pipewire and wireplumber"
+! rpm -q openh264 >/dev/null 2>&1 || fail "Cisco's openh264 is installed in the image"
+grep -qx 'excludepkgs=openh264' /etc/dnf/libdnf5.conf.d/20-microos-openh264.conf || fail "20-microos-openh264.conf does not exclude openh264"
+[[ $(rpm -qf --qf '%{NAME}' /usr/lib64/libopenh264.so.8) == noopenh264 ]] || fail "libopenh264.so.8 is not the noopenh264 stub"
 [[ $(rpm -q --qf '%{VENDOR}' inputplumber) == MicroOS ]] || fail "inputplumber is not the MicroOS build"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 [[ $(systemctl is-enabled inputplumber.service) == enabled ]] || fail "inputplumber.service is not enabled"

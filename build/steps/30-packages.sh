@@ -3,6 +3,7 @@ set -euo pipefail
 
 install -d /etc/dnf/libdnf5.conf.d
 printf '[main]\ninstall_weak_deps=False\n' > /etc/dnf/libdnf5.conf.d/10-microos.conf
+printf '[main]\nexcludepkgs=openh264\n' > /etc/dnf/libdnf5.conf.d/20-microos-openh264.conf
 
 own=(
   inputplumber/inputplumber
@@ -77,6 +78,7 @@ if ! dnf -y install \
   dosfstools \
   f3 \
   jq \
+  noopenh264 \
   mesa-dri-drivers \
   mesa-vulkan-drivers \
   mesa-libgbm \
