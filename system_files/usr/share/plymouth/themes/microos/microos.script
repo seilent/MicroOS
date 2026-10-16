@@ -1,7 +1,44 @@
 Window.SetBackgroundTopColor(0, 0, 0);
 Window.SetBackgroundBottomColor(0, 0, 0);
 
-wordmark.image = Image("wordmark.png");
-wordmark.sprite = Sprite(wordmark.image);
-wordmark.sprite.SetX(Window.GetX() + Math.Int((Window.GetWidth() - wordmark.image.GetWidth()) / 2));
-wordmark.sprite.SetY(Window.GetY() + Math.Int((Window.GetHeight() - wordmark.image.GetHeight()) / 2));
+wordmark = Image("wordmark.png");
+starting = Image("starting.png");
+updating = Image("updating.png");
+sprite = Sprite();
+shown = 0;
+ticks = 0;
+
+fun show(image)
+{
+  sprite.SetImage(image);
+  sprite.SetX(Window.GetX() + Math.Int((Window.GetWidth() - image.GetWidth()) / 2));
+  sprite.SetY(Window.GetY() + Math.Int((Window.GetHeight() - image.GetHeight()) / 2));
+  sprite.SetOpacity(1);
+  global.shown = 1;
+}
+
+fun refresh()
+{
+  if (!shown)
+    {
+      global.ticks += 1;
+      if (ticks >= 2)
+        show(wordmark);
+    }
+}
+
+fun message(text)
+{
+  if (text == "microos-starting")
+    show(starting);
+  else if (text == "microos-updating")
+    show(updating);
+}
+
+if (Plymouth.GetMode() == "boot")
+  show(wordmark);
+else
+  sprite.SetOpacity(0);
+
+Plymouth.SetRefreshFunction(refresh);
+Plymouth.SetDisplayMessageFunction(message);

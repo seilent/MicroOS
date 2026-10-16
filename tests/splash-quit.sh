@@ -4,6 +4,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 tree=${MICROOS_TREE:-$here/../system_files}
 script=$tree/usr/libexec/microos/microos-splash-quit
+update=$tree/usr/libexec/microos/microos-splash-update
 unit=$tree/usr/lib/systemd/system/microos-splash-quit.service
 sddm=$tree/usr/lib/systemd/system/sddm.service.d/10-microos-splash.conf
 quit=$tree/usr/lib/systemd/system/plymouth-quit.service.d/10-microos.conf
@@ -14,6 +15,7 @@ rc=0
 fail() { echo "FAIL: $*" >&2; rc=1; }
 
 [[ -x $script ]] || fail "${script#"$tree"} is not executable"
+[[ -x $update ]] || fail "${update#"$tree"} is not executable"
 
 root=$tmp/root
 clients=$root/sys/kernel/debug/dri/0/clients
@@ -51,6 +53,18 @@ plain() { grep -cx 'plymouth quit' "$STUB_LOG" || true; }
 kills() { grep -c '^pkill' "$STUB_LOG" || true; }
 logged() { grep -qF "$1" "$tmp/out"; }
 ms() { echo $((${EPOCHREALTIME/./} / 1000)); }
+upd() {
+  local r=0
+  PATH=$stubpath bash "$update" "$@" > "$tmp/out" 2>&1 || r=$?
+  ((r == 0)) || fail "microos-splash-update $*: exit $r"
+}
+sends() { grep -cx 'plymouth display-message --text=microos-updating' "$STUB_LOG" || true; }
+ostree=$root/run/ostree
+marker=$root/run/microos/finalizing
+ureset() {
+  reset
+  mkdir -p "$ostree" "$root/run/microos"
+}
 
 reset
 table plymouthd 400 y 1
@@ -147,6 +161,68 @@ touch "$STUB_DIR/quit-fails" "$STUB_DIR/gone"
 if run; then fail "plymouthd gone: exit 0"; fi
 logged "no plymouthd to signal" || fail "plymouthd gone not logged: $(cat "$tmp/out")"
 
+ureset
+touch "$ostree/staged-deployment"
+upd
+[[ $(sends) == 1 ]] || fail "staged: $(cat "$STUB_LOG")"
+logged "microos-splash-update: staged deployment, showing Updating" || fail "staged not logged: $(cat "$tmp/out")"
+[[ $(wc -l < "$tmp/out") == 1 ]] || fail "staged: more than one line: $(cat "$tmp/out")"
+
+ureset
+touch "$ostree/staged-deployment" "$ostree/staged-deployment-locked"
+upd
+[[ $(sends) == 0 ]] || fail "staged and locked: $(cat "$STUB_LOG")"
+logged "no staged deployment" || fail "staged and locked not logged: $(cat "$tmp/out")"
+
+ureset
+upd
+[[ $(sends) == 0 ]] || fail "none: $(cat "$STUB_LOG")"
+logged "no staged deployment" || fail "none not logged: $(cat "$tmp/out")"
+
+ureset
+touch "$ostree/staged-deployment" "$STUB_DIR/send-fails"
+upd
+[[ $(sends) == 1 ]] || fail "send fails: $(cat "$STUB_LOG")"
+logged "staged deployment, plymouth display-message failed" || fail "send fails not logged: $(cat "$tmp/out")"
+
+ureset
+upd --finalize
+[[ ! -e $marker && $(sends) == 0 ]] || fail "finalize, none staged: $(cat "$STUB_LOG")"
+logged "no staged deployment" || fail "finalize, none staged not logged: $(cat "$tmp/out")"
+
+ureset
+touch "$ostree/staged-deployment" "$ostree/staged-deployment-locked"
+upd --finalize
+[[ ! -e $marker && $(sends) == 0 ]] || fail "finalize, locked: $(cat "$STUB_LOG")"
+logged "no staged deployment" || fail "finalize, locked not logged: $(cat "$tmp/out")"
+
+ureset
+touch "$ostree/staged-deployment" "$STUB_DIR/down"
+upd --finalize
+[[ -e $marker && $(sends) == 0 ]] || fail "finalize first: $(cat "$STUB_LOG")"
+logged "staged deployment, marker written, plymouthd is not running" || fail "finalize first not logged: $(cat "$tmp/out")"
+rm "$ostree/staged-deployment" "$STUB_DIR/down"
+upd
+[[ $(sends) == 1 ]] || fail "finalize first, then plymouthd: $(cat "$STUB_LOG")"
+logged "finalize marker, showing Updating" || fail "finalize first, then plymouthd not logged: $(cat "$tmp/out")"
+
+ureset
+touch "$ostree/staged-deployment"
+upd
+[[ $(sends) == 1 ]] || fail "plymouthd first: $(cat "$STUB_LOG")"
+upd --finalize
+[[ -e $marker && $(sends) == 2 ]] || fail "plymouthd first, then finalize: $(cat "$STUB_LOG")"
+[[ $(grep -n . "$STUB_LOG" | grep -m1 -- '--ping' | cut -d: -f1) == 2 ]] || fail "plymouthd first: ping order: $(cat "$STUB_LOG")"
+logged "staged deployment, marker written, showing Updating" || fail "plymouthd first, then finalize not logged: $(cat "$tmp/out")"
+
+ureset
+rmdir "$root/run/microos"
+touch "$ostree/staged-deployment"
+upd --finalize
+[[ $(sends) == 1 ]] || fail "finalize, no run dir: $(cat "$STUB_LOG")"
+logged "staged deployment, cannot write $marker, showing Updating" || fail "finalize, no run dir not logged: $(cat "$tmp/out")"
+[[ $(wc -l < "$tmp/out") == 1 ]] || fail "finalize, no run dir: more than one line: $(cat "$tmp/out")"
+
 for l in After=display-manager.service WantedBy=display-manager.service Type=oneshot \
   ExecStart=/usr/libexec/microos/microos-splash-quit RestrictAddressFamilies=AF_UNIX ProtectSystem=strict; do
   grep -qxF "$l" "$unit" || fail "unit lacks $l"
@@ -154,8 +230,13 @@ done
 ! grep -q '^PrivateNetwork=' "$unit" || fail "unit sets PrivateNetwork, plymouthd is on an abstract socket"
 [[ $(< "$sddm") == "[Service]"$'\n'"ExecStartPre=-/bin/sh -c '/usr/bin/plymouth deactivate || /usr/bin/plymouth quit'" ]] ||
   fail "sddm drop-in: $(< "$sddm")"
-[[ $(< "$quit") == "[Service]"$'\n'"ExecStart="$'\n'"ExecStart=-/bin/sh -c '/usr/bin/plymouth deactivate || /usr/bin/plymouth quit'" ]] ||
+[[ $(< "$quit") == "[Service]"$'\n'"ExecStart="$'\n'"ExecStart=-/bin/sh -c '/usr/bin/plymouth display-message --text=microos-starting; /usr/bin/plymouth deactivate || /usr/bin/plymouth quit'" ]] ||
   fail "plymouth-quit drop-in: $(< "$quit")"
+for u in reboot poweroff halt; do
+  d=$tree/usr/lib/systemd/system/plymouth-$u.service.d/10-microos.conf
+  [[ $(< "$d") == $'[Service]\nExecStartPost=\nExecStartPost=-/usr/libexec/microos/microos-splash-update\nExecStartPost=-/usr/bin/plymouth show-splash' ]] ||
+    fail "plymouth-$u drop-in: $(cat "$d")"
+done
 [[ $(< "$conf") == $'[Daemon]\nTheme=microos\nShowDelay=0\nDeviceScale=1' ]] || fail "plymouthd.conf: $(< "$conf")"
 
 if ((rc == 0)); then

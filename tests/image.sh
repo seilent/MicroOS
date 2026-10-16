@@ -204,13 +204,19 @@ grep -qxF 'SUBSYSTEM=="bluetooth", KERNEL=="hci0", TAG+="systemd", ENV{SYSTEMD_W
   /usr/lib/udev/rules.d/70-microos-bt.rules || fail "70-microos-bt.rules lacks the hci0 rule"
 grep -qx 'Before=bluetooth.service' /usr/lib/systemd/system/microos-bt-address.service || fail "microos-bt-address.service is not before bluetooth.service"
 rpm -q plymouth plymouth-scripts plymouth-plugin-script >/dev/null || fail "plymouth rpms missing"
-for f in microos.plymouth microos.script wordmark.png; do
+while read -r n r; do
+  [[ $r == *.microos ]] || fail "$n release $r is not ours"
+done < <(rpm -qa --qf '%{NAME} %{RELEASE}\n' 'plymouth*')
+retain='Closing FB %u (retaining)'
+grep -qaF "$retain" /usr/lib64/plymouth/renderers/drm.so || fail "renderers/drm.so lacks '$retain'"
+for f in microos.plymouth microos.script wordmark.png starting.png updating.png; do
   [[ -f /usr/share/plymouth/themes/microos/$f ]] || fail "plymouth theme lacks $f"
 done
 [[ $(< /etc/plymouth/plymouthd.conf) == $'[Daemon]\nTheme=microos\nShowDelay=0\nDeviceScale=1' ]] || fail "plymouthd.conf"
 [[ $(plymouth-set-default-theme) == microos ]] || fail "plymouth default theme is $(plymouth-set-default-theme)"
-f=/usr/libexec/microos/microos-splash-quit
-[[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f missing, mode or owner"
+for f in /usr/libexec/microos/microos-splash-quit /usr/libexec/microos/microos-splash-update; do
+  [[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f missing, mode or owner"
+done
 [[ -L /etc/systemd/system/display-manager.service.wants/microos-splash-quit.service ]] \
   || fail "microos-splash-quit.service is not wanted by display-manager.service"
 quit="-/bin/sh -c '/usr/bin/plymouth deactivate || /usr/bin/plymouth quit'"
@@ -218,8 +224,13 @@ execs() {
   systemctl cat "$1" | awk -v k="$2=" 'index($0, k) == 1 { v = substr($0, length(k) + 1); if (v == "") n = 0; else l[++n] = v }
     END { for (i = 1; i <= n; i++) print l[i] }'
 }
-[[ $(execs plymouth-quit.service ExecStart) == "$quit" ]] || fail "effective plymouth-quit.service ExecStart: $(execs plymouth-quit.service ExecStart)"
+starting="-/bin/sh -c '/usr/bin/plymouth display-message --text=microos-starting; /usr/bin/plymouth deactivate || /usr/bin/plymouth quit'"
+[[ $(execs plymouth-quit.service ExecStart) == "$starting" ]] || fail "effective plymouth-quit.service ExecStart: $(execs plymouth-quit.service ExecStart)"
 execs sddm.service ExecStartPre | grep -qxF -- "$quit" || fail "sddm.service has no plymouth deactivate ExecStartPre"
+for u in plymouth-reboot plymouth-poweroff plymouth-halt; do
+  [[ $(execs $u.service ExecStartPost) == $'-/usr/libexec/microos/microos-splash-update\n-/usr/bin/plymouth show-splash' ]] \
+    || fail "effective $u.service ExecStartPost: $(execs $u.service ExecStartPost)"
+done
 while read -r u p; do
   [[ $p == -* ]] && continue
   grep -qE "^d $p [0-7]+ " /usr/lib/tmpfiles.d/*.conf || fail "${u##*/} ReadWritePaths=$p has no tmpfiles line"
@@ -231,7 +242,8 @@ leak=$(find / -xdev \( -path '*/qcom/sm8250/ayaneo/*' -o -type d \( -name slpi -
 SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "${units[@]}" /usr/lib/systemd/system/steamos-manager.service \
   /usr/lib/systemd/system/sshd.service /usr/lib/systemd/system/bootc-generic-growpart.service \
   /usr/lib/systemd/system/ostree-finalize-staged.service /usr/lib/systemd/system/sddm.service \
-  /usr/lib/systemd/system/plymouth-quit.service || fail "systemd-analyze verify"
+  /usr/lib/systemd/system/plymouth-quit.service /usr/lib/systemd/system/plymouth-reboot.service \
+  /usr/lib/systemd/system/plymouth-poweroff.service /usr/lib/systemd/system/plymouth-halt.service || fail "systemd-analyze verify"
 mkdir -p "$tmp/xdg"
 XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no \
   /usr/lib/systemd/user/microos-*.service /usr/lib/systemd/user/steamos-manager.service gamescope-session-plus@steam.service \
@@ -252,7 +264,7 @@ grep -qx 'After=gamescope-session-plus@%i.service' /usr/lib/systemd/user/microos
 stops=$(systemctl cat ostree-finalize-staged.service \
   | awk '/^ExecStop=/ { sub(/^ExecStop=/, ""); if ($0 == "") n = 0; else l[++n] = $0 } END { for (i = 1; i <= n; i++) print l[i] }') \
   || fail "systemctl cat ostree-finalize-staged.service"
-[[ $stops == '/usr/libexec/microos/microos-bootlog run finalize-staged -- /usr/bin/ostree admin finalize-staged'$'\n''-/usr/libexec/microos/microos-bootlog run finalize -- /usr/libexec/microos/microos-bootimg-update' ]] \
+[[ $stops == '-/usr/libexec/microos/microos-splash-update --finalize'$'\n''/usr/libexec/microos/microos-bootlog run finalize-staged -- /usr/bin/ostree admin finalize-staged'$'\n''-/usr/libexec/microos/microos-bootlog run finalize -- /usr/libexec/microos/microos-bootimg-update' ]] \
   || fail "effective ostree-finalize-staged.service ExecStop: $stops"
 after=$(systemctl cat microos-boot-ok.service | sed -n 's/^After=//p' | tr ' ' '\n') || fail "systemctl cat microos-boot-ok.service"
 for u in ostree-finalize-staged.service microos-bootimg-regen.service; do
@@ -304,7 +316,8 @@ done
 dropin=usr/lib/systemd/system/ostree-prepare-root.service.d/10-microos-remap.conf
 for f in usr/lib/ostree/ostree-prepare-root usr/libexec/microos/prepare-root usr/bin/sh usr/bin/realpath usr/bin/mkdir "$dropin" \
   usr/bin/plymouthd usr/bin/plymouth etc/plymouth/plymouthd.conf usr/share/plymouth/themes/microos/microos.plymouth \
-  usr/share/plymouth/themes/microos/microos.script usr/share/plymouth/themes/microos/wordmark.png; do
+  usr/share/plymouth/themes/microos/microos.script usr/share/plymouth/themes/microos/wordmark.png \
+  usr/share/plymouth/themes/microos/starting.png usr/share/plymouth/themes/microos/updating.png; do
   grep -qE " $f( |$)" <<< "$list" || fail "initramfs lacks $f"
 done
 grep -qE "/plymouth/script\.so( |$)" <<< "$list" || fail "initramfs lacks the plymouth script plugin"
