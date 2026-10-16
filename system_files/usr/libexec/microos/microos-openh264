@@ -1,0 +1,279 @@
+#!/usr/bin/python3
+import hashlib
+import lzma
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+import xml.etree.ElementTree as ET
+import zlib
+from compression import zstd
+
+ME = "microos-openh264"
+DIR = os.environ.get("MICROOS_OPENH264_DIR", "/var/lib/microos/openh264")
+KEYDIR = os.environ.get("MICROOS_OPENH264_KEYDIR", "/usr/share/microos/openh264")
+OS_RELEASE = os.environ.get("MICROOS_OPENH264_OS_RELEASE", "/usr/lib/os-release")
+ARCH = os.environ.get("MICROOS_OPENH264_ARCH", os.uname().machine)
+ATTEMPTS = int(os.environ.get("MICROOS_OPENH264_ATTEMPTS", "3"))
+RETRY_WAIT = float(os.environ.get("MICROOS_OPENH264_RETRY_WAIT", "60"))
+MAX_BYTES = 64 * 1024 * 1024
+MAX_PRIMARY = 16 * 1024 * 1024
+EVR = re.compile(r"^([0-9]+:)?[0-9A-Za-z._+~^]+-[0-9A-Za-z._+~^]+$")
+LIB = re.compile(r"^libopenh264\.so\.[0-9]+(\.[0-9]+)*$")
+ML = "{http://www.metalinker.org/}"
+REPO = "{http://linux.duke.edu/metadata/repo}"
+COMMON = "{http://linux.duke.edu/metadata/common}"
+
+
+class Offline(Exception):
+    pass
+
+
+class Refused(Exception):
+    pass
+
+
+def log(msg):
+    print(f"{ME}: {msg}", flush=True)
+
+
+def fetch(url, out):
+    for _ in range(5):
+        r = subprocess.run(
+            ["curl", "-fsS", "--proto", "=https", "--connect-timeout", "30", "--max-time", "600",
+             "--max-filesize", str(MAX_BYTES), "-w", "%{redirect_url}", "-o", out, url],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if r.returncode != 0:
+            raise Offline(f"{url}: curl exit {r.returncode} {r.stderr.strip()}")
+        nxt = r.stdout.strip()
+        if not nxt:
+            with open(out, "rb") as f:
+                return f.read()
+        url = "https://" + nxt.removeprefix("http://").removeprefix("https://")
+    raise Offline(f"{url}: too many redirects")
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def release():
+    with open(OS_RELEASE) as f:
+        for line in f:
+            k, _, v = line.strip().partition("=")
+            if k == "VERSION_ID":
+                v = v.strip('"')
+                if re.fullmatch(r"[0-9]+", v):
+                    return v
+    raise Refused(f"no numeric VERSION_ID in {OS_RELEASE}")
+
+
+def mirrors(tmp, rel):
+    url = os.environ.get("MICROOS_OPENH264_METALINK",
+                         f"https://mirrors.fedoraproject.org/metalink?repo=fedora-cisco-openh264-{rel}&arch={ARCH}")
+    root = ET.fromstring(fetch(url, f"{tmp}/metalink.xml"))
+    for f in root.iter(f"{ML}file"):
+        if f.get("name") != "repomd.xml":
+            continue
+        want = next((h.text.strip() for h in f.iter(f"{ML}hash") if h.get("type") == "sha256" and h.text), None)
+        urls = [(int(u.get("preference", "0")), u.text.strip()) for u in f.iter(f"{ML}url")
+                if u.get("protocol") == "https" and u.text and u.text.strip().endswith("/repodata/repomd.xml")]
+        if want and urls:
+            return want, [u[:-len("repodata/repomd.xml")] for _, u in sorted(urls, key=lambda x: -x[0])]
+    raise Offline(f"metalink {url} names no https repomd.xml with a sha256")
+
+
+def repomd(tmp, want, bases):
+    last = None
+    for base in bases:
+        try:
+            data = fetch(f"{base}repodata/repomd.xml", f"{tmp}/repomd.xml")
+        except Offline as e:
+            last = e
+            continue
+        if sha256(data) == want:
+            return base, ET.fromstring(data)
+        last = Offline(f"{base}repodata/repomd.xml sha256 differs from the metalink")
+    raise last
+
+
+def primary(tmp, base, md):
+    for d in md.iter(f"{REPO}data"):
+        if d.get("type") != "primary":
+            continue
+        href = d.find(f"{REPO}location").get("href")
+        want = d.find(f"{REPO}checksum").text.strip()
+        data = fetch(base + href, f"{tmp}/primary")
+        if sha256(data) != want:
+            raise Offline(f"{href} sha256 differs from repomd.xml")
+        if href.endswith(".zst"):
+            d = zstd.ZstdDecompressor()
+            data = d.decompress(data, max_length=MAX_PRIMARY)
+            done = d.eof
+        elif href.endswith(".gz"):
+            d = zlib.decompressobj(wbits=31)
+            data = d.decompress(data, MAX_PRIMARY)
+            done = d.eof
+        elif href.endswith(".xz"):
+            d = lzma.LZMADecompressor()
+            data = d.decompress(data, max_length=MAX_PRIMARY)
+            done = d.eof
+        else:
+            done = len(data) <= MAX_PRIMARY
+        if not done:
+            raise Refused(f"{href} unpacks to more than {MAX_PRIMARY} bytes")
+        return ET.fromstring(data)
+    raise Offline("repomd.xml has no primary")
+
+
+def package(pr):
+    for p in pr.iter(f"{COMMON}package"):
+        if p.findtext(f"{COMMON}name") == "openh264" and p.findtext(f"{COMMON}arch") == ARCH:
+            v = p.find(f"{COMMON}version")
+            epoch = v.get("epoch", "0")
+            evr = f"{v.get('ver')}-{v.get('rel')}" if epoch == "0" else f"{epoch}:{v.get('ver')}-{v.get('rel')}"
+            if not EVR.match(evr):
+                raise Refused(f"repo version {evr!r} is not an EVR")
+            return evr, p.find(f"{COMMON}location").get("href"), p.find(f"{COMMON}checksum").text.strip()
+    raise Offline(f"no openh264 {ARCH} in the repo")
+
+
+def vercmp(a, b):
+    r = subprocess.run(["rpm", "--eval", f'%{{lua:print(rpm.vercmp("{a}", "{b}"))}}'], capture_output=True, text=True)
+    if r.returncode != 0 or r.stdout.strip() not in ("-1", "0", "1"):
+        raise Refused(f"cannot compare {a} and {b}: {(r.stdout + r.stderr).strip()}")
+    return int(r.stdout)
+
+
+def installed():
+    try:
+        with open(f"{DIR}/version") as f:
+            evr = f.read().strip()
+    except OSError:
+        return None
+    if not EVR.match(evr):
+        return None
+    libs = [n for n in os.listdir(DIR) if LIB.match(n)]
+    return evr if libs and all(os.path.exists(f"{DIR}/{n}") for n in libs) else None
+
+
+def check(tmp, rpm, evr, keyfile):
+    db = f"{tmp}/db"
+    os.mkdir(db)
+    r = subprocess.run(["rpmkeys", "--dbpath", db, "--import", keyfile], capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Refused(f"key import failed: {r.stderr.strip()}")
+    r = subprocess.run(["rpmkeys", "--dbpath", db, "--checksig", rpm], capture_output=True, text=True)
+    if r.returncode != 0 or r.stdout.strip() != f"{rpm}: digests signatures OK":
+        raise Refused(f"signature check failed: {(r.stdout + r.stderr).strip()}")
+    r = subprocess.run(["rpm", "--dbpath", db, "-qp", "--qf", "%{NAME} %{ARCH} %{VERSION}-%{RELEASE}", rpm],
+                       capture_output=True, text=True)
+    if r.returncode != 0 or r.stdout.strip() != f"openh264 {ARCH} {evr}":
+        raise Refused(f"package is {r.stdout.strip()!r}, not openh264 {ARCH} {evr}")
+
+
+def unpack(tmp, rpm):
+    out = f"{tmp}/root"
+    os.mkdir(out)
+    p = subprocess.run(f"rpm2cpio '{rpm}' | cpio -idm --quiet --no-absolute-filenames './usr/lib64/libopenh264.so.*'",
+                       shell=True, cwd=out, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise Refused(f"unpack failed: {p.stderr.strip()}")
+    lib = f"{out}/usr/lib64"
+    names = sorted(os.listdir(lib)) if os.path.isdir(lib) else []
+    files = [n for n in names if LIB.match(n) and os.path.isfile(f"{lib}/{n}") and not os.path.islink(f"{lib}/{n}")]
+    links = [n for n in names if LIB.match(n) and os.path.islink(f"{lib}/{n}")]
+    if len(files) != 1 or not links or len(files) + len(links) != len(names):
+        raise Refused(f"unexpected files in the package: {names}")
+    real = files[0]
+    with open(f"{lib}/{real}", "rb") as f:
+        if f.read(4) != b"\x7fELF":
+            raise Refused(f"{real} is not ELF")
+    for n in links:
+        if os.readlink(f"{lib}/{n}") != real:
+            raise Refused(f"{n} does not point at {real}")
+    return lib, real, links
+
+
+def place(lib, real, links, evr):
+    tmpf = f"{DIR}/.{real}.new"
+    with open(f"{lib}/{real}", "rb") as src, open(tmpf, "wb") as dst:
+        dst.write(src.read())
+        dst.flush()
+        os.fsync(dst.fileno())
+    os.chmod(tmpf, 0o644)
+    os.rename(tmpf, f"{DIR}/{real}")
+    for n in links:
+        t = f"{DIR}/.{n}.new"
+        if os.path.lexists(t):
+            os.unlink(t)
+        os.symlink(real, t)
+        os.rename(t, f"{DIR}/{n}")
+    keep = {real, *links}
+    for n in os.listdir(DIR):
+        if LIB.match(n) and n not in keep:
+            os.unlink(f"{DIR}/{n}")
+    t = f"{DIR}/.version.new"
+    with open(t, "w") as f:
+        f.write(evr + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(t, 0o644)
+    os.rename(t, f"{DIR}/version")
+    fd = os.open(DIR, os.O_RDONLY)
+    os.fsync(fd)
+    os.close(fd)
+
+
+def once(rel, keyfile):
+    with tempfile.TemporaryDirectory() as tmp:
+        want, bases = mirrors(tmp, rel)
+        base, md = repomd(tmp, want, bases)
+        evr, href, sha = package(primary(tmp, base, md))
+        have = installed()
+        if have is not None:
+            c = vercmp(evr, have)
+            if c == 0:
+                return f"openh264 {evr} up to date"
+            if c < 0:
+                raise Refused(f"repo offers openh264 {evr}, older than the installed {have}")
+        rpm = f"{tmp}/openh264.rpm"
+        if sha256(fetch(base + href, rpm)) != sha:
+            raise Offline(f"{href} sha256 differs from the repo metadata")
+        check(tmp, rpm, evr, keyfile)
+        lib, real, links = unpack(tmp, rpm)
+        place(lib, real, links, evr)
+        return f"installed openh264 {evr} ({' '.join(links)}) from {base}"
+
+
+def main():
+    try:
+        rel = release()
+        keyfile = f"{KEYDIR}/RPM-GPG-KEY-fedora-{rel}-primary"
+        if not os.path.isfile(keyfile):
+            raise Refused(f"no {keyfile}")
+        if not os.path.isdir(DIR):
+            raise Refused(f"no {DIR}")
+    except Refused as e:
+        log(f"refused: {e}")
+        return 1
+    last = None
+    for attempt in range(1, ATTEMPTS + 1):
+        try:
+            log(once(rel, keyfile))
+            return 0
+        except Refused as e:
+            log(f"refused: {e}")
+            return 1
+        except (Offline, ET.ParseError, OSError, AttributeError, ValueError, EOFError, zlib.error, lzma.LZMAError, zstd.ZstdError) as e:
+            last = e
+            if attempt < ATTEMPTS:
+                time.sleep(RETRY_WAIT)
+    log(f"failed after {ATTEMPTS} attempts: {last}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

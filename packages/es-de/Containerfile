@@ -1,0 +1,7 @@
+FROM localhost/microos-pkg-builder
+
+COPY es-de.spec SOURCE.env /tmp/es-de/
+RUN . /tmp/es-de/SOURCE.env \
+ && dnf -y --setopt=install_weak_deps=False builddep --define "commit $ESDE_REF" /tmp/es-de/es-de.spec \
+ && dnf clean all \
+ && rm -rf /tmp/es-de
