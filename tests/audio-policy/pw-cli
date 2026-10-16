@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+if [[ $1 == s && $3 == Props && $# == 4 ]]; then
+  if grep -qF "\"name\":\"$2\"" "$STUB_DIR/sinks.json"; then
+    echo "props $2 $4" >> "$STUB_DIR/log"
+  else
+    echo "Error: \"s: unknown global '$2'\""
+  fi
+  exit 0
+fi
+echo "pw-cli stub: $*" >&2
+exit 1

@@ -15,8 +15,11 @@ case "$*" in
       [[ -e $f ]] && json=${json//\"name\":\"${f##*/}\",\"state\":\"IDLE\"/\"name\":\"${f##*/}\",\"state\":\"SUSPENDED\"}
     done
     echo "$json"
+    if [[ -e $STUB_DIR/sinks.after ]]; then mv "$STUB_DIR/sinks.after" "$STUB_DIR/sinks.json"; fi
     ;;
-  "--format=json list cards") printf '[{"name":"alsa_card.platform-sound","active_profile":"%s"}]\n' "$(cat "$STUB_DIR/profile")" ;;
+  "--format=json list cards")
+    printf '[{"name":"alsa_card.platform-sound","active_profile":"%s"}%s]\n' "$(cat "$STUB_DIR/profile")" "$(cat "$STUB_DIR/cards.json" 2> /dev/null)"
+    ;;
   subscribe)
     echo $$ > "$STUB_DIR/subscribe.pid"
     exec tail -n 0 -F "$STUB_DIR/pactl.feed" 2> /dev/null
@@ -36,6 +39,17 @@ case "$*" in
       [[ $(cat "$STUB_DIR/dapm.gen") == "$gen" ]] && echo off > "$STUB_DIR/dapm") > /dev/null 2>&1 &
     echo "Event 'change' on sink #1" >> "$STUB_DIR/pactl.feed"
     ;;
+  "suspend-sink $2 0") echo "resume $2" >> "$STUB_DIR/log" ;;
+  "set-sink-volume "*)
+    if [[ $2 == microos-eq.* && -e $STUB_DIR/chainvol-fails ]]; then
+      rm "$STUB_DIR/chainvol-fails"
+      echo "pactl stub: chain volume fails once" >&2
+      exit 1
+    fi
+    echo "volume ${*:2}" >> "$STUB_DIR/log"
+    ;;
+  "set-sink-mute $2 $3") echo "mute $2 $3" >> "$STUB_DIR/log" ;;
+  "set-card-profile $2 $3") echo "profile $2 $3" >> "$STUB_DIR/log" ;;
   *)
     echo "pactl stub: $*" >&2
     exit 1

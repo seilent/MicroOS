@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+dir=$EQ_SHIM_DIR
+mkdir -p "$dir"
+inst() {
+  local u=${1#microos-eq@}
+  echo "${u%.service}"
+}
+alive() { [[ -e $dir/$1.sup ]] && kill -0 "$(cat "$dir/$1.sup")" 2> /dev/null; }
+case "$*" in
+  "--user list-units --all --plain --no-legend --full microos-eq@*.service")
+    for f in "$dir"/*.sup; do
+      [[ -e $f ]] || continue
+      i=${f##*/}
+      i=${i%.sup}
+      if alive "$i"; then echo "microos-eq@$i.service loaded active running EQ chain $i"; fi
+    done
+    ;;
+  "--user start --no-block $4")
+    i=$(inst "$4")
+    echo "start $i" >> "$dir/log"
+    (
+      if [[ -e $dir/$i.stop ]]; then
+        for _ in {1..50}; do alive "$i" || break; sleep 0.1; done
+      fi
+      alive "$i" && exit 0
+      rm -f "$dir/$i.stop"
+      setsid "$(dirname "$0")/eq-unit" "$i" 2>> "$dir/$i.err" &
+      echo $! > "$dir/$i.sup"
+    ) > /dev/null 2>&1 < /dev/null &
+    ;;
+  "--user stop --no-block $4")
+    i=$(inst "$4")
+    echo "stop $i" >> "$dir/log"
+    alive "$i" || exit 0
+    : > "$dir/$i.stop"
+    kill "$(cat "$dir/$i.pid")" 2> /dev/null
+    (for _ in {1..50}; do alive "$i" || break; sleep 0.1; done; rm -f "$dir/$i.sup" "$dir/$i.pid") > /dev/null 2>&1 &
+    ;;
+  "--user kill -s KILL $5")
+    i=$(inst "$5")
+    kill -KILL "$(cat "$dir/$i.pid")"
+    ;;
+  *)
+    echo "systemctl shim: $*" >&2
+    exit 1
+    ;;
+esac

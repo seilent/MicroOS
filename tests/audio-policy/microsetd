@@ -13,6 +13,7 @@ XML = f"""
 <node>
   <interface name="{IFACE}">
     <method name="Get"><arg type="s" direction="in"/><arg type="v" direction="out"/></method>
+    <method name="List"><arg type="s" direction="in"/><arg type="a{{sv}}" direction="out"/></method>
     <method name="Set"><arg type="s" direction="in"/><arg type="v" direction="in"/></method>
     <signal name="Changed"><arg type="s"/><arg type="v"/></signal>
   </interface>
@@ -23,7 +24,11 @@ XML = f"""
 """
 LOG = sys.argv[1]
 FAIL_GET = os.path.join(os.path.dirname(LOG), "get-fails")
-store = {"audio.output": GLib.Variant("s", sys.argv[2])}
+store = {"audio.output": GLib.Variant("s", sys.argv[2]), "audio.bt_codec": GLib.Variant("s", "auto")}
+for slot in ("headphones", "speaker", "usb", "bt"):
+    store[f"audio.eq.{slot}.on"] = GLib.Variant("b", False)
+    store[f"audio.eq.{slot}.name"] = GLib.Variant("s", "")
+    store[f"audio.eq.{slot}.filters"] = GLib.Variant("as", ["preamp 0"])
 
 
 def record(line):
@@ -39,6 +44,14 @@ def change(conn, key, value):
 
 
 def method(conn, _sender, _path, _iface, name, params, invocation):
+    if name == "List":
+        prefix = params.get_child_value(0).get_string()
+        if os.path.exists(FAIL_GET):
+            record(f"list {prefix} failed")
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.Failed", "list fails in the stub")
+        else:
+            invocation.return_value(GLib.Variant("(a{sv})", ({k: v for k, v in store.items() if k.startswith(prefix)},)))
+        return
     if name == "Get":
         key = params.get_child_value(0).get_string()
         if os.path.exists(FAIL_GET):
