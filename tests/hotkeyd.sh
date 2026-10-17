@@ -347,7 +347,7 @@ kill "$game"
 
 : > "$tmp/ip.log"
 client w watch
-client a acquire
+client a acquire usr1
 a=$(unique a)
 until_ok is_holder "$a" || fail "holder after Acquire: $(holder)"
 until_ok want_modes 3 2 || fail "InterceptMode 3 while held: $(modes)"
@@ -355,11 +355,21 @@ until_ok grep -qx "holder $a" "$tmp/w.log" || fail "no PropertiesChanged for $a"
 client b acquire
 b=$(unique b)
 until_ok is_holder "$b" || fail "stack top after a second holder: $(holder)"
+until_ok grep -qx "holder $b" "$tmp/w.log" || fail "no PropertiesChanged for $b"
+seen=$(wc -l < "$tmp/w.log")
+kill -USR1 "${client_pid[a]}"
+until_ok grep -qx acquired "$tmp/a.log" || fail "no second Acquire from $a"
+until_ok is_holder "$a" || fail "an Acquire from a name on the stack does not move it to the top: $(holder)"
+k wait:0.3
+[[ $(tail -n +$((seen + 1)) "$tmp/w.log") == "holder $a" ]] || fail "move to top is not one Holder change: $(tail -n +$((seen + 1)) "$tmp/w.log")"
+want_modes 3 2 || fail "InterceptMode changed on a move to top: $(modes)"
 kill "${client_pid[b]}"
-until_ok is_holder "$a" || fail "holder after the top lost its name: $(holder)"
+k wait:0.3
+is_holder "$a" || fail "holder after the buried name left: $(holder)"
+[[ $(tail -n +$((seen + 1)) "$tmp/w.log") == "holder $a" ]] || fail "the buried name leaving changed Holder: $(tail -n +$((seen + 1)) "$tmp/w.log")"
 want_modes 3 2 || fail "InterceptMode changed while still held: $(modes)"
 client c acquire acquire release
-until_ok is_holder "$a" || fail "a second Acquire is not a no op: $(holder)"
+until_ok is_holder "$a" || fail "holder after a repeated Acquire and a Release: $(holder)"
 k add
 until_ok want_modes 3 3 || fail "a device added while held: $(modes)"
 kill "${client_pid[a]}"
@@ -533,6 +543,16 @@ hold guide
 [[ $(calls) == "systemctl start --no-block microos-session-switch@steam.service" ]] || fail "switch with a refused GAME_SCOPE: $(calls)"
 grep -q GetUnit "$tmp/units/systemd.log" && fail "GetUnit with a refused GAME_SCOPE"
 kill -0 "$hk" 2> /dev/null || fail "hotkeyd died: $(cat "$tmp/hotkeyd.err")"
+
+mkdir -p "$tmp/o/o.conf.d"
+echo "rc tap call net.seilent.MicroSet.Overlay /net/seilent/MicroSet/Overlay net.seilent.MicroSet.Overlay1 Toggle" \
+  > "$tmp/o/o.conf.d/60-microset.conf"
+boot o "$tmp/o"
+grep -q ": ignored: " "$tmp/hotkeyd.err" && fail "MicroSET's rc row refused: $(cat "$tmp/hotkeyd.err")"
+client v overlay
+press rc
+until_ok grep -qsx toggle "$tmp/v.log" || fail "rc did not toggle the MicroSET overlay: $(cat "$tmp/hotkeyd.err")"
+(( $(grep -cx toggle "$tmp/v.log") == 1 )) || fail "one rc tap toggled $(grep -cx toggle "$tmp/v.log") times"
 
 if (( rc == 0 )); then
   echo "hotkeyd: ok"

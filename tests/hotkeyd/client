@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
+import signal
 import sys
 
 import gi
 
 gi.require_version("Gio", "2.0")
-from gi.repository import Gio, GLib
+gi.require_version("GLibUnix", "2.0")
+from gi.repository import Gio, GLib, GLibUnix
 
 INTERCEPT = ("net.seilent.MicroOs.Intercept", "/net/seilent/MicroOs/Intercept", "net.seilent.MicroOs.Intercept1")
 XML = """
 <node>
   <interface name="test.Hotkeyd">
     <method name="Poke"/>
+  </interface>
+</node>
+"""
+OVERLAY = ("net.seilent.MicroSet.Overlay", "/net/seilent/MicroSet/Overlay", "net.seilent.MicroSet.Overlay1")
+OVERLAY_XML = f"""
+<node>
+  <interface name="{OVERLAY[2]}">
+    <method name="Toggle"/>
   </interface>
 </node>
 """
@@ -27,10 +37,21 @@ def poke(_conn, _sender, _path, _iface, _name, _params, invocation):
     invocation.return_value(None)
 
 
+def toggle(_conn, _sender, _path, _iface, _name, _params, invocation):
+    record("toggle")
+    invocation.return_value(None)
+
+
 def changed(_conn, _sender, _path, _iface, _signal, params):
     _iface, props, _gone = params.unpack()
     if "Holder" in props:
         record(f"holder {props['Holder']}")
+
+
+def again(bus):
+    bus.call_sync(*INTERCEPT, "Acquire", None, None, Gio.DBusCallFlags.NONE, 5000, None)
+    record("acquired")
+    return True
 
 
 def main(cmds):
@@ -51,6 +72,16 @@ def main(cmds):
             bus.flush_sync(None)
             record(f"gone {bus.get_unique_name()}")
             return 0
+        elif cmd == "overlay":
+            bus.register_object_with_closures2(
+                OVERLAY[1], Gio.DBusNodeInfo.new_for_xml(OVERLAY_XML).interfaces[0], toggle, None, None
+            )
+            bus.call_sync(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName",
+                GLib.Variant("(su)", (OVERLAY[0], 4)), None, Gio.DBusCallFlags.NONE, 5000, None,
+            )
+        elif cmd == "usr1":
+            GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, again, bus)
         elif cmd == "watch":
             bus.signal_subscribe(
                 INTERCEPT[0], "org.freedesktop.DBus.Properties", "PropertiesChanged", INTERCEPT[1], None,
