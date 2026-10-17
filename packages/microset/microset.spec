@@ -45,6 +45,18 @@ Requires:       %{name}-fonts = %{version}-%{release}
 The Qt Quick screen of the MicroOS recovery session. It shows the failing
 session with its journal and switches, rolls back or powers off.
 
+%package settings
+Summary:        MicroSET settings overlay
+Requires:       %{name}%{?_isa} = %{version}-%{release}
+Requires:       %{name}-fonts = %{version}-%{release}
+Requires:       qt6-qtbase-gui%{?_isa}
+Requires:       qt6-qtdeclarative%{?_isa}
+Requires:       xprop
+
+%description settings
+The MicroSET settings page as a gamescope overlay in the Steam, MicroDAP and
+MicroEMU sessions, toggled with RC.
+
 %package fonts
 Summary:        Selawik font for the MicroSET and MicroDAP screens
 License:        OFL-1.1
@@ -101,6 +113,26 @@ install -pm644 fonts/*.ttf %{buildroot}%{_datadir}/fonts/microset/
 %files recovery
 %license LICENSE
 %{_bindir}/microset-recovery
+
+%files settings
+%license LICENSE
+%{_bindir}/microset-settings
+%dir %{_libexecdir}/microset
+%{_libexecdir}/microset/microset-wait-x
+%{_userunitdir}/microset-overlay@.service
+%dir %{_userunitdir}/gamescope-session-plus@steam.service.d
+%dir %{_userunitdir}/gamescope-session-plus@microdap.service.d
+%dir %{_userunitdir}/gamescope-session-plus@microemu.service.d
+%{_userunitdir}/gamescope-session-plus@steam.service.d/30-microset-overlay.conf
+%{_userunitdir}/gamescope-session-plus@microdap.service.d/30-microset-overlay.conf
+%{_userunitdir}/gamescope-session-plus@microemu.service.d/30-microset-overlay.conf
+%dir %{_prefix}/lib/microos/hotkeys.d
+%dir %{_prefix}/lib/microos/hotkeys.d/steam.conf.d
+%dir %{_prefix}/lib/microos/hotkeys.d/microdap.conf.d
+%dir %{_prefix}/lib/microos/hotkeys.d/microemu.conf.d
+%{_prefix}/lib/microos/hotkeys.d/steam.conf.d/60-microset.conf
+%{_prefix}/lib/microos/hotkeys.d/microdap.conf.d/60-microset.conf
+%{_prefix}/lib/microos/hotkeys.d/microemu.conf.d/60-microset.conf
 
 %files fonts
 %license Selawik.txt
