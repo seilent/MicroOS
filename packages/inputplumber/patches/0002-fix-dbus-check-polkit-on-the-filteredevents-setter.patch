@@ -1,0 +1,139 @@
+From b05bc94e186df5cbd85c338a0455199970f10753 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Sat, 17 Oct 2026 16:22:41 +0900
+Subject: [PATCH] fix(dbus): check polkit on the FilteredEvents setter
+
+---
+ .../org.shadowblip.InputPlumber.policy        | 10 +++
+ src/dbus/interface/composite_device.rs        |  8 ++
+ src/dbus/polkit_test.rs                       | 73 +++++++++++++++++++
+ 3 files changed, 91 insertions(+)
+
+diff --git a/rootfs/usr/share/polkit-1/actions/org.shadowblip.InputPlumber.policy b/rootfs/usr/share/polkit-1/actions/org.shadowblip.InputPlumber.policy
+index b7c4bcf..6fabfa6 100644
+--- a/rootfs/usr/share/polkit-1/actions/org.shadowblip.InputPlumber.policy
++++ b/rootfs/usr/share/polkit-1/actions/org.shadowblip.InputPlumber.policy
+@@ -184,6 +184,16 @@
+     </defaults>
+   </action>
+ 
++  <action id="org.shadowblip.Input.CompositeDevice.SetFilteredEvents">
++    <description>Modify filtered events of the composite device</description>
++    <message>Authorization required to modify the filtered events of the composite device.</message>
++    <defaults>
++      <allow_any>no</allow_any>
++      <allow_inactive>no</allow_inactive>
++      <allow_active>auth_admin</allow_active>
++    </defaults>
++  </action>
++
+   <action id="org.shadowblip.Input.CompositeDevice.SetTargetDevices">
+     <description>Modify target devices managed by the composite device</description>
+     <message>Authorization required to modify target devices managed by the composite device.</message>
+diff --git a/src/dbus/interface/composite_device.rs b/src/dbus/interface/composite_device.rs
+index e3db7ac..b087515 100644
+--- a/src/dbus/interface/composite_device.rs
++++ b/src/dbus/interface/composite_device.rs
+@@ -617,7 +617,15 @@ impl CompositeDeviceInterface {
+     async fn set_filtered_events(
+         &mut self,
+         events: HashMap<String, Vec<String>>,
++        #[zbus(connection)] conn: &Connection,
++        #[zbus(header)] hdr: Option<Header<'_>>,
+     ) -> fdo::Result<()> {
++        check_polkit(
++            conn,
++            hdr,
++            "org.shadowblip.Input.CompositeDevice.SetFilteredEvents",
++        )
++        .await?;
+         let mut new_events = HashMap::new();
+         for (source, caps) in events {
+             let mut vals = vec![];
+diff --git a/src/dbus/polkit_test.rs b/src/dbus/polkit_test.rs
+index 75854f8..2d0e272 100644
+--- a/src/dbus/polkit_test.rs
++++ b/src/dbus/polkit_test.rs
+@@ -77,6 +77,79 @@ async fn check_polkit_policies() -> Result<(), Box<dyn Error>> {
+     Ok(())
+ }
+ 
++#[tokio::test]
++async fn check_polkit_in_interface_setters() -> Result<(), Box<dyn Error>> {
++    let mut found = 0;
++    let mut missing = Vec::new();
++    let mut dirs = vec![PathBuf::from(DBUS_IFACE_SRC_DIR)];
++    while let Some(dir) = dirs.pop() {
++        let mut entries = fs::read_dir(&dir).await?;
++        while let Some(entry) = entries.next_entry().await? {
++            let path = entry.path();
++            if entry.file_type().await?.is_dir() {
++                dirs.push(path);
++                continue;
++            }
++            let source = fs::read_to_string(&path).await?;
++            for (name, body) in interface_setters(&source) {
++                found += 1;
++                if !body.contains("check_polkit(") {
++                    missing.push(format!("{}: {name}", path.display()));
++                }
++            }
++        }
++    }
++    assert!(found > 0, "no interface setters found under {DBUS_IFACE_SRC_DIR}");
++    assert!(missing.is_empty(), "interface setters without check_polkit: {missing:?}");
++    Ok(())
++}
++
++fn block_end(source: &str, open: usize) -> usize {
++    let mut depth = 0;
++    for (i, c) in source[open..].char_indices() {
++        match c {
++            '{' => depth += 1,
++            '}' => {
++                depth -= 1;
++                if depth == 0 {
++                    return open + i;
++                }
++            }
++            _ => (),
++        }
++    }
++    source.len()
++}
++
++fn interface_setters(source: &str) -> Vec<(String, String)> {
++    let mut setters = Vec::new();
++    let mut rest = 0;
++    while let Some(at) = source[rest..].find("#[interface(") {
++        let start = rest + at;
++        let Some(open) = source[start..].find('{').map(|i| start + i) else {
++            break;
++        };
++        let end = block_end(source, open);
++        let block = &source[open..end];
++        let mut pos = 0;
++        while let Some(f) = block[pos..].find("async fn set_") {
++            let at = pos + f + "async fn ".len();
++            let name: String = block[at..]
++                .chars()
++                .take_while(|c| c.is_alphanumeric() || *c == '_')
++                .collect();
++            let Some(body) = block[at..].find('{').map(|i| at + i) else {
++                break;
++            };
++            let body_end = block_end(block, body);
++            setters.push((name, block[body..body_end].to_string()));
++            pos = body_end;
++        }
++        rest = end;
++    }
++    setters
++}
++
+ async fn get_polkit_actions() -> Result<HashSet<String>, Box<dyn Error>> {
+     let mut actions = HashSet::new();
+     let policy_data = fs::read_to_string(POLKIT_POLICY_PATH).await?;
+-- 
+2.43.0
+

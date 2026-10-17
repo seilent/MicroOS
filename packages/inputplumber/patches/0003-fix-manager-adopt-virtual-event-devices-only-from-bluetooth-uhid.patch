@@ -1,0 +1,129 @@
+From 4b9ec5467957c871965d83209095042754e13a5b Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Sat, 17 Oct 2026 16:25:23 +0900
+Subject: [PATCH] fix(manager): adopt virtual event devices only from bluetooth
+ uhid
+
+---
+ src/input/manager.rs | 88 +++++++++++++++++++++++++++++---------------
+ 1 file changed, 58 insertions(+), 30 deletions(-)
+
+diff --git a/src/input/manager.rs b/src/input/manager.rs
+index 9552586..376478f 100644
+--- a/src/input/manager.rs
++++ b/src/input/manager.rs
+@@ -57,13 +57,7 @@ const UDEV_INIT_RECHECK_INTERVAL: Duration = Duration::from_secs(1);
+ const UDEV_INIT_MAX_RECHECKS: u32 = 30;
+ /// Sysnames prefixes that udev never initializes, dropped without recheck
+ const UDEVS_SKIP_RECHECK: &[&str] = &["trigger"];
+-const VIRT_DEVICE_WHITELIST: &[&str] = &[
+-    "Sunshine PS5 (virtual) pad",
+-    "Sunshine X-Box One (virtual) pad",
+-    "Sunshine gamepad (virtual) motion sensors",
+-    "Sunshine Nintendo (virtual) pad",
+-    "MSI WMI hotkeys",
+-];
++const UHID_DEVPATH: &str = "/devices/virtual/misc/uhid/";
+ 
+ #[derive(Error, Debug)]
+ pub enum ManagerError {
+@@ -1451,35 +1445,16 @@ impl Manager {
+                     // Look up the connected device using udev
+                     let device_info = udev::get_device(dev_path.clone()).await?;
+ 
+-                    // Check if the virtual device is using the bluetooth bus
+                     let bus_id = device.get_attribute_from_tree("id/bustype");
+                     let id_bus = device_info.properties.get("ID_BUS");
+ 
+                     log::debug!("Bus ID for {dev_path}: udev: {id_bus:?}, UdevDevice: {bus_id:?}");
+-                    let is_bluetooth = {
+-                        if let Some(bus) = id_bus {
+-                            bus == "bluetooth"
+-                        } else if let Some(bus) = bus_id {
+-                            bus == "0005"
+-                        } else {
+-                            false
+-                        }
+-                    };
+-
+-                    // Some virtual gamepads we DO want to manage
+-                    let device_name = device.get_attribute_from_tree("name").unwrap_or_default();
+-                    let is_whitelisted = VIRT_DEVICE_WHITELIST.contains(&device_name.as_str());
+-
+-                    if !is_bluetooth && !is_whitelisted {
+-                        log::debug!("{dev_name} ({dev_sysname}) is virtual, skipping consideration for {dev_path}");
++                    if !adopts_virtual_event(&dev_path, id_bus.map(String::as_str), bus_id.as_deref()) {
++                        log::debug!("{dev_name} ({dev_sysname}) is virtual and not a uhid bluetooth device, skipping consideration for {dev_path}");
+                         notify_device_added = false;
++                        break 'check_manage;
+                     }
+-                    if is_bluetooth {
+-                        log::debug!("{dev_name} ({dev_sysname}) is a virtual device node for a bluetooth device. Treating as real - {dev_path}");
+-                    }
+-                    if is_whitelisted {
+-                        log::debug!("{dev_name} ({dev_sysname}) is a virtual device node for a whitelisted device. Treating as real - {dev_path}")
+-                    }
++                    log::debug!("{dev_name} ({dev_sysname}) is a uhid device node for a bluetooth device. Treating as real - {dev_path}");
+                 }
+             }
+ 
+@@ -2008,3 +1983,56 @@ impl Manager {
+         });
+     }
+ }
++
++fn adopts_virtual_event(devpath: &str, id_bus: Option<&str>, bustype: Option<&str>) -> bool {
++    let is_bluetooth = match (id_bus, bustype) {
++        (Some(bus), _) => bus == "bluetooth",
++        (None, Some(bus)) => bus == "0005",
++        (None, None) => false,
++    };
++    is_bluetooth && devpath.starts_with(UHID_DEVPATH)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::adopts_virtual_event;
++
++    const UINPUT: &str = "/devices/virtual/input/input49/event11";
++    const UHID_BT: &str = "/devices/virtual/misc/uhid/0005:045E:0B13.0003/input/input25/event12";
++    const UHID_USB: &str = "/devices/virtual/misc/uhid/0003:28DE:12F0.0002/input/input21/event10";
++
++    #[test]
++    fn uinput_with_udev_bus_bluetooth_is_dropped() {
++        assert!(!adopts_virtual_event(UINPUT, Some("bluetooth"), Some("0005")));
++    }
++
++    #[test]
++    fn uinput_with_bustype_0005_only_is_dropped() {
++        assert!(!adopts_virtual_event(UINPUT, None, Some("0005")));
++    }
++
++    #[test]
++    fn uinput_on_the_usb_bus_is_dropped() {
++        assert!(!adopts_virtual_event(UINPUT, Some("usb"), Some("0003")));
++    }
++
++    #[test]
++    fn uhid_with_udev_bus_bluetooth_is_adopted() {
++        assert!(adopts_virtual_event(UHID_BT, Some("bluetooth"), Some("0005")));
++    }
++
++    #[test]
++    fn uhid_with_bustype_0005_only_is_adopted() {
++        assert!(adopts_virtual_event(UHID_BT, None, Some("0005")));
++    }
++
++    #[test]
++    fn uhid_with_no_bus_is_dropped() {
++        assert!(!adopts_virtual_event(UHID_BT, None, None));
++    }
++
++    #[test]
++    fn uhid_on_the_usb_bus_is_dropped() {
++        assert!(!adopts_virtual_event(UHID_USB, Some("usb"), Some("0003")));
++    }
++}
+-- 
+2.43.0
+

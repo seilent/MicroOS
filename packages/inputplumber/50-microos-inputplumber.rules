@@ -1,0 +1,43 @@
+polkit.addRule(function(action, subject) {
+  var grant = [
+    "org.shadowblip.Input.CompositeDevice.SetTargetDevices",
+    "org.shadowblip.Input.CompositeDevice.SetInterceptMode",
+    "org.shadowblip.Output.ForceFeedback.Rumble"
+  ];
+  var deny = [
+    "org.shadowblip.Input.CompositeDevice.LoadProfilePath",
+    "org.shadowblip.Input.CompositeDevice.LoadProfileFromYaml",
+    "org.shadowblip.Input.CompositeDevice.Stop",
+    "org.shadowblip.Input.CompositeDevice.SendEvent",
+    "org.shadowblip.Input.CompositeDevice.SendButtonChord",
+    "org.shadowblip.Input.CompositeDevice.SetInterceptActivation",
+    "org.shadowblip.Input.CompositeDevice.SetFilteredEvents",
+    "org.shadowblip.Input.Keyboard.SendKey",
+    "org.shadowblip.Input.Mouse.MoveCursor",
+    "org.shadowblip.InputPlumber.SetGamepadOrder",
+    "org.shadowblip.InputPlumber.SetManageAllDevices",
+    "org.shadowblip.InputPlumber.CreateCompositeDevice",
+    "org.shadowblip.InputPlumber.CreateTargetDevice",
+    "org.shadowblip.InputPlumber.StopTargetDevice",
+    "org.shadowblip.InputPlumber.AttachTargetDevice",
+    "org.shadowblip.InputPlumber.HookSleep",
+    "org.shadowblip.InputPlumber.HookWake",
+    "org.shadowblip.Input.Source.IIOIMUDevice.SetAccelSampleRate",
+    "org.shadowblip.Input.Source.IIOIMUDevice.SetAngvelSampleRate",
+    "org.shadowblip.Input.Source.IIOIMUDevice.SetAccelScale",
+    "org.shadowblip.Input.Source.IIOIMUDevice.SetAngvelScale",
+    "org.shadowblip.Output.ForceFeedback.Enable",
+    "org.shadowblip.Output.ForceFeedback.Stop",
+    "org.shadowblip.Input.Metrics.Enabled",
+    "org.shadowblip.Input.Metrics.SetEnabled"
+  ];
+  if (subject.user != "micro") {
+    return;
+  }
+  if (grant.indexOf(action.id) >= 0) {
+    return polkit.Result.YES;
+  }
+  if (deny.indexOf(action.id) >= 0) {
+    return polkit.Result.NO;
+  }
+});

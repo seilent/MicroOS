@@ -25,7 +25,7 @@ tar -xzf "$tarball" -C "$top/vendor"
     | zstd -q -T0 -o "$top/SOURCES/inputplumber-$INPUTPLUMBER_VERSION-vendor.tar.zst"
 )
 rm -rf "$top/vendor"
-cp "$src"/patches/*.patch "$top/SOURCES/"
+cp "$src"/patches/*.patch "$src/50-microos-inputplumber.rules" "$top/SOURCES/"
 
 rpmbuild -ba \
   --define "_topdir $top" \

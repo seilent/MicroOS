@@ -9,7 +9,10 @@ License:        GPL-3.0-or-later
 URL:            https://github.com/ShadowBlip/InputPlumber
 Source0:        %{url}/archive/%{commit}/%{name}-%{commit}.tar.gz
 Source1:        %{name}-%{version}-vendor.tar.zst
+Source2:        50-microos-inputplumber.rules
 Patch0:         0001-feat-source-add-qualcomm-ssc-imu-source.patch
+Patch1:         0002-fix-dbus-check-polkit-on-the-filteredevents-setter.patch
+Patch2:         0003-fix-manager-adopt-virtual-event-devices-only-from-bluetooth-uhid.patch
 Vendor:         MicroOS
 BuildRequires:  cargo
 BuildRequires:  rust
@@ -36,12 +39,13 @@ cargo build --release --offline --frozen
 %ifarch aarch64
 export RUSTFLAGS="${RUSTFLAGS:-} -Ctarget-feature=+fp16,+dotprod,+rcpc"
 %endif
-cargo test --release --offline --frozen --lib ssc
+cargo test --release --offline --frozen --lib -- ssc dbus::polkit_test input::manager::tests
 
 %install
 install -D -m 755 target/release/inputplumber %{buildroot}%{_bindir}/inputplumber
 mkdir -p %{buildroot}%{_prefix}
 cp -a rootfs/usr/. %{buildroot}%{_prefix}/
+install -D -m 644 %{SOURCE2} %{buildroot}%{_datadir}/polkit-1/rules.d/50-microos-inputplumber.rules
 chmod -R go-w %{buildroot}
 
 %post
@@ -67,6 +71,7 @@ chmod -R go-w %{buildroot}
 %{_udevrulesdir}/99-inputplumber-device-setup.rules
 %{_datadir}/inputplumber/
 %{_datadir}/polkit-1/actions/org.shadowblip.InputPlumber.policy
-%{_datadir}/polkit-1/rules.d/org.shadowblip.InputPlumber.rules
+%{_datadir}/polkit-1/rules.d/50-microos-inputplumber.rules
+%exclude %{_datadir}/polkit-1/rules.d/org.shadowblip.InputPlumber.rules
 %exclude %{_modulesloaddir}/inputplumber-hrtimer.conf
 %exclude %{_datadir}/dbus-1/system-services/org.shadowblip.InputPlumber.service
