@@ -164,6 +164,94 @@ if sorted(deny) != sorted(want) or not 0 <= user < no < yes:
     sys.exit("deny %s, user check at %d, NO at %d, first YES at %d" % (deny, user, no, yes))
 PY
 grep -qx 'd /run/microos/hold 0755 root root -' /usr/lib/tmpfiles.d/microos.conf || fail "tmpfiles lacks /run/microos/hold"
+inputro=/usr/lib/udev/rules.d/72-microos-input-ro.rules
+[[ $(stat -c '%a %U %G' "$inputro") == '644 root root' ]] || fail "$inputro missing, mode or owner"
+udevadm verify --resolve-names=never "$inputro" > /dev/null 2>&1 || fail "$inputro does not verify"
+python3 - "$inputro" <<'PY' || fail "$inputro sets a mode outside the root trusted nodes"
+import re, sys
+v20 = {
+    "AYANEO Controller": ("0003", "4001", "0428", "!="),
+    "aya-keys": ("0019", "0001", "0001", "!="),
+    "gpio-keys": ("0019", "0001", "0001", "!="),
+    "pm8941_pwrkey": ("0000", "0000", "0000", "!="),
+    "pm8941_resin": ("0000", "0000", "0000", "!="),
+    "InputPlumber Keyboard": ("0003", "1234", "5678", "=="),
+}
+bad, seen = [], []
+for n, line in enumerate(open(sys.argv[1]).read().splitlines(), 1):
+    if not line.strip():
+        continue
+    kv = re.findall(r'([A-Z_]+(?:\{[^}]*\})?)(==|!=|-=|\+=|:=|=)"([^"]*)"', line)
+    d = {k: (op, v) for k, op, v in kv}
+    if ", ".join('%s%s"%s"' % t for t in kv) != line.strip():
+        bad.append("line %d does not parse: %s" % (n, line))
+        continue
+    name = d.get("ATTRS{name}", ("", ""))[1]
+    ids = v20.get(name)
+    pad = name == "AYANEO Controller"
+    ok = (ids is not None and len(kv) == len(d)
+          and d.get("SUBSYSTEM") == ("==", "input") and d.get("KERNEL") == ("==", "event*|js*" if pad else "event*")
+          and d.get("DEVPATH") == (ids[3], "/devices/virtual/*")
+          and d.get("ATTRS{id/bustype}") == ("==", ids[0]) and d.get("ATTRS{id/vendor}") == ("==", ids[1])
+          and d.get("ATTRS{id/product}") == ("==", ids[2])
+          and d.get("MODE") == ("=", "0600" if pad else "0640")
+          and d.get("GROUP", (None, None)) == (("=", "root") if pad else (None, None))
+          and d.get("TAG", (None, None)) == (("-=", "uaccess") if pad else (None, None))
+          and d.get("ENV{ID_SEAT}", (None, None)) == (("=", "seat-none") if pad else (None, None))
+          and set(d) <= {"SUBSYSTEM", "KERNEL", "DEVPATH", "ATTRS{name}", "ATTRS{id/bustype}", "ATTRS{id/vendor}",
+                         "ATTRS{id/product}", "MODE", "GROUP", "TAG", "ENV{ID_SEAT}"})
+    if not ok:
+        bad.append("line %d: %s" % (n, line))
+    seen.append(name)
+if sorted(seen) != sorted(v20):
+    bad.append("nodes %s" % seen)
+if bad:
+    sys.exit("\n".join(bad))
+PY
+python3 - <<'PY' || fail "udev rule order around 72-microos-input-ro.rules"
+import os, sys
+eff = {}
+for d in ("/usr/lib/udev/rules.d", "/run/udev/rules.d", "/etc/udev/rules.d"):
+    if os.path.isdir(d):
+        for f in os.listdir(d):
+            if f.endswith(".rules"):
+                eff[f] = os.path.join(d, f)
+names = sorted(eff)
+ours, late = "72-microos-input-ro.rules", "73-seat-late.rules"
+bad = [f for f in ("70-uaccess.rules", "71-seat.rules", ours, late) if f not in eff]
+if not bad:
+    if eff[ours] != "/usr/lib/udev/rules.d/" + ours:
+        bad.append("%s overridden by %s" % (ours, eff[ours]))
+    if not names.index("70-uaccess.rules") < names.index("71-seat.rules") < names.index(ours) < names.index(late):
+        bad.append("order")
+    if 'RUN{builtin}+="uaccess"' not in open(eff[late]).read():
+        bad.append("%s does not apply the uaccess ACL" % late)
+    for f in names[names.index(ours) + 1:names.index(late)]:
+        if 'TAG+="uaccess"' in open(eff[f]).read():
+            bad.append("%s adds uaccess after %s" % (eff[f], ours))
+    for f in names[names.index(late) + 1:]:
+        for n, line in enumerate(open(eff[f]).read().splitlines(), 1):
+            if 'TAG+="uaccess"' not in line or line.lstrip().startswith("#"):
+                continue
+            if not any(g in line for g in ('SUBSYSTEM=="hidraw"', 'KERNEL=="hidraw*"', 'ENV{USE_INPUTPLUMBER}=="1"')):
+                bad.append("%s:%d adds uaccess after %s: %s" % (eff[f], n, late, line))
+    for d in ("/usr/lib/udev/rules.d", "/run/udev/rules.d", "/etc/udev/rules.d"):
+        for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            if "ENV{USE_INPUTPLUMBER}=" in open(os.path.join(d, f)).read().replace("ENV{USE_INPUTPLUMBER}==", ""):
+                bad.append("%s/%s sets USE_INPUTPLUMBER" % (d, f))
+    for d in ("/usr/lib/udev/hwdb.d", "/etc/udev/hwdb.d"):
+        for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
+            match = []
+            for line in open(os.path.join(d, f)).read().splitlines():
+                if not line.strip() or line.startswith("#"):
+                    match = []
+                elif not line[0].isspace():
+                    match.append(line)
+                elif line.strip().startswith("USE_INPUTPLUMBER=") and any(not m.startswith("dmi:") for m in match):
+                    bad.append("%s/%s sets USE_INPUTPLUMBER on %s" % (d, f, [m for m in match if not m.startswith("dmi:")]))
+if bad:
+    sys.exit("\n".join(bad))
+PY
 rpm -q f3 udisks2 exfatprogs dosfstools e2fsprogs >/dev/null || fail "storage rpms missing"
 for c in f3probe pkexec wipefs sfdisk mkfs.ext4 mkfs.exfat fsck.ext4 fstrim flock jq busctl blkid findmnt iconv; do
   command -v "$c" >/dev/null || fail "$c is not on PATH"
