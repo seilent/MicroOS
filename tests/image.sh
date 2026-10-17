@@ -62,6 +62,10 @@ grep -qx 'excludepkgs=openh264' /etc/dnf/libdnf5.conf.d/20-microos-openh264.conf
 [[ $(rpm -q --qf '%{VENDOR}' inputplumber) == MicroOS ]] || fail "inputplumber is not the MicroOS build"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 [[ $(systemctl is-enabled inputplumber.service) == enabled ]] || fail "inputplumber.service is not enabled"
+yama=/usr/lib/sysctl.d/60-microos-yama.conf
+grep -qx 'kernel.yama.ptrace_scope = 1' "$yama" || fail "$yama does not set ptrace_scope 1"
+last=$(/usr/lib/systemd/systemd-sysctl --cat-config | awk '/^# \/[^ ]*\.conf( -> |$)/ { f = $2 } /^-?kernel[.\/]yama[.\/]ptrace_scope[[:space:]]*=/ { l = f " " $0 } END { print l }')
+[[ $last == "$yama kernel.yama.ptrace_scope = 1" ]] || fail "the last ptrace_scope setting is not $yama: $last"
 
 for h in steamos-update steamos-select-branch jupiter-biosupdate jupiter-dock-updater steamos-set-timezone \
   steamos-priv-write steamos-devkit-mode; do
