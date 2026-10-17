@@ -8,8 +8,21 @@ polkit.addRule(function(action, subject) {
     "org.freedesktop.udisks2.eject-media",
     "org.freedesktop.udisks2.filesystem-unmount-others"
   ];
+  var deny = [
+    "org.freedesktop.udisks2.modify-device",
+    "org.freedesktop.udisks2.modify-device-system",
+    "org.freedesktop.udisks2.modify-device-other-seat",
+    "org.freedesktop.udisks2.open-device",
+    "org.freedesktop.udisks2.open-device-system",
+    "org.freedesktop.udisks2.loop-setup",
+    "org.freedesktop.udisks2.manage-md-raid",
+    "org.freedesktop.udisks2.filesystem-take-ownership"
+  ];
   if (subject.user != "micro") {
     return;
+  }
+  if (deny.indexOf(action.id) >= 0) {
+    return polkit.Result.NO;
   }
   if (helpers.indexOf(action.id) >= 0) {
     return polkit.Result.YES;

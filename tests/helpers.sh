@@ -132,7 +132,7 @@ srun() {
 slog() { [[ $(< "$tmp/slog") == "$1" ]] || fail "$2: microos-storage got '$(< "$tmp/slog")', want '$1'"; }
 plog() { [[ $(< "$tmp/plog") == "$1" ]] || fail "$2: pkexec got '$(< "$tmp/plog")', want '$1'"; }
 
-for want in 0 2 5 13 14 16 19 22 32 53; do
+for want in 0 2 5 13 14 16 19 22 32 53 77; do
   srun "$want" 0 "$hw/format-device.sh" --label "" --skip-validation --device /dev/mmcblk0
   slog "format --label '' --skip-validation --device /dev/mmcblk0 " "format-device.sh exit $want"
 done
@@ -149,7 +149,7 @@ echo data > "$tmp/class/mmcblk1"
 echo data > "$tmp/class/mmcblk2"
 echo data > "$tmp/class/sda"
 echo data > "$tmp/class/mmcblk0p1"
-for want in 0 13 53; do
+for want in 0 13 53 77; do
   srun "$want" 0 "$hw/format-sdcard.sh" --label "" --device /dev/mmcblk0
   slog "format --label '' --device /dev/mmcblk0 --device /dev/mmcblk1 " "format-sdcard.sh exit $want"
 done
@@ -161,7 +161,7 @@ rm -rf "$tmp/ssys/block"/*
 srun 19 0 "$hw/format-sdcard.sh"
 slog "" "format-sdcard.sh with no card"
 
-for want in 0 13 126; do
+for want in 0 13 77 126; do
   srun "$want" 1000 "$hw/steamos-format-device" --label x --device /dev/mmcblk0
   plog "--disable-internal-agent /usr/bin/steamos-polkit-helpers/steamos-format-device --owner 1000:1000 --label x --device /dev/mmcblk0 " "steamos-format-device as micro"
   slog "" "steamos-format-device as micro"

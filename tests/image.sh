@@ -149,6 +149,21 @@ for a in eject-media filesystem-unmount-others; do
 done
 grep -qF 'udisks.indexOf(action.id) >= 0 && device && device.indexOf("/dev/mmcblk") == 0' \
   /usr/share/polkit-1/rules.d/50-microos-storage.rules || fail "50-microos-storage.rules udisks2 actions not limited to /dev/mmcblk"
+python3 - /usr/share/polkit-1/rules.d/50-microos-storage.rules <<'PY' || fail "50-microos-storage.rules udisks2 NO lines"
+import re, sys
+rule = open(sys.argv[1]).read()
+m = re.search(r"var deny = \[(.*?)\];", rule, re.S)
+deny = re.findall(r'"([^"]+)"', m.group(1)) if m else []
+want = ["org.freedesktop.udisks2." + a for a in ("modify-device", "modify-device-system", "modify-device-other-seat",
+                                               "open-device", "open-device-system", "loop-setup", "manage-md-raid",
+                                               "filesystem-take-ownership")]
+no = rule.find("if (deny.indexOf(action.id) >= 0) {\n    return polkit.Result.NO;")
+user = rule.find('if (subject.user != "micro") {')
+yes = rule.find("polkit.Result.YES")
+if sorted(deny) != sorted(want) or not 0 <= user < no < yes:
+    sys.exit("deny %s, user check at %d, NO at %d, first YES at %d" % (deny, user, no, yes))
+PY
+grep -qx 'd /run/microos/hold 0755 root root -' /usr/lib/tmpfiles.d/microos.conf || fail "tmpfiles lacks /run/microos/hold"
 rpm -q f3 udisks2 exfatprogs dosfstools e2fsprogs >/dev/null || fail "storage rpms missing"
 for c in f3probe pkexec wipefs sfdisk mkfs.ext4 mkfs.exfat fsck.ext4 fstrim flock jq busctl blkid findmnt iconv; do
   command -v "$c" >/dev/null || fail "$c is not on PATH"
