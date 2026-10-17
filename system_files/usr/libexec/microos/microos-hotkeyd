@@ -571,7 +571,10 @@ class Hotkeyd:
 
     def method(self, conn, sender, _path, _iface, name, _params, invocation):
         before = self.holder()
-        if name == "Acquire" and sender not in self.stack:
+        if name == "Acquire" and sender in self.stack:
+            self.stack.remove(sender)
+            self.stack.append(sender)
+        elif name == "Acquire":
             self.stack.append(sender)
             self.watches[sender] = Gio.bus_watch_name_on_connection(
                 conn, sender, Gio.BusNameWatcherFlags.NONE, None, self.vanished
