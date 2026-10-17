@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+. "${MICROOS_SESSION_BIN:-/usr/bin/microos-session}"
+me=microos-pad-hold
+poll=0.25
+
+[[ $# == 3 && $1 =~ ^BTN_(START|SELECT|SOUTH)(\+BTN_(START|SELECT|SOUTH))*$ && $2 =~ ^[1-9][0-9]*$ &&
+  $3 =~ ^(0|[1-9][0-9]*)$ ]] || { echo "usage: $me <BTN_x[+BTN_y]> <hold s> <wait s>" >&2; exit 2; }
+IFS=+ read -r -a want <<< "$1"
+need=$(( $2 * 4 + 1 ))
+polls=$(( $3 * 4 ))
+released=0
+(( $3 )) || { released=1; polls=$need; }
+
+mapfile -t nodes < <(pad_node)
+if (( ! ${#nodes[@]} )); then
+  log "refused: no $pad"
+  exit 1
+fi
+exec 5< <(pad_poll "$poll" "${nodes[@]}")
+p=$!
+trap 'kill "$p" 2> /dev/null' EXIT
+n=0
+for (( i = 0; i < polls; i++ )); do
+  k=""
+  if ! read -r -t 2 k <&5; then
+    log "refused: no key state from $pad"
+    exit 1
+  fi
+  all=1
+  for b in "${want[@]}"; do
+    [[ " $k " == *" $b "* ]] || all=0
+  done
+  if (( ! all )); then
+    released=1
+    n=0
+    (( $3 )) || break
+    continue
+  fi
+  (( released )) || continue
+  n=$(( n + 1 ))
+  (( n < need )) || exit 0
+done
+log "refused: $1 not held for $2 s"
+exit 1

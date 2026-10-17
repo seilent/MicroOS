@@ -6,31 +6,9 @@ me=microos-session-giveup
 t_update=${MICROOS_SESSION_UPDATE_WAIT:-60}
 started_id=39f53479d3a045ac8e11786248231fbf
 mode=${1:-}
+hold=${MICROOS_PAD_HOLD:-/usr/libexec/microos/microos-pad-hold}
 
 [[ $# == 1 && ($mode == giveup || $mode == rollback) ]] || { echo "usage: $me giveup | rollback" >&2; exit 2; }
-
-a_held() {
-  local nodes k i ok=1 p
-  mapfile -t nodes < <(pad_node)
-  if (( ! ${#nodes[@]} )); then
-    log "rollback refused: no $pad"
-    return 1
-  fi
-  exec 5< <(pad_poll 0.25 "${nodes[@]}")
-  p=$!
-  for i in 1 2 3 4 5; do
-    k=""
-    read -r -t 2 k <&5 || ok=0
-    [[ " $k " == *" BTN_SOUTH "* ]] || ok=0
-    (( ok )) || break
-  done
-  kill "$p" 2> /dev/null
-  exec 5<&-
-  if (( ! ok )); then
-    log "rollback refused: A not held for 1 s"
-    return 1
-  fi
-}
 
 rollback() {
   lockfile "$rundir/update.lock" || { log "cannot create update.lock"; return 1; }
@@ -60,7 +38,7 @@ fi
 
 if [[ $mode == rollback ]]; then
   [[ $rollback == yes ]] || { log "rollback refused: no rollback deployment"; exit 1; }
-  a_held || exit 1
+  "$hold" BTN_SOUTH 1 0 || { log "rollback refused: A not held for 1 s"; exit 1; }
   rollback "rollback from recovery" || exit 1
   systemctl reboot
   exit 0

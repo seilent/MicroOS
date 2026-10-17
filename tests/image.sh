@@ -127,7 +127,8 @@ done
 [[ -f /usr/share/steamos-manager/devices/microos-pm2.toml ]] || fail "microos-pm2.toml missing"
 for f in /usr/lib/hwsupport/format-device.sh /usr/lib/hwsupport/trim-devices.sh /usr/lib/hwsupport/format-sdcard.sh \
   /usr/bin/steamos-polkit-helpers/steamos-format-device /usr/bin/steamos-polkit-helpers/steamos-format-sdcard \
-  /usr/bin/steamos-polkit-helpers/steamos-trim-devices /usr/libexec/microos/microos-storage; do
+  /usr/bin/steamos-polkit-helpers/steamos-trim-devices /usr/libexec/microos/microos-storage \
+  /usr/libexec/microos/microos-pad-hold; do
   [[ -f $f && ! -L $f && -x $f ]] || fail "$f is not a regular executable"
   [[ $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f mode or owner"
 done

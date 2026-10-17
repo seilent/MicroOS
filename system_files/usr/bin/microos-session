@@ -69,13 +69,20 @@ pad_poll() {
     done
     return
   fi
-  python3 - "$interval" "$@" << 'EOF'
+  python3 - "$interval" "$sysfs" "$@" << 'EOF'
 import fcntl
 import os
 import sys
 import time
 
-fds = [os.open(p, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC) for p in sys.argv[2:]]
+fds = []
+for p in sys.argv[3:]:
+    fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    with open(os.path.join(sys.argv[2], "class/input", os.path.basename(p), "dev")) as f:
+        major, minor = map(int, f.read().split(":"))
+    if os.fstat(fd).st_rdev != os.makedev(major, minor):
+        sys.exit(p + " is not the device in " + sys.argv[2])
+    fds.append(fd)
 keys = ((315, "BTN_START"), (314, "BTN_SELECT"), (304, "BTN_SOUTH"))
 while True:
     held = None

@@ -25,6 +25,7 @@ export MICROOS_SESSION_SHORT_TRACKER=$tmp/short-tracker
 export MICROOS_SESSION_STEP=0.1 MICROOS_SESSION_SHUTDOWN_WAIT=2 MICROOS_SESSION_STOP_WAIT=2 MICROOS_SESSION_GAMES_WAIT=1
 export MICROOS_SESSION_RATE_MS=0 MICROOS_SESSION_SEAT_WAIT=1 MICROOS_SESSION_START_WAIT=2 MICROOS_SESSION_RESTART_WAIT=2 MICROOS_SESSION_WATCH_WAIT=2 MICROOS_SESSION_WATCH_PENDING=8
 export PATH=$here/microos-session/bin:$PATH MICROOS_BOOT_ID=$tmp/boot_id
+export MICROOS_PAD_HOLD=$libexec/microos-pad-hold
 boot=0123456789abcdef0123456789abcdef
 echo 01234567-89ab-cdef-0123-456789abcdef > "$tmp/boot_id"
 tick() { awk '{ printf "%.2f 0\n", $1 + 100000 }' /proc/uptime > "$tmp/uptime.new" && mv -f "$tmp/uptime.new" "$tmp/uptime"; }
@@ -751,6 +752,52 @@ echo BTN_SOUTH > "$FAKE/keys/event6"
 : > "$FAKE/keys/event9"
 giveup rollback
 [[ $r == 0 ]] && has "bootc rollback" && has reboot || fail "rollback from recovery: $(calls) $(cat "$tmp/out")"
+
+hold() { r=0; "$libexec/microos-pad-hold" "$@" > "$tmp/out" 2>&1 || r=$?; }
+hold BTN_SOUTH 1
+[[ $r == 2 ]] || fail "pad-hold usage: $r"
+hold BTN_EAST 1 0
+[[ $r == 2 ]] || fail "pad-hold took BTN_EAST: $r"
+hold BTN_SOUTH 1 09
+[[ $r == 2 ]] || fail "pad-hold took a wait with a leading zero: $r"
+nopads
+hold BTN_SOUTH 1 0
+[[ $r == 1 ]] && grep -q "no AYANEO Controller" "$tmp/out" || fail "pad-hold without a pad: $r $(cat "$tmp/out")"
+mkpad event9 virtual
+echo BTN_SOUTH > "$FAKE/keys/event9"
+hold BTN_SOUTH 1 0
+[[ $r == 1 ]] && grep -q "no AYANEO Controller" "$tmp/out" || fail "pad-hold took a virtual pad: $r"
+mkpad event4 real
+echo BTN_SOUTH > "$FAKE/keys/event4"
+hold BTN_SOUTH 1 0
+[[ $r == 0 ]] || fail "pad-hold held: $r $(cat "$tmp/out")"
+echo BTN_START > "$FAKE/keys/event4"
+hold BTN_SOUTH 1 0
+[[ $r == 1 ]] && grep -q "BTN_SOUTH not held for 1 s" "$tmp/out" || fail "pad-hold wrong button: $r"
+hold BTN_START+BTN_SELECT 1 0
+[[ $r == 1 ]] || fail "pad-hold accepted one of two buttons: $r"
+echo "BTN_START BTN_SELECT" > "$FAKE/keys/event4"
+hold BTN_START+BTN_SELECT 1 0
+[[ $r == 0 ]] || fail "pad-hold two buttons: $r"
+echo BTN_SOUTH > "$FAKE/keys/event4"
+hold BTN_SOUTH 1 3
+[[ $r == 1 ]] || fail "pad-hold with a wait counted a press held from the start: $r"
+: > "$FAKE/keys/event4"
+( sleep 0.4; echo BTN_SOUTH > "$FAKE/keys/event4" ) &
+rel=$!
+hold BTN_SOUTH 1 3
+wait "$rel"
+[[ $r == 0 ]] || fail "pad-hold released first then held: $r $(cat "$tmp/out")"
+: > "$FAKE/keys/event4"
+( sleep 0.4; echo BTN_SOUTH > "$FAKE/keys/event4"; sleep 0.5; : > "$FAKE/keys/event4" ) &
+rel=$!
+hold BTN_SOUTH 1 2
+wait "$rel"
+[[ $r == 1 ]] || fail "pad-hold took a short press: $r"
+: > "$FAKE/keys/event4"
+hold BTN_SOUTH 1 1
+[[ $r == 1 ]] && grep -q "not held for 1 s" "$tmp/out" || fail "pad-hold wait expired: $r"
+nopads
 unset MICROOS_PAD_STATE
 
 reset
