@@ -504,9 +504,11 @@ cmd_format() {
   if (( ! dry )); then
     exec {fmtfd}> "$rundir/lock/format.lock" || quit 53 "no lock file $rundir/lock/format.lock"
     flock -n "$fmtfd" || quit 53 "format already waiting or running"
-    trap 'rm -f "$rundir/hold/storage"' EXIT
-    if printf '%s\n' "$$" > "$rundir/hold/storage"; then
-      chmod 0644 "$rundir/hold/storage" || log "hint file $rundir/hold/storage not 0644"
+    hint=""
+    trap 'rm -f "$rundir/hold/storage" ${hint:+"$hint"}' EXIT
+    if hint=$(mktemp "$rundir/hold/.storage.XXXXXX") && printf '%s\n%s\n' "$$" "$device" > "$hint" &&
+      chmod 0644 "$hint" && mv -f -- "$hint" "$rundir/hold/storage"; then
+      hint=""
     else
       log "no hint file $rundir/hold/storage"
     fi
@@ -517,7 +519,7 @@ cmd_format() {
       fi
       quit 77 "A not held for 1 s within $holdwait s, nothing written"
     fi
-    rm -f "$rundir/hold/storage"
+    rm -f "$rundir/hold/storage" ${hint:+"$hint"}
     trap - EXIT
   fi
 

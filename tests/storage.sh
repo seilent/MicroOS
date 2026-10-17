@@ -40,8 +40,9 @@ cat > "$bin/microos-pad-hold" <<'EOF'
 #!/usr/bin/env bash
 hint=no
 if [[ -e $MICROOS_RUN/hold/storage ]]; then
-  hint=$(stat -c %a "$MICROOS_RUN/hold/storage"):$(< "$MICROOS_RUN/hold/storage")
-  [[ $hint =~ ^644:[1-9][0-9]*$ ]] && kill -0 "${hint#*:}" 2> /dev/null && hint=live
+  { read -r pid; read -r dev; } < "$MICROOS_RUN/hold/storage"
+  hint=$(stat -c %a "$MICROOS_RUN/hold/storage"):$pid:$dev:$(wc -l < "$MICROOS_RUN/hold/storage")
+  [[ $hint =~ ^644:[1-9][0-9]*:/dev/mmcblk[0-9]:2$ ]] && kill -0 "$pid" 2> /dev/null && hint=live:$dev
 fi
 if flock -n "$MICROOS_RUN/lock/format.lock" true; then lock=free; else lock=held; fi
 { printf 'microos-pad-hold'; printf ' %q' "$@"; echo " hint=$hint lock=$lock"; } >> "$CALLS"
@@ -549,7 +550,10 @@ called '^udevadm settle$' "format"
 (( $(line_of '^wipefs -a /dev/mmcblk0$') < $(line_of '^sfdisk') && $(line_of '^sfdisk') < $(line_of '^mkfs.ext4') &&
   $(line_of '^mkfs.ext4') < $(line_of '^udevadm') && $(line_of '^udevadm') < $(line_of '^systemctl start') )) ||
   fail "format: writer order: $(cat "$tmp/calls")"
-called '^microos-pad-hold BTN_SOUTH 1 15 hint=live lock=held$' "format hold"
+called '^microos-pad-hold BTN_SOUTH 1 15 hint=live:/dev/mmcblk0 lock=held$' "format hold"
+called "^mv -f -- $tmp/run/hold/\.storage\.[A-Za-z0-9]\{6\} $tmp/run/hold/storage\$" "format hint written by rename"
+(( $(line_of '^mv -f -- .*/hold/') < $(line_of '^microos-pad-hold') )) || fail "format: hint renamed after the hold started"
+[[ -z $(find "$tmp/run/hold" -name '.storage.*') ]] || fail "format: hint temp file left: $(ls -A "$tmp/run/hold")"
 (( $(line_of '^microos-pad-hold') < $(line_of '^systemctl stop') )) || fail "format: units stopped before the hold"
 [[ ! -e $tmp/run/hold/storage ]] || fail "format: hint file left"
 run RC_pad_hold=1 format --skip-validation --device /dev/mmcblk0
