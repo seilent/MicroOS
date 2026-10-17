@@ -214,7 +214,7 @@ sleep 0.3
 table
 finish "show hangs"
 nolog "plymouthd exit" || fail "show hangs: plymouthd quit instead of SIGKILL"
-logged "plymouth show-splash failed or passed 1 s" || fail "show hangs not logged: $(cat "$tmp/out")"
+logged "plymouth show-splash failed or passed 1.5 s" || fail "show hangs not logged: $(cat "$tmp/out")"
 [[ $(busy) == none ]] || fail "show hangs: busy $(busy) after the row cleared"
 
 reset
@@ -310,7 +310,7 @@ grep -q "^open $root/dev/dri/renderD128$" "$tmp/all" || fail "the open hook reco
 
 for l in Type=oneshot ExecStart=/usr/libexec/microos/microos-splash-switch \
   'ExecStopPost=/usr/libexec/microos/microos-splash-switch --cleanup' KillMode=mixed TimeoutStartSec=120 \
-  TimeoutStopSec=3 Conflicts=shutdown.target \
+  TimeoutStopSec=3 TimeoutStopFailureMode=kill Conflicts=shutdown.target \
   'Before=shutdown.target plymouth-reboot.service plymouth-poweroff.service plymouth-halt.service plymouth-kexec.service' \
   ProtectSystem=strict 'ReadWritePaths=/run/microos /run/plymouth' ProtectHome=yes PrivateTmp=yes NoNewPrivileges=yes \
   'RestrictAddressFamilies=AF_UNIX AF_NETLINK' 'CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_TTY_CONFIG CAP_DAC_OVERRIDE' \
