@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+echo "systemctl $*" >> "$STUB_LOG"
+if [[ $* == "show -p ActiveState -p Job microos-splash-switch.service" ]]; then
+  echo "ActiveState=$(cat "$STUB_DIR/state" 2> /dev/null || echo inactive)"
+  echo "Job=$(cat "$STUB_DIR/job" 2> /dev/null)"
+fi
+exit 0

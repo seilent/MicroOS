@@ -18,19 +18,27 @@ uptime_cs() {
 }
 
 master() {
-  local line cmd m
+  local line cmd m uid
   [[ -r $clients ]] || return 1
   while IFS= read -r line; do
     cmd=${line:0:20}
     cmd=${cmd#"${cmd%%[! ]*}"}
-    read -r _ _ m _ <<< "${line:20}"
-    if [[ $cmd == systemd-logind && $m == y ]]; then
+    read -r _ _ m _ uid _ <<< "${line:20}"
+    if [[ $cmd == systemd-logind && $m == y && $uid == 0 ]]; then
       return 0
     fi
   done < "$clients"
   return 1
 }
 
+switching() {
+  if [[ $(systemctl show -p ActiveState --value microos-splash-switch.service) =~ ^(active|activating)$ ]]; then
+    log "microos-splash-switch.service holds the splash"
+    exit 0
+  fi
+}
+
+switching
 if ! plymouth --ping; then
   log "plymouthd is not running"
   exit 0
@@ -61,10 +69,12 @@ log "plymouth quit --retain-splash failed, trying again"
 if plymouth quit --retain-splash; then
   exit 0
 fi
+switching
 log "plymouth quit --retain-splash failed again, quitting without the splash"
 if plymouth quit; then
   exit 1
 fi
+switching
 log "plymouth quit failed, sending SIGTERM to plymouthd"
 if ! pkill -TERM -x plymouthd; then
   log "no plymouthd to signal"
