@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >> "$STUB_LOG"
+[[ $* == "show -p ActiveState --value microos-splash-switch.service" ]] || exit 1
+cat "$STUB_DIR/switch-state" 2> /dev/null || echo inactive

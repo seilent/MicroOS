@@ -1,0 +1,101 @@
+#!/usr/bin/python3
+import fcntl
+import os
+import re
+import subprocess
+import sys
+import time
+
+ME = "microos-splash-gate"
+ROOT = os.environ.get("MICROOS_SPLASH_ROOT", "")
+CLOCK = os.environ.get("MICROOS_SPLASH_CLOCK")
+RUN = ROOT + "/run/microos"
+LOCK = RUN + "/splash.lock"
+BUSY = RUN + "/splash-busy"
+USER = RUN + "/user"
+TOKEN = re.compile(r"^[0-9]+$")
+WAIT = 5.0
+LOCK_WAIT = 3.0
+POLL = 0.05
+
+
+def log(msg):
+    print(f"{ME}: {msg}", flush=True)
+
+
+def now():
+    if CLOCK:
+        with open(CLOCK) as f:
+            return float(f.read().split()[0])
+    return time.monotonic()
+
+
+def busy():
+    try:
+        with open(BUSY) as f:
+            return f.read().split()
+    except FileNotFoundError:
+        return None
+
+
+def idle():
+    try:
+        r = subprocess.run(["systemctl", "show", "-p", "ActiveState", "-p", "Job", "microos-splash-switch.service"],
+                           stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=2)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if r.returncode != 0:
+        return False
+    v = dict(line.partition("=")[::2] for line in r.stdout.splitlines())
+    return v.get("ActiveState") in ("inactive", "failed") and not v.get("Job")
+
+
+def mark(fd):
+    end = now() + LOCK_WAIT
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if now() >= end:
+                log(f"splash lock busy after {LOCK_WAIT:g} s, passing")
+                return
+            time.sleep(POLL)
+    b = busy()
+    if b is None:
+        return
+    token = b[0] if len(b) == 1 else ""
+    if not TOKEN.match(token):
+        log("splash-busy holds no token, passing without a mark")
+        return
+    name = f"splash-passed-{token}"
+    os.close(os.open(f"{USER}/{name}", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644))
+    for n in os.listdir(USER):
+        if n.startswith("splash-passed-") and n != name:
+            os.unlink(f"{USER}/{n}")
+    log(f"splash still busy after {WAIT:g} s, passed {token}")
+
+
+def main():
+    if busy() is None:
+        return
+    if idle():
+        log("splash-busy left by an inactive microos-splash-switch.service, passing")
+        return
+    end = now() + WAIT
+    while now() < end:
+        time.sleep(POLL)
+        if busy() is None:
+            return
+    fd = os.open(LOCK, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        mark(fd)
+    finally:
+        os.close(fd)
+
+
+try:
+    main()
+except Exception as e:
+    log(f"error: {e}, passing")
+sys.exit(0)

@@ -105,6 +105,7 @@ reset() {
   echo steam > "$FAKE/default"
   echo 1 > "$FAKE/seat-id"
   : > "$FAKE/calls"
+  : > "$run/splash.lock"
   settle || true
   unset FAKE_STOP_DELAY FAKE_SHUTDOWN_DELAY FAKE_RUN_SWITCH MICROOS_PAD_STATE
   nopads
@@ -268,7 +269,7 @@ has "busctl set-property org.shadowblip.InputPlumber /org/shadowblip/InputPlumbe
   fail "InterceptMode 0 not set"
 has "busctl set-property org.shadowblip.InputPlumber /org/shadowblip/InputPlumber/CompositeDevice1 org.shadowblip.Input.CompositeDevice InterceptMode u 0" ||
   fail "InterceptMode 0 not set on the second device"
-! hasre '^restart' || fail "sddm restarted on a clean switch"
+! hasre '^restart sddm' || fail "sddm restarted on a clean switch"
 grep -q -- '--reuid=1000' "$FAKE/setpriv.log" || fail "user commands not run as uid 1000"
 [[ ! -e $run/user/track/steam ]] || fail "the stop of the switch source was counted"
 [[ $(stat -c %a "$run/lock") == 700 ]] || fail "lock dir mode $(stat -c %a "$run/lock")"
@@ -327,6 +328,104 @@ sw microdap
 [[ $(count "restart sddm.service") == 2 ]] || fail "failing target and recovery restarts: $(count "restart sddm.service")"
 has "start --no-block microos-session-giveup.service" || fail "recovery that never started did not start the giveup"
 [[ $(< "$run/session-failed") == "recovery $(cut -d' ' -f3 "$run/session-current")" ]] || fail "session-failed after the failed recovery"
+
+clients() {
+  mkdir -p "$MICROOS_SYSFS/kernel/debug/dri/0"
+  {
+    printf '%20s %5s %3s master a %5s %10s %*s %20s\n' command tgid dev uid magic 64 name id
+    printf '%20s %5d %3d   %c    %c %5d %10u %*s %20llu\n' 'gamescope wl' 900 128 n y 0 0 64 '<unset>' 76
+    printf '%20s %5d %3d   %c    %c %5d %10u %*s %20llu\n' systemd-logind 4000 128 y y 1000 0 64 '<unset>' 70
+    printf '%20s %5d %3d   %c    %c %5d %10u %*s %20llu\n' systemd-logind 585 0 y y 0 0 64 '<unset>' 77
+  } > "$MICROOS_SYSFS/kernel/debug/dri/0/clients"
+}
+splash_line() { calls | grep -nE "$1" | head -n 1 | cut -d: -f1 || true; }
+printf 'LABEL="MicroEMU"\nDESKTOP=microemu.desktop\nUNIT=gamescope-session-plus@microemu.service\nSTOP=unit\n' > "$sd/microemu.conf"
+echo '[Desktop Entry]' > "$root/usr/share/wayland-sessions/microemu.desktop"
+for pair in steam:microdap microdap:microemu microemu:steam steam:recovery; do
+  from=${pair%%:*} to=${pair#*:}
+  reset
+  unit_of microemu > "$FAKE/desktops/microemu.desktop"
+  clients
+  cur "$from"
+  [[ $from != steam ]] || reader
+  sw "$to"
+  [[ $r == 0 ]] || fail "splash $from to $to: $r $(cat "$tmp/out")"
+  s=$(cut -d' ' -f3 "$run/session-current")
+  has "splash busy=$s target=$to $s 77 lock=free" || fail "splash $from to $to: files at the restart: $(calls)"
+  [[ $(count "restart --no-block microos-splash-switch.service") == 1 ]] || fail "splash $from to $to: restarts: $(calls)"
+  a=$(line_of "restart --no-block microos-splash-switch.service")
+  if [[ $from == steam ]]; then
+    g=$(splash_line '^steam -shutdown')
+  else
+    g=$(line_of "user stop $(unit_of "$from")")
+  fi
+  [[ -n $a && -n $g ]] && (( a < g )) || fail "splash $from to $to: restart not before the source stop: $(calls)"
+  [[ ! -e $run/splash-busy ]] || fail "splash $from to $to: busy left with the unit inactive"
+  [[ $(stat -c %a "$run/splash-target") == 644 ]] || fail "splash $from to $to: target mode"
+  [[ $from != steam ]] || noreader
+done
+
+reset
+cur microdap
+echo inactive > "$FAKE/units/$(unit_of microdap)"
+sw steam
+[[ $r == 0 ]] && ! has "restart --no-block microos-splash-switch.service" || fail "splash with an inactive source: $(calls)"
+[[ ! -e $run/splash-busy ]] || fail "splash with an inactive source: busy written"
+reset
+sw microdap
+[[ $r == 0 ]] && ! has "restart --no-block microos-splash-switch.service" || fail "splash with no source: $(calls)"
+
+reset
+cur steam
+touch "$FAKE/never/$(unit_of microdap)"
+sw microdap
+[[ $(count "restart --no-block microos-splash-switch.service") == 1 ]] || fail "splash on the recovery fallback from a dead target: $(calls)"
+
+reset
+cur microdap
+touch "$FAKE/splash-restart-fails"
+echo active > "$FAKE/splash-state"
+sw steam
+grep -q "restart of microos-splash-switch.service failed" "$FAKE/switch.log" || fail "failed splash restart not logged: $(cat "$FAKE/switch.log")"
+[[ ! -e $run/splash-busy ]] || fail "failed splash restart left busy"
+
+for st in deactivating active activating; do
+  reset
+  cur microdap
+  echo "$st" > "$FAKE/splash-state"
+  sw steam
+  [[ $(cat "$run/splash-busy" 2> /dev/null) =~ ^[0-9]+$ ]] || fail "end removal with the unit $st"
+done
+reset
+cur microdap
+echo 4711 > "$FAKE/splash-job"
+sw steam
+[[ -e $run/splash-busy ]] || fail "end removal with a queued splash job"
+reset
+cur microdap
+echo failed > "$FAKE/splash-state"
+sw steam
+[[ ! -e $run/splash-busy ]] || fail "end removal kept busy with the unit failed"
+
+reset
+cur microdap
+python3 -c 'import fcntl, os, sys, time
+fcntl.flock(os.open(sys.argv[1], os.O_RDONLY), fcntl.LOCK_EX)
+time.sleep(30)' "$run/splash.lock" &
+holder=$!
+sleep 0.3
+sw steam
+kill "$holder"
+wait "$holder" 2> /dev/null || true
+grep -q "splash lock busy or splash files not written, no splash" "$FAKE/switch.log" || fail "held splash lock not logged: $(cat "$FAKE/switch.log")"
+! has "restart --no-block microos-splash-switch.service" && [[ ! -e $run/splash-busy ]] || fail "splash with the lock held: $(calls)"
+
+reset
+cur microdap
+rm "$run/splash.lock"
+sw steam
+[[ $r == 0 && $(current) == steam ]] && ! has "restart --no-block microos-splash-switch.service" || fail "switch without the splash lock: $(calls)"
+rm -f "$sd/microemu.conf" "$root/usr/share/wayland-sessions/microemu.desktop"
 
 reset
 cur steam

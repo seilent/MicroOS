@@ -1,0 +1,50 @@
+#!/usr/bin/python3
+import fcntl
+import os
+import signal
+import sys
+import time
+
+run = os.environ["MICROOS_SPLASH_ROOT"] + "/run/microos"
+stub = os.environ["STUB_DIR"]
+log = os.open(os.environ["STUB_LOG"], os.O_WRONLY | os.O_APPEND)
+sigs = {signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGUSR1, signal.SIGUSR2}
+signal.pthread_sigmask(signal.SIG_BLOCK, sigs)
+
+
+def cat(p):
+    try:
+        with open(p) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def lock():
+    fd = os.open(run + "/splash.lock", os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return "free"
+    except BlockingIOError:
+        return "held"
+    finally:
+        os.close(fd)
+
+
+with open(stub + "/plymouthd.started", "w") as f:
+    f.write(f"{os.getpid()}\n")
+os.write(log, f"plymouthd {' '.join(sys.argv[1:])} run={cat(run + '/splash-run')} busy={cat(run + '/splash-busy')} lock={lock()}\n".encode())
+if os.path.exists(stub + "/plymouthd-fails"):
+    sys.exit(1)
+if os.path.exists(stub + "/slow"):
+    time.sleep(1)
+with open(stub + "/plymouthd.pid", "w") as f:
+    f.write(f"{os.getpid()}\n")
+if os.path.exists(stub + "/row"):
+    with open(os.environ["MICROOS_SPLASH_ROOT"] + "/sys/kernel/debug/dri/0/clients", "a") as f:
+        f.write("%20s %5d %3d   %c    %c %5d %10u %64s %20d\n" % ("plymouthd", os.getpid(), 0, "y", "y", 0, 0, "<unset>", 500))
+while not os.path.exists(stub + "/quit"):
+    s = signal.sigtimedwait(sigs, 0.02)
+    if s:
+        os.write(log, f"plymouthd signal {signal.Signals(s.si_signo).name}\n".encode())
+os.write(log, b"plymouthd exit\n")

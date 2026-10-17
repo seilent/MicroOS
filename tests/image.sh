@@ -312,11 +312,18 @@ fc260da897c77c7f6cadedb5778a6cad3e9ffdd096e8e08ff660c58a23d2a316 micro-dap.png
 EOF
 [[ $(< /etc/plymouth/plymouthd.conf) == $'[Daemon]\nTheme=microos\nShowDelay=0\nDeviceScale=1' ]] || fail "plymouthd.conf"
 [[ $(plymouth-set-default-theme) == microos ]] || fail "plymouth default theme is $(plymouth-set-default-theme)"
-for f in /usr/libexec/microos/microos-splash-quit /usr/libexec/microos/microos-splash-update; do
+for f in /usr/libexec/microos/microos-splash-quit /usr/libexec/microos/microos-splash-update \
+  /usr/libexec/microos/microos-splash-switch /usr/libexec/microos/microos-splash-gate; do
   [[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f missing, mode or owner"
 done
 [[ -L /etc/systemd/system/display-manager.service.wants/microos-splash-quit.service ]] \
   || fail "microos-splash-quit.service is not wanted by display-manager.service"
+[[ -f /usr/lib/systemd/system/microos-splash-switch.service ]] || fail "microos-splash-switch.service missing"
+grep -qxF 'f /run/microos/splash.lock 0644 root root -' /usr/lib/tmpfiles.d/microos.conf || fail "tmpfiles lacks /run/microos/splash.lock"
+pre=$(systemctl --global cat gamescope-session-plus@microdap.service | awk 'index($0, "ExecStartPre=") == 1 { v = substr($0, 14); if (v == "") n = 0; else l[++n] = v }
+  END { for (i = 1; i <= n; i++) print l[i] }') || fail "systemctl --global cat gamescope-session-plus@microdap.service"
+grep -qxF -- '-/usr/libexec/microos/microos-splash-gate' <<< "$pre" \
+  || fail "effective gamescope-session-plus@microdap.service ExecStartPre lacks the splash gate: $pre"
 quit="-/bin/sh -c '/usr/bin/plymouth deactivate || /usr/bin/plymouth quit'"
 execs() {
   systemctl cat "$1" | awk -v k="$2=" 'index($0, k) == 1 { v = substr($0, length(k) + 1); if (v == "") n = 0; else l[++n] = v }

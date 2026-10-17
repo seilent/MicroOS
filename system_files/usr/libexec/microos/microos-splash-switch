@@ -1,0 +1,354 @@
+#!/usr/bin/python3
+import fcntl
+import os
+import re
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+ME = "microos-splash-switch"
+ROOT = os.environ.get("MICROOS_SPLASH_ROOT", "")
+CLOCK = os.environ.get("MICROOS_SPLASH_CLOCK")
+RUN = ROOT + "/run/microos"
+LOCK = RUN + "/splash.lock"
+BUSY = RUN + "/splash-busy"
+TARGET = RUN + "/splash-target"
+SPLASH_RUN = RUN + "/splash-run"
+PASSED = RUN + "/user/splash-passed-"
+CLIENTS = ROOT + "/sys/kernel/debug/dri/0/clients"
+RENDER = ROOT + "/dev/dri/renderD128"
+NAME = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+TOKEN = re.compile(r"^[0-9]+$")
+D1 = 1.5
+POLL = 0.02
+
+
+class Stopped(Exception):
+    pass
+
+
+class State:
+    phase = "start"
+    child = None
+    token = None
+    hold = None
+    stopping = False
+    keep = False
+
+
+st = State()
+
+
+def log(msg):
+    print(f"{ME}: {msg}", flush=True)
+
+
+def now():
+    if CLOCK:
+        with open(CLOCK) as f:
+            return float(f.read().split()[0])
+    return time.monotonic()
+
+
+class Lock:
+    def __init__(self):
+        self.fd = os.open(LOCK, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        self.held = False
+
+    def take(self, wait):
+        if self.held:
+            return True
+        end = now() + wait
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self.held = True
+                return True
+            except BlockingIOError:
+                if now() >= end:
+                    return False
+                time.sleep(POLL)
+
+    def drop(self):
+        if self.held:
+            fcntl.flock(self.fd, fcntl.LOCK_UN)
+            self.held = False
+
+
+def read(path):
+    try:
+        with open(path) as f:
+            return f.read().split()
+    except OSError:
+        return None
+
+
+def put(path, text):
+    d, n = os.path.split(path)
+    fd, tmp = tempfile.mkstemp(prefix=f".{n}.", dir=d)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text + "\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        remove(tmp)
+        raise
+
+
+def remove(path):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+
+
+def rows():
+    try:
+        with open(CLIENTS) as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return []
+    out = []
+    for line in lines:
+        f = line[20:].split()
+        if len(f) >= 8 and TOKEN.match(f[-1]):
+            out.append((line[:20].strip(), f[2], f[4], f[-1]))
+    return out
+
+
+def master(cmd=None):
+    return any(m == "y" and (cmd is None or (c == cmd and u == "0")) for c, m, u, _ in rows())
+
+
+def present(cid):
+    return any(i == cid for _, _, _, i in rows())
+
+
+def ply(*args, timeout=2.0):
+    if timeout <= 0:
+        return False
+    try:
+        r = subprocess.run(["plymouth", *args], stdin=subprocess.DEVNULL, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log(f"plymouth {' '.join(args)} timed out")
+        return False
+    except OSError as e:
+        log(f"plymouth {' '.join(args)}: {e}")
+        return False
+    return r.returncode == 0
+
+
+def on_term(signum, frame):
+    if st.stopping:
+        return
+    st.stopping = True
+    if st.phase == "window":
+        if st.child is None:
+            return
+        st.child.kill()
+    raise Stopped
+
+
+def confirm(lock):
+    st.child.kill()
+    try:
+        st.child.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        log("plymouthd not reaped 1 s after SIGKILL")
+    end = now() + 1
+    while master("plymouthd"):
+        if now() >= end:
+            log("plymouthd still holds DRM master 1 s after SIGKILL, keeping splash-busy")
+            st.keep = True
+            remove(SPLASH_RUN)
+            lock.drop()
+            return
+        time.sleep(POLL)
+
+
+def window(name, start):
+    def left():
+        return min(2.0, D1 - (now() - start))
+
+    while not ply("--ping", timeout=left()):
+        if st.child.poll() is not None:
+            log(f"plymouthd exited with {st.child.returncode}")
+            return False
+        if left() <= 0:
+            log(f"plymouthd did not answer within {D1:g} s")
+            return False
+        time.sleep(POLL)
+    msg = f"--text=microos-session-{name}"
+    for args in (("display-message", msg), ("show-splash",), ("display-message", msg), ("deactivate",)):
+        if not ply(*args, timeout=left()):
+            log(f"plymouth {' '.join(args)} failed or passed {D1:g} s")
+            return False
+    return True
+
+
+def quit_child():
+    for _ in range(2):
+        if ply("quit", "--retain-splash"):
+            break
+        log("plymouth quit --retain-splash failed")
+    try:
+        st.child.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        log("plymouthd still runs after the quit, SIGKILL")
+        st.child.kill()
+        st.child.wait()
+
+
+def run(lock):
+    if not lock.take(1):
+        log("splash lock busy, no splash")
+        return
+    t = read(TARGET)
+    if not t or len(t) != 3 or not TOKEN.match(t[1]):
+        log("no splash target")
+        lock.drop()
+        return
+    name, token, old = t
+    put(SPLASH_RUN, token)
+    if not NAME.match(name) or (old != "-" and not TOKEN.match(old)) or read(BUSY) != [token]:
+        log(f"splash-busy does not hold {token} or the target is not valid, no splash")
+        lock.drop()
+        return
+    st.token = token
+    lock.drop()
+    log(f"switch splash for {name}, token {token}, old master {old}")
+
+    try:
+        st.hold = os.open(RENDER, os.O_RDONLY | os.O_CLOEXEC)
+    except OSError as e:
+        log(f"cannot hold {RENDER}: {e}")
+    steps(lock, name, token, old)
+
+
+def steps(lock, name, token, old):
+    if ply("--ping"):
+        try:
+            subprocess.run(["systemctl", "stop", "--no-block", "microos-splash-quit.service"],
+                           stdin=subprocess.DEVNULL, timeout=2)
+        except (OSError, subprocess.TimeoutExpired) as e:
+            log(f"stop of microos-splash-quit.service: {e}")
+        ply("quit", "--retain-splash")
+        end = now() + 2
+        while ply("--ping"):
+            if now() >= end:
+                log("the boot plymouthd still answers after 2 s, no splash")
+                return
+            time.sleep(POLL)
+
+    if old != "-":
+        end = now() + 60
+        while present(old):
+            if now() >= end:
+                log(f"DRM client {old} still on dri/0 after 60 s, no splash")
+                return
+            time.sleep(POLL)
+
+    if not lock.take(1):
+        log("splash lock busy at the master window, no splash")
+        return
+    if read(BUSY) != [token]:
+        log(f"splash-busy no longer holds {token}, no splash")
+        return
+    if os.path.lexists(PASSED + token):
+        log("the session gate passed, no splash")
+        return
+    if master():
+        log("another DRM master on dri/0, no splash")
+        return
+    start = now()
+    st.phase = "window"
+    try:
+        st.child = subprocess.Popen(["plymouthd", "--mode=updates", "--no-daemon"], stdin=subprocess.DEVNULL)
+    except OSError as e:
+        log(f"plymouthd: {e}")
+        return
+    if st.stopping:
+        st.child.kill()
+        raise Stopped
+    if not window(name, start):
+        confirm(lock)
+        return
+    remove(BUSY)
+    st.phase = "after"
+    lock.drop()
+    log(f"showing {name}")
+
+    end = now() + 30
+    while not master("systemd-logind"):
+        if st.child.poll() is not None:
+            log(f"plymouthd exited with {st.child.returncode}")
+            return
+        if now() >= end:
+            log("no systemd-logind DRM master after 30 s")
+            break
+        time.sleep(POLL)
+    quit_child()
+
+
+def stopped(lock):
+    if st.phase == "window" and st.child is not None:
+        confirm(lock)
+    elif st.phase == "after" and st.child is not None and st.child.poll() is None:
+        ply("quit", "--retain-splash", timeout=1)
+        try:
+            st.child.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            st.child.kill()
+            st.child.wait()
+
+
+def finish(lock):
+    st.stopping = True
+    if st.token is not None and not st.keep:
+        if lock.take(1):
+            if read(BUSY) == [st.token]:
+                remove(BUSY)
+        else:
+            log("splash lock busy, splash-busy left")
+    lock.drop()
+    if st.hold is not None:
+        os.close(st.hold)
+
+
+def cleanup(lock):
+    if not lock.take(1):
+        log("splash lock busy, splash-busy left")
+        return
+    b, r = read(BUSY), read(SPLASH_RUN)
+    if b and b == r:
+        remove(BUSY)
+    lock.drop()
+
+
+def main():
+    signal.signal(signal.SIGTERM, on_term)
+    try:
+        lock = Lock()
+    except OSError as e:
+        log(f"{LOCK}: {e}")
+        return 0
+    try:
+        if sys.argv[1:] == ["--cleanup"]:
+            cleanup(lock)
+            return 0
+        run(lock)
+    except Stopped:
+        log("stopped")
+        stopped(lock)
+    except Exception as e:
+        st.stopping = True
+        log(f"error: {e}")
+        stopped(lock)
+    finish(lock)
+    return 0
+
+
+sys.exit(main())

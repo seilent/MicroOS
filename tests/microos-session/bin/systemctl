@@ -193,11 +193,22 @@ case $1 in
     fi
     ;;
   show)
+    if [[ $* == "show -p ActiveState -p Job microos-splash-switch.service" ]]; then
+      printf 'ActiveState=%s\nJob=%s\n' "$(cat "$F/splash-state" 2> /dev/null || echo inactive)" "$(cat "$F/splash-job" 2> /dev/null)"
+      exit 0
+    fi
     [[ $* == "show -p MainPID --value user@1000.service" && ! -e $F/no-manager ]] || exit 1
     echo 4242
     ;;
   is-system-running) cat "$F/system-state" 2> /dev/null || echo running ;;
   restart)
+    if [[ $2 == --no-block && $3 == microos-splash-switch.service ]]; then
+      rec "restart --no-block $3"
+      r=$MICROOS_RUNDIR
+      rec "splash busy=$(cat "$r/splash-busy" 2> /dev/null) target=$(cat "$r/splash-target" 2> /dev/null) lock=$(flock -n "$r/splash.lock" true && echo free || echo held)"
+      [[ ! -e $F/splash-restart-fails ]]
+      exit
+    fi
     rec "restart $2"
     rm -f "$F/stale"
     if [[ -e $F/panel-off ]]; then
