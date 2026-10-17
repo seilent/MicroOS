@@ -91,7 +91,8 @@ done
 
 ou=$tmp/usr/lib/systemd/user/microset-overlay@.service
 for kv in BindsTo=gamescope-session-plus@%i.service After=gamescope-session-plus@%i.service Type=notify NoNewPrivileges=yes \
-  Environment=DISPLAY=:0 Environment=QT_QPA_PLATFORM=xcb ExecStartPre=/usr/libexec/microset/microset-wait-x \
+  Environment=DISPLAY=:0 Environment=QT_QPA_PLATFORM=xcb Environment=QT_QUICK_BACKEND=software \
+  Environment=QT_XCB_GL_INTEGRATION=none ExecStartPre=/usr/libexec/microset/microset-wait-x \
   'ExecStart=/usr/bin/microset-settings --overlay' Restart=on-failure; do
   if ! grep -qxF "$kv" "$ou"; then fail "microset-overlay@.service lacks $kv"; fi
 done
