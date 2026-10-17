@@ -21,7 +21,9 @@ for f in usr/lib/ostree/ostree-prepare-root usr/libexec/microos/prepare-root usr
   usr/lib/systemd/system/ostree-prepare-root.service.d/10-microos-remap.conf usr/bin/plymouthd usr/bin/plymouth \
   etc/plymouth/plymouthd.conf usr/share/plymouth/themes/microos/microos.plymouth \
   usr/share/plymouth/themes/microos/microos.script usr/share/plymouth/themes/microos/wordmark.png \
-  usr/share/plymouth/themes/microos/starting.png usr/share/plymouth/themes/microos/updating.png; do
+  usr/share/plymouth/themes/microos/starting.png usr/share/plymouth/themes/microos/updating.png \
+  usr/share/plymouth/themes/microos/micro-dap.png usr/share/plymouth/themes/microos/micro-emu.png \
+  usr/share/plymouth/themes/microos/steam-os.png; do
   grep -qE " $f( |$)" <<< "$list" || { echo "50-initramfs: $f missing" >&2; exit 1; }
 done
 lsinitrd -f usr/lib/systemd/system/ostree-prepare-root.service.d/10-microos-remap.conf "$img" | grep -qx 'ExecStart=' \

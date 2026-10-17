@@ -297,9 +297,19 @@ while read -r n r; do
 done < <(rpm -qa --qf '%{NAME} %{RELEASE}\n' 'plymouth*')
 retain='Closing FB %u (retaining)'
 grep -qaF "$retain" /usr/lib64/plymouth/renderers/drm.so || fail "renderers/drm.so lacks '$retain'"
-for f in microos.plymouth microos.script wordmark.png starting.png updating.png; do
+for f in microos.plymouth microos.script wordmark.png starting.png updating.png micro-dap.png micro-emu.png steam-os.png; do
   [[ -f /usr/share/plymouth/themes/microos/$f ]] || fail "plymouth theme lacks $f"
 done
+while read -r h f; do
+  [[ $(sha256sum "/usr/share/plymouth/themes/microos/$f" | cut -d' ' -f1) == "$h" ]] || fail "plymouth theme $f sha256"
+done <<'EOF'
+58bcb04911a993446f2c66125a5bcebff53cb77793729dde5137b790c8def530 wordmark.png
+66710e9609fc93ca3c4beb90f72fabb561979f5118ab5b392f38b60602eabef4 starting.png
+bcdf7ae9b099ff425628cce9233e68b88fc738d83f6690fae2f91535ba4510c8 updating.png
+fc260da897c77c7f6cadedb5778a6cad3e9ffdd096e8e08ff660c58a23d2a316 micro-dap.png
+1707d4b1dd3b21080243c5c1aaf3c5f69dabea01b34b94ba16645f07bfeab83b micro-emu.png
+99de3f2ed66b6cba2a343ecba55c7a3c8ee50322c7f4ac856386e5ac4b30825c steam-os.png
+EOF
 [[ $(< /etc/plymouth/plymouthd.conf) == $'[Daemon]\nTheme=microos\nShowDelay=0\nDeviceScale=1' ]] || fail "plymouthd.conf"
 [[ $(plymouth-set-default-theme) == microos ]] || fail "plymouth default theme is $(plymouth-set-default-theme)"
 for f in /usr/libexec/microos/microos-splash-quit /usr/libexec/microos/microos-splash-update; do
@@ -437,7 +447,9 @@ dropin=usr/lib/systemd/system/ostree-prepare-root.service.d/10-microos-remap.con
 for f in usr/lib/ostree/ostree-prepare-root usr/libexec/microos/prepare-root usr/bin/sh usr/bin/realpath usr/bin/mkdir "$dropin" \
   usr/bin/plymouthd usr/bin/plymouth etc/plymouth/plymouthd.conf usr/share/plymouth/themes/microos/microos.plymouth \
   usr/share/plymouth/themes/microos/microos.script usr/share/plymouth/themes/microos/wordmark.png \
-  usr/share/plymouth/themes/microos/starting.png usr/share/plymouth/themes/microos/updating.png; do
+  usr/share/plymouth/themes/microos/starting.png usr/share/plymouth/themes/microos/updating.png \
+  usr/share/plymouth/themes/microos/micro-dap.png usr/share/plymouth/themes/microos/micro-emu.png \
+  usr/share/plymouth/themes/microos/steam-os.png; do
   grep -qE " $f( |$)" <<< "$list" || fail "initramfs lacks $f"
 done
 grep -qE "/plymouth/script\.so( |$)" <<< "$list" || fail "initramfs lacks the plymouth script plugin"

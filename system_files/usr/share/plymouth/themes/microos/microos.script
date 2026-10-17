@@ -4,6 +4,9 @@ Window.SetBackgroundBottomColor(0, 0, 0);
 wordmark = Image("wordmark.png");
 starting = Image("starting.png");
 updating = Image("updating.png");
+microdap = Image("micro-dap.png");
+microemu = Image("micro-emu.png");
+steamos = Image("steam-os.png");
 sprite = Sprite();
 shown = 0;
 ticks = 0;
@@ -33,6 +36,14 @@ fun message(text)
     show(starting);
   else if (text == "microos-updating")
     show(updating);
+  else if (text == "microos-session-microdap")
+    show(microdap);
+  else if (text == "microos-session-microemu")
+    show(microemu);
+  else if (text == "microos-session-steam")
+    show(steamos);
+  else if (text.SubString(0, 16) == "microos-session-")
+    show(wordmark);
 }
 
 if (Plymouth.GetMode() == "boot")
