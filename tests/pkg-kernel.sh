@@ -28,10 +28,13 @@ builtin=(
   PHY_QCOM_QMP_COMBO DRM_AUX_BRIDGE DRM_AUX_HPD_BRIDGE
   TYPEC TYPEC_TCPM TYPEC_QCOM_PMIC TYPEC_MUX_GPIO_SBU REGULATOR_QCOM_USB_VBUS
   FTRACE TRACING EVENT_TRACING TRACEPOINTS PM_DEBUG PM_SLEEP_DEBUG HIDRAW NTSYNC LRU_GEN_ENABLED
+  SECURITY_YAMA
 )
 for s in "${builtin[@]}"; do
   grep -qx "CONFIG_$s=y" "$kdir/config" || { echo "pkg-kernel: CONFIG_$s is not built in" >&2; exit 1; }
 done
+
+grep -qE '^CONFIG_LSM="([^"]*,)?yama(,[^"]*)?"$' "$kdir/config" || { echo "pkg-kernel: CONFIG_LSM lacks yama: $(grep '^CONFIG_LSM=' "$kdir/config")" >&2; exit 1; }
 
 for m in snd-seq joydev hid-playstation hid-sony hid-nintendo hid-microsoft xpad zram exfat ntfs3; do
   find "$kdir" -name "$m.ko*" | grep -q . || { echo "pkg-kernel: module $m missing" >&2; exit 1; }
