@@ -476,6 +476,29 @@ grep -qx 'After=gamescope-session-plus@%i.service' /usr/lib/systemd/user/microos
 grep -qx 'ExecStartPre=-/usr/libexec/microos/microos-pad-target deck-uhid keyboard' \
   /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/30-microos-pad.conf || fail "steam pad target drop-in"
 [[ $(stat -c '%a %U' /usr/libexec/microos/microos-pad-target) == '755 root' ]] || fail "microos-pad-target mode"
+[[ $(rpm -q --qf '%{VENDOR}' microset-settings) == MicroOS ]] || fail "microset-settings is not the MicroOS build"
+ou=/usr/lib/systemd/user/microset-overlay@.service
+grep -qxF 'ExecStart=/usr/bin/microset-settings --overlay' "$ou" || fail "microset-overlay@ ExecStart"
+grep -qxF 'BindsTo=gamescope-session-plus@%i.service' "$ou" || fail "microset-overlay@ BindsTo"
+XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no microset-overlay@steam.service \
+  || fail "systemd-analyze verify --user microset-overlay@steam.service"
+for s in steam microdap microemu; do
+  [[ $(< "/usr/lib/systemd/user/gamescope-session-plus@$s.service.d/30-microset-overlay.conf") == $'[Unit]\nWants=microset-overlay@'"$s"'.service' ]] \
+    || fail "$s session overlay drop-in"
+  [[ $(< "/usr/lib/microos/hotkeys.d/$s.conf.d/60-microset.conf") == 'rc tap call net.seilent.MicroSet.Overlay /net/seilent/MicroSet/Overlay net.seilent.MicroSet.Overlay1 Toggle' ]] \
+    || fail "$s overlay hotkey drop-in"
+done
+python3 - <<'PY' || fail "hotkeyd rc tap is not the overlay toggle in every session"
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("hotkeyd", "/usr/libexec/microos/microos-hotkeyd")
+h = importlib.util.module_from_spec(importlib.util.spec_from_loader("hotkeyd", loader))
+loader.exec_module(h)
+want = ("call", "net.seilent.MicroSet.Overlay", "/net/seilent/MicroSet/Overlay", "net.seilent.MicroSet.Overlay1", "Toggle")
+bad = [s for s in ("steam", "microdap", "microemu") if h.load_table(s).get(("rc", "tap")) != want]
+if bad:
+    print(f"FAIL: rc tap in {bad}", file=sys.stderr)
+    sys.exit(1)
+PY
 
 [[ $(grep '^ExecStop=' /usr/lib/systemd/system/ostree-finalize-staged.service) == 'ExecStop=/usr/bin/ostree admin finalize-staged' ]] \
   || fail "ostree-finalize-staged.service ExecStop changed"

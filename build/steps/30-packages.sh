@@ -14,6 +14,7 @@ own=(
   mangohud/mangohud
   microset/microset
   microset/microset-recovery
+  microset/microset-settings
   microset/microset-fonts
   hexagonrpc/hexagonrpc
   microdap/microdap
