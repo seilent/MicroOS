@@ -22,6 +22,8 @@ BuildRequires:  dbus-daemon
 BuildRequires:  /usr/bin/setpriv
 BuildRequires:  systemd-rpm-macros
 BuildRequires:  unzip
+BuildRequires:  xorg-x11-server-Xvfb
+BuildRequires:  xorg-x11-xauth
 
 %description
 microsetd holds every MicroOS, MicroDAP and MicroEMU setting behind
