@@ -1,0 +1,6 @@
+SUBSYSTEM=="input", KERNEL=="event*|js*", DEVPATH!="/devices/virtual/*", ATTRS{name}=="AYANEO Controller", ATTRS{id/bustype}=="0003", ATTRS{id/vendor}=="4001", ATTRS{id/product}=="0428", MODE="0600", GROUP="root", TAG-="uaccess", ENV{ID_SEAT}="seat-none"
+SUBSYSTEM=="input", KERNEL=="event*", DEVPATH!="/devices/virtual/*", ATTRS{name}=="aya-keys", ATTRS{id/bustype}=="0019", ATTRS{id/vendor}=="0001", ATTRS{id/product}=="0001", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", DEVPATH!="/devices/virtual/*", ATTRS{name}=="gpio-keys", ATTRS{id/bustype}=="0019", ATTRS{id/vendor}=="0001", ATTRS{id/product}=="0001", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", DEVPATH!="/devices/virtual/*", ATTRS{name}=="pm8941_pwrkey", ATTRS{id/bustype}=="0000", ATTRS{id/vendor}=="0000", ATTRS{id/product}=="0000", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", DEVPATH!="/devices/virtual/*", ATTRS{name}=="pm8941_resin", ATTRS{id/bustype}=="0000", ATTRS{id/vendor}=="0000", ATTRS{id/product}=="0000", MODE="0640"
+SUBSYSTEM=="input", KERNEL=="event*", DEVPATH=="/devices/virtual/*", ATTRS{name}=="InputPlumber Keyboard", ATTRS{id/bustype}=="0003", ATTRS{id/vendor}=="1234", ATTRS{id/product}=="5678", MODE="0640"
