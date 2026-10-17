@@ -36,6 +36,19 @@ EOF
 for n in mv ln stat realpath readlink; do
   ln -s passthru "$bin/$n"
 done
+cat > "$bin/microos-pad-hold" <<'EOF'
+#!/usr/bin/env bash
+hint=no
+if [[ -e $MICROOS_RUN/hold/storage ]]; then
+  { read -r pid; read -r dev; } < "$MICROOS_RUN/hold/storage"
+  hint=$(stat -c %a "$MICROOS_RUN/hold/storage"):$pid:$dev:$(wc -l < "$MICROOS_RUN/hold/storage")
+  [[ $hint =~ ^644:[1-9][0-9]*:/dev/mmcblk[0-9]:2$ ]] && kill -0 "$pid" 2> /dev/null && hint=live:$dev
+fi
+if flock -n "$MICROOS_RUN/lock/format.lock" true; then lock=free; else lock=held; fi
+{ printf 'microos-pad-hold'; printf ' %q' "$@"; echo " hint=$hint lock=$lock"; } >> "$CALLS"
+(( ! ${RC_pad_hold:-0} )) || echo "microos-pad-hold: refused: BTN_SOUTH not held for 1 s" >&2
+exit "${RC_pad_hold:-0}"
+EOF
 cat > "$bin/logger" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$LOGGER_LOG"
@@ -198,7 +211,7 @@ setup() {
   cp "$t/lsblk.json" "$tmp/lsblk.json"
   : > "$tmp/mounts"
   rm -rf "$tmp/run"
-  mkdir -p "$tmp/run/lock"
+  mkdir -p "$tmp/run/lock" "$tmp/run/hold"
 }
 
 run() {
@@ -217,7 +230,7 @@ run() {
   env -i PATH="${STUB_PATH:-$bin}:${SYS_PATH:-/usr/bin:/bin}" CALLS="$tmp/calls" LOGGER_LOG="$tmp/log" FINDMNT_CALLS="$tmp/fcalls" \
     BLKID_CALLS="$tmp/bcalls" FINDMNT_ROWS="$tmp/findmnt" MOUNTS="$tmp/mounts" BLKID_JSON="$tmp/lsblk.json" \
     MICROOS_SYSFS="$sys" MICROOS_DEV="$dev" MICROOS_STORAGE_LOCK_WAIT=2 BUS_COUNT="$tmp/buscount" SEQ_FILE="$sys/block/mmcblk0/diskseq" \
-    LOCK_NODE="$dev/mmcblk0" BUS_NAME=e8ea5deb-1451-4895-9312-7f169786ad58 MICROOS_RUN="$tmp/run" \
+    LOCK_NODE="$dev/mmcblk0" MICROOS_PAD_HOLD="$bin/microos-pad-hold" BUS_NAME=e8ea5deb-1451-4895-9312-7f169786ad58 MICROOS_RUN="$tmp/run" \
     CONTENT_LOCK="$tmp/run/lock/content" CONTENT_LINK="$tmp/run/content" POLL_COUNT="$tmp/pollcount" POLL_LOG="$tmp/poll" \
     "${vars[@]}" "$storage" "$@" > "$tmp/out" 2>&1 ||
     r=$?
@@ -537,6 +550,38 @@ called '^udevadm settle$' "format"
 (( $(line_of '^wipefs -a /dev/mmcblk0$') < $(line_of '^sfdisk') && $(line_of '^sfdisk') < $(line_of '^mkfs.ext4') &&
   $(line_of '^mkfs.ext4') < $(line_of '^udevadm') && $(line_of '^udevadm') < $(line_of '^systemctl start') )) ||
   fail "format: writer order: $(cat "$tmp/calls")"
+called '^microos-pad-hold BTN_SOUTH 1 15 hint=live:/dev/mmcblk0 lock=held$' "format hold"
+called "^mv -f -- $tmp/run/hold/\.storage\.[A-Za-z0-9]\{6\} $tmp/run/hold/storage\$" "format hint written by rename"
+(( $(line_of '^mv -f -- .*/hold/') < $(line_of '^microos-pad-hold') )) || fail "format: hint renamed after the hold started"
+[[ -z $(find "$tmp/run/hold" -name '.storage.*') ]] || fail "format: hint temp file left: $(ls -A "$tmp/run/hold")"
+(( $(line_of '^microos-pad-hold') < $(line_of '^systemctl stop') )) || fail "format: units stopped before the hold"
+[[ ! -e $tmp/run/hold/storage ]] || fail "format: hint file left"
+run RC_pad_hold=1 format --skip-validation --device /dev/mmcblk0
+code 77 "format without the hold"
+no_writer "format without the hold"
+not_called '^systemctl' "format without the hold"
+logged 'A not held for 1 s within 15 s, nothing written' "format without the hold"
+logged '^-t microos-pad-hold microos-pad-hold: refused: BTN_SOUTH not held for 1 s$' "format without the hold"
+grep -q 'refused: BTN_SOUTH not held' "$tmp/out" || fail "format without the hold: helper reason not on stderr: $(cat "$tmp/out")"
+[[ ! -e $tmp/run/hold/storage ]] || fail "format without the hold: hint file left"
+flock -o -x "$tmp/run/lock/format.lock" sleep 4 &
+holder=$!
+sleep 0.3
+run format --skip-validation --device /dev/mmcblk0
+code 53 "format while another format waits"
+not_called '^microos-pad-hold' "format while another format waits"
+no_writer "format while another format waits"
+not_called '^systemctl' "format while another format waits"
+[[ ! -e $tmp/run/hold/storage ]] || fail "format while another format waits: hint file written"
+kill "$holder" 2> /dev/null || true
+wait "$holder" 2> /dev/null || true
+holder=""
+run RC_pad_hold=1 format --dry-run --device /dev/mmcblk0
+code 0 "format --dry-run without the hold"
+not_called '^microos-pad-hold' "format --dry-run"
+run RC_pad_hold=1 format --version
+code 0 "format --version without the hold"
+not_called '^microos-pad-hold' "format --version"
 run format --label "" --skip-validation --device /dev/mmcblk0
 code 0 "format empty label"
 not_called ' -L ' "format empty label"
@@ -719,8 +764,9 @@ echo 5767168 > "$sys/class/block/mmcblk0p1/size"
 printf '%s\n' "/dev/mmcblk0p1 $media ext4 rw,noatime" "/dev/sda22 /sysroot btrfs rw,noatime" \
   "/dev/sda22 /var btrfs rw,noatime" "/dev/sda21 /boot ext4 ro,relatime" "/dev/sda2 /persist ext4 rw,relatime" \
   "/dev/sda20 /boot/efi vfat rw,relatime" > "$tmp/mounts"
-run trim
+run RC_pad_hold=1 trim
 code 0 "trim"
+not_called "^microos-pad-hold" "trim"
 want=$(printf '%s\n' "fstrim -o 0 -l 1073741824 $media" "fstrim -o 1073741824 -l 1073741824 $media" \
   "fstrim -o 2147483648 -l 1073741824 $media" "fstrim /sysroot" "fstrim -o 0 -l 1073741824 /persist")
 [[ $(grep '^fstrim' "$tmp/calls") == "$want" ]] || fail "trim: $(cat "$tmp/calls")"

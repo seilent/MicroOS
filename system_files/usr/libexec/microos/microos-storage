@@ -11,6 +11,8 @@ lockwait=${MICROOS_STORAGE_LOCK_WAIT:-30}
 retry=${MICROOS_STORAGE_MOUNT_RETRY:-5}
 [[ $retry =~ ^[0-9]+$ ]] || retry=5
 rundir=${MICROOS_RUN:-/run/microos}
+padhold=${MICROOS_PAD_HOLD:-/usr/libexec/microos/microos-pad-hold}
+holdwait=15
 user=micro
 seen=-
 errseen=-
@@ -498,6 +500,27 @@ cmd_format() {
   seq_check
   if (( validate )) && ! command -v f3probe > /dev/null; then
     quit 2 "f3probe missing"
+  fi
+  if (( ! dry )); then
+    exec {fmtfd}> "$rundir/lock/format.lock" || quit 53 "no lock file $rundir/lock/format.lock"
+    flock -n "$fmtfd" || quit 53 "format already waiting or running"
+    hint=""
+    trap 'rm -f "$rundir/hold/storage" ${hint:+"$hint"}' EXIT
+    if hint=$(mktemp "$rundir/hold/.storage.XXXXXX") && printf '%s\n%s\n' "$$" "$device" > "$hint" &&
+      chmod 0644 "$hint" && mv -f -- "$hint" "$rundir/hold/storage"; then
+      hint=""
+    else
+      log "no hint file $rundir/hold/storage"
+    fi
+    if ! holderr=$("$padhold" BTN_SOUTH 1 "$holdwait" 2>&1); then
+      if [[ -n $holderr ]]; then
+        echo "$holderr" >&2
+        logger -t microos-pad-hold "$holderr" || true
+      fi
+      quit 77 "A not held for 1 s within $holdwait s, nothing written"
+    fi
+    rm -f "$rundir/hold/storage" ${hint:+"$hint"}
+    trap - EXIT
   fi
 
   mapfile -t parts < <(children "$disk")
