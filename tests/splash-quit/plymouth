@@ -7,9 +7,13 @@ case $1 in
       n=$(cat "$STUB_DIR/retain-fails" 2> /dev/null || echo 0)
       if ((n > 0)); then
         echo $((n - 1)) > "$STUB_DIR/retain-fails"
+        if ((n == 1)) && [[ -e $STUB_DIR/switch-at-retain ]]; then
+          echo active > "$STUB_DIR/switch-state"
+        fi
         exit 1
       fi
     else
+      [[ ! -e $STUB_DIR/switch-at-quit ]] || echo activating > "$STUB_DIR/switch-state"
       [[ ! -e $STUB_DIR/quit-fails ]]
     fi
     ;;

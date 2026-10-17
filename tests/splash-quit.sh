@@ -73,6 +73,43 @@ run || fail "plymouthd down: exit $?"
 [[ $(quits) == 0 ]] || fail "plymouthd down: quit called"
 logged "plymouthd is not running" || fail "plymouthd down not logged: $(cat "$tmp/out")"
 
+for st in active activating; do
+  reset
+  table plymouthd 400 n 1 systemd-logind 585 y 2
+  echo "$st" > "$STUB_DIR/switch-state"
+  run || fail "switch splash $st: exit $?"
+  [[ $(quits) == 0 ]] || fail "switch splash $st: quit called: $(cat "$STUB_LOG")"
+  ! grep -q -- '--ping' "$STUB_LOG" || fail "switch splash $st: plymouthd pinged"
+  logged "microos-splash-switch.service holds the splash" || fail "switch splash $st not logged: $(cat "$tmp/out")"
+done
+
+reset
+table systemd-logind 585 y 2
+echo 2 > "$STUB_DIR/retain-fails"
+touch "$STUB_DIR/switch-at-retain"
+run || fail "switch splash after the retries: exit $?"
+[[ $(retains) == 2 && $(plain) == 0 && $(kills) == 0 ]] || fail "switch splash after the retries: $(cat "$STUB_LOG")"
+logged "microos-splash-switch.service holds the splash" || fail "switch splash after the retries not logged: $(cat "$tmp/out")"
+
+reset
+table systemd-logind 585 y 2
+echo 2 > "$STUB_DIR/retain-fails"
+touch "$STUB_DIR/quit-fails" "$STUB_DIR/switch-at-quit"
+run || fail "switch splash before the SIGTERM: exit $?"
+[[ $(plain) == 1 && $(kills) == 0 ]] || fail "switch splash before the SIGTERM: $(cat "$STUB_LOG")"
+
+reset
+table plymouthd 400 n 1
+printf '%20s %5d %3d   %c    %c %5d %10u %*s %20llu\n' systemd-logind 4000 128 y y 1000 0 64 '<unset>' 9 >> "$clients"
+MICROOS_SPLASH_WAIT=1 run || fail "uid 1000 logind row: exit $?"
+logged "no systemd-logind DRM master on dri/0 after 1 s" || fail "uid 1000 logind row taken as the master: $(cat "$tmp/out")"
+
+reset
+table plymouthd 400 n 1 systemd-logind 585 y 2
+echo deactivating > "$STUB_DIR/switch-state"
+run || fail "switch splash deactivating: exit $?"
+[[ $(quits) == 1 ]] || fail "switch splash deactivating: $(quits) quits"
+
 reset
 table plymouthd 400 n 1 systemd-logind 585 y 2
 run || fail "logind master: exit $?"

@@ -343,6 +343,46 @@ load_profile() {
   done
 }
 
+old_master() {
+  local line cmd f
+  if [[ -r $sysfs/kernel/debug/dri/0/clients ]]; then
+    while IFS= read -r line; do
+      cmd=${line:0:20}
+      cmd=${cmd#"${cmd%%[! ]*}"}
+      read -ra f <<< "${line:20}"
+      if (( ${#f[@]} >= 8 )) && [[ $cmd == systemd-logind && ${f[2]} == y && ${f[4]} == 0 && ${f[-1]} =~ ^[0-9]+$ ]]; then
+        echo "${f[-1]}"
+        return
+      fi
+    done < "$sysfs/kernel/debug/dri/0/clients"
+  fi
+  echo -
+}
+
+splash_off() {
+  ( exec 9< "$rundir/splash.lock" && flock -w 1 9 && rm -f "$rundir/splash-busy" ) || log "splash lock busy, splash-busy left"
+}
+
+splash_on() {
+  local id
+  id=$(old_master)
+  if ! ( exec 9< "$rundir/splash.lock" && flock -w 1 9 && put "$rundir/splash-busy" "$2" &&
+    put "$rundir/splash-target" "$1 $2 $id" ); then
+    log "splash lock busy or splash files not written, no splash"
+    return
+  fi
+  if ! systemctl restart --no-block microos-splash-switch.service; then
+    log "restart of microos-splash-switch.service failed"
+    splash_off
+  fi
+}
+
+splash_idle() {
+  local out
+  out=$(systemctl show -p ActiveState -p Job microos-splash-switch.service 2> /dev/null) || return 1
+  grep -qxE 'ActiveState=(inactive|failed)' <<< "$out" && ! grep -qE '^Job=.' <<< "$out"
+}
+
 source_back() { [[ -n $src_unit && $src_unit != "$target_unit" ]] && started "$src_unit"; }
 
 settled() { started "$target_unit" || source_back; }
@@ -419,6 +459,9 @@ switch_once() {
   seat=$(seat_session)
   log "switch from ${src_name:-none} to $want"
   panel_on
+  if [[ -n $src_unit ]] && active "$src_unit"; then
+    splash_on "$want" "$serial"
+  fi
   if [[ -n $src_unit && $src_unit != "$target_unit" ]]; then
     stop_source "$src_unit" "$src_stop"
   fi
@@ -453,6 +496,9 @@ switch_once() {
     log "recovery did not start, giving up"
     put "$rundir/session-failed" "recovery $serial" || log "cannot write session-failed"
     systemctl start --no-block microos-session-giveup.service || log "start of microos-session-giveup.service failed"
+  fi
+  if [[ -e $rundir/splash-busy ]] && splash_idle; then
+    splash_off
   fi
 }
 

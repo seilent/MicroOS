@@ -1,0 +1,26 @@
+[Unit]
+Description=Show the session switch splash
+Conflicts=shutdown.target
+Before=shutdown.target plymouth-reboot.service plymouth-poweroff.service plymouth-halt.service plymouth-kexec.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+TimeoutStopSec=3
+KillMode=mixed
+ExecStart=/usr/libexec/microos/microos-splash-switch
+ExecStopPost=/usr/libexec/microos/microos-splash-switch --cleanup
+ProtectSystem=strict
+ReadWritePaths=/run/microos /run/plymouth
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_TTY_CONFIG CAP_DAC_OVERRIDE
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native

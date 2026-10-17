@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+echo "plymouth $*" >> "$STUB_LOG"
+d=$STUB_DIR
+run=$MICROOS_SPLASH_ROOT/run/microos
+up() { [[ -e $d/plymouthd.pid && ! -e $d/quit ]] && kill -0 "$(< "$d/plymouthd.pid")" 2> /dev/null; }
+case $1 in
+  --ping) [[ -e $d/boot ]] || up ;;
+  quit)
+    echo "quit busy=$([[ -e $run/splash-busy ]] && echo yes || echo no) lock=$(flock -n "$run/splash.lock" true && echo free || echo held) hold=$(ls -l "/proc/$PPID/fd" | grep -q "$MICROOS_SPLASH_ROOT/dev/dri/renderD128" && echo yes || echo no)" >> "$STUB_LOG"
+    if [[ -e $d/boot ]]; then
+      [[ -e $d/boot-stays ]] || rm -f "$d/boot"
+      exit 0
+    fi
+    up && touch "$d/quit"
+    ;;
+  show-splash)
+    [[ ! -e $d/hang ]] || sleep 5
+    up
+    ;;
+  display-message | deactivate) up ;;
+  *) exit 1 ;;
+esac
