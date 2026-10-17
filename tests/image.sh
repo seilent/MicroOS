@@ -66,6 +66,8 @@ yama=/usr/lib/sysctl.d/60-microos-yama.conf
 grep -qx 'kernel.yama.ptrace_scope = 1' "$yama" || fail "$yama does not set ptrace_scope 1"
 last=$(/usr/lib/systemd/systemd-sysctl --cat-config | awk '/^# \/[^ ]*\.conf( -> |$)/ { f = $2 } /^-?kernel[.\/]yama[.\/]ptrace_scope[[:space:]]*=/ { l = f " " $0 } END { print l }')
 [[ $last == "$yama kernel.yama.ptrace_scope = 1" ]] || fail "the last ptrace_scope setting is not $yama: $last"
+uhid=$(grep -rsnE 'KERNEL=="[^"]*uhid|/dev/uhid' /usr/lib/udev/rules.d /etc/udev/rules.d || true)
+[[ -z $uhid ]] || fail "a udev rule names uhid, InputPlumber's uhid adoption needs /dev/uhid root only: $uhid"
 
 for h in steamos-update steamos-select-branch jupiter-biosupdate jupiter-dock-updater steamos-set-timezone \
   steamos-priv-write steamos-devkit-mode; do
