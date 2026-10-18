@@ -8,6 +8,7 @@
 0008-drm-msm-dp-return-0-from-audio_prepare-when-cable-is-disconnected.patch
 0009-scsi-ufs-ufs-qcom-enable-only-lane-clocks-in-lane-clock-apis.patch
 0010-serial-qcom-geni-add-force-suspend-resume-to-system-sleep-callbacks.patch
+0011-crypto-qce-add-runtime-pm-and-interconnect-bandwidth-scaling-support.patch
 0101-drm-panel-add-ayaneo-ar18-panel.patch
 0102-input-touchscreen-add-sitronix-st7123.patch
 0103-hid-add-ayaneo-pocket-micro2-force-feedback.patch
