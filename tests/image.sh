@@ -290,7 +290,7 @@ tdps=$(sed -n '/^\[tdp\]$/,/^\[/s/^\([0-9]\+\)=.*/\1/p' /usr/lib/microos/power-p
 clocks="$(sed -n 's/^CLOCK_MIN = \([0-9]\+\)$/\1/p' /usr/libexec/microos/microos-powerd) $(sed -n 's/^CLOCK_MAX = \([0-9]\+\)$/\1/p' /usr/libexec/microos/microos-powerd)"
 [[ $(jq -r '.keys["power.gpu_clock"] | "\(.min) \(.max)"' "$schema") == "$clocks" ]] \
   || fail "power.gpu_clock range differs from microos-powerd CLOCK_MIN CLOCK_MAX $clocks"
-rpm -q sddm sddm-wayland-generic steam-devices gtk2 openal-soft sdl2-compat libXcomposite libXdamage libXfixes libXi \
+rpm -q sddm sddm-wayland-generic steam-devices dbus-tools gtk2 openal-soft sdl2-compat libXcomposite libXdamage libXfixes libXi \
   libXinerama libXrandr libXrender libXtst libSM libICE at-spi2-atk cups-libs libssh2 libva libvdpau \
   google-noto-sans-cjk-vf-fonts google-noto-color-emoji-fonts google-noto-sans-arabic-vf-fonts \
   google-noto-sans-hebrew-vf-fonts google-noto-sans-thai-vf-fonts google-noto-sans-devanagari-vf-fonts \
