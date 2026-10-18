@@ -21,6 +21,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0008 drm/msm/dp: return 0 from audio_prepare when cable is disconnected | dri-devel and linux-arm-msm v1, 2026-06-16, `20260616151252.3599089-2-kumar.singh@oss.qualcomm.com` | Kumar Anurag | lore, ROCKNIX `7.2/0016` (`7b4da83200`, sunshineinabox) | CONFIRMED. Taken from the patchwork mbox |
 | 0009 scsi: ufs: ufs-qcom: enable only lane clocks in lane clock APIs | linux-scsi V2, 2026-09-09, `20260909053944.2827968-1-nitin.rawat@oss.qualcomm.com`, `mkp/scsi.git` `f07317a8d57f` | Nitin Rawat | lore, mkp/scsi | CONFIRMED. Taken from git.kernel.org |
 | 0010 serial: qcom-geni: add force suspend/resume to system sleep callbacks | linux-arm-msm v2, 2026-07-02, `20260702-add_force_suspend_resume_to_system_sleep_callbacks-v2-1-b79e254a7015@oss.qualcomm.com`, torvalds `d0cd9c8d0fd5` | Praveen Talari | lore, mainline | CONFIRMED. Taken from git.kernel.org. The Armada copy keeps this header over a body with extra error handling (virtudude, Armada `493b4f7`); not taken |
+| 0011 crypto: qce: add runtime PM and interconnect bandwidth scaling support | v9, 2026-07-29, applied by Herbert Xu, torvalds `6f5569203bb6` | Udit Tiwari | mainline, Armada `v9_20260729_qualcomm_crypto_qce_runtime_pm_interconnect` (same code) | CONFIRMED. Taken from git.kernel.org. Context of the include hunk rebased to 7.2.6, no code change |
 | 0101 to 0111 | my Armada `pocket-micro-2-build` and ROCKNIX `pocket-micro2` trees | seilent; 0101 is based on danyi's AR16 driver (ROCKNIX SM8550 `0064`, `aa418ad72e`, 2026-08-13), 0102 on the Sitronix and Waveshare ST7123 driver (raspberrypi/linux `6d4adb6bfea6`, 2026-07-16), 0103 uses the rumble report format of the stock Android 4.19.157 `hid-ayaneo` | own | CONFIRMED |
 | 0112 ASoC: qcom: sm8250: keep the PCM backend format | written new 2026-10-13; the S16_LE force is torvalds `89be3c15a58b` (lore `20250228161430.373961-1-alexey.klimov@linaro.org`, v6.15); the idea of dropping it for PCM is ROCKNIX-old `f7b53cc4b244`, 2025-06-02, `SM8250/0100-revert-force-16bit-audio.patch` | seilent; idea rmake (ROCKNIX-old), force Alexey Klimov | ROCKNIX-old `f7b53cc4b244`, ROCKNIX `9f1fab30f6` (squash import), removed in `4c7e4ab631` and restored in `7a554eedb9` (Philippe Simons), Armada `0100`, batocera and other SM8250 trees carry the same file; patchwork has no revert or follow up on the list | CONFIRMED. The ROCKNIX copy tests `dai_link->compr_ops`, which is never set on a backend link, so it drops the force for compressed playback too; 0112 keeps S16_LE when the format mask is empty (compressed) |
 | 0113 ASoC: codecs: wsa881x: restore the PA gain after power up | written new 2026-10-15; mainline `wsa881x.c` has no fix up to `e857b163c8f4` (2026-07-09) | seilent | none | CONFIRMED |
@@ -39,6 +40,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0008 | a failed DP prepare makes PipeWire drop the whole card profile | speaker and headphones stay with DP unplugged |
 | 0009 | s2idle: the lane clock refcount leak kept `gpll0` and XO on | s2idle residency |
 | 0010 | s2idle: QUP clocks held across system sleep | s2idle residency |
+| 0011 | s2idle: qce held its 393600 interconnect vote across system sleep | `1dfa000.crypto` runtime status `suspended` at idle, no qce vote in the suspend flush trace |
 | 0101 | AR18 panel | panel lights up |
 | 0102 | ST7123 touch | touch input |
 | 0103 | pad rumble | rumble in a game |
@@ -68,6 +70,7 @@ header and context differences drop out. Run 2026-10-12.
 | 0008 | `f9f70a7829e5` | `f9f70a7829e5` (`7.2/0016`) | `f21364e61939` (`0618`, same change, no author) | `f9f70a7829e5` (v1 mbox) |
 | 0009 | `3a560368f8dc` | | `3a560368f8dc` (`0533`) | `3a560368f8dc` (`f07317a8d57f`) |
 | 0010 | `d4b3ea706b2c` | | `64eba2c0ebec` (`0534`, modified) | `d4b3ea706b2c` (`d0cd9c8d0fd5`) |
+| 0011 | `5fa3fcc62a14` | | `5fa3fcc62a14` (`v9_20260729_qualcomm_crypto_qce_runtime_pm_interconnect`, run 2026-10-18) | `5fa3fcc62a14` (`6f5569203bb6`, run 2026-10-18) |
 | 0101 | `ac0bf37aa420` | `fe316f1d41ff` (`pocket-micro2` `0068`, older) | `ac0bf37aa420` (`0301`) | |
 | 0102 | `c4f2698387a8` | `c4f2698387a8` (`pocket-micro2` `0069`) | `c4f2698387a8` (`0302`) | |
 | 0103 | `bae827a9b120` | `32d7b3149e64` (`pocket-micro2` `0070`, older) | `bae827a9b120` (`0303`) | |
