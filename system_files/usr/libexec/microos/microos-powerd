@@ -4,6 +4,7 @@ import os
 import pwd
 import re
 import sys
+from decimal import Decimal, InvalidOperation
 
 import gi
 
@@ -22,6 +23,10 @@ PROFILE = "com.steampowered.SteamOSManager1.PerformanceProfile1"
 GPU = "com.steampowered.SteamOSManager1.GpuPerformanceLevel1"
 TDP = "com.steampowered.SteamOSManager1.TdpLimit1"
 CPU = "com.steampowered.SteamOSManager1.CpuScaling1"
+SYSTEMD = "org.freedesktop.systemd1"
+SYSTEMD_PATH = "/org/freedesktop/systemd1"
+MANAGER = "org.freedesktop.systemd1.Manager"
+UNIT = "org.freedesktop.systemd1.Unit"
 
 CPUS = "/devices/system/cpu"
 POLICIES = ("policy0", "policy4", "policy7")
@@ -37,10 +42,21 @@ HOLD_MAX = 4
 DAP_CPUS = range(4, 8)
 DAP_CPU_MAX = 787200
 DAP_GPU_MAX = 305000000
+FLOOR_MIN = 0
+FLOOR_MAX = 83
+FLOOR_POLLS = 50
+FLOOR_POLL_MS = 100
+USERS = "/fs/cgroup/user.slice"
 WRITABLE = re.compile(
     r"/devices/system/cpu/(cpufreq/policy[047]/scaling_(max_freq|min_freq|governor)|cpu[0-9]+/online)"
     r"|/class/devfreq/3d00000\.gpu/(governor|min_freq|max_freq)"
 )
+CGROUP_WRITABLE = re.compile(
+    r"/fs/cgroup/user\.slice(/user-[0-9]+\.slice(/user@[0-9]+\.service(/game\.slice)?)?)?/cpu\.uclamp\.min"
+)
+GAME = re.compile(r"app-steam-app.*\.scope|microemu-game\.scope")
+USER_SLICE = re.compile(r"user-([0-9]+)\.slice")
+MANAGER_UNIT = re.compile(r"user@([0-9]+)\.service")
 
 SCHEMA = {
     POWER: [
@@ -50,6 +66,7 @@ SCHEMA = {
         ("ManualGpuClock", "u", "readwrite"),
         ("CpuGovernor", "s", "readwrite"),
         ("AvailableCpuGovernors", "as", "read"),
+        ("GameCpuFloor", "u", "readwrite"),
         ("Holds", "as", "read"),
     ],
     PROFILE: [
@@ -85,6 +102,7 @@ SETTERS = {
     (POWER, "CpuGovernor"): "governor",
     (CPU, "CpuScalingGovernor"): "governor",
     (TDP, "TdpLimit"): "tdp",
+    (POWER, "GameCpuFloor"): "game_floor",
 }
 
 METHODS = {
@@ -120,6 +138,31 @@ def write(rel, value):
             f.write(str(value))
     except OSError as e:
         log(f"write {rel}={value}: {e.strerror}")
+
+
+def write_cgroup(rel, value):
+    if not CGROUP_WRITABLE.fullmatch(rel):
+        log(f"refused write {rel}")
+        return False
+    try:
+        fd = os.open(SYSFS + rel, os.O_WRONLY | os.O_NOFOLLOW | os.O_TRUNC)
+        try:
+            os.write(fd, str(value).encode())
+        finally:
+            os.close(fd)
+    except OSError as e:
+        log(f"write {rel}={value}: {e.strerror}")
+        return False
+    return True
+
+
+def manager(uid):
+    return f"{USERS}/user-{uid}.slice/user@{uid}.service"
+
+
+def levels(uid):
+    dirs = (USERS, f"{USERS}/user-{uid}.slice", manager(uid), f"{manager(uid)}/game.slice")
+    return [f"{d}/cpu.uclamp.min" for d in dirs]
 
 
 def clamp(key, value, lo, hi):
@@ -182,6 +225,8 @@ class Power:
         self.last = {}
         self.holds = {}
         self.state = {}
+        self.watches = {}
+        self.polls = {}
         try:
             self.microset = pwd.getpwnam("microset").pw_uid
         except KeyError:
@@ -201,7 +246,8 @@ class Power:
         self.state = state
 
     def defaults(self):
-        return {"profile": self.default, "gpu_level": "auto", "gpu_clock": CLOCK_MAX, "governor": "schedutil", "tdp": None}
+        return {"profile": self.default, "gpu_level": "auto", "gpu_clock": CLOCK_MAX, "governor": "schedutil", "tdp": None,
+                "game_floor": FLOOR_MIN}
 
     def governors(self):
         return [g for g in (read(f"{CPUS}/cpufreq/policy0/scaling_available_governors") or "").split() if g != "userspace"]
@@ -215,6 +261,8 @@ class Power:
             return value
         if key == "gpu_clock" and isinstance(value, int):
             return clamp(key, value, CLOCK_MIN, CLOCK_MAX)
+        if key == "game_floor" and isinstance(value, int):
+            return clamp(key, value, FLOOR_MIN, FLOOR_MAX)
         if key == "tdp" and isinstance(value, int):
             return clamp(key, value, min(self.tdp), max(self.tdp)) if self.tdp else value
         raise ValueError(f"{value!r} is not a valid {key}")
@@ -304,9 +352,118 @@ class Power:
             write(f"{DEVFREQ}/max_freq", gpu_max)
             write(f"{DEVFREQ}/min_freq", floor)
             caps.append(f"gpu={gpu_max}")
+        self.scan()
+        for uid in list(self.watches):
+            self.floor(uid)
         tdp = f" tdp={self.tdp_watts()}" if self.tdp else ""
         hold = f" hold={held[0]}" if held else ""
-        log(f"applied profile={self.state['profile']} governor={self.state['governor']}{tdp}{hold} {' '.join(caps)}")
+        log(f"applied profile={self.state['profile']} governor={self.state['governor']}{tdp}{hold} "
+            f"floor={self.state['game_floor']} {' '.join(caps)}")
+
+    def write_floor(self, uid):
+        floor = self.state["game_floor"]
+        missing = None
+        for rel in levels(uid):
+            text = read(rel)
+            if text is None:
+                missing = missing or rel
+                continue
+            try:
+                same = Decimal(text) == floor
+            except InvalidOperation:
+                same = False
+            if not same and write_cgroup(rel, floor):
+                log(f"floor {floor} on {rel}")
+        return missing if floor else None
+
+    def floor(self, uid):
+        if self.write_floor(uid) is None:
+            self.stop_poll(uid)
+        elif uid not in self.polls:
+            self.polls[uid] = [FLOOR_POLLS, GLib.timeout_add(FLOOR_POLL_MS, self.poll, uid)]
+
+    def poll(self, uid):
+        missing = self.write_floor(uid)
+        if missing is None:
+            del self.polls[uid]
+            return False
+        self.polls[uid][0] -= 1
+        if self.polls[uid][0] > 0:
+            return True
+        log(f"floor: {missing} missing after {FLOOR_POLLS} polls")
+        del self.polls[uid]
+        return False
+
+    def stop_poll(self, uid):
+        poll = self.polls.pop(uid, None)
+        if poll:
+            GLib.source_remove(poll[1])
+
+    def arm(self, uid):
+        path = SYSFS + manager(uid)
+        if not os.path.isdir(path):
+            return
+        old = self.watches.pop(uid, None)
+        if old:
+            old.cancel()
+        try:
+            monitor = Gio.File.new_for_path(path).monitor_directory(Gio.FileMonitorFlags.NONE, None)
+        except GLib.Error as e:
+            log(f"watch {manager(uid)}: {e.message}")
+            return
+        monitor.connect("changed", self.on_tree, uid)
+        self.watches[uid] = monitor
+        self.floor(uid)
+
+    def on_tree(self, monitor, file, other, event, uid):
+        if self.watches.get(uid) is not monitor:
+            return
+        if event == Gio.FileMonitorEvent.DELETED and file.get_path() == SYSFS + manager(uid):
+            monitor.cancel()
+            del self.watches[uid]
+            self.stop_poll(uid)
+        elif event == Gio.FileMonitorEvent.CREATED and file.get_basename() == "game.slice":
+            self.floor(uid)
+
+    def scan(self):
+        try:
+            slices = os.listdir(SYSFS + USERS)
+        except OSError:
+            return
+        for name in sorted(slices):
+            m = USER_SLICE.fullmatch(name)
+            if m and int(m.group(1)) not in self.watches:
+                self.arm(int(m.group(1)))
+
+    def systemd(self, path, iface, method, args, reply):
+        return self.conn.call_sync(SYSTEMD, path, iface, method, args, GLib.VariantType(reply) if reply else None,
+                                   Gio.DBusCallFlags.NO_AUTO_START, -1, None)
+
+    def subscribe(self):
+        try:
+            self.systemd(SYSTEMD_PATH, MANAGER, "Subscribe", None, None)
+        except GLib.Error as e:
+            log(f"systemd Subscribe: {e.message}")
+        self.scan()
+
+    def active(self, unit):
+        try:
+            path = self.systemd(SYSTEMD_PATH, MANAGER, "GetUnit", GLib.Variant("(s)", (unit,)), "(o)").unpack()[0]
+            state = self.systemd(path, PROPS, "Get", GLib.Variant("(ss)", (UNIT, "ActiveState")), "(v)").unpack()[0]
+        except GLib.Error as e:
+            log(f"{unit} ActiveState: {e.message}")
+            return False
+        return state == "active"
+
+    def on_job(self, conn, sender, path, iface, signal, params):
+        _, _, unit, result = params.unpack()
+        m = MANAGER_UNIT.fullmatch(unit)
+        if m and result == "done" and self.active(unit):
+            self.arm(int(m.group(1)))
+
+    def on_systemd(self, conn, sender, path, iface, signal, params):
+        if params.unpack()[2]:
+            self.subscribe()
 
     def values(self):
         s = self.state
@@ -320,6 +477,7 @@ class Power:
                 "ManualGpuClock": ("u", s["gpu_clock"]),
                 "CpuGovernor": ("s", governor),
                 "AvailableCpuGovernors": ("as", governors),
+                "GameCpuFloor": ("u", s["game_floor"]),
                 "Holds": ("as", self.held()),
             },
             PROFILE: {
@@ -395,8 +553,7 @@ class Power:
                 cgroup = f.read()
         except OSError:
             return uid, f"cannot read the cgroup of pid {pid}"
-        path = cgroup.strip()
-        if "/app-steam-app" in path or path.endswith("/microemu-game.scope") or "/microemu-game.scope/" in path:
+        if any(GAME.fullmatch(c) for c in cgroup.strip().split("/")):
             return uid, "called from a game"
         return uid, None
 
@@ -532,6 +689,10 @@ class Power:
         self.register()
         conn.signal_subscribe("org.freedesktop.login1", "org.freedesktop.login1.Manager", "PrepareForSleep",
                               "/org/freedesktop/login1", None, Gio.DBusSignalFlags.NONE, self.on_sleep)
+        conn.signal_subscribe(SYSTEMD, MANAGER, "JobRemoved", SYSTEMD_PATH, None, Gio.DBusSignalFlags.NONE, self.on_job)
+        conn.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged", "/org/freedesktop/DBus",
+                              SYSTEMD, Gio.DBusSignalFlags.NONE, self.on_systemd)
+        self.subscribe()
 
     def on_name(self, conn, name):
         self.publish(force=True)

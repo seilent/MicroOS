@@ -9,10 +9,10 @@ shipped=$tree/usr/lib/microos/power-profiles.conf
 bus=$here/powerd/bus.py
 tmp=$(mktemp -d)
 chmod 755 "$tmp"
-pd="" daemon="" mon="" h1="" h2="" hs=""
+pd="" daemon="" mon="" h1="" h2="" hs="" sd=""
 cleanup() {
   local p
-  for p in $pd $mon $h1 $h2 $hs $daemon; do kill "$p" 2> /dev/null || true; done
+  for p in $pd $mon $h1 $h2 $hs $sd $daemon; do kill "$p" 2> /dev/null || true; done
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -26,10 +26,12 @@ gpu=$sys/class/devfreq/3d00000.gpu
 export MICROOS_SYSFS=$sys MICROOS_PROC=$tmp/proc MICROOS_STATEDIR=$tmp/state MICROOS_POWER_PROFILES=$tmp/profiles.conf
 export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$tmp/bus/socket
 allowed='/devices/system/cpu/(cpufreq/policy[047]/scaling_(max_freq|min_freq|governor)|cpu[0-9]+/online)$|/class/devfreq/3d00000\.gpu/(governor|min_freq|max_freq)$'
+allowed+='|/fs/cgroup/user\.slice(/user-[0-9]+\.slice(/user@[0-9]+\.service(/game\.slice)?)?)?/cpu\.uclamp\.min$'
 
 if grep -nE 'hwmon|thermal|pwm' "$powerd"; then fail "powerd names a hwmon, thermal or pwm path"; fi
 if grep -nE '/var/lib|power\.conf|STATEDIR' "$powerd"; then fail "powerd names a state file"; fi
-if grep -n ReadWritePaths "$tree/usr/lib/systemd/system/microos-powerd.service"; then fail "powerd unit has ReadWritePaths"; fi
+rw=$(grep '^ReadWritePaths=' "$tree/usr/lib/systemd/system/microos-powerd.service")
+[[ $rw == "ReadWritePaths=/sys/devices/system/cpu -/sys/class/devfreq/3d00000.gpu /sys/fs/cgroup" ]] || fail "powerd unit $rw"
 
 getent passwd 1000 > /dev/null || useradd -u 1000 -M micro
 mkdir -p "$tmp/bus" "$tmp/proc"
@@ -57,6 +59,8 @@ cat > "$tmp/bus.conf" <<EOF
   </policy>
   <policy user="root">
     <allow own="org.freedesktop.login1"/>
+    <allow own="org.freedesktop.systemd1"/>
+    <allow send_destination="org.freedesktop.systemd1"/>
   </policy>
   <include>$tree/usr/share/dbus-1/system.d/net.seilent.MicroOs.Power.conf</include>
 </busconfig>
@@ -128,7 +132,7 @@ snapshot() { (cd "$sys" && find . -type f | grep -Ev "$allowed" | sort | xargs s
 
 start() {
   snap=$(snapshot)
-  "$powerd" > "$tmp/log" 2>&1 &
+  "$@" "$powerd" > "$tmp/log" 2>&1 &
   pd=$!
   python3 "$bus" wait-name 10 || fail "powerd did not own its name: $(tail -n 5 "$tmp/log")"
 }
@@ -612,6 +616,278 @@ h2=""
 (( code == 0 )) || fail "dap-off holder exited $code"
 settled "[]" $(( a + 7 )) "dap-off name loss"
 online "dap-off name loss"
+stop
+
+cg=$sys/fs/cgroup
+users=$cg/user.slice
+rusers=/fs/cgroup/user.slice
+mgr() { echo "$users/user-$1.slice/user@$1.service"; }
+cgdir() {
+  mkdir -p "$1"
+  echo 0.00 > "$1/cpu.uclamp.min"
+  echo max > "$1/cpu.uclamp.max"
+  : > "$1/cgroup.procs"
+  echo "cpu memory pids" > "$1/cgroup.subtree_control"
+}
+utree() {
+  local d
+  for d in "$users" "$users/user-$1.slice" "$(mgr "$1")" "$(mgr "$1")/app.slice" "$(mgr "$1")/app.slice/app-steam-app1-1.scope"; do
+    cgdir "$d"
+  done
+}
+gslice() { cgdir "$(mgr "$1")/game.slice"; }
+chain() { echo "$users" "$users/user-$1.slice" "$(mgr "$1")" "$(mgr "$1")/game.slice"; }
+floors() {
+  local d _
+  for _ in $(seq 100); do
+    for d in $(chain "$1"); do [[ $(v "$d/cpu.uclamp.min") == "$2" ]] || { sleep 0.05; continue 2; }; done
+    break
+  done
+  for d in $(chain "$1"); do want "$d/cpu.uclamp.min" "$2" "$3"; done
+}
+stamps() { find "$cg" -name cpu.uclamp.min -printf '%p %T@\n' 2> /dev/null | sort; }
+writes() { grep -c "^floor $1 on" "$tmp/log" || true; }
+watches() { cat /proc/"$pd"/fdinfo/* 2> /dev/null | grep -c '^inotify wd:' || true; }
+in_cg() {
+  local c=$1
+  shift
+  as "0::/user.slice/user-1000.slice/user@1000.service/$c" setpriv --reuid 1000 --regid 1000 --groups 10 "$@"
+}
+sdstart() {
+  local _
+  rm -f "$tmp/sdin"
+  mkfifo "$tmp/sdin"
+  : > "$tmp/sdout"
+  root python3 "$bus" systemd < "$tmp/sdin" > "$tmp/sdout" &
+  sd=$!
+  exec 4> "$tmp/sdin"
+  for _ in $(seq 100); do grep -q ready "$tmp/sdout" && break; sleep 0.05; done
+}
+sdstop() {
+  exec 4>&-
+  wait "$sd" || true
+  sd=""
+}
+sdsend() {
+  local n _
+  n=$(grep -c '^ok$' "$tmp/sdout" || true)
+  echo "$1" >&4
+  for _ in $(seq 100); do (( $(grep -c '^ok$' "$tmp/sdout" || true) > n )) && break; sleep 0.05; done
+}
+subscribed() {
+  local _
+  for _ in $(seq 100); do grep -q Subscribe "$tmp/sdout" && break; sleep 0.05; done
+  grep -q Subscribe "$tmp/sdout" || fail "$1: no Subscribe"
+}
+
+mktree
+tdp_rows
+utree 1000
+gslice 1000
+echo 0.00 > "$cg/cpu.uclamp.min"
+cgdir "$cg/system.slice"
+s0=$(stamps)
+start
+[[ $(get $P1 GameCpuFloor) == 0 ]] || fail "GameCpuFloor at start: $(get $P1 GameCpuFloor)"
+[[ $(root "$cli" get | grep game-floor) == "game-floor 0" ]] || fail "cli get: $(root "$cli" get)"
+grep -q "^applied .* floor=0 " "$tmp/log" || fail "no floor in the applied line"
+[[ $(stamps) == "$s0" ]] || fail "floor 0 from start wrote a cpu.uclamp.min"
+set_ $P1 GameCpuFloor u 68
+floors 1000 68 "set 68"
+want "$(mgr 1000)/app.slice/cpu.uclamp.min" 0.00 "app.slice at 68"
+want "$(mgr 1000)/app.slice/app-steam-app1-1.scope/cpu.uclamp.min" 0.00 "scope at 68"
+want "$(mgr 1000)/game.slice/cpu.uclamp.max" max "cpu.uclamp.max at 68"
+(( $(writes 68) == 4 )) || fail "set 68 wrote $(writes 68) times"
+s1=$(stamps)
+set_ $P1 GameCpuFloor u 68
+set_ $P1 CpuGovernor s performance
+set_ $P1 Profile s low-power
+set_ $P1 Profile s balanced
+set_ $P1 CpuGovernor s schedutil
+set_ $S.TdpLimit1 TdpLimit u 5
+set_ $S.TdpLimit1 TdpLimit u 9
+floors 1000 68 "governor, profile and TDP sets"
+[[ $(stamps) == "$s1" ]] || fail "an identical apply wrote a cpu.uclamp.min"
+(( $(writes 68) == 4 )) || fail "identical applies wrote $(( $(writes 68) - 4 )) times"
+for f in 84 100 4294967295; do
+  set_ $P1 GameCpuFloor u "$f"
+  [[ $(get $P1 GameCpuFloor) == 83 ]] || fail "GameCpuFloor $f published as $(get $P1 GameCpuFloor)"
+  floors 1000 83 "GameCpuFloor $f"
+done
+grep -q "game_floor 100 clamped to 83" "$tmp/log" || fail "floor clamp not logged"
+[[ $(in_cg game.slice/app-steam-app1-1.scope python3 "$bus" set $P1 GameCpuFloor u 0) == org.freedesktop.DBus.Error.AccessDenied ]] ||
+  fail "a Steam game scope under game.slice allowed"
+[[ $(in_cg app.slice/microemu-game.scope python3 "$bus" set $P1 GameCpuFloor u 0) == org.freedesktop.DBus.Error.AccessDenied ]] ||
+  fail "a MicroEMU game scope allowed"
+[[ $(in_cg game.slice/microemu-game.scope/core python3 "$bus" set $P1 GameCpuFloor u 0) == org.freedesktop.DBus.Error.AccessDenied ]] ||
+  fail "a cgroup below the MicroEMU game scope allowed"
+[[ $(get $P1 GameCpuFloor) == 83 ]] || fail "a refused set changed the floor"
+[[ $(in_cg app.slice/app-steam-appx.scope python3 "$bus" set $P1 GameCpuFloor u 68) == org.freedesktop.DBus.Error.AccessDenied ]] ||
+  fail "a scope named app-steam-appx allowed"
+[[ $(in_cg app.slice/app-steam-x.service python3 "$bus" set $P1 GameCpuFloor u 68) == "" ]] ||
+  fail "a unit named app-steam-x.service refused"
+floors 1000 68 "set from app-steam-x.service"
+root "$cli" game-floor 49 || fail "cli game-floor"
+floors 1000 49 "cli game-floor 49"
+[[ $(root "$cli" get | grep game-floor) == "game-floor 49" ]] || fail "cli get after game-floor 49"
+rm -rf "$(mgr 1000)/game.slice"
+mkdir -p "$tmp/stage"
+cgdir "$tmp/stage/game.slice"
+mv "$tmp/stage/game.slice" "$(mgr 1000)/"
+floors 1000 49 "game.slice made after arm"
+rm -rf "$(mgr 1000)/game.slice"
+mkdir "$(mgr 1000)/game.slice"
+sleep 0.3
+gslice 1000
+floors 1000 49 "cpu.uclamp.min added after game.slice"
+echo 0.00 > "$tmp/target"
+rm "$(mgr 1000)/game.slice/cpu.uclamp.min"
+ln -s "$tmp/target" "$(mgr 1000)/game.slice/cpu.uclamp.min"
+set_ $P1 GameCpuFloor u 28
+want "$tmp/target" 0.00 "symlink in place of cpu.uclamp.min"
+[[ -L $(mgr 1000)/game.slice/cpu.uclamp.min ]] || fail "symlink replaced"
+grep -q "^write $rusers/user-1000.slice/user@1000.service/game.slice/cpu.uclamp.min=28: " "$tmp/log" || fail "symlink write not logged"
+rm "$(mgr 1000)/game.slice/cpu.uclamp.min"
+set_ $P1 CpuGovernor s schedutil
+for _ in $(seq 160); do grep -q "missing after" "$tmp/log" && break; sleep 0.05; done
+grep -qx "floor: $rusers/user-1000.slice/user@1000.service/game.slice/cpu.uclamp.min missing after 50 polls" "$tmp/log" ||
+  fail "missing cpu.uclamp.min not logged: $(tail -n 3 "$tmp/log")"
+echo 0.00 > "$(mgr 1000)/game.slice/cpu.uclamp.min"
+set_ $P1 GameCpuFloor u 28
+echo 28.32 > "$(mgr 1000)/game.slice/cpu.uclamp.min"
+set_ $P1 CpuGovernor s schedutil
+want "$(mgr 1000)/game.slice/cpu.uclamp.min" 28 "28.32 with floor 28"
+echo max > "$(mgr 1000)/game.slice/cpu.uclamp.min"
+set_ $P1 CpuGovernor s schedutil
+want "$(mgr 1000)/game.slice/cpu.uclamp.min" 28 "max with floor 28"
+rm "$(mgr 1000)/game.slice/cpu.uclamp.min"
+set_ $P1 GameCpuFloor u 0
+sleep 6
+(( $(grep -c "missing after" "$tmp/log") == 1 )) || fail "floor 0 polled a missing file: $(grep "missing after" "$tmp/log")"
+stop
+
+MICROOS_SYSFS=$sys python3 - "$powerd" > "$tmp/refused" 2>&1 <<'PY'
+import importlib.machinery
+import importlib.util
+import sys
+
+loader = importlib.machinery.SourceFileLoader("powerd", sys.argv[1])
+powerd = importlib.util.module_from_spec(importlib.util.spec_from_loader("powerd", loader))
+loader.exec_module(powerd)
+m = "/fs/cgroup/user.slice/user-1000.slice/user@1000.service"
+for rel in (f"{m}/app.slice/cpu.uclamp.min", f"{m}/app.slice/app-steam-app1-1.scope/cpu.uclamp.min",
+            f"{m}/game.slice/cpu.uclamp.max", f"{m}/game.slice/cgroup.procs", f"{m}/game.slice/cgroup.subtree_control",
+            "/fs/cgroup/system.slice/cpu.uclamp.min", "/fs/cgroup/cpu.uclamp.min"):
+    powerd.write_cgroup(rel, 68)
+PY
+for rel in app.slice/cpu.uclamp.min app.slice/app-steam-app1-1.scope/cpu.uclamp.min game.slice/cpu.uclamp.max \
+  game.slice/cgroup.procs game.slice/cgroup.subtree_control; do
+  grep -qx "refused write $rusers/user-1000.slice/user@1000.service/$rel" "$tmp/refused" || fail "write to $rel not refused"
+done
+for rel in system.slice/cpu.uclamp.min cpu.uclamp.min; do
+  grep -qx "refused write /fs/cgroup/$rel" "$tmp/refused" || fail "write to /fs/cgroup/$rel not refused"
+done
+want "$(mgr 1000)/app.slice/cpu.uclamp.min" 0.00 "refused app.slice"
+want "$(mgr 1000)/game.slice/cpu.uclamp.max" max "refused cpu.uclamp.max"
+[[ -z $(v "$(mgr 1000)/game.slice/cgroup.procs") ]] || fail "refused cgroup.procs written"
+want "$(mgr 1000)/game.slice/cgroup.subtree_control" "cpu memory pids" "refused cgroup.subtree_control"
+want "$cg/system.slice/cpu.uclamp.min" 0.00 "refused system.slice"
+want "$cg/cpu.uclamp.min" 0.00 "refused root cgroup"
+
+for d in "$users" "$users/user-1000.slice" "$(mgr 1000)"; do echo 68 > "$d/cpu.uclamp.min"; done
+echo 28.32 > "$(mgr 1000)/game.slice/cpu.uclamp.min"
+start
+floors 1000 0 "stale values at start with floor 0"
+stop
+
+mktree
+start
+sdstart
+subscribed "systemd after powerd"
+set_ $P1 GameCpuFloor u 68
+utree 1000
+gslice 1000
+snap=$(snapshot)
+sdsend "job user@1000.service done"
+floors 1000 68 "JobRemoved done, active"
+(( $(watches) == 1 )) || fail "$(watches) inotify watches after one arm"
+utree 1001
+mkdir "$(mgr 1001)/game.slice"
+snap=$(snapshot)
+sdsend "state user@1001.service inactive"
+sdsend "job user@1001.service done"
+sleep 0.3
+echo 0.00 > "$(mgr 1001)/game.slice/cpu.uclamp.min"
+sleep 0.3
+for d in "$users/user-1001.slice" "$(mgr 1001)" "$(mgr 1001)/game.slice"; do want "$d/cpu.uclamp.min" 0.00 "stop job"; done
+(( $(watches) == 1 )) || fail "$(watches) inotify watches after a stop job"
+rm -rf "$users/user-1001.slice"
+utree 1003
+gslice 1003
+snap=$(snapshot)
+sdsend "job user@1003.service failed"
+sleep 0.3
+want "$(mgr 1003)/game.slice/cpu.uclamp.min" 0.00 "failed job"
+set_ $P1 CpuGovernor s schedutil
+floors 1003 68 "apply arms a tree without a watch"
+(( $(watches) == 2 )) || fail "$(watches) inotify watches after the apply"
+rm -rf "$users/user-1003.slice" "$users/user-1000.slice"
+for _ in $(seq 100); do (( $(watches) == 0 )) && break; sleep 0.05; done
+(( $(watches) == 0 )) || fail "$(watches) inotify watches after the tree went"
+set_ $P1 CpuGovernor s schedutil
+sleep 6
+grep -q "missing after" "$tmp/log" && fail "a removed tree polled: $(grep "missing after" "$tmp/log")"
+utree 1000
+gslice 1000
+snap=$(snapshot)
+sdsend "job user@1000.service done"
+floors 1000 68 "relogin"
+(( $(watches) == 1 )) || fail "$(watches) inotify watches after relogin"
+rm -rf "$(mgr 1000)/game.slice"
+gslice 1000
+floors 1000 68 "game.slice made after relogin"
+n=$(grep -c "systemd Subscribe:" "$tmp/log" || true)
+sdstop
+sleep 0.5
+(( $(grep -c "systemd Subscribe:" "$tmp/log" || true) == n )) || fail "Subscribe called when systemd left the bus"
+sdstart
+subscribed "systemd restarted"
+utree 1002
+gslice 1002
+snap=$(snapshot)
+sdsend "job user@1002.service done"
+floors 1002 68 "JobRemoved after a systemd restart"
+stop
+sdstop
+
+mktree
+utree 1000
+gslice 1000
+sdstart
+start
+subscribed "systemd before powerd"
+set_ $P1 GameCpuFloor u 68
+floors 1000 68 "scan at start"
+stop
+sdstop
+
+mktree
+utree 1000
+gslice 1000
+gf=$(mgr 1000)/game.slice/cpu.uclamp.min
+chown 1000 "$gf"
+chmod 644 "$gf"
+start setpriv --bounding-set -all,+dac_override --inh-caps -all
+set_ $P1 GameCpuFloor u 68
+floors 1000 68 "with CAP_DAC_OVERRIDE"
+stop
+for d in "$users" "$users/user-1000.slice" "$(mgr 1000)" "$(mgr 1000)/game.slice"; do echo 0.00 > "$d/cpu.uclamp.min"; done
+start setpriv --bounding-set -all --inh-caps -all
+set_ $P1 GameCpuFloor u 68
+want "$gf" 0.00 "without CAP_DAC_OVERRIDE"
+want "$users/cpu.uclamp.min" 68 "root owned level without CAP_DAC_OVERRIDE"
+grep -q "^write $rusers/user-1000.slice/user@1000.service/game.slice/cpu.uclamp.min=68: Permission denied" "$tmp/log" ||
+  fail "refused game.slice write not logged: $(tail -n 3 "$tmp/log")"
 stop
 
 if (( rc == 0 )); then

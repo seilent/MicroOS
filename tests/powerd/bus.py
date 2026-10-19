@@ -103,6 +103,58 @@ def main(cmd, *args):
                         GLib.Variant("(b)", (args[0] == "true",)))
         bus.flush_sync(None)
         return 0
+    if cmd == "systemd":
+        states, units = {}, {}
+        manager = Gio.DBusNodeInfo.new_for_xml(
+            '<node><interface name="org.freedesktop.systemd1.Manager"><method name="Subscribe"/>'
+            '<method name="GetUnit"><arg name="name" type="s" direction="in"/>'
+            '<arg name="unit" type="o" direction="out"/></method></interface></node>').interfaces[0]
+        unit = Gio.DBusNodeInfo.new_for_xml(
+            '<node><interface name="org.freedesktop.systemd1.Unit">'
+            '<property name="ActiveState" type="s" access="read"/></interface></node>').interfaces[0]
+
+        def on_unit(conn, sender, path, iface, method, params, inv):
+            inv.return_value(GLib.Variant("(v)", (GLib.Variant("s", states.get(units[path], "active")),)))
+
+        def on_manager(conn, sender, path, iface, method, params, inv):
+            if method == "Subscribe":
+                print("Subscribe", flush=True)
+                inv.return_value(None)
+                return
+            name = params.unpack()[0]
+            path = "/org/freedesktop/systemd1/unit/" + "".join(c if c.isalnum() else f"_{ord(c):02x}" for c in name)
+            if path not in units:
+                units[path] = name
+                bus.register_object(path, unit, on_unit, None, None)
+            inv.return_value(GLib.Variant("(o)", (path,)))
+
+        bus.register_object("/org/freedesktop/systemd1", manager, on_manager, None, None)
+        reply = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                              "RequestName", GLib.Variant("(su)", ("org.freedesktop.systemd1", 4)),
+                              GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 1000, None)
+        if reply.unpack()[0] != 1:
+            return 1
+
+        def on_line(fd, cond):
+            line = sys.stdin.readline()
+            if not line:
+                loop.quit()
+                return False
+            what, name, value = line.split()
+            if what == "state":
+                states[name] = value
+            else:
+                bus.emit_signal(None, "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "JobRemoved",
+                                GLib.Variant("(uoss)", (1, "/org/freedesktop/systemd1/job/1", name, value)))
+                bus.flush_sync(None)
+            print("ok", flush=True)
+            return True
+
+        loop = GLib.MainLoop()
+        GLib.io_add_watch(sys.stdin.fileno(), GLib.PRIORITY_DEFAULT, GLib.IOCondition.IN | GLib.IOCondition.HUP, on_line)
+        print("ready", flush=True)
+        loop.run()
+        return 0
     return 2
 
 
