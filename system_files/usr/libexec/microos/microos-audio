@@ -23,6 +23,7 @@ CARD_ID = "PocketMICRO2"
 CARD = "alsa_card.platform-sound"
 SYSFS = os.environ.get("MICROOS_AUDIO_SYSFS", "/sys/class/sound")
 SETTLE_S = float(os.environ.get("MICROOS_AUDIO_SETTLE", "5"))
+BOOT_ID = os.environ.get("MICROOS_AUDIO_BOOT_ID", "/proc/sys/kernel/random/boot_id")
 APPLY = {"audio.hp_amp": HEADPHONES, "audio.speaker_gain": SPEAKER}
 OUTPUTS = ("auto", "speaker", "headphones", "usb", "bt")
 PMDOWN_MS = 5000
@@ -35,7 +36,9 @@ SLOTS = ("headphones", "speaker", "usb", "bt")
 WIRED = ("headphones", "usb")
 CHAIN_KEYS = ("audio.eq.", "audio.balance.", "audio.crossfeed.")
 EQ_PREFIX = "microos-eq."
-EQ_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "microos-audio", "eq")
+STATE_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "microos-audio")
+EQ_DIR = os.path.join(STATE_DIR, "eq")
+POWER_ON = os.path.join(STATE_DIR, "power-on")
 EQ_UNIT = re.compile(r"microos-eq@([a-z]+-[0-9a-f]{12})\.service")
 EQ_TARGET = re.compile(r'node\.name = "((?:[^"\\]|\\.)*)"')
 EQ_LABELS = {
@@ -50,6 +53,7 @@ EQ_BANDS = 10
 EQ_WAITS = 10
 EQ_KICKS = 3
 EQ_RESUME_MS = 300
+POWER_ON_WAITS = 10
 FULL = 65536
 CODECS = {"aptx": "aptX", "aac": "AAC", "ldac": "LDAC", "sbc": "SBC"}
 UPDATE = re.compile(r"update: id:0 key:'default\.configured\.audio\.sink' value:'(.*)' type:'[^']*'")
@@ -358,6 +362,14 @@ def channels(sink):
     return [int(c["value"]) for c in (sink.get("volume") or {}).values()]
 
 
+def chain_target(sink, sinks):
+    m = EQ_TARGET.search(str((sink.get("properties") or {}).get("filter.smart.target", "")))
+    try:
+        return sinks.get(json.loads(f'"{m.group(1)}"')) if m else None
+    except ValueError:
+        return None
+
+
 def codec_profile(card, codec):
     profiles = card.get("profiles") or {}
     suffix = f"codec {CODECS[codec]})"
@@ -397,6 +409,10 @@ class Audio:
         self.cards_dirty = True
         self.reset_pending = {}
         self.fold_logged = set()
+        self.max_volume = None
+        self.power_on = None
+        self.power_on_done = False
+        self.power_on_waits = 0
 
     def watch(self, argv, handler):
         proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE)
@@ -472,8 +488,8 @@ class Audio:
     def refresh(self):
         self.pending = None
         sinks = None
-        if self.cycles or (not self.settling and (self.output not in (None, "auto") or self.eq_wanted()
-                                                  or eq_slot(self.configured))):
+        if self.cycles or (not self.settling and (self.max_volume is not None or self.output not in (None, "auto")
+                                                  or self.eq_wanted() or eq_slot(self.configured))):
             try:
                 sinks = list_sinks()
             except ERRORS as err:
@@ -481,8 +497,10 @@ class Audio:
                 self.again()
                 return GLib.SOURCE_REMOVE
         if sinks is not None:
+            self.cap(sinks)
             self.fold(sinks)
         self.reconcile(sinks)
+        self.power_on_volume(sinks)
         self.equalize(sinks)
         self.codecs()
         self.step(sinks)
@@ -531,6 +549,84 @@ class Audio:
         except ERRORS as err:
             self.sent.pop()
             log(f"setting the configured default failed: {err}")
+
+    def cap(self, sinks):
+        if self.max_volume is None:
+            return
+        top = self.max_volume * FULL // 100
+        fresh = None
+        for name, sink in sinks.items():
+            chain = channels(sink)
+            if eq_slot(name) is not None or not chain or max(chain) <= top:
+                continue
+            try:
+                if fresh is None:
+                    fresh = list_sinks()
+                now = channels(fresh[name]) if name in fresh else []
+                if len(now) != len(chain):
+                    continue
+                chain = [min(a, b) for a, b in zip(chain, now)]
+                if max(chain) <= top:
+                    continue
+                levels = [c * top // max(chain) for c in chain]
+                run("pactl", "set-sink-volume", name, *map(str, levels))
+                log(f"{name} volume {chain} above audio.max_volume {self.max_volume}, folded to {levels}")
+            except ERRORS as err:
+                log(f"folding {name} to audio.max_volume failed: {err}")
+                self.again()
+
+    def power_on_volume(self, sinks):
+        if self.settling or self.power_on_done or self.max_volume is None or self.power_on is None or sinks is None:
+            return
+        try:
+            with open(BOOT_ID) as f:
+                boot = f.read().strip()
+        except OSError as err:
+            log(f"reading the boot id failed: {err}")
+            return
+        try:
+            with open(POWER_ON) as f:
+                if f.read().strip() == boot:
+                    self.power_on_done = True
+                    return
+        except OSError:
+            pass
+        if self.power_on:
+            try:
+                default = run("pactl", "get-default-sink").strip()
+            except ERRORS as err:
+                log(f"reading the default sink failed: {err}")
+                self.again()
+                return
+            sink = sinks.get(default)
+            if sink is not None and eq_slot(default) is not None:
+                sink = chain_target(sink, sinks)
+            if (sink is None or classify(sink["name"]) is None) and self.power_on_waits < POWER_ON_WAITS:
+                if self.power_on_waits == 0:
+                    log(f"audio.power_on_volume {self.power_on}: default sink {default} is not a listed output, waiting")
+                self.power_on_waits += 1
+                self.again()
+                return
+            if sink is None or classify(sink["name"]) is None:
+                log(f"audio.power_on_volume {self.power_on}: default sink {default} is still not a listed output, "
+                    "skipped for this boot")
+            else:
+                percent = min(self.power_on, self.max_volume)
+                try:
+                    run("pactl", "set-sink-volume", sink["name"], str(percent * FULL // 100))
+                except ERRORS as err:
+                    log(f"setting the power on volume failed: {err}")
+                    self.again()
+                    return
+                log(f"audio.power_on_volume {self.power_on}: {sink['name']} set to {percent} %")
+        self.power_on_done = True
+        try:
+            os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+            with open(POWER_ON + ".new", "w") as f:
+                f.write(boot + "\n")
+            os.replace(POWER_ON + ".new", POWER_ON)
+        except OSError as err:
+            log(f"writing the power on marker failed: {err}")
 
     def eq_wanted(self):
         return self.eq is not None and (bool(self.units) or any(
@@ -585,11 +681,7 @@ class Audio:
         self.fold_logged &= present
 
     def fold_hw(self, name, sink, sinks, chain, key):
-        m = EQ_TARGET.search(str((sink.get("properties") or {}).get("filter.smart.target", "")))
-        try:
-            hw = sinks.get(json.loads(f'"{m.group(1)}"')) if m else None
-        except ValueError:
-            hw = None
+        hw = chain_target(sink, sinks)
         if hw is None:
             if key not in self.fold_logged:
                 log(f"{name} is not at 100 % and its hardware sink is gone or unknown, left as is")
@@ -811,6 +903,8 @@ class Audio:
             log(f"reading the audio keys failed: {err.message}")
             return
         self.eq = {slot: {"on": False, "filters": None, "balance": 0, "crossfeed": "off"} for slot in SLOTS}
+        self.set_key("audio.max_volume", values.get("audio.max_volume", 100))
+        self.set_key("audio.power_on_volume", values.get("audio.power_on_volume", 0))
         for key, value in values.items():
             if key.startswith(CHAIN_KEYS) or key == "audio.bt_codec":
                 self.set_key(key, value)
@@ -820,6 +914,17 @@ class Audio:
         if key == "audio.bt_codec":
             self.codec = value
             self.cards_dirty = True
+            return
+        if key in ("audio.max_volume", "audio.power_on_volume"):
+            try:
+                number = max(0, min(100, int(value)))
+            except (TypeError, ValueError):
+                number = 100 if key == "audio.max_volume" else 0
+                log(f"{key} {value!r} not valid, using {number}")
+            if key == "audio.max_volume":
+                self.max_volume = max(50, number)
+            else:
+                self.power_on = number
             return
         parts = key.split(".")
         if self.eq is None or len(parts) < 3 or parts[2] not in SLOTS:
@@ -853,7 +958,7 @@ class Audio:
         key, value = params.unpack()
         if key == "audio.output":
             self.set_output(value)
-        elif key.startswith(CHAIN_KEYS) or key == "audio.bt_codec":
+        elif key.startswith(CHAIN_KEYS) or key in ("audio.bt_codec", "audio.max_volume", "audio.power_on_volume"):
             self.set_key(key, value)
             self.schedule()
         elif key in APPLY:

@@ -24,6 +24,7 @@ case "$*" in
     echo $$ > "$STUB_DIR/subscribe.pid"
     exec tail -n 0 -F "$STUB_DIR/pactl.feed" 2> /dev/null
     ;;
+  get-default-sink) cat "$STUB_DIR/default-sink" 2> /dev/null || echo auto_null ;;
   "set-default-sink $2")
     echo "default $2" >> "$STUB_DIR/log"
     [[ -e $STUB_DIR/no-echo ]] || meta "$2"

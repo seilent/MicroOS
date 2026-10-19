@@ -66,7 +66,7 @@ echo 1200 > "$sys/card0/device/WSA Playback/pmdown_time"
 echo Other > "$sys/card1/id"
 echo 9000 > "$sys/card1/device/MultiMedia1/pmdown_time"
 
-declare -A state=([$spk]=IDLE [$hp]=IDLE) avail=([$spk]=available [$hp]=available) vol=() mute=() target=() oid=()
+declare -A state=([$spk]=IDLE [$hp]=IDLE) avail=([$spk]=available [$hp]=available) vol=() volr=() mute=() target=() oid=()
 write_sinks() {
   local n props sep="" out=${1:-$STUB_DIR/sinks.json}
   {
@@ -78,7 +78,7 @@ write_sinks() {
         props=$(printf '"priority.session":"%s"' "$([[ $n == "$hp" ]] && echo 1100 || echo 1000)")
       fi
       printf '%s{"name":"%s","state":"%s","description":"%s desc","mute":%s,"volume":{"front-left":{"value":%s},"front-right":{"value":%s}},"ports":[{"name":"p","availability":"%s"}],"active_port":"p","properties":{%s}}' \
-        "$sep" "$n" "${state[$n]}" "$n" "${mute[$n]:-false}" "${vol[$n]:-65536}" "${vol[$n]:-65536}" "${avail[$n]:-available}" "$props"
+        "$sep" "$n" "${state[$n]}" "$n" "${mute[$n]:-false}" "${vol[$n]:-65536}" "${volr[$n]:-${vol[$n]:-65536}}" "${avail[$n]:-available}" "$props"
       sep=,
     done
     printf ']\n'
@@ -655,6 +655,176 @@ sleep 1.5
 since "$m" | grep -q "^props $na " && fail "values sent to an adopted chain whose conf already holds them: $(since "$m")"
 since "$m" | grep -qE "^(start|stop) microos-eq@$ia" && fail "the adopted chain was restarted: $(since "$m")"
 since "$m" | grep -q "^suspend $na" && fail "an adopted chain whose output has a format was suspended: $(since "$m")"
+
+kill "$as"
+wait "$as" 2> /dev/null || true
+unset "state[$na]" "target[$na]" "oid[$na]"
+vol[$hp]=65536 vol[$spk]=65536
+write_sinks
+echo boot-a > "$tmp/boot_id"
+echo "$hp" > "$STUB_DIR/default-sink"
+marker=$XDG_RUNTIME_DIR/microos-audio/power-on
+poke audio.eq.headphones.on "<false>"
+poke audio.max_volume "<uint32 60>"
+poke audio.power_on_volume "<uint32 80>"
+cap60=$((65536 * 60 / 100)) cap50=$((65536 * 50 / 100))
+novol() { sleep 1; ! since "$1" | grep -q "^volume "; }
+poweron() {
+  for _ in {1..40}; do since "$1" | grep -qxF "$2" && break; sleep 0.1; done
+  (($(since "$1" | grep -cxF "$2") == 1))
+}
+start_audio_boot() {
+  PATH=$here/audio-policy:$PATH MICROOS_AUDIO_SYSFS=$sys MICROOS_AUDIO_SETTLE=2 MICROOS_AUDIO_BOOT_ID=$tmp/boot_id \
+    setsid python3 "$audio" 2>> "$tmp/audio.err" & as=$!
+  pids+=("$as")
+}
+m=$(mark)
+start_audio_boot
+waitlog "$m" "volume $hp $cap60 $cap60" || fail "max volume: $hp above the cap at start was not folded: $(since "$m")"
+waitlog "$m" "volume $spk $cap60 $cap60" || fail "max volume: $spk above the cap at start was not folded: $(since "$m")"
+vol[$hp]=$cap60 vol[$spk]=$cap60
+sinks_changed
+poweron "$m" "volume $hp $cap60" || fail "power on volume 80 was not applied once at the cap 60: $(since "$m")"
+[[ $(cat "$marker") == boot-a ]] || fail "no power on marker for boot-a"
+m=$(mark)
+vol[$hp]=$((65536 * 80 / 100))
+sinks_changed
+waitlog "$m" "volume $hp $cap60 $cap60" || fail "max volume: a raise to 80 % was not folded to 60 %: $(since "$m")"
+vol[$hp]=$cap60
+write_sinks
+m=$(mark)
+poke audio.max_volume "<uint32 50>"
+waitlog "$m" "volume $hp $cap50 $cap50" || fail "max volume: a cap lowered to 50 % did not lower $hp: $(since "$m")"
+waitlog "$m" "volume $spk $cap50 $cap50" || fail "max volume: a cap lowered to 50 % did not lower $spk: $(since "$m")"
+vol[$hp]=$cap50 vol[$spk]=$cap50
+sinks_changed
+m=$(mark)
+vol[$hp]=$((65536 * 30 / 100))
+sinks_changed
+novol "$m" || fail "max volume: a level under the cap was changed: $(since "$m")"
+vol[$hp]=$cap50
+write_sinks
+kill "$as"
+wait "$as" 2> /dev/null || true
+m=$(mark)
+start_audio_boot
+sleep 3
+sinks_changed
+novol "$m" || fail "a microos-audio restart in the same boot wrote a volume: $(since "$m")"
+kill "$as"
+wait "$as" 2> /dev/null || true
+echo boot-b > "$tmp/boot_id"
+m=$(mark)
+start_audio_boot
+poweron "$m" "volume $hp $cap50" || fail "power on volume on a new boot was not applied at the cap 50: $(since "$m")"
+kill "$as"
+wait "$as" 2> /dev/null || true
+poke audio.power_on_volume "<uint32 0>"
+echo boot-c > "$tmp/boot_id"
+m=$(mark)
+start_audio_boot
+sleep 3
+sinks_changed
+novol "$m" || fail "power on volume LAST wrote a volume: $(since "$m")"
+[[ $(cat "$marker") == boot-c ]] || fail "power on LAST did not mark boot-c"
+
+kill "$as"
+wait "$as" 2> /dev/null || true
+poke audio.power_on_volume "<uint32 40>"
+cap40=$((65536 * 40 / 100))
+echo auto_null > "$STUB_DIR/default-sink"
+echo boot-d > "$tmp/boot_id"
+m=$(mark)
+start_audio_boot
+errline "audio.power_on_volume 40: default sink auto_null is not a listed output, waiting" ||
+  fail "power on volume did not wait for a hardware default"
+novol "$m" || fail "power on volume was set with no hardware default: $(since "$m")"
+[[ $(cat "$marker") == boot-c ]] || fail "power on volume marked boot-d with no hardware default"
+echo "$hp" > "$STUB_DIR/default-sink"
+sinks_changed
+poweron "$m" "volume $hp $cap40" || fail "power on volume was not applied once the default was $hp: $(since "$m")"
+[[ $(cat "$marker") == boot-d ]] || fail "no power on marker for boot-d"
+kill "$as"
+wait "$as" 2> /dev/null || true
+vol[$hp]=$cap50
+state[$na]=IDLE target[$na]=$hp oid[$na]=91
+write_sinks
+echo "$na" > "$STUB_DIR/default-sink"
+echo boot-e > "$tmp/boot_id"
+m=$(mark)
+start_audio_boot
+poweron "$m" "volume $hp $cap40" || fail "a chain default did not set the power on volume on its hardware sink: $(since "$m")"
+since "$m" | grep -q "^volume $na " && fail "power on volume was written to the chain sink: $(since "$m")"
+kill "$as"
+wait "$as" 2> /dev/null || true
+unset "state[$na]" "target[$na]" "oid[$na]"
+vol[$hp]=$cap50
+write_sinks
+echo "$hp" > "$STUB_DIR/default-sink"
+rm -f "$marker"
+mkdir "$marker"
+echo boot-f > "$tmp/boot_id"
+m=$(mark)
+start_audio_boot
+poweron "$m" "volume $hp $cap40" || fail "power on volume was not applied on boot-f: $(since "$m")"
+errline "writing the power on marker failed" || fail "a failed marker write was not logged"
+vol[$hp]=$((65536 * 20 / 100))
+sinks_changed
+sleep 1
+sinks_changed
+sleep 1
+(($(since "$m" | grep -cxF "volume $hp $cap40") == 1)) || fail "a failed marker write reapplied the power on volume: $(since "$m")"
+rmdir "$marker"
+
+m=$(mark)
+poke audio.max_volume "<uint32 60>"
+vol[$hp]=$((65536 * 80 / 100)) volr[$hp]=$((65536 * 40 / 100))
+sinks_changed
+waitlog "$m" "volume $hp $cap60 $((volr[$hp] * cap60 / vol[$hp]))" ||
+  fail "max volume: unequal channels 80 and 40 % were not folded to 60 and 30 %: $(since "$m")"
+unset "volr[$hp]"
+vol[$hp]=$((65536 * 30 / 100))
+write_sinks
+m=$(mark)
+vol[$hp]=$((65536 * 90 / 100))
+write_sinks
+vol[$hp]=$((65536 * 30 / 100))
+write_sinks "$STUB_DIR/sinks.after"
+echo "Event 'change' on sink #$RANDOM" >> "$STUB_DIR/pactl.feed"
+novol "$m" || fail "max volume: a level lowered after the listing was raised to the cap: $(since "$m")"
+m=$(mark)
+state[$na]=IDLE target[$na]=$hp oid[$na]=92 vol[$na]=$((65536 * 90 / 100))
+sinks_changed
+waitlog "$m" "volume $na 65536" || fail "a chain sink at 90 % was not folded: $(since "$m")"
+since "$m" | grep -q "^volume $na $cap60" && fail "max volume: a chain sink was capped and not left to the fold: $(since "$m")"
+unset "state[$na]" "target[$na]" "oid[$na]" "vol[$na]"
+write_sinks
+m=$(mark)
+poke audio.max_volume "<'loud'>"
+errline "audio.max_volume 'loud' not valid, using 100" || fail "a bad audio.max_volume was not logged"
+vol[$hp]=$((65536 * 120 / 100))
+sinks_changed
+waitlog "$m" "volume $hp 65536 65536" || fail "a bad audio.max_volume did not cap at 100 %: $(since "$m")"
+m=$(mark)
+poke audio.max_volume "<uint32 100>"
+vol[$spk]=$((65536 * 120 / 100))
+sinks_changed
+waitlog "$m" "volume $spk 65536 65536" || fail "max volume 100: a sink at 120 % was not folded to 100 %: $(since "$m")"
+kill "$as"
+wait "$as" 2> /dev/null || true
+vol[$spk]=65536 vol[$hp]=$cap50
+write_sinks
+echo auto_null > "$STUB_DIR/default-sink"
+echo boot-g > "$tmp/boot_id"
+m=$(mark)
+start_audio_boot
+for _ in {1..200}; do grep -qF "default sink auto_null is still not a listed output, skipped for this boot" "$tmp/audio.err" && break; sleep 0.1; done
+grep -qF "default sink auto_null is still not a listed output, skipped for this boot" "$tmp/audio.err" ||
+  fail "power on volume did not give up on a default that never became an output"
+[[ $(cat "$marker") == boot-g ]] || fail "power on volume did not mark boot-g after the waits ran out"
+echo "$hp" > "$STUB_DIR/default-sink"
+sinks_changed
+novol "$m" || fail "power on volume was applied after the waits ran out: $(since "$m")"
 
 if ((rc != 0)); then
   cat "$tmp/audio.err" >&2
