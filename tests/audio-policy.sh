@@ -316,18 +316,21 @@ errline "apply cycle: $hp is gone, dropped" || fail "a sink gone mid cycle was n
 state[$hp]=IDLE avail[$hp]=available
 write_sinks
 
-eqhash() { printf '%s\n%s' "$1" "$2" | sha256sum | cut -c1-12; }
+eqhash() { printf '%s\n%s\n%s' "$1" "$2" "${3:-off}" | sha256sum | cut -c1-12; }
 count() { since "$1" | grep -cxF "$2" || true; }
 params() {
-  local out='{ params = [ "f0:Gain"' n=1 b
-  out+=" $1"
+  local out='{ params = [' preamp=$1 side n b
   shift
-  for b in "$@"; do
-    read -r f q g <<< "$b"
-    out+=" \"f$n:Freq\" $f \"f$n:Q\" $q \"f$n:Gain\" $g"
-    n=$((n + 1))
+  for side in L R; do
+    out+=" \"f${side}0:Gain\" $preamp"
+    n=1
+    for b in "$@"; do
+      read -r f q g <<< "$b"
+      out+=" \"f$side$n:Freq\" $f \"f$side$n:Q\" $q \"f$side$n:Gain\" $g"
+      n=$((n + 1))
+    done
   done
-  echo "$out ] }"
+  echo "$out \"bL:Gain\" ${balance_l:-0.0} \"bR:Gain\" ${balance_r:-0.0} ] }"
 }
 m=$(mark)
 poke audio.eq.headphones.filters "<['preamp -3', 'peak 1000 6 1']>"
@@ -341,9 +344,15 @@ for want in "node.name = \"$n1\"" "node.name = \"$n1.out\"" "filter.smart.name =
   "filter.smart.target = { node.name = \"$hp\" }" "target.object = \"$hp\"" "node.description = \"$hp desc EQ\"" \
   "media.class = Audio/Sink" "filter.smart = true" "filter.smart.targetable = false" "state.restore-props = false" \
   "node.dont-fallback = true" "node.passive = true" "node.linger = true" "name = libpipewire-module-filter-chain" \
-  '{ type = builtin name = f0 label = bq_highshelf control = { "Freq" = 0.0 "Q" = 1.0 "Gain" = -3.0 } }' \
-  '{ type = builtin name = f1 label = bq_peaking control = { "Freq" = 1000.0 "Q" = 1.0 "Gain" = 6.0 } }' \
-  '{ output = "f0:Out" input = "f1:In" }'; do
+  '{ type = builtin name = fL0 label = bq_highshelf control = { "Freq" = 0.0 "Q" = 1.0 "Gain" = -3.0 } }' \
+  '{ type = builtin name = fL1 label = bq_peaking control = { "Freq" = 1000.0 "Q" = 1.0 "Gain" = 6.0 } }' \
+  '{ type = builtin name = fR0 label = bq_highshelf control = { "Freq" = 0.0 "Q" = 1.0 "Gain" = -3.0 } }' \
+  '{ type = builtin name = fR1 label = bq_peaking control = { "Freq" = 1000.0 "Q" = 1.0 "Gain" = 6.0 } }' \
+  '{ type = builtin name = bL label = bq_highshelf control = { "Freq" = 0.0 "Q" = 1.0 "Gain" = 0.0 } }' \
+  '{ type = builtin name = bR label = bq_highshelf control = { "Freq" = 0.0 "Q" = 1.0 "Gain" = 0.0 } }' \
+  '{ output = "fL0:Out" input = "fL1:In" }' '{ output = "fR0:Out" input = "fR1:In" }' \
+  '{ output = "fL1:Out" input = "bL:In" }' '{ output = "fR1:Out" input = "bR:In" }' \
+  'inputs = [ "fL0:In" "fR0:In" ]' 'outputs = [ "bL:Out" "bR:Out" ]'; do
   grep -qF -- "$want" "$conf" 2> /dev/null || fail "$i1.conf lacks $want"
 done
 (($(wc -l < "$conf") > 40)) || fail "$i1.conf is not written with newlines"

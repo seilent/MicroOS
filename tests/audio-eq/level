@@ -11,6 +11,11 @@ def main():
         t = np.arange(int(rate * seconds)) / rate
         signal = sum(amp * np.sin(2 * np.pi * float(f) * t) for f in sys.argv[5:])
         sys.stdout.buffer.write(signal.astype("<f4").tobytes())
+    elif cmd == "gen2":
+        seconds, left, right = float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
+        t = np.arange(int(rate * seconds)) / rate
+        signal = sum(np.sin(2 * np.pi * float(f) * t) for f in sys.argv[6:])
+        sys.stdout.buffer.write(np.stack([left * signal, right * signal], axis=1).astype("<f4").tobytes())
     elif cmd == "mag":
         data = np.fromfile(sys.argv[3], dtype="<f4")
         if len(data) < rate:

@@ -30,6 +30,25 @@ for f in "$wpconf" "$bypass"; do
   [[ -f $f ]] || { echo "FAIL: ${f#"$tree"} missing" >&2; exit 1; }
 done
 g++ -std=c++20 -O2 -o "$tmp/biquad-ref" "$here/fixtures/eq/biquad-ref.cpp" "$here/fixtures/eq/Biquad.cpp"
+g++ -std=c++20 -O2 -ffp-contract=off -o "$tmp/flatdap-ref" "$here/fixtures/eq/flatdap-ref.cpp"
+python3 - "$tmp/flatdap-ref" "$here/fixtures/eq/flatdap-987ddd3.txt" << 'PY' || fail "flatdap-ref differs from flatdap 987ddd3 design_biquad or xfeed_design"
+import subprocess, sys
+ref, golden = sys.argv[1], sys.argv[2]
+one, bad = 1 << 30, []
+for line in open(golden):
+    f = line.split()
+    out = subprocess.run([ref, *f[:3]] if f[0] == "xcoef" else [ref, *f[:5]], capture_output=True, text=True, check=True).stdout
+    if f[0] == "coef":
+        ok = all(abs(a - b) <= 1e-12 * max(1.0, abs(b)) for a, b in zip(map(float, out.split()), map(float, f[5:])))
+    else:
+        lo, hi = ([float(v) for v in l.split()] for l in out.splitlines())
+        got = (lo[0] * one, -lo[3] * one, hi[0] * one, hi[1] * one, -hi[3] * one)
+        ok = all(abs(a - int(b)) <= 2 for a, b in zip(got, f[3:]))
+    if not ok:
+        bad.append(line.strip())
+if bad:
+    sys.exit("\n".join(bad))
+PY
 
 export XDG_RUNTIME_DIR=$tmp/run XDG_CONFIG_HOME=$tmp/config XDG_DATA_HOME=$tmp/data XDG_STATE_HOME=$tmp/state EQ_SHIM_DIR=$tmp/shim
 mkdir "$XDG_RUNTIME_DIR"
@@ -104,7 +123,7 @@ chain_up() {
   done
   return 1
 }
-eqhash() { printf '%s\n%s' "$1" "$2" | sha256sum | cut -c1-12; }
+eqhash() { printf '%s\n%s\n%s' "$1" "$2" "${3:-off}" | sha256sum | cut -c1-12; }
 volume() { pactl get-sink-volume "$1" 2> /dev/null | awk '/Volume:/ { print $3; exit }'; }
 
 start_audio
@@ -143,16 +162,17 @@ play() {
   pids+=("$player")
 }
 capture() {
-  local out=$1 rate=$2 sink=${3:-$hp} rec
+  local out=$1 rate=$2 sink=${3:-$hp} port=${4:-FL} tones=("${@:5}") rec
   rm -f "$out"
   pw-record --raw --rate "$rate" --channels 1 --format f32 -P '{ node.name = microos-eq-test-rec node.autoconnect = false }' "$out" 2>> "$tmp/play.log" &
   rec=$!
   for _ in {1..50}; do pw-link -i | grep -qxF microos-eq-test-rec:input_MONO && break; sleep 0.05; done
-  pw-link "$sink:monitor_FL" microos-eq-test-rec:input_MONO
+  pw-link "$sink:monitor_$port" microos-eq-test-rec:input_MONO
   sleep 1.6
   kill "$rec"
   wait "$rec" 2> /dev/null || true
-  "$level" mag "$rate" "$out" "${freqs[@]}"
+  ((${#tones[@]})) || tones=("${freqs[@]}")
+  "$level" mag "$rate" "$out" "${tones[@]}"
 }
 compare() {
   local label=$1 limit=$2 rate=$3 dry=$4 want=$5 out
@@ -161,7 +181,7 @@ compare() {
       FILENAME == ARGV[1] { m[$1] = $2; next }
       FILENAME == ARGV[2] { d[$1] = $2; next }
       { got = m[$1] - d[$1]; diff = got - $2; if (diff < 0) diff = -diff
-        if (diff > limit) { printf "FAIL: %s at %s Hz: %.3f dB, Biquad.cpp %.3f dB\n", label, $1, got, $2; bad = 1 } }
+        if (diff > limit) { printf "FAIL: %s at %s Hz: %.3f dB, reference %.3f dB\n", label, $1, got, $2; bad = 1 } }
       END { exit bad }' <(capture "$tmp/eq.raw" "$rate") <(echo "$dry") <(echo "$want")) && return 0
     echo "audio-eq: $label: capture off by more than $limit dB" >> "$tmp/retries"
     sleep 1
@@ -205,6 +225,154 @@ for rate in 44100 48000 96000; do
   kill "$player" 2> /dev/null || true
   wait "$player" 2> /dev/null || true
 done
+
+mref() {
+  local rate=$1 preamp f args=()
+  shift
+  preamp=${1#preamp }
+  shift
+  for f in "$@"; do
+    read -r -a b <<< "$f"
+    args+=("${b[@]:1}")
+  done
+  printf '%s\n' "${freqs[@]}" | "$tmp/flatdap-ref" mag "$rate" "$preamp" "${args[@]}"
+}
+filters_m=("preamp -6" "matchedpeak 1000 6 0.92" "matchedpeak 8000 -4 0.92" "matchedpeak 16000 9 0.92")
+im=headphones-$(eqhash "$hp" "matchedpeak/1000.0/6.0/0.92 matchedpeak/8000.0/-4.0/0.92 matchedpeak/16000.0/9.0/0.92")
+play 48000
+sleep 1
+declare -A dry_at
+for rate in 44100 48000 96000; do
+  pw-metadata -n settings 0 clock.force-rate "$rate" > /dev/null
+  sleep 0.7
+  dry_at[$rate]=$(capture "$tmp/dry.raw" "$rate")
+done
+m=$(amark)
+poke audio.eq.headphones.filters "$(variant "${filters_m[@]}")"
+poke audio.eq.headphones.on "<true>"
+chain_up "$im" || fail "matched peak: chain $im did not come up: $(tail -n +"$((m + 1))" "$tmp/audio.err")"
+sleep 0.7
+s=$(smark)
+for rate in 96000 44100 48000; do
+  pw-metadata -n settings 0 clock.force-rate "$rate" > /dev/null
+  sleep 0.7
+  compare "$rate M (rate switch)" 0.1 "$rate" "${dry_at[$rate]}" "$(mref "$rate" "${filters_m[@]}")"
+done
+[[ -z $(ssince "$s") ]] || fail "matched peak: a rate switch touched a unit: $(ssince "$s")"
+conf=$XDG_RUNTIME_DIR/microos-audio/eq/$im.conf
+for rate in 44100 48000 96000; do
+  for band in "1 1000 6 0.92" "2 8000 -4 0.92" "3 16000 9 0.92"; do
+    read -r n f g q <<< "$band"
+    want=$("$tmp/flatdap-ref" coef "$rate" "$f" "$g" "$q")
+    for side in L R; do
+      python3 - "$conf" "f$side$n" "$rate" "$want" << 'PY' || fail "matched peak f$side$n at $rate: coefficients differ from flatdap eq.cpp"
+import re, sys
+conf, node, rate, want = sys.argv[1], sys.argv[2], sys.argv[3], [float(v) for v in sys.argv[4].split()]
+line = next(l for l in open(conf) if f"name = {node} label = bq_raw" in l)
+m = re.search(r"\{ rate = " + rate + r" b0 = (\S+) b1 = (\S+) b2 = (\S+) a0 = 1\.0 a1 = (\S+) a2 = (\S+) \}", line)
+got = [float(v) for v in m.groups()]
+sys.exit(0 if all(abs(a - b) <= 1e-12 * max(1.0, abs(b)) for a, b in zip(got, want)) else 1)
+PY
+    done
+  done
+done
+m=$(amark)
+s=$(smark)
+poke audio.balance.headphones "<6>"
+await "$m" "EQ values sent to $im" || fail "matched peak: a balance edit was not sent to $im"
+for rate in 96000 44100 48000; do
+  pw-metadata -n settings 0 clock.force-rate "$rate" > /dev/null
+  sleep 0.7
+  compare "$rate M balance R 3 dB (rate switch)" 0.1 "$rate" "${dry_at[$rate]}" \
+    "$(mref "$rate" "${filters_m[@]}" | awk '{ print $1, $2 - 3 }')"
+done
+[[ -z $(ssince "$s") ]] || fail "matched peak: a balance edit touched a unit: $(ssince "$s")"
+m=$(amark)
+poke audio.balance.headphones "<0>"
+await "$m" "EQ values sent to $im" || fail "matched peak: balance 0 was not sent to $im"
+m=$(amark)
+poke audio.eq.headphones.on "<false>"
+await "$m" "EQ chain $im stopped" || fail "matched peak: EQ off did not stop $im"
+kill "$player" 2> /dev/null || true
+wait "$player" 2> /dev/null || true
+
+pw-metadata -n settings 0 clock.force-rate 48000 > /dev/null
+sleep 0.5
+rate=48000
+level_at() { capture "$tmp/b.raw" "$rate" "$hp" "$1" | awk '$1 == 1000 { print $2 }'; }
+near() { awk -v a="$1" -v b="$2" -v want="$3" 'BEGIN { d = a - b - want; exit !(d < 0.1 && d > -0.1) }'; }
+play "$rate"
+sleep 1
+dl=$(level_at FL)
+dr=$(level_at FR)
+ibal=headphones-$(eqhash "$hp" "")
+m=$(amark)
+s=$(smark)
+poke audio.balance.headphones "<6>"
+chain_up "$ibal" || fail "balance: no chain for balance alone: $(tail -n +"$((m + 1))" "$tmp/audio.err")"
+sleep 0.7
+l=$(level_at FL) r=$(level_at FR)
+near "$l" "$dl" -3 && near "$r" "$dr" 0 || fail "balance R 3 dB: L $l R $r, dry L $dl R $dr"
+grep -q "label = mixer" "$XDG_RUNTIME_DIR/microos-audio/eq/$ibal.conf" && fail "balance alone built a crossfeed"
+m=$(amark)
+s=$(smark)
+poke audio.balance.headphones "<-4>"
+await "$m" "EQ values sent to $ibal" || fail "balance: a live edit was not sent to $ibal"
+sleep 0.3
+l=$(level_at FL) r=$(level_at FR)
+near "$l" "$dl" 0 && near "$r" "$dr" -2 || fail "balance L 2 dB: L $l R $r, dry L $dl R $dr"
+[[ -z $(ssince "$s") ]] || fail "balance: a live edit touched a unit: $(ssince "$s")"
+m=$(amark)
+poke audio.balance.headphones "<0>"
+await "$m" "EQ chain $ibal stopped" || fail "balance 0 kept the chain"
+kill "$player" 2> /dev/null || true
+wait "$player" 2> /dev/null || true
+
+"$level" gen2 "$rate" 60 0.1 0 700 > "$tmp/x.raw"
+setsid pw-play --target "$hp" -P '{ node.name = microos-eq-test-xdry node.dont-reconnect = true }' --raw --rate "$rate" \
+  --channels 2 --format f32 "$tmp/x.raw" 2>> "$tmp/play.log" & xd=$!
+pids+=("$xd")
+sleep 1
+xdry=$(capture "$tmp/xd.raw" "$rate" "$hp" FL 700 | awk '{ print $2 }')
+kill "$xd" 2> /dev/null || true
+wait "$xd" 2> /dev/null || true
+prev=
+for preset in default chuMoy janMeier; do
+  ix=headphones-$(eqhash "$hp" "" "$preset")
+  m=$(amark)
+  poke audio.crossfeed.headphones "<'$preset'>"
+  chain_up "$ix" || fail "crossfeed $preset: no chain: $(tail -n +"$((m + 1))" "$tmp/audio.err")"
+  [[ -n ${prev:-} ]] && { await "$m" "EQ chain $prev stopped" || fail "crossfeed $preset: the $prev chain was kept"; }
+  setsid pw-play --raw --rate "$rate" --channels 2 --format f32 -P '{ node.name = microos-eq-test-x }' "$tmp/x.raw" 2>> "$tmp/play.log" & xp=$!
+  pids+=("$xp")
+  sleep 1
+  read -r hi lo <<< "$("$tmp/flatdap-ref" xfeed "$preset" "$rate" 700)"
+  l=$(capture "$tmp/xl.raw" "$rate" "$hp" FL 700 | awk '{ print $2 }')
+  r=$(capture "$tmp/xr.raw" "$rate" "$hp" FR 700 | awk '{ print $2 }')
+  near "$l" "$xdry" "$hi" && near "$r" "$xdry" "$lo" || fail "crossfeed $preset at 700 Hz on L: L $l R $r, dry $xdry, want $hi $lo dB"
+  kill "$xp" 2> /dev/null || true
+  wait "$xp" 2> /dev/null || true
+  prev=$ix
+done
+m=$(amark)
+poke audio.balance.headphones "<6>"
+await "$m" "EQ values sent to $prev" || fail "crossfeed and balance: the balance was not sent to $prev"
+setsid pw-play --raw --rate "$rate" --channels 2 --format f32 -P '{ node.name = microos-eq-test-x }' "$tmp/x.raw" 2>> "$tmp/play.log" & xp=$!
+pids+=("$xp")
+sleep 1
+read -r hi lo <<< "$("$tmp/flatdap-ref" xfeed janMeier "$rate" 700)"
+l=$(capture "$tmp/xl.raw" "$rate" "$hp" FL 700 | awk '{ print $2 }')
+r=$(capture "$tmp/xr.raw" "$rate" "$hp" FR 700 | awk '{ print $2 }')
+near "$l" "$xdry" "$(awk -v h="$hi" 'BEGIN { print h - 3 }')" && near "$r" "$xdry" "$lo" ||
+  fail "crossfeed janMeier and balance R 3 dB at 700 Hz on L: L $l R $r, dry $xdry, want $hi - 3 and $lo dB"
+kill "$xp" 2> /dev/null || true
+wait "$xp" 2> /dev/null || true
+m=$(amark)
+poke audio.balance.headphones "<0>"
+await "$m" "EQ values sent to $prev" || fail "crossfeed and balance: balance 0 was not sent to $prev"
+m=$(amark)
+poke audio.crossfeed.headphones "<'off'>"
+await "$m" "EQ chain $prev stopped" || fail "crossfeed off kept the chain"
 pw-metadata -n settings -d 0 clock.force-rate > /dev/null
 
 rate=48000
@@ -389,8 +557,8 @@ chain_up "$ub" || fail "usb: no chain for $usb_b"
 for i in "$ua" "$ub"; do
   conf=$XDG_RUNTIME_DIR/microos-audio/eq/$i.conf
   spa-json-dump "$conf" > /dev/null 2> "$tmp/json.err" || fail "$i.conf is not valid SPA JSON: $(cat "$tmp/json.err")"
-  (($(grep -c 'type = builtin' "$conf") == 1)) || fail "$i.conf: the default profile is not one node"
-  grep -q 'output = "f' "$conf" && fail "$i.conf: the default profile has links"
+  (($(grep -c 'type = builtin' "$conf") == 4)) || fail "$i.conf: the default profile is not a preamp and a balance node per side"
+  grep -qF '{ output = "fL0:Out" input = "bL:In" }' "$conf" || fail "$i.conf: the default profile is not preamp to balance"
 done
 descs=$(pw-dump | python3 -c 'import json, sys
 for o in json.load(sys.stdin):
@@ -409,9 +577,35 @@ awk -v g="$got" 'BEGIN { exit !(g < 0.3 && g > -0.3) }' || fail "the preamp 0 ch
 awk '$1 == 1000 { exit !($2 > -60) }' <<< "$levels" || fail "the preamp 0 chain is silent: $levels"
 kill "$up" 2> /dev/null || true
 m=$(amark)
+poke audio.crossfeed.usb "<'janMeier'>"
+uj=usb-$(eqhash "$usb_a" "" janMeier)
+chain_up "$uj" || fail "usb crossfeed: no chain for $usb_a"
+grep -q "label = mixer" "$XDG_RUNTIME_DIR/microos-audio/eq/$uj.conf" || fail "usb crossfeed: $uj.conf has no crossfeed"
+poke audio.crossfeed.usb "<'off'>"
+chain_up "$ua" && chain_up "$ub" || fail "usb crossfeed off: the plain chains did not come back"
+m=$(amark)
 poke audio.eq.usb.on "<false>"
 await "$m" "EQ chain $ub stopped" || fail "usb EQ off kept a chain"
 for n in "$usb_a" "$usb_b"; do
+  pw-cli destroy "$(pactl --format=json list sinks 2> /dev/null | python3 -c 'import json, sys
+print(next(s["properties"]["object.id"] for s in json.load(sys.stdin) if s["name"] == sys.argv[1]))' "$n")" > /dev/null
+done
+
+usb_1=alsa_output.usb-Test_Mono-00.mono-fallback usb_6=alsa_output.usb-Test_Six-00.analog-surround-51
+pw-cli create-node adapter "{ factory.name = support.null-audio-sink node.name = \"$usb_1\" media.class = Audio/Sink object.linger = true audio.position = [ MONO ] monitor.channel-volumes = true }" > /dev/null
+pw-cli create-node adapter "{ factory.name = support.null-audio-sink node.name = \"$usb_6\" media.class = Audio/Sink object.linger = true audio.position = [ FL FR FC LFE RL RR ] monitor.channel-volumes = true }" > /dev/null
+for _ in {1..50}; do pactl list sinks short 2> /dev/null | grep -qF "$usb_6" && break; sleep 0.1; done
+m=$(amark)
+s=$(smark)
+poke audio.balance.usb "<4>"
+poke audio.crossfeed.usb "<'default'>"
+await "$m" "$usb_1 has 1 channels, balance and crossfeed skipped" || fail "a mono sink skip was not logged"
+await "$m" "$usb_6 has 6 channels, balance and crossfeed skipped" || fail "a 6 channel sink skip was not logged"
+sleep 1
+ssince "$s" | grep -q "^start usb-" && fail "a mono or 6 channel sink got a chain: $(ssince "$s")"
+poke audio.balance.usb "<0>"
+poke audio.crossfeed.usb "<'off'>"
+for n in "$usb_1" "$usb_6"; do
   pw-cli destroy "$(pactl --format=json list sinks 2> /dev/null | python3 -c 'import json, sys
 print(next(s["properties"]["object.id"] for s in json.load(sys.stdin) if s["name"] == sys.argv[1]))' "$n")" > /dev/null
 done
@@ -420,6 +614,24 @@ s=$(smark)
 btmod=$(pactl load-module module-null-sink "sink_name=$bt")
 sleep 2
 ssince "$s" | grep -q "^start bt-" && fail "the bt slot is off by default and got a chain"
+poke audio.crossfeed.headphones "<'default'>"
+ixa=headphones-$(eqhash "$hp" "$(types "${filters_a[@]}")" default)
+chain_up "$ixa" || fail "headphones crossfeed with EQ: no chain $ixa"
+for slot in speaker bt; do
+  sink=$spk
+  [[ $slot == bt ]] && sink=$bt
+  i=$slot-$(eqhash "$sink" "")
+  poke "audio.balance.$slot" "<2>"
+  chain_up "$i" || fail "$slot balance: no chain"
+  grep -q "label = mixer" "$XDG_RUNTIME_DIR/microos-audio/eq/$i.conf" && fail "$slot got a crossfeed"
+  grep -qF '"Gain" = -1.0' "$XDG_RUNTIME_DIR/microos-audio/eq/$i.conf" || fail "$slot balance R 1 dB is not in $i.conf"
+  m=$(amark)
+  poke "audio.balance.$slot" "<0>"
+  await "$m" "EQ chain $i stopped" || fail "$slot balance 0 kept the chain"
+done
+m=$(amark)
+poke audio.crossfeed.headphones "<'off'>"
+await "$m" "EQ chain $ixa stopped" || fail "headphones crossfeed off kept its chain"
 pactl unload-module "$btmod"
 
 kill "$poller" 2> /dev/null || true
