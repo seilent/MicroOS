@@ -1,0 +1,8 @@
+[Unit]
+Description=Games
+
+[Slice]
+CPUWeight=100
+
+[Install]
+WantedBy=default.target
