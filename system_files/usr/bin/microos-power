@@ -19,9 +19,10 @@ SETS = {
     "gpu-clock": (POWER, "ManualGpuClock", "u"),
     "governor": (POWER, "CpuGovernor", "s"),
     "tdp": (TDP, "TdpLimit", "u"),
+    "game-floor": (POWER, "GameCpuFloor", "u"),
 }
 USAGE = ("usage: microos-power get | reload | set-profile <name> | gpu-level auto|manual | gpu-clock <MHz> | "
-         "governor <name> | tdp <W> | hold dap | hold dap-off")
+         "governor <name> | tdp <W> | game-floor <%> | hold dap | hold dap-off")
 
 
 def call(bus, iface, method, args=None, reply=None):
@@ -48,6 +49,7 @@ def main(argv):
             print(f"gpu-clock {p['ManualGpuClock']}")
             print(f"governor {p['CpuGovernor']}")
             print(f"governors {' '.join(p['AvailableCpuGovernors'])}")
+            print(f"game-floor {p['GameCpuFloor']}")
             try:
                 t = get_all(bus, TDP)
                 print(f"tdp {t['TdpLimit']} ({t['TdpLimitMin']} to {t['TdpLimitMax']})")

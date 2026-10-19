@@ -325,6 +325,14 @@ done
 [[ -x /usr/libexec/microos/microos-powerd ]] || fail "microos-powerd missing"
 [[ -x /usr/libexec/microos/microos-vpower ]] || fail "microos-vpower missing"
 ! grep -qE 'pwm|hwmon|thermal' /usr/libexec/microos/microos-powerd || fail "microos-powerd names a pwm, hwmon or thermal path"
+pu=/usr/lib/systemd/system/microos-powerd.service
+for l in CapabilityBoundingSet=CAP_DAC_OVERRIDE DevicePolicy=closed "DeviceAllow=char-input r" ProtectKernelTunables=yes \
+  "ReadWritePaths=/sys/devices/system/cpu -/sys/class/devfreq/3d00000.gpu /sys/fs/cgroup" \
+  "InaccessiblePaths=-/dev/shm -/dev/mqueue" ProtectKernelModules=yes ProtectKernelLogs=yes ProtectClock=yes \
+  RestrictNamespaces=yes LockPersonality=yes SystemCallArchitectures=native; do
+  grep -qxF "$l" "$pu" || fail "microos-powerd.service lacks $l"
+done
+! grep -q '^PrivateDevices=' "$pu" || fail "microos-powerd.service sets PrivateDevices"
 [[ $(rpm -q --qf '%{VENDOR}' microset) == MicroOS ]] || fail "microset is not the MicroOS build"
 ! rpm -q microset-devel >/dev/null 2>&1 || fail "microset-devel is installed"
 [[ $(rpm -qf /usr/share/fonts/microset/selawk.ttf) == microset-fonts-* ]] || fail "Selawik is not in microset-fonts"
@@ -526,7 +534,7 @@ for u in plymouth-reboot plymouth-poweroff plymouth-halt; do
     || fail "effective $u.service ExecStartPost: $(execs $u.service ExecStartPost)"
 done
 while read -r u p; do
-  [[ $p == -* ]] && continue
+  [[ $p == -* || $p == /sys/* ]] && continue
   grep -qE "^d $p [0-7]+ " /usr/lib/tmpfiles.d/*.conf || fail "${u##*/} ReadWritePaths=$p has no tmpfiles line"
 done < <(awk -F= '/^ReadWritePaths=/ { n = split($2, a, " "); for (i = 1; i <= n; i++) print FILENAME, a[i] }' \
   /usr/lib/systemd/system/microos-*)
