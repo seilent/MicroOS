@@ -142,6 +142,26 @@ else
   fail "${eq##*/}: $(cat "$tmp/eq.err")"
 fi
 
+bt=$tree/usr/share/wireplumber/wireplumber.conf.d/55-microos-bt.conf
+if spa-json-dump "$bt" > "$tmp/bt.json" 2> "$tmp/bt.err"; then
+  grep -q '"monitor.bluez.rules"' "$tmp/bt.json" || fail "${bt##*/} has no monitor.bluez.rules"
+  ! grep -q '"monitor.alsa.rules"' "$tmp/bt.json" || fail "${bt##*/} has alsa rules"
+  [[ $(grep -c '"dither.method"' "$tmp/bt.json") == 1 ]] || fail "${bt##*/} does not set dither.method once"
+  grep -q '"dither.method": "triangular"' "$tmp/bt.json" || fail "${bt##*/} does not set dither.method triangular"
+  mapfile -t res < <(sed -n 's/^ *"node.name": "~\(.*\)",\{0,1\}$/\1/p' "$tmp/bt.json")
+  [[ ${#res[@]} == 1 ]] || fail "${bt##*/} has ${#res[@]} node.name matches, not one"
+  for re in "${res[@]}"; do
+    for n in bluez_output.00_1B_66_00_00_01.1 bluez_output.00_1B_66_00_00_01.0; do
+      grep -qE "^($re)$" <<< "$n" || fail "${bt##*/}: '$re' misses $n"
+    done
+    for n in bluez_input.BC_27_7A_6F_A9_6F.2 alsa_output.platform-sound.HiFi__Headphones__sink alsa_output.usb-FIIO_SNOWSKY_TINY_B_000000000000-01.analog-stereo; do
+      grep -qE "^($re)$" <<< "$n" && fail "${bt##*/}: '$re' matches $n"
+    done
+  done
+else
+  fail "${bt##*/}: $(cat "$tmp/bt.err")"
+fi
+
 export XDG_RUNTIME_DIR=$tmp/run XDG_CONFIG_HOME=$tmp/config XDG_DATA_HOME=$tmp/data XDG_STATE_HOME=$tmp/state HOME=$tmp/home
 mkdir -p "$XDG_RUNTIME_DIR" "$HOME" "$XDG_CONFIG_HOME/wireplumber" "$XDG_DATA_HOME/wireplumber"
 chmod 700 "$XDG_RUNTIME_DIR"

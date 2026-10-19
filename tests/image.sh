@@ -90,6 +90,8 @@ grep -qE 'session\.dont-restore-off-profile"? *[=:] *true' /usr/share/wireplumbe
   || fail "52-microos-pm2.conf does not set session.dont-restore-off-profile"
 grep -qE 'api\.alsa\.soft-mixer"? *[=:] *true' /usr/share/wireplumber/wireplumber.conf.d/50-microos-soft-mixer.conf \
   || fail "50-microos-soft-mixer.conf does not set api.alsa.soft-mixer"
+grep -qE 'dither\.method"? *[=:] *"?triangular' /usr/share/wireplumber/wireplumber.conf.d/55-microos-bt.conf \
+  || fail "55-microos-bt.conf does not set dither.method triangular"
 ucm=$(mktemp -d)/ucm2
 cp -a /usr/share/alsa/ucm2 "$ucm"
 sed -i 's/[$]{CardId}/0/g' "$ucm/Qualcomm/sm8250/PocketMICRO2-HiFi.conf"
