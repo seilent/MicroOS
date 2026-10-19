@@ -130,7 +130,7 @@
 
 	fan: pwm-fan {
 		compatible = "pwm-fan";
-		cooling-levels = <0 26 45 83 121 159 255>;
+		cooling-levels = <0 77 83 121 159 255>;
 		#cooling-cells = <2>;
 		pwms = <&pm8150l_lpg 4 40000>;
 		interrupt-parent = <&tlmm>;
@@ -267,36 +267,30 @@
 
 			trips {
 				c0_fan0: fan-0 {
-					temperature = <65000>;
+					temperature = <55000>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
 				c0_fan1: fan-1 {
-					temperature = <75000>;
-					hysteresis = <2000>;
-					type = "active";
-				};
-
-				c0_fan2: fan-2 {
 					temperature = <77500>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				c0_fan3: fan-3 {
+				c0_fan2: fan-2 {
 					temperature = <80000>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				c0_fan4: fan-4 {
+				c0_fan3: fan-3 {
 					temperature = <82500>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				c0_fan5: fan-5 {
+				c0_fan4: fan-4 {
 					temperature = <85000>;
 					hysteresis = <2000>;
 					type = "active";
@@ -328,11 +322,6 @@
 					trip = <&c0_fan4>;
 					cooling-device = <&fan 5 5>;
 				};
-
-				map-fan5 {
-					trip = <&c0_fan5>;
-					cooling-device = <&fan 6 6>;
-				};
 			};
 		};
 
@@ -341,36 +330,30 @@
 
 			trips {
 				c1_fan0: fan-0 {
-					temperature = <65000>;
+					temperature = <55000>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
 				c1_fan1: fan-1 {
-					temperature = <75000>;
-					hysteresis = <2000>;
-					type = "active";
-				};
-
-				c1_fan2: fan-2 {
 					temperature = <77500>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				c1_fan3: fan-3 {
+				c1_fan2: fan-2 {
 					temperature = <80000>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				c1_fan4: fan-4 {
+				c1_fan3: fan-3 {
 					temperature = <82500>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				c1_fan5: fan-5 {
+				c1_fan4: fan-4 {
 					temperature = <85000>;
 					hysteresis = <2000>;
 					type = "active";
@@ -402,11 +385,6 @@
 					trip = <&c1_fan4>;
 					cooling-device = <&fan 5 5>;
 				};
-
-				map-fan5 {
-					trip = <&c1_fan5>;
-					cooling-device = <&fan 6 6>;
-				};
 			};
 		};
 
@@ -415,36 +393,30 @@
 
 			trips {
 				gt_fan0: fan-0 {
-					temperature = <65000>;
+					temperature = <55000>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
 				gt_fan1: fan-1 {
-					temperature = <75000>;
-					hysteresis = <2000>;
-					type = "active";
-				};
-
-				gt_fan2: fan-2 {
 					temperature = <77500>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				gt_fan3: fan-3 {
+				gt_fan2: fan-2 {
 					temperature = <80000>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				gt_fan4: fan-4 {
+				gt_fan3: fan-3 {
 					temperature = <82500>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				gt_fan5: fan-5 {
+				gt_fan4: fan-4 {
 					temperature = <85000>;
 					hysteresis = <2000>;
 					type = "active";
@@ -476,11 +448,6 @@
 					trip = <&gt_fan4>;
 					cooling-device = <&fan 5 5>;
 				};
-
-				map-fan5 {
-					trip = <&gt_fan5>;
-					cooling-device = <&fan 6 6>;
-				};
 			};
 		};
 
@@ -489,36 +456,30 @@
 
 			trips {
 				gb_fan0: fan-0 {
-					temperature = <65000>;
+					temperature = <55000>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
 				gb_fan1: fan-1 {
-					temperature = <75000>;
-					hysteresis = <2000>;
-					type = "active";
-				};
-
-				gb_fan2: fan-2 {
 					temperature = <77500>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				gb_fan3: fan-3 {
+				gb_fan2: fan-2 {
 					temperature = <80000>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				gb_fan4: fan-4 {
+				gb_fan3: fan-3 {
 					temperature = <82500>;
 					hysteresis = <2000>;
 					type = "active";
 				};
 
-				gb_fan5: fan-5 {
+				gb_fan4: fan-4 {
 					temperature = <85000>;
 					hysteresis = <2000>;
 					type = "active";
@@ -549,11 +510,6 @@
 				map-fan4 {
 					trip = <&gb_fan4>;
 					cooling-device = <&fan 5 5>;
-				};
-
-				map-fan5 {
-					trip = <&gb_fan5>;
-					cooling-device = <&fan 6 6>;
 				};
 			};
 		};

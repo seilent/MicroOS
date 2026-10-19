@@ -2,8 +2,8 @@
 set -euo pipefail
 
 dtb=${1:?usage: fan-trips.sh <dtb>}
-levels="0 26 45 83 121 159 255"
-temps=(65000 75000 77500 80000 82500 85000)
+levels="0 77 83 121 159 255"
+temps=(55000 77500 80000 82500 85000)
 zones=(cluster0-thermal cluster1-thermal gpu-top-thermal gpu-bottom-thermal)
 
 fan=$(fdtget -t s "$dtb" /__symbols__ fan 2>/dev/null) || fan=/pwm-fan
