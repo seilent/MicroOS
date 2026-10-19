@@ -794,6 +794,22 @@
 
 &gpu_opp_table {
 	/delete-node/ opp-670000000;
+
+	opp-587000000 {
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS_L1>;
+	};
+
+	opp-525000000 {
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS_L0>;
+	};
+
+	opp-490000000 {
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS>;
+	};
+
+	opp-441600000 {
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS>;
+	};
 };
 
 &gpu_zap_shader {
