@@ -29,6 +29,9 @@ for slot in ("headphones", "speaker", "usb", "bt"):
     store[f"audio.eq.{slot}.on"] = GLib.Variant("b", False)
     store[f"audio.eq.{slot}.name"] = GLib.Variant("s", "")
     store[f"audio.eq.{slot}.filters"] = GLib.Variant("as", ["preamp 0"])
+    store[f"audio.balance.{slot}"] = GLib.Variant("i", 0)
+for slot in ("headphones", "usb"):
+    store[f"audio.crossfeed.{slot}"] = GLib.Variant("s", "off")
 
 
 def record(line):

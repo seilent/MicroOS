@@ -2,6 +2,7 @@
 import glob
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -31,14 +32,20 @@ RETRY_MS = 1000
 PACTL_TIMEOUT = 3
 ERRORS = (subprocess.SubprocessError, OSError, ValueError)
 SLOTS = ("headphones", "speaker", "usb", "bt")
+WIRED = ("headphones", "usb")
+CHAIN_KEYS = ("audio.eq.", "audio.balance.", "audio.crossfeed.")
 EQ_PREFIX = "microos-eq."
 EQ_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "microos-audio", "eq")
 EQ_UNIT = re.compile(r"microos-eq@([a-z]+-[0-9a-f]{12})\.service")
 EQ_TARGET = re.compile(r'node\.name = "((?:[^"\\]|\\.)*)"')
 EQ_LABELS = {
     "peak": "bq_peaking", "lowshelf": "bq_lowshelf", "highshelf": "bq_highshelf", "bandpass": "bq_bandpass",
-    "lowpass": "bq_lowpass", "highpass": "bq_highpass", "allpass": "bq_allpass",
+    "lowpass": "bq_lowpass", "highpass": "bq_highpass", "allpass": "bq_allpass", "matchedpeak": "bq_raw",
 }
+XFEED = {"default": (700.0, 4.5), "chuMoy": (700.0, 6.0), "janMeier": (650.0, 9.5)}
+RATES = (8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000, 176400, 192000, 352800,
+         384000, 705600, 768000)
+SIDES = ("L", "R")
 EQ_BANDS = 10
 EQ_WAITS = 10
 EQ_KICKS = 3
@@ -143,8 +150,58 @@ def parse_filters(items):
         return None
 
 
-def eq_instance(slot, hw, filters):
-    key = hw + "\n" + " ".join(b[0] for b in filters[1])
+def matched_peak(freq, gain, q, rate):
+    if gain == 0 or freq >= 0.49 * rate or q <= 0:
+        return None
+    a = 10 ** (gain / 40)
+    w0 = 2 * math.pi * freq / rate
+    g, z = a * a, 1 / (2 * q * a)
+    r = math.cos(math.sqrt(1 - z * z) * w0) if z <= 1 else math.cosh(math.sqrt(z * z - 1) * w0)
+    a1 = -2 * math.exp(-z * w0) * r
+    a2 = math.exp(-2 * z * w0)
+    pa0, pa1, pa2 = (1 + a1 + a2) ** 2, (1 - a1 + a2) ** 2, -4 * a2
+    p1 = math.sin(w0 / 2) ** 2
+    p0 = 1 - p1
+    p2 = 4 * p0 * p1
+    r1 = (pa0 * p0 + pa1 * p1 + pa2 * p2) * g * g
+    r2 = (-pa0 + pa1 + 4 * (p0 - p1) * pa2) * g * g
+    qb0 = pa0
+    qb2 = (r1 - r2 * p1 - qb0) / (4 * p1 * p1)
+    qb1 = r2 + qb0 + 4 * (p1 - p0) * qb2
+    w = (math.sqrt(qb0) + math.sqrt(max(qb1, 0.0))) / 2
+    if qb1 < 0 or w * w + qb2 < 0:
+        return None
+    b0 = (w + math.sqrt(w * w + qb2)) / 2
+    b1 = (math.sqrt(qb0) - math.sqrt(qb1)) / 2
+    return b0, b1, -qb2 / (4 * b0), a1, a2
+
+
+def bs2b(preset, rate):
+    fc, level = XFEED[preset]
+    gb_lo, gb_hi = level * -5 / 6 - 3, level / 6 - 3
+    g_lo, g_hi = 10 ** (gb_lo / 20), 1 - 10 ** (gb_hi / 20)
+    fc_hi = fc * 2 ** ((gb_lo - 20 * math.log10(g_hi)) / 12)
+    gain = 1 / (1 - g_hi + g_lo)
+    xl, xh = math.exp(-2 * math.pi * fc / rate), math.exp(-2 * math.pi * fc_hi / rate)
+    lo = gain * g_lo * (1 - xl)
+    hi = gain * (1 - g_hi * (1 - xh))
+    return (lo, 0.0, 0.0, -xl, 0.0), (hi, (1 - lo / (1 - xl)) * (1 - xh) - hi, 0.0, -xh, 0.0)
+
+
+def raw_config(design):
+    sets = []
+    for rate in RATES:
+        b0, b1, b2, a1, a2 = design(rate) or (1.0, 0.0, 0.0, 0.0, 0.0)
+        sets.append(f"{{ rate = {rate} b0 = {b0!r} b1 = {b1!r} b2 = {b2!r} a0 = 1.0 a1 = {a1!r} a2 = {a2!r} }}")
+    return "{ coefficients = [ " + " ".join(sets) + " ] }"
+
+
+def band_id(band):
+    return "/".join([band[0], *map(repr, band[1:])]) if band[0] == "matchedpeak" else band[0]
+
+
+def eq_instance(slot, hw, spec):
+    key = hw + "\n" + " ".join(band_id(b) for b in spec[1]) + "\n" + spec[2]
     return f"{slot}-{hashlib.sha256(key.encode()).hexdigest()[:12]}"
 
 
@@ -153,18 +210,48 @@ def eq_node(instance):
     return f"{EQ_PREFIX}{slot}.{digest}"
 
 
-def eq_conf(instance, hw, description, filters):
+def gain_node(name, gain):
+    return f'{{ type = builtin name = {name} label = bq_highshelf control = {{ "Freq" = 0.0 "Q" = 1.0 "Gain" = {gain!r} }} }}'
+
+
+def balance_gains(balance):
+    return {"L": 0.0 - max(0, balance) / 2, "R": 0.0 - max(0, -balance) / 2}
+
+
+def eq_conf(instance, hw, description, spec):
     node = eq_node(instance)
     name = json.dumps(node)
     target = json.dumps(hw, ensure_ascii=False)
     desc = json.dumps(f"{description} EQ", ensure_ascii=False)
-    preamp, bands = filters
-    nodes = [f'{{ type = builtin name = f0 label = bq_highshelf control = {{ "Freq" = 0.0 "Q" = 1.0 "Gain" = {preamp!r} }} }}']
-    links = []
-    for n, (kind, freq, gain, q) in enumerate(bands, 1):
-        nodes.append(f'{{ type = builtin name = f{n} label = {EQ_LABELS[kind]} '
-                     f'control = {{ "Freq" = {freq!r} "Q" = {q!r} "Gain" = {gain!r} }} }}')
-        links.append(f'{{ output = "f{n - 1}:Out" input = "f{n}:In" }}')
+    preamp, bands, crossfeed, balance = spec
+    nodes, links, ends = [], [], {}
+    for side in SIDES:
+        nodes.append(gain_node(f"f{side}0", preamp))
+        for n, (kind, freq, gain, q) in enumerate(bands, 1):
+            if kind == "matchedpeak":
+                config = raw_config(lambda rate, f=freq, g=gain, k=q: matched_peak(f, g, k, rate))
+                nodes.append(f"{{ type = builtin name = f{side}{n} label = bq_raw config = {config} }}")
+            else:
+                nodes.append(f'{{ type = builtin name = f{side}{n} label = {EQ_LABELS[kind]} '
+                             f'control = {{ "Freq" = {freq!r} "Q" = {q!r} "Gain" = {gain!r} }} }}')
+            links.append(f'{{ output = "f{side}{n - 1}:Out" input = "f{side}{n}:In" }}')
+        ends[side] = f"f{side}{len(bands)}:Out"
+    if crossfeed != "off":
+        lo = raw_config(lambda rate: bs2b(crossfeed, rate)[0])
+        hi = raw_config(lambda rate: bs2b(crossfeed, rate)[1])
+        for side in SIDES:
+            nodes += [f"{{ type = builtin name = h{side} label = bq_raw config = {hi} }}",
+                      f"{{ type = builtin name = l{side} label = bq_raw config = {lo} }}",
+                      f"{{ type = builtin name = m{side} label = mixer }}"]
+            links += [f'{{ output = "{ends[side]}" input = "h{side}:In" }}',
+                      f'{{ output = "{ends[side]}" input = "l{side}:In" }}']
+        for side, other in zip(SIDES, reversed(SIDES)):
+            links += [f'{{ output = "h{side}:Out" input = "m{side}:In 1" }}',
+                      f'{{ output = "l{other}:Out" input = "m{side}:In 2" }}']
+            ends[side] = f"m{side}:Out"
+    for side, gain in balance_gains(balance).items():
+        nodes.append(gain_node(f"b{side}", gain))
+        links.append(f'{{ output = "{ends[side]}" input = "b{side}:In" }}')
     lines = [
         "context.properties = {",
         "    log.level = 0",
@@ -192,6 +279,8 @@ def eq_conf(instance, hw, description, filters):
         "                links = [",
         *[f"                    {link}" for link in links],
         "                ]",
+        '                inputs = [ "fL0:In" "fR0:In" ]',
+        '                outputs = [ "bL:Out" "bR:Out" ]',
         "            }",
         "            capture.props = {",
         f"                node.name = {name}",
@@ -217,11 +306,15 @@ def eq_conf(instance, hw, description, filters):
     return "\n".join(lines) + "\n"
 
 
-def eq_params(filters):
-    preamp, bands = filters
-    params = [f'"f0:Gain" {preamp!r}']
-    for n, (_kind, freq, gain, q) in enumerate(bands, 1):
-        params += [f'"f{n}:Freq" {freq!r}', f'"f{n}:Q" {q!r}', f'"f{n}:Gain" {gain!r}']
+def eq_params(spec):
+    preamp, bands, _crossfeed, balance = spec
+    params = []
+    for side in SIDES:
+        params.append(f'"f{side}0:Gain" {preamp!r}')
+        for n, (kind, freq, gain, q) in enumerate(bands, 1):
+            if kind != "matchedpeak":
+                params += [f'"f{side}{n}:Freq" {freq!r}', f'"f{side}{n}:Q" {q!r}', f'"f{side}{n}:Gain" {gain!r}']
+    params += [f'"b{side}:Gain" {gain!r}' for side, gain in balance_gains(balance).items()]
     return "{ params = [ " + " ".join(params) + " ] }"
 
 
@@ -298,6 +391,7 @@ class Audio:
         self.dirty = set()
         self.eq = None
         self.units = None
+        self.skip_logged = set()
         self.codec = None
         self.codec_done = {}
         self.cards_dirty = True
@@ -439,7 +533,24 @@ class Audio:
             log(f"setting the configured default failed: {err}")
 
     def eq_wanted(self):
-        return self.eq is not None and (bool(self.units) or any(v["on"] for v in self.eq.values()))
+        return self.eq is not None and (bool(self.units) or any(
+            v["on"] or v["balance"] or v["crossfeed"] != "off" for v in self.eq.values()))
+
+    def chain_spec(self, slot, sink):
+        eq = self.eq[slot]
+        filters = eq["filters"] if eq["on"] else None
+        stereo = len(channels(sink)) == 2
+        balance = eq["balance"] if stereo else 0
+        crossfeed = eq["crossfeed"] if stereo and slot in WIRED else "off"
+        if not stereo and (eq["balance"] or (slot in WIRED and eq["crossfeed"] != "off")):
+            skipped = (sink["name"], eq["balance"], eq["crossfeed"])
+            if skipped not in self.skip_logged:
+                self.skip_logged.add(skipped)
+                log(f"{sink['name']} has {len(channels(sink))} channels, balance and crossfeed skipped")
+        if filters is None and balance == 0 and crossfeed == "off":
+            return None
+        preamp, bands = filters or (0.0, ())
+        return preamp, bands, crossfeed, balance
 
     def fold(self, sinks):
         present = set()
@@ -517,30 +628,29 @@ class Audio:
         want = {}
         for name, sink in sorted((sinks or {}).items()):
             slot = classify(name)
-            if slot is None or not self.eq[slot]["on"] or self.eq[slot]["filters"] is None:
+            if slot is None or (slot in ("headphones", "speaker") and not available(sink)):
                 continue
-            if slot in ("headphones", "speaker") and not available(sink):
-                continue
-            filters = self.eq[slot]["filters"]
-            want[eq_instance(slot, name, filters)] = (name, sink, filters)
+            spec = self.chain_spec(slot, sink)
+            if spec is not None:
+                want[eq_instance(slot, name, spec)] = (name, sink, spec)
         up = {i for i in want if eq_node(i) in sinks}
         dump = None
-        for instance, (hw, sink, filters) in want.items():
+        for instance, (hw, sink, spec) in want.items():
             unit = self.units.get(instance)
             if unit is None:
-                if not self.start(instance, hw, sink, filters):
+                if not self.start(instance, hw, sink, spec):
                     continue
                 unit = self.units[instance]
             unit["hw"] = hw
             node = sinks.get(eq_node(instance))
-            if unit["conf"] != filters:
-                text = eq_conf(instance, hw, describe(hw, sink), filters)
+            if unit["conf"] != spec:
+                text = eq_conf(instance, hw, describe(hw, sink), spec)
                 if unit["conf"] is None and read_conf(instance) == text:
-                    unit["conf"] = unit["live"] = filters
+                    unit["conf"] = unit["live"] = spec
                 else:
                     try:
                         write_conf(instance, text)
-                        unit["conf"] = filters
+                        unit["conf"] = spec
                         if node is None:
                             unit["live"] = None
                     except OSError as err:
@@ -553,8 +663,8 @@ class Audio:
                 self.again()
                 continue
             unit["waits"] = 0
-            if unit["live"] != filters:
-                self.props(instance, unit, filters)
+            if unit["live"] != spec:
+                self.props(instance, unit, spec)
             if "out" in unit and unit["out"]["timer"] is None:
                 if dump is None:
                     dump = pw_dump()
@@ -565,9 +675,9 @@ class Audio:
                 continue
             self.stop(instance)
 
-    def start(self, instance, hw, sink, filters):
+    def start(self, instance, hw, sink, spec):
         try:
-            write_conf(instance, eq_conf(instance, hw, describe(hw, sink), filters))
+            write_conf(instance, eq_conf(instance, hw, describe(hw, sink), spec))
             try:
                 run("systemctl", "--user", "reset-failed", f"microos-eq@{instance}.service")
             except ERRORS:
@@ -578,12 +688,12 @@ class Audio:
             self.again()
             return False
         log(f"EQ chain {instance} started for {hw}")
-        self.units[instance] = {"hw": hw, "conf": filters, "live": filters}
+        self.units[instance] = {"hw": hw, "conf": spec, "live": spec}
         return True
 
-    def props(self, instance, unit, filters):
+    def props(self, instance, unit, spec):
         try:
-            proc = subprocess.run(["pw-cli", "s", eq_node(instance), "Props", eq_params(filters)],
+            proc = subprocess.run(["pw-cli", "s", eq_node(instance), "Props", eq_params(spec)],
                                   capture_output=True, text=True, timeout=PACTL_TIMEOUT)
             if proc.returncode != 0 or "Error" in proc.stderr or "Error" in proc.stdout:
                 raise ValueError((proc.stderr or proc.stdout).strip())
@@ -591,7 +701,7 @@ class Audio:
             log(f"sending EQ values to {instance} failed: {err}")
             self.again()
             return
-        unit["live"] = filters
+        unit["live"] = spec
         log(f"EQ values sent to {instance}")
 
     def check_out(self, instance, unit, hw, dump):
@@ -700,9 +810,9 @@ class Audio:
         except GLib.Error as err:
             log(f"reading the audio keys failed: {err.message}")
             return
-        self.eq = {slot: {"on": False, "filters": None} for slot in SLOTS}
+        self.eq = {slot: {"on": False, "filters": None, "balance": 0, "crossfeed": "off"} for slot in SLOTS}
         for key, value in values.items():
-            if key.startswith("audio.eq.") or key == "audio.bt_codec":
+            if key.startswith(CHAIN_KEYS) or key == "audio.bt_codec":
                 self.set_key(key, value)
         self.set_output(values.get("audio.output"))
 
@@ -712,11 +822,21 @@ class Audio:
             self.cards_dirty = True
             return
         parts = key.split(".")
-        if self.eq is None or len(parts) != 4 or parts[2] not in SLOTS:
+        if self.eq is None or len(parts) < 3 or parts[2] not in SLOTS:
             return
-        if parts[3] == "on":
+        if len(parts) == 3 and parts[1] == "balance":
+            try:
+                self.eq[parts[2]]["balance"] = max(-20, min(20, int(value)))
+            except (TypeError, ValueError):
+                log(f"{key} {value!r} not valid, balance 0 for {parts[2]}")
+                self.eq[parts[2]]["balance"] = 0
+        elif len(parts) == 3 and parts[1] == "crossfeed":
+            if value != "off" and value not in XFEED:
+                log(f"{key} {value!r} unknown, crossfeed off for {parts[2]}")
+            self.eq[parts[2]]["crossfeed"] = value if value in XFEED else "off"
+        elif len(parts) == 4 and parts[3] == "on":
             self.eq[parts[2]]["on"] = bool(value)
-        elif parts[3] == "filters":
+        elif len(parts) == 4 and parts[3] == "filters":
             filters = parse_filters(value)
             if filters is None:
                 log(f"{key} {value!r} not valid, EQ off for {parts[2]}")
@@ -733,7 +853,7 @@ class Audio:
         key, value = params.unpack()
         if key == "audio.output":
             self.set_output(value)
-        elif key.startswith("audio.eq.") or key == "audio.bt_codec":
+        elif key.startswith(CHAIN_KEYS) or key == "audio.bt_codec":
             self.set_key(key, value)
             self.schedule()
         elif key in APPLY:
