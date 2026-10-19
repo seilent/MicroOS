@@ -628,6 +628,8 @@ XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user
 [[ -f /usr/lib/systemd/user/microos-steam-seed.service ]] || fail "microos-steam-seed.service missing"
 grep -qxF CPUWeight=100 /usr/lib/systemd/user/game.slice || fail "game.slice lacks CPUWeight=100"
 [[ $(systemctl --global is-enabled game.slice) == enabled ]] || fail "user game.slice is not enabled"
+[[ $(< /usr/lib/systemd/user/app-steam-.scope.d/50-microos-game-slice.conf) == $'[Scope]\nSlice=game.slice' ]] \
+  || fail "Steam game scope drop-in"
 [[ $(< /usr/lib/systemd/user/gamescope-session-plus@.service.d/20-microos-hotkeyd.conf) == $'[Unit]\nWants=microos-hotkeyd@%i.service' ]] \
   || fail "hotkeyd drop-in"
 [[ -e /usr/lib/systemd/user/microos-hotkeyd.service || -e /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/20-microos-hotkeyd.conf ]] \
