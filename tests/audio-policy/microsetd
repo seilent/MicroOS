@@ -24,7 +24,8 @@ XML = f"""
 """
 LOG = sys.argv[1]
 FAIL_GET = os.path.join(os.path.dirname(LOG), "get-fails")
-store = {"audio.output": GLib.Variant("s", sys.argv[2]), "audio.bt_codec": GLib.Variant("s", "auto")}
+store = {"audio.output": GLib.Variant("s", sys.argv[2]), "audio.bt_codec": GLib.Variant("s", "auto"),
+         "audio.max_volume": GLib.Variant("u", 100), "audio.power_on_volume": GLib.Variant("u", 0)}
 for slot in ("headphones", "speaker", "usb", "bt"):
     store[f"audio.eq.{slot}.on"] = GLib.Variant("b", False)
     store[f"audio.eq.{slot}.name"] = GLib.Variant("s", "")
