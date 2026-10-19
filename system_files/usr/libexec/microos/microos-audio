@@ -586,11 +586,12 @@ class Audio:
             return
         try:
             with open(POWER_ON) as f:
-                if f.read().strip() == boot:
+                if f.readline().strip() == boot:
                     self.power_on_done = True
                     return
         except OSError:
             pass
+        target = ""
         if self.power_on:
             try:
                 default = run("pactl", "get-default-sink").strip()
@@ -619,11 +620,12 @@ class Audio:
                     self.again()
                     return
                 log(f"audio.power_on_volume {self.power_on}: {sink['name']} set to {percent} %")
+                target = sink["name"]
         self.power_on_done = True
         try:
             os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
             with open(POWER_ON + ".new", "w") as f:
-                f.write(boot + "\n")
+                f.write(boot + "\n" + target + "\n")
             os.replace(POWER_ON + ".new", POWER_ON)
         except OSError as err:
             log(f"writing the power on marker failed: {err}")

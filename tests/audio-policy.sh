@@ -685,7 +685,7 @@ waitlog "$m" "volume $spk $cap60 $cap60" || fail "max volume: $spk above the cap
 vol[$hp]=$cap60 vol[$spk]=$cap60
 sinks_changed
 poweron "$m" "volume $hp $cap60" || fail "power on volume 80 was not applied once at the cap 60: $(since "$m")"
-[[ $(cat "$marker") == boot-a ]] || fail "no power on marker for boot-a"
+[[ $(cat "$marker") == boot-a$'\n'"$hp" ]] || fail "no power on marker for boot-a naming $hp: $(cat "$marker")"
 m=$(mark)
 vol[$hp]=$((65536 * 80 / 100))
 sinks_changed
@@ -743,7 +743,7 @@ novol "$m" || fail "power on volume was set with no hardware default: $(since "$
 echo "$hp" > "$STUB_DIR/default-sink"
 sinks_changed
 poweron "$m" "volume $hp $cap40" || fail "power on volume was not applied once the default was $hp: $(since "$m")"
-[[ $(cat "$marker") == boot-d ]] || fail "no power on marker for boot-d"
+[[ $(cat "$marker") == boot-d$'\n'"$hp" ]] || fail "no power on marker for boot-d naming $hp: $(cat "$marker")"
 kill "$as"
 wait "$as" 2> /dev/null || true
 vol[$hp]=$cap50
@@ -755,6 +755,7 @@ m=$(mark)
 start_audio_boot
 poweron "$m" "volume $hp $cap40" || fail "a chain default did not set the power on volume on its hardware sink: $(since "$m")"
 since "$m" | grep -q "^volume $na " && fail "power on volume was written to the chain sink: $(since "$m")"
+[[ $(cat "$marker") == boot-e$'\n'"$hp" ]] || fail "the power on marker for a chain default does not name $hp: $(cat "$marker")"
 kill "$as"
 wait "$as" 2> /dev/null || true
 unset "state[$na]" "target[$na]" "oid[$na]"
