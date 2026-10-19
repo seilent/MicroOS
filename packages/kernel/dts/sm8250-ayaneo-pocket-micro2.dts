@@ -785,6 +785,8 @@
 };
 
 &gmu {
+	qcom,qmp = <&aoss_qmp>;
+
 	status = "okay";
 };
 
@@ -793,7 +795,33 @@
 };
 
 &gpu_opp_table {
+	compatible = "operating-points-v2-adreno", "operating-points-v2";
+
 	/delete-node/ opp-670000000;
+
+	opp-587000000 {
+		qcom,opp-acd-level = <0x802b5ffd>;
+	};
+
+	opp-525000000 {
+		qcom,opp-acd-level = <0x802b5ffd>;
+	};
+
+	opp-490000000 {
+		qcom,opp-acd-level = <0xa02b5ffd>;
+	};
+
+	opp-441600000 {
+		qcom,opp-acd-level = <0xa02b5ffd>;
+	};
+
+	opp-400000000 {
+		qcom,opp-acd-level = <0xa02b5ffd>;
+	};
+
+	opp-305000000 {
+		qcom,opp-acd-level = <0xa02b5ffd>;
+	};
 };
 
 &gpu_zap_shader {
