@@ -800,14 +800,17 @@
 	/delete-node/ opp-670000000;
 
 	opp-587000000 {
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS_L2>;
 		qcom,opp-acd-level = <0x802b5ffd>;
 	};
 
 	opp-525000000 {
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS_L1>;
 		qcom,opp-acd-level = <0x802b5ffd>;
 	};
 
 	opp-490000000 {
+		opp-level = <RPMH_REGULATOR_LEVEL_SVS_L0>;
 		qcom,opp-acd-level = <0xa02b5ffd>;
 	};
 
