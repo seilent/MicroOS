@@ -27,6 +27,7 @@ CARD = "alsa_card.platform-sound"
 SYSFS = os.environ.get("MICROOS_AUDIO_SYSFS", "/sys/class/sound")
 SETTLE_S = float(os.environ.get("MICROOS_AUDIO_SETTLE", "5"))
 ROLE_SETTLE_S = float(os.environ.get("MICROOS_AUDIO_ROLE_SETTLE", "3"))
+HOLD_MAX_MS = int(os.environ.get("MICROOS_AUDIO_HOLD_MAX_MS", "10000"))
 BOOT_ID = os.environ.get("MICROOS_AUDIO_BOOT_ID", "/proc/sys/kernel/random/boot_id")
 APPLY = {"audio.hp_amp": HEADPHONES, "audio.speaker_gain": SPEAKER}
 OUTPUTS = ("auto", "speaker", "headphones", "usb", "bt")
@@ -472,6 +473,10 @@ class Audio:
         self.role_timer = None
         self.guard = None
         self.show_failed = False
+        self.hold = None
+        self.hold_timer = None
+        self.restarted = None
+        self.deferred = None
 
     def watch(self, argv, handler):
         proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE)
@@ -532,7 +537,7 @@ class Audio:
     def sinks(self, text):
         if " on card " in text and text.startswith(("Event 'new'", "Event 'change'")):
             self.cards_dirty = True
-        if " on sink " in text or " on card " in text:
+        if any(f" on {kind} " in text for kind in ("sink", "source", "sink-input", "source-output", "card")):
             self.schedule()
 
     def schedule(self):
@@ -1093,7 +1098,124 @@ class Audio:
             return None
         known = self.derive(disk)
         self.publish(wanted)
-        return disk if known else None
+        if known:
+            self.restart(disk)
+
+    def restart(self, disk):
+        if disk is None or self.role_timer is not None:
+            return
+        if disk == self.offer["applied"]:
+            self.deferred = None
+            self.release("the offer is in effect")
+            return
+        if self.restarted == self.offer.get("written", 0):
+            return
+        if self.held_back(disk, self.blocked):
+            return
+        if self.engine is not None and self.hold is None:
+            self.take_hold()
+            return
+        if self.hold == "asking" or self.held_back(disk, self.carded):
+            return
+        try:
+            run("systemctl", "--user", "restart", "--no-block", "wireplumber.service")
+        except ERRORS as err:
+            log(f"restarting wireplumber for the bluetooth offer {disk} failed: {err}")
+            self.release("the restart failed")
+            return
+        self.restarted = self.offer.get("written", 0)
+        log(f"bluetooth offer {disk}: no audio stream and no bluetooth card, wireplumber restarted")
+
+    def held_back(self, disk, check):
+        try:
+            reason = check()
+        except ERRORS as err:
+            log(f"listing nodes for the bluetooth offer failed: {err}")
+            self.again()
+            return True
+        if reason is None:
+            self.deferred = None
+            return False
+        if reason != self.deferred:
+            log(f"bluetooth offer {disk} pending: {reason}")
+            self.deferred = reason
+        self.release(reason)
+        return True
+
+    def blocked(self):
+        nodes = [n for kind in ("sinks", "sources") for n in json.loads(run("pactl", "--format=json", "list", kind))]
+        busy = sorted(str(n.get("name")) for n in nodes if n.get("state") == "RUNNING")
+        if busy:
+            return f"{' '.join(busy)} running"
+        streams = []
+        for kind in ("sink-inputs", "source-outputs"):
+            for stream in json.loads(run("pactl", "--format=json", "list", kind)):
+                name = str((stream.get("properties") or {}).get("node.name") or stream.get("index"))
+                if not name.startswith(EQ_PREFIX):
+                    streams.append(name)
+        if streams:
+            return f"{' '.join(sorted(streams))} open"
+        return self.carded()
+
+    def carded(self):
+        cards = json.loads(run("pactl", "--format=json", "list", "cards"))
+        connected = sorted(c["name"] for c in cards if str(c.get("name", "")).startswith("bluez_card."))
+        return f"{' '.join(connected)} connected" if connected else None
+
+    def hold_for(self, role):
+        if self.engine is None or self.hold is not None:
+            return
+        wanted = self.wanted(role)
+        target = None if wanted is None else self.guarded(wanted)
+        if target is not None and target != self.offer["applied"]:
+            self.take_hold()
+
+    def take_hold(self):
+        self.hold = "asking"
+        self.hold_timer = GLib.timeout_add(HOLD_MAX_MS, self.hold_expired)
+        log("holding the reconnect engine for the bluetooth offer")
+        self.session.call(*RECONNECT, "Hold", GLib.Variant("(b)", (True,)), None, Gio.DBusCallFlags.NONE, 5000, None,
+                          self.hold_reply, None)
+
+    def hold_reply(self, conn, result, _data):
+        try:
+            conn.call_finish(result)
+            got = "held"
+        except GLib.Error as err:
+            log(f"holding the reconnect engine failed: {err.message}")
+            got = "failed"
+        if self.hold == "asking":
+            self.hold = got
+        self.schedule()
+
+    def unhold(self):
+        if self.hold in ("asking", "held") and self.engine is not None:
+            self.session.call(*RECONNECT, "Hold", GLib.Variant("(b)", (False,)), None, Gio.DBusCallFlags.NONE, 5000,
+                              None, self.unhold_reply, None)
+            return True
+        return False
+
+    def unhold_reply(self, conn, result, _data):
+        try:
+            conn.call_finish(result)
+        except GLib.Error as err:
+            log(f"releasing the reconnect engine failed: {err.message}")
+
+    def release(self, reason):
+        if self.hold_timer is not None:
+            GLib.source_remove(self.hold_timer)
+            self.hold_timer = None
+        if self.unhold():
+            log(f"reconnect engine released: {reason}")
+        self.hold = None
+
+    def hold_expired(self):
+        self.hold_timer = None
+        if self.unhold():
+            log(f"reconnect engine released after {HOLD_MAX_MS} ms")
+        self.hold = "expired"
+        self.schedule()
+        return GLib.SOURCE_REMOVE
 
     def connect_engine(self):
         try:
@@ -1130,6 +1252,10 @@ class Audio:
 
     def engine_down(self, _conn, _name):
         self.engine = None
+        if self.hold_timer is not None:
+            GLib.source_remove(self.hold_timer)
+            self.hold_timer = None
+        self.hold = None
         self.engine_gone()
 
     def engine_gone(self):
@@ -1151,6 +1277,7 @@ class Audio:
             GLib.source_remove(self.role_timer)
         self.role_next = role
         self.role_timer = GLib.timeout_add(int(ROLE_SETTLE_S * 1000), self.role_settled)
+        self.hold_for(role)
 
     def role_settled(self):
         self.role_timer = None
@@ -1242,6 +1369,8 @@ class Audio:
             self.set_output(value)
         elif key.startswith(CHAIN_KEYS) or key in (*CODEC_KEYS.values(), "audio.max_volume", "audio.power_on_volume"):
             self.set_key(key, value)
+            if key == CODEC_KEYS["receiver"] and self.role_timer is None:
+                self.hold_for(self.role)
             self.schedule()
         elif key in APPLY:
             self.dirty.add(APPLY[key])

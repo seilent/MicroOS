@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import sys
 
 import gi
@@ -24,6 +25,7 @@ XML = f"""
 </node>
 """
 LOG = sys.argv[1]
+DELAY = os.path.join(os.path.dirname(LOG), "hold-delay")
 role = sys.argv[2]
 holds = set()
 watches = {}
@@ -79,6 +81,9 @@ def method(conn, sender, _path, iface, name, params, invocation):
         if sender not in watches:
             watches[sender] = conn.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
                                                     "/org/freedesktop/DBus", sender, Gio.DBusSignalFlags.NONE, gone)
+        if arg and os.path.exists(DELAY):
+            GLib.timeout_add(3000, lambda: invocation.return_value(None) and False)
+            return
     elif name == "Role":
         role = arg
         emit(conn, {"Role": role})
