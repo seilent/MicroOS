@@ -23,3 +23,4 @@
 0111-drm-msm-dsi-phy-unprepare-iface-clk-across-system-sleep.patch
 0112-ASoC-qcom-sm8250-keep-the-pcm-backend-format.patch
 0113-ASoC-codecs-wsa881x-restore-the-pa-gain-after-power-up.patch
+0114-drm-msm-a6xx-add-a-gpu-level-override.patch
