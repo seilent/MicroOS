@@ -103,6 +103,7 @@ if ! dnf -y install \
   sddm-wayland-generic \
   steam-devices \
   dbus-tools \
+  bluez-obexd \
   gtk2 \
   openal-soft \
   sdl2-compat \

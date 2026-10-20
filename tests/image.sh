@@ -47,6 +47,13 @@ for p in libfreeaptx pipewire-codec-aptx; do
 done
 [[ -f /usr/lib64/spa-0.2/bluez5/libspa-codec-bluez5-aptx.so ]] || fail "aptX codec module missing"
 ! ldd /usr/lib64/spa-0.2/bluez5/libspa-codec-bluez5-aptx.so | grep -q 'not found' || fail "aptX codec module has unresolved libraries"
+rpm -q bluez bluez-obexd >/dev/null || fail "bluez or bluez-obexd missing"
+grep -qx 'SystemdService=dbus-org.bluez.obex.service' /usr/share/dbus-1/services/org.bluez.obex.service \
+  || fail "obexd is not activated through dbus-org.bluez.obex.service"
+[[ $(readlink /usr/lib/systemd/user/dbus-org.bluez.obex.service) == obex.service ]] || fail "dbus-org.bluez.obex.service is not obex.service"
+obexd=$(systemctl --global cat obex.service | awk 'index($0, "ExecStart=") == 1 { v = substr($0, 11); if (v == "") n = 0; else l[++n] = v }
+  END { for (i = 1; i <= n; i++) print l[i] }') || fail "systemctl --global cat obex.service"
+[[ $obexd == "/usr/libexec/bluetooth/obexd -P opp,ftp,pcsuite,irmc,pbap,mas,filesystem" ]] || fail "effective obex.service ExecStart: $obexd"
 pwevr=$(rpm -q --requires pipewire-codec-aptx | awk '$1 == "pipewire-libs(aarch-64)" && $2 == "=" { print $3 }')
 [[ -n $pwevr ]] || fail "pipewire-codec-aptx has no exact pipewire-libs(aarch-64) Requires"
 while read -r p evr; do
