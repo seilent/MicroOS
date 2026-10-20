@@ -19,6 +19,15 @@ case "$*" in
     echo "stop $4" >> "$STUB_DIR/log"
     rm -f "$units/$4"
     ;;
+  "--user restart --no-block wireplumber.service")
+    echo "restart wireplumber.service" >> "$STUB_DIR/log"
+    [[ -e $STUB_DIR/restart-fails ]] && { echo "systemctl stub: restart fails" >&2; exit 1; }
+    python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000)' > "$STUB_DIR/wp-start"
+    if [[ -e $STUB_DIR/bindsto ]]; then
+      read -r -a stat < "/proc/$PPID/stat"
+      setsid bash -c 'sleep 0.2; kill -- "-$1"; exec bash "$2"' _ "${stat[4]}" "$STUB_DIR/bindsto" < /dev/null > /dev/null 2>&1 &
+    fi
+    ;;
   "--user show -p "*)
     [[ -e $STUB_DIR/show-fails ]] && { echo "systemctl stub: show fails" >&2; exit 1; }
     ;;&

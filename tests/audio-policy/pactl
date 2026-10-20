@@ -17,6 +17,15 @@ case "$*" in
     echo "$json"
     if [[ -e $STUB_DIR/sinks.after ]]; then mv "$STUB_DIR/sinks.after" "$STUB_DIR/sinks.json"; fi
     ;;
+  "--format=json list sink-inputs")
+    cat "$STUB_DIR/sink-inputs.json" 2> /dev/null || echo '[]'
+    ;;
+  "--format=json list source-outputs")
+    cat "$STUB_DIR/source-outputs.json" 2> /dev/null || echo '[]'
+    ;;
+  "--format=json list sources")
+    cat "$STUB_DIR/sources.json" 2> /dev/null || echo '[]'
+    ;;
   "--format=json list cards")
     printf '[{"name":"alsa_card.platform-sound","active_profile":"%s"}%s]\n' "$(cat "$STUB_DIR/profile")" "$(cat "$STUB_DIR/cards.json" 2> /dev/null)"
     ;;

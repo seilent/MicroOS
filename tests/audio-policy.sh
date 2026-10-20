@@ -1056,6 +1056,197 @@ kill "$as" "$eng"
 wait "$as" "$eng" 2> /dev/null || true
 rm -f "$STUB_DIR/cards.json"
 
+rm -f "$frag" "$status" "$STUB_DIR/sources.json"
+echo "setsid python3 '$audio' 2>> '$tmp/audio.err' < /dev/null & echo \$! > '$STUB_DIR/audio.pid'" > "$STUB_DIR/bindsto"
+picked() {
+  local n
+  for n in {1..80}; do [[ -s $STUB_DIR/audio.pid ]] && break; sleep 0.1; done
+  [[ -s $STUB_DIR/audio.pid ]] || return 1
+  as=$(cat "$STUB_DIR/audio.pid")
+  pids+=("$as")
+  rm "$STUB_DIR/audio.pid"
+}
+held_first() {
+  since "$1" | awk '/^hold true / && !h { h = NR } $0 == "restart wireplumber.service" && !r { r = NR } END { exit !(h && r && h < r) }'
+}
+holds() { since "$1" | grep -c "^hold $2 " || true; }
+waithold() {
+  local n
+  for n in {1..80}; do (($(holds "$1" "$2") >= ${3:-1})) && return 0; sleep 0.1; done
+  return 1
+}
+restarted() {
+  local m=$1 why=$2 want=$3
+  picked || { fail "$why: no new instance after the restart: $(since "$m")"; return; }
+  held_first "$m" || fail "$why: no Hold before the restart: $(since "$m")"
+  status_is "$want" || fail "$why: the new instance status is not $want: $(cat "$status" 2>&1)"
+  sleep 1.5
+  (($(restarts "$m") == 1)) || fail "$why: $(restarts "$m") restarts, not 1: $(since "$m")"
+}
+engine headphones
+start_offer
+status_is $'wanted auto\napplied auto' || fail "headphones at start is not auto: $(cat "$status" 2>&1)"
+
+m=$(mark)
+role receiver
+waithold "$m" true || fail "entering receiver with aac did not hold the engine: $(since "$m")"
+restarted "$m" "entering receiver" $'wanted aac\napplied aac'
+
+m=$(mark)
+role headphones
+waithold "$m" true || fail "leaving receiver with aac applied did not hold the engine: $(since "$m")"
+restarted "$m" "leaving receiver" $'wanted auto\napplied auto'
+
+m=$(mark)
+state[$hp]=RUNNING
+write_sinks
+role receiver
+waithold "$m" false || fail "a RUNNING $hp did not drop the hold: $(since "$m")"
+sleep 1
+(($(restarts "$m") == 0)) || fail "a RUNNING $hp did not defer the restart: $(since "$m")"
+status_is $'wanted aac\napplied auto' || fail "a deferred restart is not pending: $(cat "$status" 2>&1)"
+state[$hp]=IDLE
+sinks_changed
+restarted "$m" "a sink stop" $'wanted aac\napplied aac'
+
+m=$(mark)
+echo '[{"name":"bluez_input.BB_BB_BB_BB_BB_01.2","state":"RUNNING"}]' > "$STUB_DIR/sources.json"
+role headphones
+waithold "$m" false || fail "a RUNNING bluez_input did not drop the hold: $(since "$m")"
+sleep 1
+(($(restarts "$m") == 0)) || fail "a RUNNING bluez_input did not defer the restart: $(since "$m")"
+echo '[{"name":"bluez_input.BB_BB_BB_BB_BB_01.2","state":"IDLE"}]' > "$STUB_DIR/sources.json"
+echo "Event 'change' on source #$RANDOM" >> "$STUB_DIR/pactl.feed"
+restarted "$m" "a source stop" $'wanted auto\napplied auto'
+rm "$STUB_DIR/sources.json"
+
+m=$(mark)
+cards "$(card "$phone" 91 "$gw" audio-gateway)"
+role receiver
+waithold "$m" false || fail "a bluez_card did not drop the hold: $(since "$m")"
+sleep 1
+(($(restarts "$m") == 0)) || fail "a bluez_card did not defer the restart: $(since "$m")"
+rm "$STUB_DIR/cards.json"
+echo "Event 'remove' on card #91" >> "$STUB_DIR/pactl.feed"
+restarted "$m" "a card removal" $'wanted aac\napplied aac'
+
+m=$(mark)
+gdbus call --session -d net.seilent.MicroOs.Reconnect -o /net/seilent/MicroOs/Reconnect -m test.Stub.Hold true > /dev/null
+cards "$(card "$phone" 92 "$gw" audio-gateway)"
+role headphones
+waithold "$m" false || fail "a card under another hold did not drop our hold: $(since "$m")"
+rm "$STUB_DIR/cards.json"
+echo "Event 'remove' on card #92" >> "$STUB_DIR/pactl.feed"
+restarted "$m" "a role switch under another hold" $'wanted auto\napplied auto'
+gdbus call --session -d net.seilent.MicroOs.Reconnect -o /net/seilent/MicroOs/Reconnect -m test.Stub.Hold false > /dev/null
+
+m=$(mark)
+: > "$STUB_DIR/restart-fails"
+role receiver
+waithold "$m" false || fail "a failed restart did not drop the hold: $(since "$m")"
+held_first "$m" || fail "no Hold before the failed restart: $(since "$m")"
+since "$m" | awk '$0 == "restart wireplumber.service" && !r { r = NR } /^hold false / && !f { f = NR } END { exit !(r && f && r < f) }' ||
+  fail "the hold was not dropped after the failed restart: $(since "$m")"
+sleep 1
+[[ ! -e $STUB_DIR/audio.pid ]] || fail "a failed restart started a new instance"
+status_is $'wanted aac\napplied auto' || fail "a failed restart is not pending: $(cat "$status" 2>&1)"
+rm "$STUB_DIR/restart-fails"
+m=$(mark)
+sinks_changed
+restarted "$m" "a restart after a failed one" $'wanted aac\napplied aac'
+
+m=$(mark)
+role headphones
+waithold "$m" true || fail "the flap did not hold the engine: $(since "$m")"
+i=0
+for r in receiver headphones receiver headphones receiver headphones; do
+  sleep 1
+  role "$r"
+  i=$((i + 1))
+  ((i != 3)) || (($(holds "$m" false) == 0)) || fail "the hold was dropped before the cap: $(since "$m")"
+done
+(($(holds "$m" false) == 1)) || fail "a repeating settle did not drop the hold at the cap: $(since "$m")"
+since_err 0 | grep -qF "reconnect engine released after 4000 ms" || fail "no log line for the hold cap"
+(($(holds "$m" true) == 1)) || fail "the hold was taken again after the cap: $(since "$m")"
+role receiver
+sleep 3
+(($(restarts "$m") == 0)) || fail "a flap back to the applied offer restarted wireplumber: $(since "$m")"
+status_is $'wanted aac\napplied aac' || fail "the flap back is not aac: $(cat "$status" 2>&1)"
+
+m=$(mark)
+role receiver
+sleep 2.5
+sinks_changed
+sleep 1
+(($(restarts "$m") == 0 && $(holds "$m" true) == 0)) || fail "an unchanged offer held or restarted: $(since "$m")"
+
+m=$(mark)
+poke audio.bt_codec "<'sbc'>"
+waithold "$m" true || fail "a pick change did not hold the engine: $(since "$m")"
+restarted "$m" "a pick change" $'wanted sbc\napplied sbc'
+[[ $(< "$frag") == 'monitor.bluez.properties = { override.bluez5.codecs = [ sbc msbc lc3_swb ] }' ]] ||
+  fail "the sbc fragment: $(cat "$frag" 2>&1)"
+since "$m" | grep -qE '^(profile|volume|suspend) ' && fail "the offer restart touched a profile or a volume: $(since "$m")"
+
+m=$(mark)
+echo '[{"index":40,"corked":true,"properties":{"node.name":"microdap"}}]' > "$STUB_DIR/sink-inputs.json"
+echo '[{"index":41,"properties":{"node.name":"microos-eq.headphones.000000000001.out"}}]' > "$STUB_DIR/source-outputs.json"
+poke audio.bt_codec "<'aac'>"
+waithold "$m" false || fail "a paused stream did not drop the hold: $(since "$m")"
+sleep 1
+(($(restarts "$m") == 0)) || fail "a paused stream did not defer the restart: $(since "$m")"
+since_err 0 | grep -qF "bluetooth offer aac pending: microdap open" || fail "no pending line for the open stream"
+echo '[{"index":42,"properties":{"node.name":"microos-eq.headphones.000000000001.out"}}]' > "$STUB_DIR/sink-inputs.json"
+echo "Event 'remove' on sink-input #40" >> "$STUB_DIR/pactl.feed"
+restarted "$m" "a stream close with only EQ chain streams left" $'wanted aac\napplied aac'
+rm -f "$STUB_DIR/sink-inputs.json" "$STUB_DIR/source-outputs.json"
+
+m=$(mark)
+: > "$STUB_DIR/hold-delay"
+role headphones
+waithold "$m" true || fail "no hold for the delayed reply case: $(since "$m")"
+sleep 1.6
+echo "$(card "$phone" 93 "$gw" audio-gateway)" > "$STUB_DIR/cards.json"
+sleep 2.5
+(($(restarts "$m") == 0)) || fail "a card that came during the hold restarted wireplumber: $(since "$m")"
+(($(holds "$m" false) >= 1)) || fail "a card that came during the hold kept the hold: $(since "$m")"
+rm "$STUB_DIR/hold-delay" "$STUB_DIR/cards.json"
+echo "Event 'remove' on card #93" >> "$STUB_DIR/pactl.feed"
+restarted "$m" "the card gone after the delayed hold" $'wanted auto\napplied auto'
+
+m=$(mark)
+: > "$STUB_DIR/show-fails"
+role receiver
+sleep 4
+(($(restarts "$m") == 0)) || fail "a failing systemctl show restarted wireplumber: $(since "$m")"
+status_is $'wanted auto\napplied auto' || fail "a failing systemctl show changed the status: $(cat "$status" 2>&1)"
+[[ ! -e $frag ]] || fail "a failing systemctl show wrote the fragment"
+rm "$STUB_DIR/show-fails"
+restarted "$m" "systemctl show working again" $'wanted aac\napplied aac'
+m=$(mark)
+: > "$STUB_DIR/show-fails"
+poke audio.bt_codec "<'sbc'>"
+sleep 3
+(($(restarts "$m") == 0)) || fail "an unknown wireplumber start time restarted wireplumber: $(since "$m")"
+status_is $'wanted sbc\napplied aac' || fail "an unknown start time is not pending: $(cat "$status" 2>&1)"
+rm "$STUB_DIR/show-fails"
+restarted "$m" "the start time known again" $'wanted sbc\napplied sbc'
+
+kill "$as"
+wait "$as" 2> /dev/null || true
+echo 1 > "$STUB_DIR/wp-start"
+role headphones
+rm -f "$frag"
+sleep 0.2
+printf 'wanted auto\napplied aac\n' > "$status"
+m=$(mark)
+start_offer
+picked || fail "a missing written stamp blocked the restart: $(since "$m")"
+status_is $'wanted auto\napplied auto' || fail "after a missing stamp the new instance is not auto: $(cat "$status" 2>&1)"
+sleep 1.5
+(($(restarts "$m") == 1)) || fail "a missing written stamp restarted $(restarts "$m") times: $(since "$m")"
+rm -f "$STUB_DIR/bindsto"
+
 if ((rc != 0)); then
   cat "$tmp/audio.err" >&2
 else
