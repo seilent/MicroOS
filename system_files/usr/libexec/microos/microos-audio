@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -16,6 +17,8 @@ from gi.repository import Gio, GLib
 
 ME = "microos-audio"
 MICROSET = ("net.seilent.MicroSet", "/net/seilent/MicroSet", "net.seilent.MicroSet1")
+RECONNECT = ("net.seilent.MicroOs.Reconnect", "/net/seilent/MicroOs/Reconnect", "net.seilent.MicroOs.Reconnect1")
+PROPS = "org.freedesktop.DBus.Properties"
 KEY = "default.configured.audio.sink"
 SPEAKER = "alsa_output.platform-sound.HiFi__Speaker__sink"
 HEADPHONES = "alsa_output.platform-sound.HiFi__Headphones__sink"
@@ -23,6 +26,7 @@ CARD_ID = "PocketMICRO2"
 CARD = "alsa_card.platform-sound"
 SYSFS = os.environ.get("MICROOS_AUDIO_SYSFS", "/sys/class/sound")
 SETTLE_S = float(os.environ.get("MICROOS_AUDIO_SETTLE", "5"))
+ROLE_SETTLE_S = float(os.environ.get("MICROOS_AUDIO_ROLE_SETTLE", "3"))
 BOOT_ID = os.environ.get("MICROOS_AUDIO_BOOT_ID", "/proc/sys/kernel/random/boot_id")
 APPLY = {"audio.hp_amp": HEADPHONES, "audio.speaker_gain": SPEAKER}
 OUTPUTS = ("auto", "speaker", "headphones", "usb", "bt")
@@ -41,6 +45,11 @@ EQ_PREFIX = "microos-eq."
 STATE_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}", "microos-audio")
 EQ_DIR = os.path.join(STATE_DIR, "eq")
 POWER_ON = os.path.join(STATE_DIR, "power-on")
+WP_DIR = os.path.join(STATE_DIR, "wireplumber")
+OFFER_CONF = os.path.join(WP_DIR, "wireplumber.conf.d", "90-microos-bt-codecs.conf")
+BT_CODECS = os.path.join(STATE_DIR, "bt-codecs")
+OFFERS = ("aptx", "aac", "sbc")
+OFFER_CODEC = re.compile(r"override\.bluez5\.codecs = \[ ([a-z0-9_]+) ")
 EQ_UNIT = re.compile(r"microos-eq@([a-z]+-[0-9a-f]{12})\.service")
 EQ_TARGET = re.compile(r'node\.name = "((?:[^"\\]|\\.)*)"')
 EQ_LABELS = {
@@ -390,6 +399,37 @@ def codec_profile(card, codec):
     return None
 
 
+def monotonic_us():
+    return time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000
+
+
+def offer_on_disk():
+    try:
+        with open(OFFER_CONF) as f:
+            m = OFFER_CODEC.search(f.read())
+    except FileNotFoundError:
+        return "auto"
+    except OSError:
+        return None
+    return m.group(1) if m else None
+
+
+def read_offer():
+    offer = {"applied": "auto"}
+    try:
+        with open(BT_CODECS) as f:
+            for line in f:
+                key, _, value = line.strip().partition(" ")
+                if key in ("wanted", "applied") and value:
+                    offer[key] = value
+                elif key == "written" and value.isdigit():
+                    offer[key] = int(value)
+    except OSError:
+        pass
+    offer.setdefault("written", monotonic_us())
+    return offer
+
+
 def configured_name(value):
     try:
         name = json.loads(value).get("name")
@@ -423,6 +463,15 @@ class Audio:
         self.power_on = None
         self.power_on_done = False
         self.power_on_waits = 0
+        self.session = None
+        self.engine = None
+        self.engine_seen = False
+        self.offer = read_offer()
+        self.role = None
+        self.role_next = None
+        self.role_timer = None
+        self.guard = None
+        self.show_failed = False
 
     def watch(self, argv, handler):
         proc = Gio.Subprocess.new(argv, Gio.SubprocessFlags.STDOUT_PIPE)
@@ -513,6 +562,7 @@ class Audio:
         self.power_on_volume(sinks)
         self.equalize(sinks)
         self.codecs()
+        self.offer_pass()
         self.step(sinks)
         return GLib.SOURCE_REMOVE
 
@@ -905,8 +955,6 @@ class Audio:
                 done[ident] = previous
                 continue
             if side == "receiver":
-                done[ident] = (side, codec)
-                log(f"{key} {codec}: {name} streams from a phone, the phone picks the codec, left as is")
                 continue
             profile = codec_profile(card, codec)
             if profile is None:
@@ -941,6 +989,176 @@ class Audio:
         for ident in [i for i in self.codec_fail if i not in seen]:
             self.drop_fail(ident)
         self.codec_done = done
+
+    def wanted(self, role):
+        if role is None:
+            return self.offer.get("wanted")
+        if role != "receiver":
+            return "auto"
+        codec = self.codec["receiver"]
+        if codec is None:
+            return None
+        return codec if codec in OFFERS else "auto"
+
+    def guarded(self, wanted):
+        if wanted == "auto":
+            return wanted
+        if self.guard is None:
+            try:
+                env = shlex.split(run("systemctl", "--user", "show", "-p", "Environment", "--value",
+                                      "wireplumber.service"))
+            except ERRORS as err:
+                self.show_failure(f"reading the wireplumber environment failed: {err}")
+                return None
+            self.show_failed = False
+            dirs = [e.partition("=")[2].split(":") for e in env if e.startswith("WIREPLUMBER_CONFIG_DIR=")]
+            self.guard = bool(dirs) and dirs[-1][0] == WP_DIR
+            if not self.guard:
+                log(f"wireplumber.service does not read {WP_DIR} first, the phone codec offer stays auto")
+        return wanted if self.guard else "auto"
+
+    def place(self, target):
+        disk = offer_on_disk()
+        if disk == target:
+            return disk
+        try:
+            if target == "auto":
+                os.unlink(OFFER_CONF)
+            else:
+                os.makedirs(os.path.dirname(OFFER_CONF), mode=0o700, exist_ok=True)
+                with open(OFFER_CONF + ".new", "w") as f:
+                    f.write(f"monitor.bluez.properties = {{ override.bluez5.codecs = [ {target} msbc lc3_swb ] }}\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(OFFER_CONF + ".new", OFFER_CONF)
+        except OSError as err:
+            log(f"writing the bluetooth offer {target} failed: {err}")
+            self.again()
+            return disk
+        self.offer["written"] = monotonic_us()
+        log(f"bluetooth offer {target}: " + ("fragment removed" if target == "auto" else "fragment written"))
+        return target
+
+    def show_failure(self, msg):
+        if not self.show_failed:
+            log(msg)
+        self.show_failed = True
+        self.again()
+
+    def derive(self, disk):
+        if disk == self.offer["applied"]:
+            return True
+        try:
+            start = int(run("systemctl", "--user", "show", "-p", "ActiveEnterTimestampMonotonic", "--value",
+                            "wireplumber.service").strip())
+        except ERRORS as err:
+            self.show_failure(f"reading the wireplumber start time failed: {err}")
+            return False
+        self.show_failed = False
+        if start > self.offer.get("written", 0):
+            self.offer["applied"] = disk
+            log(f"bluetooth offer {disk} in effect")
+        return True
+
+    def publish(self, wanted):
+        lines = f"wanted {wanted}\napplied {self.offer['applied']}\n"
+        if self.offer.get("written") is not None:
+            lines += f"written {self.offer['written']}\n"
+        self.offer["wanted"] = wanted
+        try:
+            with open(BT_CODECS) as f:
+                if f.read() == lines:
+                    return
+        except OSError:
+            pass
+        try:
+            os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+            with open(BT_CODECS + ".new", "w") as f:
+                f.write(lines)
+            os.replace(BT_CODECS + ".new", BT_CODECS)
+        except OSError as err:
+            log(f"writing the bluetooth offer status failed: {err}")
+
+    def offer_pass(self):
+        if self.settling:
+            return None
+        wanted = self.wanted(self.role)
+        if wanted is None:
+            return None
+        target = self.guarded(wanted)
+        if target is None:
+            return None
+        disk = self.place(target)
+        if disk is None:
+            return None
+        known = self.derive(disk)
+        self.publish(wanted)
+        return disk if known else None
+
+    def connect_engine(self):
+        try:
+            self.session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        except GLib.Error as err:
+            log(f"no session bus, bluetooth role headphones: {err.message}")
+            self.engine_gone()
+            return
+        self.session.signal_subscribe(RECONNECT[0], PROPS, "PropertiesChanged", RECONNECT[1], RECONNECT[2],
+                                      Gio.DBusSignalFlags.NONE, self.engine_props)
+        Gio.bus_watch_name_on_connection(self.session, RECONNECT[0], Gio.BusNameWatcherFlags.NONE,
+                                         self.engine_up, self.engine_down)
+
+    def engine_up(self, conn, _name, owner):
+        self.engine = owner
+        self.engine_seen = True
+        conn.call(RECONNECT[0], RECONNECT[1], PROPS, "Get", GLib.Variant("(ss)", (RECONNECT[2], "Role")),
+                  GLib.VariantType("(v)"), Gio.DBusCallFlags.NONE, 5000, None, self.role_read, owner)
+
+    def role_read(self, conn, result, owner):
+        try:
+            role = conn.call_finish(result).unpack()[0]
+        except GLib.Error as err:
+            log(f"reading the reconnect engine role failed: {err.message}")
+            return
+        if owner == self.engine:
+            self.role_changed(role)
+
+    def engine_props(self, _conn, _sender, _path, _iface, _signal, params):
+        _iface_name, changed, _invalid = params.unpack()
+        if "Role" in changed:
+            self.role_changed(changed["Role"])
+        self.schedule()
+
+    def engine_down(self, _conn, _name):
+        self.engine = None
+        self.engine_gone()
+
+    def engine_gone(self):
+        if self.engine_seen:
+            self.role_changed("headphones")
+        elif self.role is None and "wanted" not in self.offer:
+            self.role = "headphones"
+            self.schedule()
+
+    def role_changed(self, role):
+        if not isinstance(role, str) or not role:
+            return
+        if self.role is None and self.role_timer is None:
+            self.role = role
+            log(f"bluetooth role {role}")
+            self.schedule()
+            return
+        if self.role_timer is not None:
+            GLib.source_remove(self.role_timer)
+        self.role_next = role
+        self.role_timer = GLib.timeout_add(int(ROLE_SETTLE_S * 1000), self.role_settled)
+
+    def role_settled(self):
+        self.role_timer = None
+        if self.role != self.role_next:
+            log(f"bluetooth role {self.role_next}")
+        self.role = self.role_next
+        self.schedule()
+        return GLib.SOURCE_REMOVE
 
     def codec_retry(self, ident):
         self.codec_fail[ident]["wait"] = None
@@ -1095,6 +1313,7 @@ def main():
         audio.watch(["pactl", "subscribe"], audio.sinks),
     ]
     GLib.timeout_add(int(SETTLE_S * 1000), audio.settled)
+    audio.connect_engine()
     loop.run()
     for proc in procs:
         proc.force_exit()

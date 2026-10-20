@@ -1,0 +1,94 @@
+#!/usr/bin/env python3
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+NAME = "net.seilent.MicroOs.Reconnect"
+PATH = "/net/seilent/MicroOs/Reconnect"
+IFACE = "net.seilent.MicroOs.Reconnect1"
+PROPS = "org.freedesktop.DBus.Properties"
+XML = f"""
+<node>
+  <interface name="{IFACE}">
+    <method name="Hold"><arg type="b" direction="in"/></method>
+    <property name="Role" type="s" access="read"/>
+    <property name="Phase" type="s" access="read"/>
+  </interface>
+  <interface name="test.Stub">
+    <method name="Role"><arg type="s" direction="in"/></method>
+    <method name="Hold"><arg type="b" direction="in"/></method>
+  </interface>
+</node>
+"""
+LOG = sys.argv[1]
+role = sys.argv[2]
+holds = set()
+watches = {}
+
+
+def record(line):
+    with open(LOG, "a") as f:
+        f.write(line + "\n")
+
+
+def phase():
+    return "held" if holds else "idle"
+
+
+def emit(conn, changed):
+    conn.emit_signal(None, PATH, PROPS, "PropertiesChanged",
+                     GLib.Variant("(sa{sv}as)", (IFACE, {k: GLib.Variant("s", v) for k, v in changed.items()}, [])))
+
+
+def hold(conn, holder, on):
+    before = phase()
+    if on:
+        holds.add(holder)
+    else:
+        holds.discard(holder)
+    if phase() != before:
+        emit(conn, {"Phase": phase()})
+
+
+def gone(conn, _sender, _path, _iface, _signal, params):
+    name, _old, new = params.unpack()
+    if not new and name in holds:
+        record(f"hold dropped {name}")
+        hold(conn, name, False)
+
+
+def method(conn, sender, _path, iface, name, params, invocation):
+    global role
+    if iface == PROPS:
+        prop = params.unpack()[1] if name == "Get" else None
+        values = {"Role": role, "Phase": phase()}
+        if name == "Get" and prop in values:
+            invocation.return_value(GLib.Variant("(v)", (GLib.Variant("s", values[prop]),)))
+        elif name == "GetAll":
+            invocation.return_value(GLib.Variant("(a{sv})", ({k: GLib.Variant("s", v) for k, v in values.items()},)))
+        else:
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownProperty", str(prop))
+        return
+    arg = params.unpack()[0]
+    if iface == IFACE:
+        record(f"hold {str(arg).lower()} {sender}")
+        hold(conn, sender, arg)
+        if sender not in watches:
+            watches[sender] = conn.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+                                                    "/org/freedesktop/DBus", sender, Gio.DBusSignalFlags.NONE, gone)
+    elif name == "Role":
+        role = arg
+        emit(conn, {"Role": role})
+    else:
+        hold(conn, "test", arg)
+    invocation.return_value(None)
+
+
+bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+for info in Gio.DBusNodeInfo.new_for_xml(XML).interfaces:
+    bus.register_object_with_closures2(PATH, info, method, None, None)
+Gio.bus_own_name_on_connection(bus, NAME, Gio.BusNameOwnerFlags.NONE, lambda *_: record(f"engine up {role}"), None)
+GLib.MainLoop().run()
