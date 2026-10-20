@@ -135,7 +135,7 @@ meta default.configured.audio.sink "$hp"
 export XDG_RUNTIME_DIR=$tmp/xdg
 eqdir=$XDG_RUNTIME_DIR/microos-audio/eq
 mkdir -p "$XDG_RUNTIME_DIR"
-PATH=$here/audio-policy:$PATH MICROOS_AUDIO_SYSFS=$sys MICROOS_AUDIO_SETTLE=2 \
+PATH=$here/audio-policy:$PATH MICROOS_AUDIO_SYSFS=$sys MICROOS_AUDIO_SETTLE=2 MICROOS_AUDIO_CODEC_RETRY_MS=50 \
   setsid python3 "$audio" 2>> "$tmp/audio.err" & as=$!
 pids+=("$as")
 sleep 0.5
@@ -537,19 +537,22 @@ a_profiles="$(prof a2dp-sink "aptX HD"),$(prof a2dp-sink-aptx aptX),$(prof a2dp-
 m=$(mark)
 cards "$(card $cardA 80 "$a_profiles")"
 sleep 1
-since "$m" | grep -q '^profile ' && fail "audio.bt_codec auto changed a profile: $(since "$m")"
-poke audio.bt_codec "<'aptx'>"
+since "$m" | grep -q '^profile ' && fail "audio.bt_codec_headphones auto changed a profile: $(since "$m")"
+poke audio.bt_codec_headphones "<'aptx'>"
 waitlog "$m" "profile $cardA a2dp-sink-aptx" || fail "aptx not applied: $(since "$m")"
 (($(since "$m" | grep -c '^profile ') == 1)) || fail "aptx applied more than once: $(since "$m")"
 m=$(mark)
-poke audio.bt_codec "<'ldac'>"
-errline "audio.bt_codec ldac: $cardA offers no profile for it" || fail "an unavailable codec was not logged"
+poke audio.bt_codec_headphones "<'ldac'>"
+errline "audio.bt_codec_headphones ldac: $cardA offers no profile for it" || fail "an unavailable codec was not logged"
 EVENT=change cards "$(card $cardA 80 "$a_profiles")"
 sleep 1
-(($(grep -c "audio.bt_codec ldac: $cardA offers no profile" "$tmp/audio.err") == 1)) || fail "a missing codec was logged more than once"
+(($(grep -c "audio.bt_codec_headphones ldac: $cardA offers no profile" "$tmp/audio.err") == 1)) || fail "a missing codec was logged more than once"
 since "$m" | grep -q '^profile ' && fail "a missing codec changed the profile: $(since "$m")"
 m=$(mark)
-poke audio.bt_codec "<'aac'>"
+EVENT=change cards "$(card $cardA 80 "${a_profiles/\"available\":false/\"available\":true}")"
+waitlog "$m" "profile $cardA a2dp-sink-ldac" || fail "a codec profile that became available was not applied: $(since "$m")"
+m=$(mark)
+poke audio.bt_codec_headphones "<'aac'>"
 cards "$(card $cardA 81 "$a_profiles")$(card $cardB 82 "$(prof a2dp-sink AAC),$(prof a2dp-sink-sbc SBC)")"
 waitlog "$m" "profile $cardB a2dp-sink" || fail "aac by the bare a2dp-sink description not applied: $(since "$m")"
 since "$m" | grep -q "^profile $cardA" && fail "a card without aac got a profile: $(since "$m")"
@@ -557,11 +560,11 @@ m=$(mark)
 state[$bt]=RUNNING avail[$bt]=available
 write_sinks
 EVENT=change cards "$(card $cardA 81 "$a_profiles")$(card $cardB 82 "$(prof a2dp-sink AAC),$(prof a2dp-sink-sbc SBC)" a2dp-sink)"
-poke audio.bt_codec "<'sbc'>"
+poke audio.bt_codec_headphones "<'sbc'>"
 waitlog "$m" "profile $cardA a2dp-sink-sbc" && fail "a card already on sbc was switched again"
 waitlog "$m" "profile $cardB a2dp-sink-sbc" || fail "a codec change with a stream playing not applied: $(since "$m")"
 m=$(mark)
-poke audio.bt_codec "<'aptx'>"
+poke audio.bt_codec_headphones "<'aptx'>"
 waitlog "$m" "profile $cardA a2dp-sink-aptx" || fail "aptx not applied again: $(since "$m")"
 m=$(mark)
 cards "$(card $cardA 83 "$a_profiles")$(card $cardB 82 "$(prof a2dp-sink AAC),$(prof a2dp-sink-sbc SBC)" a2dp-sink)"
@@ -570,10 +573,69 @@ sleep 0.5
 (($(since "$m" | grep -c '^profile ') == 1)) || fail "a card that stayed got the codec again: $(since "$m")"
 grep -qi wireplumber "$tmp/audio.err" && fail "a codec change touched wireplumber: $(grep -i wireplumber "$tmp/audio.err")"
 m=$(mark)
-poke audio.bt_codec "<'auto'>"
+poke audio.bt_codec_headphones "<'auto'>"
 sleep 0.5
-poke audio.bt_codec "<'aptx'>"
+poke audio.bt_codec_headphones "<'aptx'>"
 waitlog "$m" "profile $cardA a2dp-sink-aptx" || fail "aptx after auto was not applied again: $(since "$m")"
+m=$(mark)
+phone=bluez_card.BB_BB_BB_BB_BB_01 duplex=bluez_card.CC_CC_CC_CC_CC_01
+gw='"audio-gateway":{"description":"Audio Gateway (A2DP Source & HSP/HFP AG)","available":true}'
+dprof='"a2dp-duplex-aptx":{"description":"High Fidelity Duplex (A2DP Source/Sink, codec aptX)","available":true}'
+dprof+=',"a2dp-duplex-sbc":{"description":"High Fidelity Duplex (A2DP Source/Sink, codec SBC)","available":true}'
+cards "$(card $cardA 84 "$a_profiles" a2dp-sink-aptx)$(card $phone 85 "$gw" audio-gateway)$(card $duplex 86 "$dprof,$gw" audio-gateway)"
+sleep 1
+since "$m" | grep -q "^profile $duplex" && fail "a duplex card on audio-gateway was taken off it: $(since "$m")"
+since "$m" | grep -q "^profile $phone" && fail "a phone card got the headphones codec: $(since "$m")"
+m=$(mark)
+poke audio.bt_codec "<'ldac'>"
+errline "audio.bt_codec ldac: $phone streams from a phone, the phone picks the codec, left as is" \
+  || fail "a receiver codec on a phone card was not logged"
+sleep 0.5
+since "$m" | grep -q '^profile ' && fail "audio.bt_codec changed a profile: $(since "$m")"
+m=$(mark)
+EVENT=change cards "$(card $cardA 84 "$a_profiles" a2dp-sink-aptx)$(card $phone 85 "$gw" audio-gateway)$(card $duplex 86 "$dprof,$gw" a2dp-duplex-sbc)"
+waitlog "$m" "profile $duplex a2dp-duplex-aptx" || fail "a duplex card sending on a2dp did not take the headphones codec: $(since "$m")"
+sleep 0.5
+(($(since "$m" | grep -c '^profile ') == 1)) || fail "a card change into a2dp switched more than the duplex card: $(since "$m")"
+(($(grep -c "audio.bt_codec ldac: $phone streams from a phone" "$tmp/audio.err") == 1)) || fail "the phone line was logged more than once"
+m=$(mark)
+poke audio.bt_codec_headphones "<'auto'>"
+poke audio.bt_codec "<'auto'>"
+EVENT=change cards "$(card $cardA 84 "$a_profiles" a2dp-sink-sbc)$(card $phone 85 "$gw" audio-gateway)"
+sleep 1
+since "$m" | grep -q '^profile ' && fail "auto on both keys changed a profile: $(since "$m")"
+m=$(mark)
+poke audio.bt_codec_headphones "<'aptx_hd'>"
+waitlog "$m" "profile $cardA a2dp-sink" || fail "aptx_hd by the bare a2dp-sink description not applied: $(since "$m")"
+m=$(mark)
+: > "$STUB_DIR/profile-fails"
+poke audio.bt_codec_headphones "<'aptx'>"
+errline "setting $cardA profile a2dp-sink-aptx failed" || fail "a failed profile set was not logged"
+waitlog "$m" "profile $cardA a2dp-sink-aptx" || fail "a failed profile set was not retried: $(since "$m")"
+m=$(mark)
+: > "$STUB_DIR/profile-fails-always"
+poke audio.bt_codec_headphones "<'aptx_hd'>"
+sleep 3
+tries=$(grep -c . "$STUB_DIR/profile-tries")
+((tries == 6)) || fail "a profile set that always fails was tried $tries times, not 6"
+poke audio.bt_codec_headphones "<'aptx_hd'>"
+sleep 1
+(($(grep -c . "$STUB_DIR/profile-tries") == tries)) || fail "a profile set kept retrying after the last try"
+(($(grep -cF "setting $cardA profile a2dp-sink failed" "$tmp/audio.err") == 1)) \
+  || fail "a failing profile set was logged more than once"
+EVENT=change cards "$(card $cardA 84 "$a_profiles" a2dp-sink-sbc)$(card $phone 85 "$gw" audio-gateway)"
+sleep 1
+(($(grep -c . "$STUB_DIR/profile-tries") == tries)) || fail "a card change with the same profiles retried a failed set"
+poke audio.bt_codec_headphones "<'ldac'>"
+sleep 0.5
+poke audio.bt_codec_headphones "<'aptx_hd'>"
+sleep 0.5
+(($(grep -c . "$STUB_DIR/profile-tries") > tries)) || fail "a codec with no profile kept the old failure"
+sleep 3
+rm "$STUB_DIR/profile-fails-always"
+m=$(mark)
+EVENT=change cards "$(card $cardA 84 "$a_profiles" a2dp-sink-aptx)$(card $phone 85 "$gw" audio-gateway)"
+waitlog "$m" "profile $cardA a2dp-sink" || fail "a card change to another profile did not retry a failed set: $(since "$m")"
 unset "state[$bt]" "avail[$bt]"
 rm "$STUB_DIR/cards.json"
 sinks_changed
