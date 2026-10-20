@@ -19,6 +19,15 @@ case "$*" in
     echo "stop $4" >> "$STUB_DIR/log"
     rm -f "$units/$4"
     ;;
+  "--user show -p "*)
+    [[ -e $STUB_DIR/show-fails ]] && { echo "systemctl stub: show fails" >&2; exit 1; }
+    ;;&
+  "--user show -p Environment --value wireplumber.service")
+    cat "$STUB_DIR/wp-env" 2> /dev/null || true
+    ;;
+  "--user show -p ActiveEnterTimestampMonotonic --value wireplumber.service")
+    cat "$STUB_DIR/wp-start" 2> /dev/null || echo 0
+    ;;
   *)
     echo "systemctl stub: $*" >&2
     exit 1

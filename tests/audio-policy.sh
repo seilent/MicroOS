@@ -38,10 +38,11 @@ wpenv=$(sed -n 's/^Environment=WIREPLUMBER_CONFIG_DIR=//p' "$wpdir")
 [[ ${wpenv%%:*} == %t/microos-audio/wireplumber && ${wpenv#*:} == "$wpdefaults" ]] ||
   fail "WIREPLUMBER_CONFIG_DIR does not list the runtime dir first and every default dir after it: $wpenv"
 
-cat > "$tmp/bus.conf" << EOF
+for b in system session; do
+  cat > "$tmp/$b.conf" << EOF
 <busconfig>
-  <type>system</type>
-  <listen>unix:path=$tmp/bus</listen>
+  <type>$b</type>
+  <listen>unix:path=$tmp/$b</listen>
   <auth>EXTERNAL</auth>
   <policy context="default">
     <allow user="*"/>
@@ -51,9 +52,10 @@ cat > "$tmp/bus.conf" << EOF
   </policy>
 </busconfig>
 EOF
-dbus-daemon --config-file="$tmp/bus.conf" --nofork & pids+=($!)
-export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$tmp/bus
-for _ in {1..50}; do [[ -S $tmp/bus ]] && break; sleep 0.1; done
+  dbus-daemon --config-file="$tmp/$b.conf" --nofork & pids+=($!)
+done
+export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$tmp/system DBUS_SESSION_BUS_ADDRESS=unix:path=$tmp/session
+for _ in {1..50}; do [[ -S $tmp/system && -S $tmp/session ]] && break; sleep 0.1; done
 
 export STUB_DIR=$tmp/stub DAPM_MS=1500
 mkdir -p "$STUB_DIR"
@@ -594,17 +596,15 @@ sleep 1
 since "$m" | grep -q "^profile $duplex" && fail "a duplex card on audio-gateway was taken off it: $(since "$m")"
 since "$m" | grep -q "^profile $phone" && fail "a phone card got the headphones codec: $(since "$m")"
 m=$(mark)
-poke audio.bt_codec "<'ldac'>"
-errline "audio.bt_codec ldac: $phone streams from a phone, the phone picks the codec, left as is" \
-  || fail "a receiver codec on a phone card was not logged"
-sleep 0.5
+poke audio.bt_codec "<'aac'>"
+sleep 1
 since "$m" | grep -q '^profile ' && fail "audio.bt_codec changed a profile: $(since "$m")"
+grep -qF "streams from a phone" "$tmp/audio.err" && fail "a phone card got a per card codec line"
 m=$(mark)
 EVENT=change cards "$(card $cardA 84 "$a_profiles" a2dp-sink-aptx)$(card $phone 85 "$gw" audio-gateway)$(card $duplex 86 "$dprof,$gw" a2dp-duplex-sbc)"
 waitlog "$m" "profile $duplex a2dp-duplex-aptx" || fail "a duplex card sending on a2dp did not take the headphones codec: $(since "$m")"
 sleep 0.5
 (($(since "$m" | grep -c '^profile ') == 1)) || fail "a card change into a2dp switched more than the duplex card: $(since "$m")"
-(($(grep -c "audio.bt_codec ldac: $phone streams from a phone" "$tmp/audio.err") == 1)) || fail "the phone line was logged more than once"
 m=$(mark)
 poke audio.bt_codec_headphones "<'auto'>"
 poke audio.bt_codec "<'auto'>"
@@ -895,6 +895,166 @@ grep -qF "default sink auto_null is still not a listed output, skipped for this 
 echo "$hp" > "$STUB_DIR/default-sink"
 sinks_changed
 novol "$m" || fail "power on volume was applied after the waits ran out: $(since "$m")"
+
+kill "$as"
+wait "$as" 2> /dev/null || true
+offerdir=$XDG_RUNTIME_DIR/microos-audio
+frag=$offerdir/wireplumber/wireplumber.conf.d/90-microos-bt-codecs.conf
+status=$offerdir/bt-codecs
+mono() { python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1000)'; }
+echo "LANG=C WIREPLUMBER_CONFIG_DIR=$offerdir/wireplumber:%E/wireplumber:/usr/share/wireplumber" > "$STUB_DIR/wp-env"
+echo 1 > "$STUB_DIR/wp-start"
+rm -f "$frag" "$status"
+echo "$hp" > "$STUB_DIR/default-sink"
+start_offer() {
+  PATH=$here/audio-policy:$PATH MICROOS_AUDIO_SYSFS=$sys MICROOS_AUDIO_SETTLE=1 MICROOS_AUDIO_BOOT_ID=$tmp/boot_id \
+    MICROOS_AUDIO_ROLE_SETTLE=1.5 MICROOS_AUDIO_HOLD_MAX_MS=4000 setsid python3 "$audio" 2>> "$tmp/audio.err" & as=$!
+  pids+=("$as")
+}
+engine() {
+  local m
+  m=$(mark)
+  python3 "$here/audio-policy/reconnect" "$log" "$1" & eng=$!
+  pids+=("$eng")
+  waitlog "$m" "engine up $1" || fail "the fake reconnect engine did not start"
+}
+role() {
+  gdbus call --session -d net.seilent.MicroOs.Reconnect -o /net/seilent/MicroOs/Reconnect -m test.Stub.Role "'$1'" > /dev/null
+}
+status_is() {
+  local want=$1 n
+  for n in {1..60}; do [[ $(grep -v '^written ' "$status" 2> /dev/null) == "$want" ]] && return 0; sleep 0.1; done
+  return 1
+}
+offer_lines() { since_err "$1" | grep -c "bluetooth offer $2: fragment $3" || true; }
+errmark() { wc -l < "$tmp/audio.err"; }
+since_err() { tail -n "+$(($1 + 1))" "$tmp/audio.err"; }
+restarts() { since "$1" | grep -cxF "restart wireplumber.service" || true; }
+gw='"audio-gateway":{"description":"Audio Gateway (A2DP Source & HSP/HFP AG)","available":true}'
+cards "$(card "$phone" 90 "$gw" audio-gateway)"
+poke audio.bt_codec "<'aac'>"
+
+m=$(mark)
+e=$(errmark)
+start_offer
+status_is $'wanted auto\napplied auto' || fail "a fresh boot with no engine is not wanted auto, applied auto: $(cat "$status" 2>&1)"
+[[ ! -e $frag ]] || fail "no engine wrote an offer fragment"
+
+engine receiver
+status_is $'wanted aac\napplied auto' || fail "receiver with aac is not wanted aac: $(cat "$status" 2>&1)"
+[[ $(< "$frag") == 'monitor.bluez.properties = { override.bluez5.codecs = [ aac msbc lc3_swb ] }' ]] ||
+  fail "the receiver fragment is not [ aac msbc lc3_swb ]: $(cat "$frag" 2>&1)"
+[[ $(stat -c %a "$offerdir/wireplumber/wireplumber.conf.d") == 700 ]] || fail "fragment dir mode"
+written=$(sed -n 's/^written //p' "$status")
+[[ -n $written ]] || fail "no written stamp after the fragment"
+sinks_changed
+sleep 1
+status_is $'wanted aac\napplied auto' || fail "a pass with wireplumber started before the write marked it applied"
+mono > "$STUB_DIR/wp-start"
+sinks_changed
+status_is $'wanted aac\napplied aac' || fail "an outside restart did not mark aac applied: $(cat "$status" 2>&1)"
+(($(restarts "$m") == 0)) || fail "a connected phone card did not keep the restart shut: $(since "$m")"
+
+e=$(errmark)
+role headphones
+status_is $'wanted auto\napplied aac' || fail "headphones is not wanted auto while aac is applied: $(cat "$status" 2>&1)"
+[[ ! -e $frag ]] || fail "headphones kept the fragment"
+mono > "$STUB_DIR/wp-start"
+sinks_changed
+status_is $'wanted auto\napplied auto' || fail "an outside restart did not mark auto applied: $(cat "$status" 2>&1)"
+
+e=$(errmark)
+role receiver
+sleep 0.4
+role headphones
+sleep 0.4
+role receiver
+status_is $'wanted aac\napplied auto' || fail "the flap did not settle on receiver: $(cat "$status" 2>&1)"
+sleep 1
+(($(offer_lines "$e" aac written) == 1)) || fail "a role flap wrote the fragment $(offer_lines "$e" aac written) times"
+(($(offer_lines "$e" auto removed) == 0)) || fail "a role flap removed the fragment"
+mono > "$STUB_DIR/wp-start"
+sinks_changed
+status_is $'wanted aac\napplied aac' || fail "aac not applied after the flap: $(cat "$status" 2>&1)"
+
+kill "$eng"
+wait "$eng" 2> /dev/null || true
+status_is $'wanted auto\napplied aac' || fail "the engine leaving is not headphones: $(cat "$status" 2>&1)"
+[[ ! -e $frag ]] || fail "the engine leaving kept the fragment"
+mono > "$STUB_DIR/wp-start"
+sinks_changed
+status_is $'wanted auto\napplied auto' || fail "auto not applied after the engine left"
+engine receiver
+status_is $'wanted aac\napplied auto' || fail "the engine back as receiver is not wanted aac"
+mono > "$STUB_DIR/wp-start"
+sinks_changed
+status_is $'wanted aac\napplied aac' || fail "aac not applied with the engine back"
+
+kill "$as" "$eng"
+wait "$as" "$eng" 2> /dev/null || true
+m=$(mark)
+e=$(errmark)
+start_offer
+sleep 2
+engine receiver
+sleep 2.5
+[[ -e $frag ]] || fail "a new instance with a late engine removed the fragment"
+(($(offer_lines "$e" auto removed) == 0)) || fail "a late engine read as headphones: $(since_err "$e")"
+status_is $'wanted aac\napplied aac' || fail "a late engine changed the status: $(cat "$status" 2>&1)"
+(($(restarts "$m") == 0)) || fail "a late engine restarted wireplumber: $(since "$m")"
+
+kill "$as" "$eng"
+wait "$as" "$eng" 2> /dev/null || true
+rm -f "$frag" "$status"
+echo "LANG=C" > "$STUB_DIR/wp-env"
+m=$(mark)
+e=$(errmark)
+engine receiver
+start_offer
+status_is $'wanted aac\napplied auto' || fail "a missing drop in is not wanted aac, applied auto: $(cat "$status" 2>&1)"
+sleep 1
+sinks_changed
+sleep 1
+[[ ! -e $frag ]] || fail "a missing drop in wrote the fragment"
+(($(since_err "$e" | grep -c "wireplumber.service does not read $offerdir/wireplumber first") == 1)) ||
+  fail "a missing drop in was not logged once: $(since_err "$e")"
+(($(restarts "$m") == 0)) || fail "a missing drop in restarted wireplumber"
+kill "$as" "$eng"
+wait "$as" "$eng" 2> /dev/null || true
+echo "LANG=C WIREPLUMBER_CONFIG_DIR=$offerdir/wireplumber:%E/wireplumber:/usr/share/wireplumber" > "$STUB_DIR/wp-env"
+
+echo 1 > "$STUB_DIR/wp-start"
+mkdir -p "${frag%/*}"
+echo 'monitor.bluez.properties = { override.bluez5.codecs = [ aac msbc lc3_swb ] }' > "$frag"
+printf 'wanted aac\napplied auto\n' > "$status"
+m=$(mark)
+engine receiver
+start_offer
+sleep 2.5
+healed=$(sed -n 's/^written //p' "$status")
+[[ -n $healed ]] && ((healed > $(mono) - 30000000)) || fail "a missing written stamp is not the start time: $(cat "$status")"
+status_is $'wanted aac\napplied auto' || fail "a missing written stamp marked the offer applied: $(cat "$status" 2>&1)"
+mono > "$STUB_DIR/wp-start"
+sinks_changed
+status_is $'wanted aac\napplied aac' || fail "a healed stamp did not apply after a restart: $(cat "$status" 2>&1)"
+kill "$as" "$eng"
+wait "$as" "$eng" 2> /dev/null || true
+
+rm -f "$frag" "$status"
+: > "$STUB_DIR/show-fails"
+e=$(errmark)
+engine receiver
+start_offer
+sleep 3
+[[ ! -e $frag && ! -e $status ]] || fail "a failing systemctl show wrote the offer: $(cat "$status" 2>&1)"
+(($(since_err "$e" | grep -c "reading the wireplumber environment failed") == 1)) ||
+  fail "a failing systemctl show was not logged once: $(since_err "$e")"
+rm "$STUB_DIR/show-fails"
+status_is $'wanted aac\napplied auto' || fail "the offer did not follow once systemctl show worked: $(cat "$status" 2>&1)"
+[[ -e $frag ]] || fail "no fragment once systemctl show worked"
+kill "$as" "$eng"
+wait "$as" "$eng" 2> /dev/null || true
+rm -f "$STUB_DIR/cards.json"
 
 if ((rc != 0)); then
   cat "$tmp/audio.err" >&2
