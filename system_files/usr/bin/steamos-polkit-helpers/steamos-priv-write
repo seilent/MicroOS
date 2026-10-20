@@ -12,6 +12,23 @@ refuse() {
 [[ $1 == "$node" ]] || refuse "refused, path not allowed" "$@"
 [[ $2 =~ ^[0-9]{1,9}$ ]] || refuse "refused, value is not an integer" "$@"
 max=$(< "$dir/max_brightness") || refuse "refused, no max_brightness" "$@"
-[[ $max =~ ^[0-9]{1,9}$ ]] || refuse "refused, max_brightness is $(printf %q "$max")" "$@"
+[[ $max =~ ^[0-9]{1,9}$ ]] && (( 10#$max > 0 )) || refuse "refused, max_brightness is $(printf %q "$max")" "$@"
 (( 10#$2 <= 10#$max )) || refuse "refused, value above $max" "$@"
-printf '%d\n' "$((10#$2))" > "$dir/brightness" || refuse "write failed" "$@"
+(( 10#$2 > 0 )) || refuse "refused, value is 0" "$@"
+bp=$(( (10#$2 * 10000 + 10#$max / 2) / 10#$max ))
+(( bp >= 1 )) || bp=1
+
+read -r stat < /proc/$$/stat || refuse "no start time" "$@"
+read -ra fields <<< "${stat##*) }"
+start=${fields[19]}
+lock=${XDG_RUNTIME_DIR:-/run/user/$UID}/$me.lock
+exec 9<> "$lock" || refuse "cannot open $lock" "$@"
+flock -w 3 9 || refuse "lock busy" "$@"
+read -r up _ < "${MICROOS_PROC:-/proc}/uptime" || refuse "no uptime" "$@"
+tck=$(getconf CLK_TCK) || refuse "no CLK_TCK" "$@"
+now=$(( ${up%.*} * tck + 10#${up#*.} * tck / 100 ))
+last=$(< "$lock")
+[[ $last =~ ^[0-9]{1,18}$ ]] && (( 10#$last > start && 10#$last <= now )) && exit 0
+err=$(busctl --timeout=2 call net.seilent.MicroSet /net/seilent/MicroSet net.seilent.MicroSet1 Set sv \
+  display.brightness u "$bp" 2>&1 > /dev/null) || refuse "set failed, $err" "$@"
+printf '%s\n' "$start" > "$lock"
