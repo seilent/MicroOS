@@ -495,6 +495,12 @@ execs() {
   systemctl cat "$1" | awk -v k="$2=" 'index($0, k) == 1 { v = substr($0, length(k) + 1); if (v == "") n = 0; else l[++n] = v }
     END { for (i = 1; i <= n; i++) print l[i] }'
 }
+[[ $(execs bluetooth.service ExecStart) == "/usr/libexec/bluetooth/bluetoothd -P admin" ]] \
+  || fail "effective bluetooth.service ExecStart: $(execs bluetooth.service ExecStart)"
+[[ $(execs bluetooth.service ConfigurationDirectory) == bluetooth ]] || fail "bluetooth.service ConfigurationDirectory is not bluetooth"
+btd=$(timeout 5 /usr/libexec/bluetooth/bluetoothd -n -d 2>&1 || true)
+grep -qF 'parsing /etc/bluetooth/main.conf' <<< "$btd" && grep -qF 'General.Experimental = true' <<< "$btd" \
+  || fail "bluetoothd does not read Experimental = true from /etc/bluetooth/main.conf"
 starting="-/bin/sh -c '/usr/bin/plymouth display-message --text=microos-starting; /usr/bin/plymouth deactivate || /usr/bin/plymouth quit'"
 [[ $(execs plymouth-quit.service ExecStart) == "$starting" ]] || fail "effective plymouth-quit.service ExecStart: $(execs plymouth-quit.service ExecStart)"
 execs sddm.service ExecStartPre | grep -qxF -- "$quit" || fail "sddm.service has no plymouth deactivate ExecStartPre"
