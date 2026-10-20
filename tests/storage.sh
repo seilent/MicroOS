@@ -564,6 +564,11 @@ logged 'A not held for 1 s within 15 s, nothing written' "format without the hol
 logged '^-t microos-pad-hold microos-pad-hold: refused: BTN_SOUTH not held for 1 s$' "format without the hold"
 grep -q 'refused: BTN_SOUTH not held' "$tmp/out" || fail "format without the hold: helper reason not on stderr: $(cat "$tmp/out")"
 [[ ! -e $tmp/run/hold/storage ]] || fail "format without the hold: hint file left"
+run RC_pad_hold=3 format --skip-validation --device /dev/mmcblk0
+code 53 "format while another A hold waits"
+no_writer "format while another A hold waits"
+logged 'another A hold is waiting, nothing written' "format while another A hold waits"
+[[ ! -e $tmp/run/hold/storage ]] || fail "format while another A hold waits: hint file left"
 flock -o -x "$tmp/run/lock/format.lock" sleep 4 &
 holder=$!
 sleep 0.3

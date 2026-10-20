@@ -97,9 +97,10 @@ settle() {
 reset() {
   [[ ! -d $FAKE ]] || settle || true
   rm -rf "$run" "$state" "$FAKE" "$tmp/victim" "$MICROOS_SESSION_SHORT_TRACKER"
-  mkdir -p "$run/user" "$state/session" "$FAKE/units" "$FAKE/enter" "$FAKE/scopes" "$FAKE/desktops" "$FAKE/never" \
+  mkdir -p "$run/user" "$run/hold" "$state/session" "$FAKE/units" "$FAKE/enter" "$FAKE/scopes" "$FAKE/desktops" "$FAKE/never" \
     "$FAKE/home/.steam"
   chmod 0755 "$run"
+  install -m 0600 /dev/null "$run/hold/.lock"
   for s in steam recovery microdap; do
     unit_of "$s" > "$FAKE/desktops/$(desk_of "$s")"
   done
@@ -750,6 +751,14 @@ giveup rollback
 [[ $r == 1 ]] && ! hasre '^bootc' || fail "rollback with one of two real pads not held"
 echo BTN_SOUTH > "$FAKE/keys/event6"
 : > "$FAKE/keys/event9"
+flock -o -x "$run/hold/.lock" sleep 3 &
+holder=$!
+for _ in $(seq 40); do flock -n "$run/hold/.lock" true || break; sleep 0.05; done
+giveup rollback
+kill "$holder" 2> /dev/null || true
+wait "$holder" 2> /dev/null || true
+[[ $r == 1 ]] && ! hasre '^bootc' && grep -q "another A hold is waiting" "$tmp/out" ||
+  fail "rollback while another A hold waits: $r $(cat "$tmp/out")"
 giveup rollback
 [[ $r == 0 ]] && has "bootc rollback" && has reboot || fail "rollback from recovery: $(calls) $(cat "$tmp/out")"
 
@@ -797,6 +806,39 @@ wait "$rel"
 : > "$FAKE/keys/event4"
 hold BTN_SOUTH 1 1
 [[ $r == 1 ]] && grep -q "not held for 1 s" "$tmp/out" || fail "pad-hold wait expired: $r"
+"$libexec/microos-pad-hold" BTN_SOUTH 1 2 > /dev/null 2>&1 &
+first=$!
+for _ in $(seq 40); do flock -n "$run/hold/.lock" true || break; sleep 0.05; done
+hold BTN_SOUTH 1 1
+[[ $r == 3 ]] && grep -q "another hold is waiting" "$tmp/out" || fail "pad-hold while another waits: $r $(cat "$tmp/out")"
+wait "$first" || true
+hold BTN_SOUTH 1 1
+[[ $r == 1 ]] || fail "pad-hold after the other hold ended: $r"
+! setpriv --reuid 65534 --regid 65534 --clear-groups sh -c 'exec 7< "$1"' sh "$run/hold/.lock" 2> /dev/null ||
+  fail "another uid opened the hold lock"
+for bad in mode link missing; do
+  rm -f "$run/hold/.lock"
+  case $bad in
+    mode) install -m 0644 /dev/null "$run/hold/.lock" ;;
+    link) install -m 0600 /dev/null "$tmp/lock-target" && ln -s "$tmp/lock-target" "$run/hold/.lock" ;;
+  esac
+  echo BTN_SOUTH > "$FAKE/keys/event4"
+  hold BTN_SOUTH 1 0
+  [[ $r == 1 ]] && grep -q "missing or not root 0600" "$tmp/out" || fail "pad-hold with a $bad lock: $r $(cat "$tmp/out")"
+done
+rm -f "$run/hold/.lock" "$tmp/lock-target"
+install -m 0600 /dev/null "$run/hold/.lock"
+echo BTN_SOUTH > "$FAKE/keys/event4"
+echo "steam gamescope-session-plus@steam.service 1 0" > "$run/session-current"
+hold --yield recovery BTN_SOUTH 1 0
+[[ $r == 0 ]] || fail "pad-hold --yield recovery outside recovery: $r $(cat "$tmp/out")"
+: > "$FAKE/keys/event4"
+echo "recovery microos-recovery.service 2 0" > "$run/session-current"
+hold --yield recovery BTN_SOUTH 1 3
+[[ $r == 1 ]] && grep -q "the recovery session is active" "$tmp/out" || fail "pad-hold --yield in recovery: $r $(cat "$tmp/out")"
+hold --yield 'bad name' BTN_SOUTH 1 0
+[[ $r == 2 ]] || fail "pad-hold --yield with a bad name: $r"
+rm -f "$run/session-current"
 nopads
 unset MICROOS_PAD_STATE
 
