@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
+import contextlib
+import errno
+import fcntl
 import grp
 import os
 import pwd
 import re
 import sys
+import time
 from decimal import Decimal, InvalidOperation
 
 import gi
@@ -14,6 +18,15 @@ from gi.repository import Gio, GLib
 SYSFS = os.environ.get("MICROOS_SYSFS", "/sys")
 PROC = os.environ.get("MICROOS_PROC", "/proc")
 PROFILES = os.environ.get("MICROOS_POWER_PROFILES", "/usr/lib/microos/power-profiles.conf")
+UNDERVOLTS = os.environ.get("MICROOS_GPU_UNDERVOLTS", "/usr/lib/microos/gpu-undervolt.conf")
+UV_STATE = os.environ.get("MICROOS_GPU_UNDERVOLT_STATE", "/var/lib/microos/gpu-undervolt")
+UV_RUN = os.environ.get("MICROOS_GPU_UNDERVOLT_RUN", "/run/microos/gpu-undervolt")
+HOLD_DIR = os.environ.get("MICROOS_HOLD_DIR", "/run/microos/hold")
+CONFIRMED = os.environ.get("MICROOS_CONFIRMED", "/var/lib/microos/confirmed")
+PAD_HOLD = os.environ.get("MICROOS_PAD_HOLD", "/usr/libexec/microos/microos-pad-hold")
+HOLD_WAIT = os.environ.get("MICROOS_GPU_UNDERVOLT_HOLD_WAIT", "15")
+HOLD_COOLDOWN = float(os.environ.get("MICROOS_GPU_UNDERVOLT_COOLDOWN", "30"))
+SESSION_CURRENT = os.environ.get("MICROOS_SESSION_CURRENT", "/run/microos/session-current")
 
 BUS_NAME = "net.seilent.MicroOs.Power"
 PATH = "/net/seilent/MicroOs/Power"
@@ -31,6 +44,7 @@ UNIT = "org.freedesktop.systemd1.Unit"
 CPUS = "/devices/system/cpu"
 POLICIES = ("policy0", "policy4", "policy7")
 DEVFREQ = "/class/devfreq/3d00000.gpu"
+GPU_DEV = "/devices/platform/soc@0/3d00000.gpu"
 GPU_CAP = 587000000
 GPU_FLOOR = 305000000
 CLOCK_MIN = 305
@@ -50,6 +64,7 @@ USERS = "/fs/cgroup/user.slice"
 WRITABLE = re.compile(
     r"/devices/system/cpu/(cpufreq/policy[047]/scaling_(max_freq|min_freq|governor)|cpu[0-9]+/online)"
     r"|/class/devfreq/3d00000\.gpu/(governor|min_freq|max_freq)"
+    r"|/devices/platform/soc@0/3d00000\.gpu/gpu_levels"
 )
 CGROUP_WRITABLE = re.compile(
     r"/fs/cgroup/user\.slice(/user-[0-9]+\.slice(/user@[0-9]+\.service(/game\.slice)?)?)?/cpu\.uclamp\.min"
@@ -57,6 +72,12 @@ CGROUP_WRITABLE = re.compile(
 GAME = re.compile(r"app-steam-app.*\.scope|microemu-game\.scope")
 USER_SLICE = re.compile(r"user-([0-9]+)\.slice")
 MANAGER_UNIT = re.compile(r"user@([0-9]+)\.service")
+UV_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+UV_LEVELS = re.compile(r"[0-9]{1,10}:[0-9]{1,5}(,[0-9]{1,10}:[0-9]{1,5}){0,31}")
+UV_TRIPS = ("hang", "gmu", "hfi", "oob", "start")
+UV_REASONS = UV_TRIPS + ("unclean", "changed", "refused")
+UV_NO_TRIPS = ["0", "-", "-", "off", "off"]
+HOLD_BUSY = 3
 
 SCHEMA = {
     POWER: [
@@ -68,6 +89,10 @@ SCHEMA = {
         ("AvailableCpuGovernors", "as", "read"),
         ("GameCpuFloor", "u", "readwrite"),
         ("Holds", "as", "read"),
+        ("GpuUndervolt", "s", "readwrite"),
+        ("GpuUndervoltActive", "s", "read"),
+        ("GpuTuningFallback", "s", "read"),
+        ("GpuTuningTrip", "s", "read"),
     ],
     PROFILE: [
         ("AvailablePerformanceProfiles", "as", "read"),
@@ -106,7 +131,12 @@ SETTERS = {
 }
 
 METHODS = {
-    POWER: [("Reload", ()), ("Hold", (("mode", "s"),)), ("Release", (("mode", "s"),))],
+    POWER: [("Reload", ()), ("Hold", (("mode", "s"),)), ("Release", (("mode", "s"),)),
+            ("RequestUndervolt", (("serial", "u"), ("name", "s"), ("levels", "s")))],
+}
+
+SIGNALS = {
+    POWER: [("UndervoltRequestDone", (("serial", "u"), ("result", "s"), ("name", "s"), ("levels", "s")))],
 }
 
 
@@ -138,6 +168,119 @@ def write(rel, value):
             f.write(str(value))
     except OSError as e:
         log(f"write {rel}={value}: {e.strerror}")
+
+
+def write_levels(levels):
+    rel = f"{GPU_DEV}/gpu_levels"
+    if not WRITABLE.fullmatch(rel):
+        log(f"refused write {rel}")
+        return errno.EPERM
+    try:
+        with open(SYSFS + rel, "w") as f:
+            f.write(levels)
+    except OSError as e:
+        log(f"write {rel}={levels}: {e.strerror}")
+        return e.errno or errno.EIO
+    return 0
+
+
+def read_file(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return None
+
+
+def replace_file(path, text):
+    folder = os.path.dirname(path)
+    tmp = f"{folder}/.{os.path.basename(path)}.{os.getpid()}"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+        try:
+            os.write(fd, text.encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+        sync_dir(folder)
+    except OSError as e:
+        log(f"write {path}: {e.strerror}")
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
+    return True
+
+
+def remove_file(path):
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        log(f"remove {path}: {e.strerror}")
+        return
+    sync_dir(os.path.dirname(path))
+
+
+def sync_dir(folder):
+    try:
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError as e:
+        log(f"sync {folder}: {e.strerror}")
+
+
+@contextlib.contextmanager
+def trips_lock():
+    try:
+        fd = os.open(f"{UV_STATE}/trips.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError as e:
+        log(f"open {UV_STATE}/trips.lock: {e.strerror}")
+        yield
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
+
+
+def read_trips(name):
+    line = read_file(f"{UV_STATE}/trips")
+    fields = (line or "").split()
+    if len(fields) != 5 or fields[0] not in ("0", "1"):
+        if line:
+            log(f"undervolt trips line {line[:120]!r} not understood, count 0")
+        return list(UV_NO_TRIPS)
+    if fields[3:] != [name, "off"]:
+        fields[0] = "0"
+    return fields
+
+
+def load_undervolts():
+    rows = {}
+    try:
+        with open(UNDERVOLTS) as f:
+            for n, raw in enumerate(f, 1):
+                fields = raw.split()
+                if not fields:
+                    continue
+                if len(fields) != 3 or not UV_NAME.fullmatch(fields[0]) or fields[0] == "off" or fields[0] in rows \
+                        or not UV_LEVELS.fullmatch(fields[2]):
+                    raise ValueError(f"line {n}: not <name> <label> <freq:level,...>")
+                rows[fields[0]] = fields[2]
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        log(f"{UNDERVOLTS}: {e}, no undervolt presets")
+        return {}
+    return rows
 
 
 def write_cgroup(rel, value):
@@ -172,10 +315,12 @@ def clamp(key, value, lo, hi):
     return fit
 
 
-def interface_xml(name, props, methods):
+def interface_xml(name, props, methods, signals):
     body = "".join(f'<property name="{p}" type="{t}" access="{a}"/>' for p, t, a in props)
     body += "".join(f'<method name="{m}">' + "".join(f'<arg name="{a}" type="{t}" direction="in"/>' for a, t in args)
                     + "</method>" for m, args in methods)
+    body += "".join(f'<signal name="{m}">' + "".join(f'<arg name="{a}" type="{t}"/>' for a, t in args)
+                    + "</signal>" for m, args in signals)
     return f'<node><interface name="{name}">{body}</interface></node>'
 
 
@@ -227,14 +372,22 @@ class Power:
         self.state = {}
         self.watches = {}
         self.polls = {}
+        self.undervolt = "unset"
+        self.request = None
+        self.next_request = 0.0
         try:
             self.microset = pwd.getpwnam("microset").pw_uid
         except KeyError:
             self.microset = None
         self.load()
+        self.boot_id = read_file(f"{PROC}/sys/kernel/random/boot_id") or ""
+        self.check_awake()
+        self.count_trip()
+        remove_file(f"{HOLD_DIR}/gpu-undervolt")
 
     def load(self):
         self.names, self.profiles, self.tdp, self.default = load_profiles()
+        self.undervolts = load_undervolts()
         state = self.defaults()
         for key, value in self.state.items():
             if value is None:
@@ -465,6 +618,165 @@ class Power:
         if params.unpack()[2]:
             self.subscribe()
 
+    def check_awake(self):
+        awake = (read_file(f"{UV_STATE}/awake") or "").split()
+        if not awake:
+            return
+        if not self.boot_id:
+            log("undervolt: no boot id, awake left for the next boot")
+            return
+        if len(awake) == 3 and awake[2] == self.boot_id:
+            log(f"undervolt {awake[0]} applied earlier in this boot")
+            return
+        name = awake[0]
+        log(f"undervolt {name}: the last boot ended without a clean shutdown")
+        with trips_lock():
+            replace_file(f"{UV_STATE}/fallback", f"unclean {name} off {awake[2] if len(awake) == 3 else '-'}\n")
+            replace_file(f"{UV_STATE}/trips", f"0 {self.boot_id} - {name} off\n")
+        remove_file(f"{UV_STATE}/awake")
+
+    def count_trip(self):
+        trip = self.trip()
+        awake = (read_file(f"{UV_STATE}/awake") or "").split()
+        if not trip or not self.boot_id or len(awake) != 3 or awake[2] != self.boot_id:
+            return
+        name = awake[0]
+        with trips_lock():
+            count, boot, reason, _, _ = read_trips(name)
+            if boot == self.boot_id and reason != "-":
+                return
+            if count == "0":
+                replace_file(f"{UV_STATE}/trips", f"1 {self.boot_id} {trip} {name} off\n")
+                log(f"undervolt {name} tripped ({trip}), stock until reboot, kept for the next boot")
+                return
+            replace_file(f"{UV_STATE}/fallback", f"{trip} {name} off {self.boot_id}\n")
+            replace_file(f"{UV_STATE}/trips", f"0 {self.boot_id} {trip} {name} off\n")
+            log(f"undervolt {name} tripped ({trip}) on a second boot in a row, stock from the next boot")
+
+    def trip(self):
+        trip = read(f"{GPU_DEV}/gpu_levels_fallback") or ""
+        return trip if trip in UV_TRIPS else ""
+
+    def fallback(self):
+        reason = (read_file(f"{UV_STATE}/fallback") or "").split()
+        return reason[0] if reason and reason[0] in UV_REASONS else ""
+
+    def active_undervolt(self):
+        applied = read(f"{GPU_DEV}/gpu_levels_applied")
+        if applied in (None, "", "stock"):
+            return "waiting" if read(f"{GPU_DEV}/gpu_levels") and not self.trip() else "stock"
+        if applied == "failed":
+            return "failed"
+        return next((n for n, levels in self.undervolts.items() if levels == applied), "custom")
+
+    def booted_confirmed(self):
+        cmdline = (read_file(f"{PROC}/cmdline") or "").split()
+        booted = next((a.partition("=")[2] for a in cmdline if a.startswith("microos.deploy=")), "")
+        return bool(booted) and booted == read_file(CONFIRMED)
+
+    def set_undervolt(self, value):
+        name, _, levels = value.partition(" ")
+        if not UV_NAME.fullmatch(name) or (name == "off") != (levels == "") or (levels and not UV_LEVELS.fullmatch(levels)):
+            raise ValueError(f"{value!r} is not <name> <freq:level,...> or off")
+        if name == "off":
+            if os.path.exists(f"{UV_STATE}/fallback"):
+                remove_file(f"{UV_STATE}/fallback")
+                log("undervolt fallback recorded by microsetd")
+        self.undervolt = value
+        awake = (read_file(f"{UV_STATE}/awake") or "").split()
+        if os.path.exists(f"{UV_RUN}/applied") or (len(awake) == 3 and awake[2] == self.boot_id):
+            log(f"undervolt {name} for the next boot")
+            return
+        replace_file(f"{UV_RUN}/applied", f"{value}\n")
+        self.apply_undervolt(name, levels)
+
+    def apply_undervolt(self, name, levels):
+        if name == "off":
+            log("undervolt off")
+            return
+        if not self.boot_id:
+            log(f"undervolt {name} not applied: no boot id")
+            return
+        if not self.booted_confirmed():
+            log(f"undervolt {name} not applied: the booted deployment is not confirmed")
+            return
+        if os.path.exists(f"{UV_STATE}/fallback"):
+            log(f"undervolt {name} not applied: a fallback is waiting to be recorded")
+            return
+        if self.undervolts.get(name) != levels:
+            log(f"undervolt {name} not applied: the preset changed")
+            replace_file(f"{UV_STATE}/fallback", f"changed {name} off {self.boot_id}\n")
+            return
+        if self.trip():
+            log(f"undervolt {name} not applied: the GPU tripped in this boot")
+            return
+        with trips_lock():
+            if read_trips(name)[3:] != [name, "off"]:
+                replace_file(f"{UV_STATE}/trips", f"0 {self.boot_id} - {name} off\n")
+                log(f"undervolt {name}: trip count reset for a new preset")
+        if not replace_file(f"{UV_STATE}/awake", f"{name} {levels} {self.boot_id}\n"):
+            log(f"undervolt {name} not applied: no boot marker")
+            return
+        err = write_levels(levels)
+        if err == errno.EINVAL:
+            remove_file(f"{UV_STATE}/awake")
+            replace_file(f"{UV_STATE}/fallback", f"refused {name} off {self.boot_id}\n")
+            log(f"undervolt {name} refused by the kernel")
+            return
+        back = read(f"{GPU_DEV}/gpu_levels")
+        if err or back != levels:
+            remove_file(f"{UV_STATE}/awake")
+            log(f"undervolt {name} not applied: " + (os.strerror(err) if err else f"gpu_levels reads {back!r}"))
+            return
+        log(f"undervolt {name} set, applied from the next GPU start")
+
+    def request_undervolt(self, serial, name, levels, inv):
+        if self.request is not None:
+            log(f"undervolt request {serial} refused: a hold is waiting")
+            inv.return_dbus_error("org.freedesktop.DBus.Error.LimitsExceeded", "a hold is waiting")
+            return
+        if time.clock_gettime(time.CLOCK_BOOTTIME) < self.next_request:
+            log(f"undervolt request {serial} refused: too soon after the last hold")
+            inv.return_dbus_error("org.freedesktop.DBus.Error.LimitsExceeded", "too soon after the last hold")
+            return
+        if (read_file(SESSION_CURRENT) or "").split()[:1] == ["recovery"]:
+            log(f"undervolt request {serial} refused: the recovery session is active")
+            inv.return_dbus_error("org.freedesktop.DBus.Error.AccessDenied", "no undervolt request in recovery")
+            return
+        if self.undervolts.get(name) != levels:
+            log(f"undervolt request {serial} refused: {name} {levels} is not a preset")
+            inv.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs", f"{name} {levels} is not a preset")
+            return
+        try:
+            pid, _, _, _ = GLib.spawn_async([PAD_HOLD, "--yield", "recovery", "BTN_SOUTH", "1", HOLD_WAIT],
+                                            flags=GLib.SpawnFlags.DO_NOT_REAP_CHILD)
+        except GLib.Error as e:
+            log(f"undervolt request {serial}: {e.message}")
+            inv.return_dbus_error("org.freedesktop.DBus.Error.Failed", e.message)
+            return
+        self.request = (serial, name, levels)
+        if not replace_file(f"{HOLD_DIR}/gpu-undervolt", f"{os.getpid()}\ngpu-undervolt\n"):
+            log(f"no hint file {HOLD_DIR}/gpu-undervolt")
+        GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, self.on_hold)
+        log(f"undervolt request {serial} {name}: waiting for A")
+        inv.return_value(None)
+
+    def on_hold(self, pid, status):
+        serial, name, levels = self.request
+        self.request = None
+        self.next_request = time.clock_gettime(time.CLOCK_BOOTTIME) + HOLD_COOLDOWN
+        remove_file(f"{HOLD_DIR}/gpu-undervolt")
+        code = os.waitstatus_to_exitcode(status)
+        if code == 0:
+            result = "accepted"
+        elif code == HOLD_BUSY:
+            result = "refused another hold is waiting"
+        else:
+            result = "refused A not held"
+        log(f"undervolt request {serial} {name}: {result}")
+        self.conn.emit_signal(None, PATH, POWER, "UndervoltRequestDone",
+                              GLib.Variant("(usss)", (serial, result, name, levels)))
+
     def values(self):
         s = self.state
         governor = read(f"{CPUS}/cpufreq/policy0/scaling_governor") or s["governor"]
@@ -479,6 +791,10 @@ class Power:
                 "AvailableCpuGovernors": ("as", governors),
                 "GameCpuFloor": ("u", s["game_floor"]),
                 "Holds": ("as", self.held()),
+                "GpuUndervolt": ("s", self.undervolt),
+                "GpuUndervoltActive": ("s", self.active_undervolt()),
+                "GpuTuningFallback": ("s", self.fallback()),
+                "GpuTuningTrip": ("s", self.trip()),
             },
             PROFILE: {
                 "AvailablePerformanceProfiles": ("as", self.names),
@@ -519,7 +835,8 @@ class Power:
         for iface, props in SCHEMA.items():
             want = iface != TDP or bool(self.tdp)
             if want and iface not in self.registered:
-                info = Gio.DBusNodeInfo.new_for_xml(interface_xml(iface, props, METHODS.get(iface, [])))
+                info = Gio.DBusNodeInfo.new_for_xml(interface_xml(iface, props, METHODS.get(iface, []),
+                                                                  SIGNALS.get(iface, [])))
                 self.registered[iface] = self.conn.register_object(PATH, info.interfaces[0], self.on_call, None, None)
             elif not want and iface in self.registered:
                 self.conn.unregister_object(self.registered.pop(iface))
@@ -636,6 +953,9 @@ class Power:
             inv.return_value(GLib.Variant("(a{sv})", ({k: GLib.Variant(t, v) for k, (t, v) in props.items()},)))
         elif iface == PROPS and method == "Set":
             key = SETTERS.get((args[0], args[1]))
+            if (args[0], args[1]) == (POWER, "GpuUndervolt"):
+                self.on_undervolt(sender, args[2], params, inv)
+                return
             if key is None:
                 inv.return_dbus_error("org.freedesktop.DBus.Error.PropertyReadOnly", f"{args[1]} is read only")
                 return
@@ -656,10 +976,15 @@ class Power:
             if not self.authorize(sender, "Reload", inv):
                 return
             self.load()
+            self.count_trip()
             self.register()
             self.apply()
             self.publish()
             inv.return_value(None)
+        elif iface == POWER and method == "RequestUndervolt":
+            if not self.undervolt_caller(sender, f"RequestUndervolt {args[0]} {args[1]}", inv):
+                return
+            self.request_undervolt(args[0], args[1], args[2], inv)
         elif iface == POWER and method in ("Hold", "Release"):
             if not self.authorize(sender, method, inv, value=f" {repr(args[0])[:64]}"):
                 return
@@ -678,8 +1003,36 @@ class Power:
         else:
             inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", f"{iface}.{method}")
 
+    def undervolt_caller(self, sender, what, inv):
+        uid, reason = self.refusal(sender, True)
+        if not reason and (self.microset is None or uid != self.microset):
+            reason = "not microsetd"
+        if reason:
+            log(f"{what} by uid {uid} refused: {reason}")
+            inv.return_dbus_error("org.freedesktop.DBus.Error.AccessDenied", reason)
+            return False
+        return True
+
+    def on_undervolt(self, sender, value, params, inv):
+        sent = params.get_child_value(2).get_variant().get_type_string()
+        if sent != "s":
+            inv.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs", f"GpuUndervolt is s, not {sent}")
+            return
+        if not self.undervolt_caller(sender, f"set GpuUndervolt={value[:200]!r}", inv):
+            return
+        try:
+            self.set_undervolt(value)
+        except ValueError as e:
+            inv.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs", str(e))
+            return
+        self.publish()
+        inv.return_value(None)
+
     def on_sleep(self, conn, sender, path, iface, signal, params):
-        if not params.unpack()[0]:
+        if params.unpack()[0]:
+            self.count_trip()
+            self.publish()
+        else:
             log("resumed")
             self.apply()
             self.publish()

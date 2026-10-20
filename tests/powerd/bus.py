@@ -58,6 +58,13 @@ def main(cmd, *args):
             except GLib.Error as e:
                 print(Gio.dbus_error_get_remote_error(e))
         return 0
+    if cmd == "request":
+        try:
+            call(bus, POWER, "RequestUndervolt", GLib.Variant("(uss)", (int(args[0]), args[1], args[2])))
+        except GLib.Error as e:
+            print(Gio.dbus_error_get_remote_error(e))
+            return 1
+        return 0
     if cmd == "holder":
         for line in sys.stdin:
             method, _, mode = line.strip().partition(":")
@@ -88,7 +95,11 @@ def main(cmd, *args):
             for k, v in sorted(props.items()):
                 out.write(f"{name} {k}={v}\n")
 
+        def done(conn, sender, path, iface, signal, params):
+            out.write("UndervoltRequestDone " + " ".join(str(v) for v in params.unpack()) + "\n")
+
         bus.signal_subscribe(NAME, PROPS, "PropertiesChanged", PATH, None, Gio.DBusSignalFlags.NONE, changed)
+        bus.signal_subscribe(NAME, POWER, "UndervoltRequestDone", PATH, None, Gio.DBusSignalFlags.NONE, done)
         bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "GetId", None, None,
                       Gio.DBusCallFlags.NONE, 1000, None)
         out.write("ready\n")

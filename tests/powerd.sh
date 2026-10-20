@@ -24,14 +24,27 @@ cpu=$sys/devices/system/cpu
 pol=$cpu/cpufreq
 gpu=$sys/class/devfreq/3d00000.gpu
 export MICROOS_SYSFS=$sys MICROOS_PROC=$tmp/proc MICROOS_STATEDIR=$tmp/state MICROOS_POWER_PROFILES=$tmp/profiles.conf
+uvstate=$tmp/uvstate uvrun=$tmp/uvrun holddir=$tmp/hold
+export MICROOS_GPU_UNDERVOLT_STATE=$uvstate MICROOS_GPU_UNDERVOLT_RUN=$uvrun MICROOS_HOLD_DIR=$holddir
+export MICROOS_CONFIRMED=$tmp/confirmed MICROOS_GPU_UNDERVOLTS=$tree/usr/lib/microos/gpu-undervolt.conf
+export MICROOS_PAD_HOLD=$tmp/pad-hold HOLD_GO=$tmp/hold-go HOLD_RC=$tmp/hold-rc HOLD_ARGS=$tmp/hold-args
+export MICROOS_GPU_UNDERVOLT_COOLDOWN=0 MICROOS_SESSION_CURRENT=$tmp/session-current
 export DBUS_SYSTEM_BUS_ADDRESS=unix:path=$tmp/bus/socket
 allowed='/devices/system/cpu/(cpufreq/policy[047]/scaling_(max_freq|min_freq|governor)|cpu[0-9]+/online)$|/class/devfreq/3d00000\.gpu/(governor|min_freq|max_freq)$'
 allowed+='|/fs/cgroup/user\.slice(/user-[0-9]+\.slice(/user@[0-9]+\.service(/game\.slice)?)?)?/cpu\.uclamp\.min$'
+allowed+='|/devices/platform/soc@0/3d00000\.gpu/gpu_levels$'
 
 if grep -nE 'hwmon|thermal|pwm' "$powerd"; then fail "powerd names a hwmon, thermal or pwm path"; fi
-if grep -nE '/var/lib|power\.conf|STATEDIR' "$powerd"; then fail "powerd names a state file"; fi
-rw=$(grep '^ReadWritePaths=' "$tree/usr/lib/systemd/system/microos-powerd.service")
-[[ $rw == "ReadWritePaths=/sys/devices/system/cpu -/sys/class/devfreq/3d00000.gpu /sys/fs/cgroup" ]] || fail "powerd unit $rw"
+if grep -nE '/var/lib|power\.conf|STATEDIR' "$powerd" | grep -vE '"/var/lib/microos/(gpu-undervolt|confirmed)"\)$'; then
+  fail "powerd names a state file"
+fi
+unit=$tree/usr/lib/systemd/system/microos-powerd.service
+rw=$(grep '^ReadWritePaths=' "$unit")
+[[ $rw == "ReadWritePaths=/sys/devices/system/cpu -/sys/class/devfreq/3d00000.gpu /sys/fs/cgroup /run/microos/hold -/sys/devices/platform/soc@0/3d00000.gpu/gpu_levels" ]] ||
+  fail "powerd unit $rw"
+for l in RuntimeDirectory=microos/gpu-undervolt RuntimeDirectoryPreserve=restart StateDirectory=microos/gpu-undervolt; do
+  grep -qxF "$l" "$unit" || fail "powerd unit lacks $l"
+done
 
 getent passwd 1000 > /dev/null || useradd -u 1000 -M micro
 mkdir -p "$tmp/bus" "$tmp/proc"
@@ -889,6 +902,452 @@ want "$users/cpu.uclamp.min" 68 "root owned level without CAP_DAC_OVERRIDE"
 grep -q "^write $rusers/user-1000.slice/user@1000.service/game.slice/cpu.uclamp.min=68: Permission denied" "$tmp/log" ||
   fail "refused game.slice write not logged: $(tail -n 3 "$tmp/log")"
 stop
+
+LOW=305000000:64,400000000:128,441600000:128,490000000:128,525000000:144,587000000:192
+dev=$sys/devices/platform/soc@0/3d00000.gpu
+clean=$tree/usr/libexec/microos/microos-gpu-undervolt-clean
+getent passwd microset > /dev/null || useradd -r -M microset
+ms=$(id -u microset)
+cat > "$MICROOS_PAD_HOLD" <<'EOF'
+#!/bin/sh
+echo "$*" > "$HOLD_ARGS"
+for _ in $(seq 200); do [ -e "$HOLD_GO" ] && break; sleep 0.05; done
+rm -f "$HOLD_GO"
+exit "$(cat "$HOLD_RC" 2> /dev/null || echo 1)"
+EOF
+chmod 755 "$MICROOS_PAD_HOLD"
+uvsetup() {
+  mktree
+  rm -rf "$uvstate" "$uvrun" "$holddir" "$HOLD_GO"
+  mkdir -p "$uvstate" "$uvrun" "$holddir" "$dev" "$tmp/proc/sys/kernel/random"
+  : > "$dev/gpu_levels"
+  echo stock > "$dev/gpu_levels_applied"
+  : > "$dev/gpu_levels_fallback"
+  echo "$1" > "$tmp/proc/sys/kernel/random/boot_id"
+  echo "BOOT_IMAGE=/vmlinuz microos.deploy=abc.0 rw" > "$tmp/proc/cmdline"
+  echo abc.0 > "$tmp/confirmed"
+}
+uvset() { microset python3 "$bus" set $P1 GpuUndervolt s "$1"; }
+uvwant() { [[ $(get $P1 "$1") == "$2" ]] || fail "$3: $1 is $(get $P1 "$1"), expected $2"; }
+seen() {
+  local _
+  for _ in $(seq 100); do grep -qxF "$1" "$tmp/mon" && return 0; sleep 0.05; done
+  fail "$2: no '$1' in $(tail -n 3 "$tmp/mon")"
+}
+monitor() {
+  : > "$tmp/mon"
+  python3 "$bus" monitor "$tmp/mon" &
+  mon=$!
+  for _ in $(seq 100); do grep -q ready "$tmp/mon" 2> /dev/null && break; sleep 0.05; done
+}
+unmonitor() { kill "$mon"; wait "$mon" 2> /dev/null || true; mon=""; }
+
+uvsetup boot1
+start
+uvwant GpuUndervolt unset "start"
+uvwant GpuUndervoltActive stock "start"
+uvwant GpuTuningFallback "" "start"
+[[ $(uvset off) == "" ]] || fail "boot push of off refused"
+uvwant GpuUndervolt off "boot push of off"
+[[ -e $uvrun/applied && ! -e $uvstate/awake ]] || fail "boot push of off: applied marker or awake"
+[[ $(uvset "low $LOW") == "" ]] || fail "later push refused"
+want "$dev/gpu_levels" "" "a push after the boot value"
+grep -q "undervolt low for the next boot" "$tmp/log" || fail "later push not taken as the next boot value"
+uvwant GpuUndervolt "low $LOW" "later push"
+stop
+
+uvsetup boot1
+start
+[[ $(uvset "low $LOW") == "" ]] || fail "boot push of low refused"
+want "$dev/gpu_levels" "$LOW" "boot push of low"
+[[ $(v "$uvstate/awake") == "low $LOW boot1" ]] || fail "awake is $(v "$uvstate/awake")"
+: > "$dev/gpu_levels"
+snap=$(snapshot)
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "" "second push of low"
+uvset off > /dev/null
+want "$dev/gpu_levels" "" "off after the boot value"
+[[ -e $uvstate/awake ]] || fail "off after the boot value removed awake"
+stop
+rm -f "$uvrun/applied"
+start
+grep -q "undervolt low applied earlier in this boot" "$tmp/log" || fail "restart did not see this boot's awake"
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "" "push after a restart"
+[[ $(v "$uvstate/awake") == "low $LOW boot1" ]] || fail "restart changed awake: $(v "$uvstate/awake")"
+stop
+
+uvsetup boot2
+echo "low $LOW boot1" > "$uvstate/awake"
+echo "1 boot0 hang low off" > "$uvstate/trips"
+start
+[[ ! -e $uvstate/awake ]] || fail "awake of another boot kept"
+[[ $(v "$uvstate/fallback") == "unclean low off boot1" ]] || fail "unclean fallback: $(v "$uvstate/fallback")"
+[[ $(v "$uvstate/trips") == "0 boot2 - low off" ]] || fail "unclean end kept the count: $(v "$uvstate/trips")"
+uvwant GpuTuningFallback unclean "awake of another boot"
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "" "low with a fallback waiting"
+uvset off > /dev/null
+[[ ! -e $uvstate/fallback ]] || fail "off push kept the fallback file"
+uvwant GpuTuningFallback "" "after the off push"
+stop
+
+uvsetup boot2
+echo "low $LOW boot1" > "$uvstate/awake"
+: > "$tmp/proc/sys/kernel/random/boot_id"
+start
+[[ $(v "$uvstate/awake") == "low $LOW boot1" && ! -e $uvstate/fallback ]] || fail "no boot id: awake judged"
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "" "no boot id"
+grep -q "undervolt low not applied: no boot id" "$tmp/log" || fail "no boot id apply not logged"
+stop
+
+uvsetup boot1
+echo other.1 > "$tmp/confirmed"
+start
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "" "unconfirmed boot"
+[[ ! -e $uvstate/awake && ! -e $uvstate/fallback ]] || fail "unconfirmed boot left awake or fallback"
+uvwant GpuTuningFallback "" "unconfirmed boot"
+stop
+uvsetup boot1
+rm "$tmp/confirmed"
+start
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "" "no confirmed deployment"
+stop
+
+uvsetup boot1
+start
+uvset "low 305000000:64,400000000:128,441600000:144,490000000:192,525000000:224,587000000:224" > /dev/null
+want "$dev/gpu_levels" "" "changed row"
+[[ $(v "$uvstate/fallback") == "changed low off boot1" ]] || fail "changed fallback: $(v "$uvstate/fallback")"
+uvwant GpuTuningFallback changed "changed row"
+stop
+
+uvsetup boot1
+start
+for who in root wheel game; do
+  [[ $($who python3 "$bus" set $P1 GpuUndervolt s "low $LOW") == org.freedesktop.DBus.Error.AccessDenied ]] ||
+    fail "GpuUndervolt from $who allowed"
+done
+for bad in low "off $LOW" "Low $LOW" "low 305000000:64;" "low $LOW,"; do
+  [[ $(uvset "$bad") == org.freedesktop.DBus.Error.InvalidArgs ]] || fail "GpuUndervolt $bad accepted"
+done
+[[ $(microset python3 "$bus" set $P1 GpuUndervolt u 1) == org.freedesktop.DBus.Error.InvalidArgs ]] || fail "GpuUndervolt u accepted"
+uvwant GpuUndervolt unset "refused pushes"
+[[ ! -e $uvrun/applied ]] || fail "a refused push took the boot value"
+for a in failed "$LOW" "305000000:64,400000000:128,441600000:144,490000000:192,525000000:224,587000000:256"; do
+  echo "$a" > "$dev/gpu_levels_applied"
+  case $a in failed) w=failed ;; "$LOW") w=low ;; *) w=custom ;; esac
+  uvwant GpuUndervoltActive "$w" "gpu_levels_applied $a"
+done
+rm "$dev/gpu_levels_applied"
+uvwant GpuUndervoltActive stock "no gpu_levels_applied"
+echo stock > "$dev/gpu_levels_applied"
+echo "$LOW" > "$dev/gpu_levels"
+uvwant GpuUndervoltActive waiting "gpu_levels written, applied stock"
+echo hang > "$dev/gpu_levels_fallback"
+uvwant GpuUndervoltActive stock "gpu_levels written, applied stock after a trip"
+: > "$dev/gpu_levels_fallback"
+: > "$dev/gpu_levels"
+stop
+
+trips() { v "$uvstate/trips"; }
+same() { [[ $(sha256sum < "$1") == "$(sha256sum < "$2")" ]]; }
+shut() { "$clean" || fail "clean unit script exited $?"; }
+boot() {
+  rm -rf "$uvrun"
+  mkdir -p "$uvrun"
+  : > "$dev/gpu_levels"
+  echo stock > "$dev/gpu_levels_applied"
+  : > "$dev/gpu_levels_fallback"
+  echo "$1" > "$tmp/proc/sys/kernel/random/boot_id"
+}
+tripnow() {
+  echo "$1" > "$dev/gpu_levels_fallback"
+  snap=$(snapshot)
+  root "$cli" reload > /dev/null || fail "reload after a $1 trip"
+}
+run_boot() {
+  boot "$1"
+  start
+  uvset "$3" > /dev/null
+  [[ $2 == - ]] || tripnow "$2"
+  stop
+  shut
+}
+
+uvsetup boot1
+start
+uvwant GpuTuningTrip "" "start"
+monitor
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "$LOW" "boot push before a trip"
+echo "$LOW" > "$dev/gpu_levels_applied"
+tripnow hang
+seen "$P1 GpuTuningTrip=hang" "trip through Reload"
+seen "$P1 GpuUndervoltActive=low" "applied through Reload"
+uvwant GpuTuningFallback "" "first trip"
+[[ $(trips) == "1 boot1 hang low off" ]] || fail "first trip line: $(trips)"
+echo gmu > "$dev/gpu_levels_fallback"
+snap=$(snapshot)
+python3 "$bus" sleep true || fail "stub logind"
+seen "$P1 GpuTuningTrip=gmu" "trip read on PrepareForSleep(true)"
+root "$cli" reload > /dev/null || fail "second reload"
+[[ $(trips) == "1 boot1 hang low off" && ! -e $uvstate/fallback ]] || fail "two trips in one boot: $(trips)"
+unmonitor
+: > "$dev/gpu_levels"
+before=$(trips)
+stop
+start
+[[ $(trips) == "$before" && ! -e $uvstate/fallback ]] || fail "restart in a trip boot raised: $(trips)"
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "" "push after a restart in a trip boot"
+uvwant GpuTuningTrip gmu "restart in a trip boot"
+stop
+rm "$uvstate/awake"
+rm -f "$uvrun/applied"
+start
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "" "first push in a boot with a trip"
+grep -q "undervolt low not applied: the GPU tripped in this boot" "$tmp/log" || fail "no level write after a trip not logged"
+stop
+
+uvsetup boot1
+start
+uvset "low $LOW" > /dev/null
+echo hfi > "$dev/gpu_levels_fallback"
+snap=$(snapshot)
+python3 "$bus" sleep true || fail "stub logind"
+for _ in $(seq 100); do [[ $(trips) == "1 boot1 hfi low off" ]] && break; sleep 0.05; done
+[[ $(trips) == "1 boot1 hfi low off" ]] || fail "trip raised on PrepareForSleep(true): $(trips)"
+stop
+
+uvsetup boot1
+[[ ! -e $uvstate/trips ]] || fail "trips before the first boot"
+run_boot boot1 hang "low $LOW"
+[[ $(trips) == "1 boot1 hang low off" && ! -e $uvstate/fallback && ! -e $uvstate/awake ]] ||
+  fail "trip on boot 1 from no trips file: $(trips)"
+boot boot2
+start
+uvwant GpuTuningFallback "" "boot after one trip"
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "$LOW" "a count of 1 refused the apply"
+[[ $(trips) == "1 boot1 hang low off" ]] || fail "same names pushed changed the line: $(trips)"
+tripnow gmu
+[[ $(v "$uvstate/fallback") == "gmu low off boot2" && $(trips) == "0 boot2 gmu low off" ]] ||
+  fail "trips on boots 1 and 2: fallback $(v "$uvstate/fallback"), trips $(trips)"
+stop
+shut
+[[ $(v "$uvstate/fallback") == "gmu low off boot2" && $(trips) == "0 boot2 gmu low off" ]] ||
+  fail "clean unit after the second trip: fallback $(v "$uvstate/fallback"), trips $(trips)"
+boot boot3
+start
+uvwant GpuTuningFallback gmu "boot after two trips"
+uvset "low $LOW" > /dev/null
+want "$dev/gpu_levels" "" "boot after two trips"
+stop
+
+uvsetup boot1
+run_boot boot1 hang "low $LOW"
+run_boot boot2 - "low $LOW"
+[[ $(trips) == "0 boot2 - low off" ]] || fail "clean boot after a trip: $(trips)"
+run_boot boot3 hang "low $LOW"
+[[ $(trips) == "1 boot3 hang low off" && ! -e $uvstate/fallback ]] || fail "trip, clean, trip: $(trips)"
+
+uvsetup boot1
+run_boot boot1 hang "low $LOW"
+cp "$uvstate/trips" "$tmp/trips.before"
+echo other.1 > "$tmp/confirmed"
+run_boot boot2 - "low $LOW"
+same "$uvstate/trips" "$tmp/trips.before" || fail "unconfirmed boot changed the line: $(trips)"
+echo abc.0 > "$tmp/confirmed"
+run_boot boot3 oob "low $LOW"
+[[ $(v "$uvstate/fallback") == "oob low off boot3" ]] || fail "trip, neutral boot, trip: $(v "$uvstate/fallback")"
+
+DEEP=305000000:64,400000000:64,441600000:128,490000000:128,525000000:128,587000000:192
+printf 'low Low %s\ndeep Deep %s\n' "$LOW" "$DEEP" > "$tmp/uv2.conf"
+export MICROOS_GPU_UNDERVOLTS=$tmp/uv2.conf
+uvsetup boot1
+run_boot boot1 hang "low $LOW"
+boot boot2
+start
+uvset "deep $DEEP" > /dev/null
+want "$dev/gpu_levels" "$DEEP" "other names after a trip boot"
+[[ $(trips) == "0 boot2 - deep off" ]] || fail "other names after a trip boot: $(trips)"
+r=$(grep -n "undervolt deep: trip count reset for a new preset" "$tmp/log" | cut -d: -f1)
+a=$(grep -n "undervolt deep set, applied from the next GPU start" "$tmp/log" | cut -d: -f1)
+[[ -n $r && -n $a ]] && (( r < a )) || fail "reset line not written before the apply"
+tripnow hang
+[[ $(trips) == "1 boot2 hang deep off" && ! -e $uvstate/fallback ]] || fail "a stored key change kept the count: $(trips)"
+stop
+export MICROOS_GPU_UNDERVOLTS=$tree/usr/lib/microos/gpu-undervolt.conf
+
+uvsetup boot1
+echo "low $LOW boot1" > "$uvstate/awake"
+echo hang > "$dev/gpu_levels_fallback"
+snap=$(snapshot)
+exec {lk}> "$uvstate/trips.lock"
+flock -x "$lk"
+"$clean" {lk}>&- &
+cl=$!
+sleep 0.5
+kill -0 "$cl" 2> /dev/null || fail "clean unit did not wait for the lock"
+[[ ! -e $uvstate/trips ]] || fail "clean unit wrote trips under a held lock"
+exec {lk}>&-
+wait "$cl" || fail "clean unit under the lock exited $?"
+[[ $(trips) == "1 boot1 hang low off" ]] || fail "clean unit after the lock: $(trips)"
+rm "$uvstate/trips"
+echo "low $LOW boot1" > "$uvstate/awake"
+exec {lk}> "$uvstate/trips.lock"
+flock -x "$lk"
+"$powerd" > "$tmp/log" 2>&1 {lk}>&- &
+pd=$!
+sleep 0.5
+[[ ! -e $uvstate/trips ]] || fail "powerd wrote trips under a held lock"
+exec {lk}>&-
+python3 "$bus" wait-name 10 || fail "powerd did not own its name after the lock"
+[[ $(trips) == "1 boot1 hang low off" ]] || fail "powerd start in a trip boot: $(trips)"
+stop
+
+uvsetup boot1
+echo "low $LOW boot1" > "$uvstate/awake"
+shut
+[[ ! -e $uvstate/awake && ! -e $uvstate/fallback && $(trips) == "0 boot1 - low off" ]] ||
+  fail "clean shutdown without a trip: $(trips)"
+echo "low $LOW boot1" > "$uvstate/awake"
+echo hfi > "$dev/gpu_levels_fallback"
+shut
+[[ ! -e $uvstate/awake && ! -e $uvstate/fallback && $(trips) == "1 boot1 hfi low off" ]] ||
+  fail "clean shutdown after a trip with count 0: $(trips)"
+echo "low $LOW boot1" > "$uvstate/awake"
+shut
+[[ ! -e $uvstate/awake && ! -e $uvstate/fallback && $(trips) == "1 boot1 hfi low off" ]] ||
+  fail "clean shutdown after a trip raised in this boot: $(trips)"
+echo "1 boot0 hang low off" > "$uvstate/trips"
+echo "low $LOW boot1" > "$uvstate/awake"
+shut
+[[ ! -e $uvstate/awake && $(v "$uvstate/fallback") == "hfi low off boot1" && $(trips) == "0 boot1 hfi low off" ]] ||
+  fail "clean shutdown after a trip with count 1: fallback $(v "$uvstate/fallback"), trips $(trips)"
+rm "$uvstate/fallback"
+cp "$uvstate/trips" "$tmp/trips.before"
+shut
+same "$uvstate/trips" "$tmp/trips.before" && [[ ! -e $uvstate/fallback ]] || fail "clean shutdown without awake wrote"
+echo "low $LOW boot0" > "$uvstate/awake"
+shut
+same "$uvstate/trips" "$tmp/trips.before" && [[ -e $uvstate/awake && ! -e $uvstate/fallback ]] ||
+  fail "clean shutdown with an awake of another boot"
+grep -n '/recorded' "$powerd" "$clean" && fail "the recorded marker is still named"
+done_line() { seen "UndervoltRequestDone $1" "$2"; }
+request() { microset python3 "$bus" request "$@"; }
+uvsetup boot1
+start
+monitor
+echo 0 > "$HOLD_RC"
+[[ $(request 1 low "$LOW") == "" ]] || fail "RequestUndervolt refused"
+for _ in $(seq 100); do [[ -f $holddir/gpu-undervolt ]] && break; sleep 0.05; done
+[[ $(v "$holddir/gpu-undervolt") == "$pd"$'\n'"gpu-undervolt" ]] || fail "hint file: $(v "$holddir/gpu-undervolt")"
+[[ $(request 2 low "$LOW") == org.freedesktop.DBus.Error.LimitsExceeded ]] || fail "second request while waiting accepted"
+touch "$HOLD_GO"
+done_line "1 accepted low $LOW" "held request"
+[[ $(v "$HOLD_ARGS") == "--yield recovery BTN_SOUTH 1 15" ]] || fail "pad-hold arguments: $(v "$HOLD_ARGS")"
+for _ in $(seq 100); do [[ ! -e $holddir/gpu-undervolt ]] && break; sleep 0.05; done
+[[ ! -e $holddir/gpu-undervolt ]] || fail "hint file left after the hold"
+grep -q "UndervoltRequestDone 2 " "$tmp/mon" && fail "refused second request emitted"
+[[ $(request 3 low 305000000:64) == org.freedesktop.DBus.Error.InvalidArgs ]] || fail "wrong levels accepted"
+[[ $(request 3 off "") == org.freedesktop.DBus.Error.InvalidArgs ]] || fail "off requested"
+[[ $(root python3 "$bus" request 3 low "$LOW") == org.freedesktop.DBus.Error.AccessDenied ]] || fail "RequestUndervolt from root"
+[[ $(wheel python3 "$bus" request 3 low "$LOW") == org.freedesktop.DBus.Error.AccessDenied ]] || fail "RequestUndervolt from wheel"
+[[ $(game python3 "$bus" request 3 low "$LOW") == org.freedesktop.DBus.Error.AccessDenied ]] || fail "RequestUndervolt from a game"
+request 4 low "$LOW" > /dev/null
+touch "$HOLD_GO"
+done_line "4 accepted low $LOW" "accept"
+uvset off > /dev/null
+request 5 low "$LOW" > /dev/null
+touch "$HOLD_GO"
+done_line "5 accepted low $LOW" "accept after a shallower push"
+echo 1 > "$HOLD_RC"
+request 6 low "$LOW" > /dev/null
+touch "$HOLD_GO"
+done_line "6 refused A not held low $LOW" "first refusal"
+request 7 low "$LOW" > /dev/null
+touch "$HOLD_GO"
+done_line "7 refused A not held low $LOW" "second refusal"
+echo 3 > "$HOLD_RC"
+request 8 low "$LOW" > /dev/null
+touch "$HOLD_GO"
+done_line "8 refused another hold is waiting low $LOW" "hold lock busy"
+want "$dev/gpu_levels" "" "requests"
+request 9 low "$LOW" > /dev/null
+for _ in $(seq 100); do [[ -f $holddir/gpu-undervolt ]] && break; sleep 0.05; done
+stop
+start
+[[ ! -e $holddir/gpu-undervolt ]] || fail "hint file kept over a restart"
+touch "$HOLD_GO"
+sleep 0.5
+grep -q "UndervoltRequestDone 9 " "$tmp/mon" && fail "request over a restart emitted"
+[[ $(request 10 low "$LOW") == "" ]] || fail "request after a restart refused"
+touch "$HOLD_GO"
+done_line "10 refused another hold is waiting low $LOW" "request after a restart"
+unmonitor
+stop
+
+uvsetup boot1
+MICROOS_GPU_UNDERVOLT_COOLDOWN=1 start
+monitor
+echo 1 > "$HOLD_RC"
+request 20 low "$LOW" > /dev/null
+touch "$HOLD_GO"
+done_line "20 refused A not held low $LOW" "first request with a cooldown"
+[[ $(request 21 low "$LOW") == org.freedesktop.DBus.Error.LimitsExceeded ]] || fail "request inside the cooldown accepted"
+sleep 1.2
+[[ $(request 22 low "$LOW") == "" ]] || fail "request after the cooldown refused"
+touch "$HOLD_GO"
+done_line "22 refused A not held low $LOW" "request after the cooldown"
+unmonitor
+stop
+uvsetup boot1
+echo "recovery microos-recovery.service 3 0" > "$tmp/session-current"
+start
+[[ $(request 30 low "$LOW") == org.freedesktop.DBus.Error.AccessDenied ]] || fail "request in recovery accepted"
+[[ ! -e $holddir/gpu-undervolt ]] || fail "request in recovery wrote the hint"
+echo "steam gamescope-session-plus@steam.service 4 0" > "$tmp/session-current"
+[[ $(request 31 low "$LOW") == "" ]] || fail "request outside recovery refused"
+touch "$HOLD_GO"
+stop
+rm -f "$tmp/session-current"
+
+uvsetup boot1
+python3 - "$powerd" "$LOW" > "$tmp/errno" 2>&1 <<'PY'
+import errno
+import importlib.machinery
+import importlib.util
+import os
+import sys
+
+loader = importlib.machinery.SourceFileLoader("powerd", sys.argv[1])
+powerd = importlib.util.module_from_spec(importlib.util.spec_from_loader("powerd", loader))
+loader.exec_module(powerd)
+low = sys.argv[2]
+levels = powerd.SYSFS + powerd.GPU_DEV + "/gpu_levels"
+for name, err, back in (("einval", errno.EINVAL, ""), ("enodev", errno.ENODEV, ""), ("erofs", errno.EROFS, ""),
+                        ("mismatch", 0, "305000000:64"), ("ok", 0, low)):
+    for f in (powerd.UV_RUN + "/applied", powerd.UV_STATE + "/awake", powerd.UV_STATE + "/fallback"):
+        if os.path.exists(f):
+            os.unlink(f)
+    with open(levels, "w") as f:
+        f.write(back)
+    powerd.write_levels = lambda value, err=err: err
+    p = powerd.Power()
+    p.set_undervolt("low " + low)
+    print(name, os.path.exists(powerd.UV_STATE + "/awake"), p.fallback() or "-", p.undervolt == "low " + low)
+PY
+for l in "einval False refused True" "enodev False - True" "erofs False - True" "mismatch False - True" "ok True - True"; do
+  grep -qx "$l" "$tmp/errno" || fail "apply errno: no '$l' in $(cat "$tmp/errno")"
+done
+grep -q "undervolt low refused by the kernel" "$tmp/errno" || fail "EINVAL not logged"
+grep -q "gpu_levels reads '305000000:64'" "$tmp/errno" || fail "read back mismatch not logged"
 
 if (( rc == 0 )); then
   echo "powerd: ok"
