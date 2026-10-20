@@ -259,6 +259,22 @@ sleep 1
 sleep 4
 [[ $(prop Target) == "$HEAD" ]] || fail "reconcile after the return cleared Target"
 
+sleep 1
+before=$(n Connect)
+st teardown
+st own
+st adapter 0
+st device AA:AA:AA:AA:AA:01 headset 0
+sleep 1.5
+[[ $(n Connect) == "$before" ]] || fail "a Connect while the returned adapter is off"
+[[ $(prop Phase) == notready ]] || fail "Phase with the adapter off: $(prop Phase)"
+st prop adapter Powered 1
+waitn Connect $((before + 1)) || fail "the Powered edge after the return gave no boot run"
+sleep 1
+[[ $(n Connect) == $((before + 1)) ]] || fail "the Powered edge after the return gave more than one boot attempt"
+sleep 4.5
+[[ $(prop Target) == "$HEAD" ]] || fail "reconcile after the P0 order return cleared Target"
+
 st remove AA:AA:AA:AA:AA:01
 sleep 2
 [[ $(prop Target) == "$HEAD" ]] || fail "a forget cleared Target before 3 s"
