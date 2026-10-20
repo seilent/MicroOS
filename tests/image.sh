@@ -332,6 +332,15 @@ schema=/usr/share/microset/schema.d/10-microset.json
 enum() { jq -er --arg k "$1" '.keys[$k].enum | sort | join(" ")' "$schema" || fail "$schema has no enum for $1"; }
 [[ $(jq -r '.keys["display.brightness"].applier' "$schema") == backlight ]] \
   || fail "$schema has no display.brightness with applier backlight"
+for k in audio.bt_codec audio.bt_codec_headphones; do
+  codecs=$(python3 -c 'import re
+s = open("/usr/libexec/microos/microos-audio").read()
+print(" ".join(sorted(re.findall(r"\"(\w+)\": \"[^\"]+\"", re.search(r"^CODECS = \{(.*)\}$", s, re.M).group(1))) + ["auto"]))') \
+    || fail "no CODECS table in microos-audio"
+  for c in $(enum "$k"); do
+    [[ " $codecs " == *" $c "* ]] || fail "$k value $c is not in microos-audio CODECS ($codecs)"
+  done
+done
 profiles=$(sed -n 's/^\[\(.*\)\]$/\1/p' /usr/lib/microos/power-profiles.conf | grep -vx tdp | sort | paste -sd' ')
 schemaprofiles=$(enum power.profile)
 [[ $schemaprofiles == "$profiles" ]] || fail "power.profile enum $schemaprofiles, power-profiles.conf $profiles"
