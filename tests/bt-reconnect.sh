@@ -297,6 +297,57 @@ st own
 sleep 6
 [[ $(prop Target) == "$HEAD" ]] || fail "a valid target dropped at the return: $(prop Target)"
 
+fresh
+printf '{"phone": "BB:BB:BB:BB:BB:01"}\n' > "$state"
+st prop BB:BB:BB:BB:BB:01 Connected 1
+st default ConnectProfile ok
+st default DisconnectProfile ok
+start_daemon
+P=BB:BB:BB:BB:BB:01
+mkfifo "$tmp/r.in"
+python3 "$client" holder < "$tmp/r.in" > "$tmp/r.out" & pids+=($!)
+exec 9> "$tmp/r.in"
+claim() {
+  local before
+  before=$(wc -l < "$tmp/r.out")
+  printf '%s\n' "$@" >&9
+  for _ in {1..50}; do (( $(wc -l < "$tmp/r.out") >= before + $# )) && break; sleep 0.1; done
+}
+claim "SetRole receiver" "Scope true"
+waitprop Role receiver 2 || fail "receiver claim: $(prop Role)"
+st disconnected $P ss org.bluez.Reason.Timeout
+waitn ConnectProfile 1 $P || fail "no ConnectProfile to the phone"
+[[ $(awk -v a=$P '$2 == "ConnectProfile" && $3 == a { print $4 }' "$calls") == 0000110c-0000-1000-8000-00805f9b34fb ]] \
+  || fail "ConnectProfile not 0000110c: $(cat "$calls")"
+waitn DisconnectProfile 1 $P 120 || fail "no DisconnectProfile without A2DP"
+mapfile -t a < <(stamps ConnectProfile $P)
+mapfile -t b < <(stamps DisconnectProfile $P)
+within "$(python3 -c "print(${b[0]} - ${a[0]})")" 9.8 11.0 || fail "DisconnectProfile not 10 s after the ok: ${a[*]} ${b[*]}"
+[[ $(awk -v a=$P '$2 == "DisconnectProfile" && $3 == a { print $4 }' "$calls") == 0000110c-0000-1000-8000-00805f9b34fb ]] \
+  || fail "DisconnectProfile not 0000110c"
+[[ $(n Connect $P) == 0 && $(n Disconnect $P) == 0 ]] || fail "Connect or Disconnect sent to the phone"
+grep -qF "oui BB:BB:BB" "$dlog" || fail "no OUI line"
+
+claim "Scope false" "Scope true"
+st disconnected $P ss org.bluez.Reason.Timeout
+waitn ConnectProfile 2 $P || fail "no ConnectProfile after a new scope edge"
+sleep 3
+restart_daemon
+waitn DisconnectProfile 2 $P 120 || fail "no DisconnectProfile after a restart inside the window"
+mapfile -t a < <(stamps ConnectProfile $P)
+mapfile -t b < <(stamps DisconnectProfile $P)
+within "$(python3 -c "print(${b[1]} - ${a[1]})")" 9.5 11.5 || fail "restart: DisconnectProfile not at until: ${a[*]} ${b[*]}"
+
+claim "SetRole receiver" "Scope true"
+st disconnected $P ss org.bluez.Reason.Timeout
+waitn ConnectProfile 3 $P || fail "no ConnectProfile for the A2DP case"
+sleep 1
+st transport fd1 $P 0000110b
+waitprop Phase idle 3 || fail "a phone transport does not end the receiver run: $(prop Phase)"
+sleep 10
+[[ $(n DisconnectProfile $P) == 2 ]] || fail "DisconnectProfile with A2DP up"
+exec 9>&-
+
 stop_all
 (( rc == 0 )) && echo "bt-reconnect: ok"
 exit $rc
