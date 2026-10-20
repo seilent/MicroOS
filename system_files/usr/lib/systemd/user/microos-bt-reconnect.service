@@ -1,0 +1,17 @@
+[Unit]
+Description=Bluetooth reconnect to the last headset
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=dbus
+BusName=net.seilent.MicroOs.Reconnect
+ExecStart=/usr/libexec/microos/microos-bt-reconnect
+Restart=on-failure
+RestartSec=3
+StateDirectory=microos-bt-reconnect
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=default.target

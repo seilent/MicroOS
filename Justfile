@@ -160,7 +160,7 @@ test-services:
     fedora=registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
     dnf="dnf -yq --setopt=install_weak_deps=False install"
     run() { podman run --rm --arch "$arch" -v "$PWD:/repo:ro,Z" "$@"; }
-    run "$fedora" sh -c "$dnf python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/steamos-manager-config.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh"
+    run "$fedora" sh -c "$dnf python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/steamos-manager-config.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh"
     run -v "$PWD/system_files/usr/bin/steamos-update:/usr/bin/steamos-update:ro,Z" "$fedora" \
       sh -c "$dnf systemd-udev && /repo/tests/helpers.sh"
     pin="/repo/build/pin-pipewire.sh /repo/packages/pipewire-aptx/SOURCE.env"
