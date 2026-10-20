@@ -29,6 +29,7 @@ MANAGER = "org.freedesktop.DBus.ObjectManager"
 LOGIN = "org.freedesktop.login1"
 SOURCE_UUID = "0000110a"
 SINK_UUID = "0000110b"
+AVRCP_TARGET = "0000110c-0000-1000-8000-00805f9b34fb"
 DEV = re.compile(r"/org/bluez/hci0/dev_([0-9A-F]{2}(?:_[0-9A-F]{2}){5})")
 ADDR = re.compile(r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}")
 INVALID = "org.freedesktop.DBus.Error.InvalidArgs"
@@ -38,6 +39,7 @@ REASONS = ("org.bluez.Reason.Timeout", "org.bluez.Reason.Unknown")
 ROLES = ("receiver", "headphones")
 HEADSET_KINDS = ("loss", "boot", "want")
 DROP = ("hold", "role", "target", "headset")
+CUT = ("sleep", "owner", "power")
 
 LOSS_GAPS = (1.0, 2.0, 4.0, 8.0)
 B_GAP, B_JITTER, B_END = 30.0, 5.0, 300.0
@@ -238,10 +240,13 @@ class Engine:
         self.ready_since = None
         self.reconcile_at = None
         self.boot_wait = None
+        self.window = None
+        self.phone_held = None
         state = load_state(path, say)
         self.target = device_path(state["target"])
         self.phone = device_path(state["phone"])
         self.start_boot = state["start_boot"]
+        self.pending = state["pending_a2dp"]
 
     def addr(self, path):
         return address(path) or path or "none"
@@ -295,12 +300,17 @@ class Engine:
         }
 
     def persist(self):
-        state = {"target": address(self.target), "phone": address(self.phone), "pending_a2dp": None,
+        w = self.window
+        pending = {"addr": address(w["path"]), "boot_id": self.boot_id, "until": w["until_boot"]} if w else None
+        state = {"target": address(self.target), "phone": address(self.phone), "pending_a2dp": pending,
                  "start_boot": self.start_boot}
         try:
             save_state(self.path, state)
         except OSError as e:
             self.say(f"{self.path}: {e.strerror or e}, kept in memory")
+
+    def uuid_of(self, r):
+        return SINK_UUID if r.kind == "receiver" else SOURCE_UUID
 
     def pageable(self, path):
         d = self.devices.get(path)
@@ -331,7 +341,12 @@ class Engine:
         stack = self.stack()
         ready = self.ready()
         if not ready:
-            self.stop(self.not_ready_why(), now)
+            why = self.not_ready_why()
+            self.stop(why, now)
+            if why in CUT and self.window is not None:
+                self.say(f"{self.addr(self.window['path'])} a2dp window ended: {why}")
+                self.window = None
+                self.persist()
             self.reconcile_at = None
             self.boot_wait = None
         paused = self.adapter and (self.discovering or self.discoverable)
@@ -423,7 +438,7 @@ class Engine:
         if r.path not in self.devices:
             self.stop("no device", now)
             return
-        if self.audio_up(r.path, SOURCE_UUID):
+        if self.audio_up(r.path, self.uuid_of(r)):
             self.done(now)
             return
         if r.kind != "receiver" and not self.pageable(r.path):
@@ -434,7 +449,10 @@ class Engine:
                 self.unresolved(now)
             return
         r.acl = False
-        self.send(r.path, "Connect", (), {"kind": "attempt", "run": r})
+        if r.kind == "receiver":
+            self.send(r.path, "ConnectProfile", (AVRCP_TARGET,), {"kind": "attempt", "run": r})
+        else:
+            self.send(r.path, "Connect", (), {"kind": "attempt", "run": r})
 
     def reply(self, cid, error, message, now):
         f = self.inflight
@@ -453,14 +471,17 @@ class Engine:
     def run_reply(self, error, message, now):
         r = self.run
         event, r.event = r.event, False
-        if self.audio_up(r.path, SOURCE_UUID):
+        if self.audio_up(r.path, self.uuid_of(r)):
             self.done(now)
             return
         cls = classify(error, message, self.powered)
         if cls == "ok":
             self.unknown = 0
             r.busy = 0
-            r.audio_by = now + AUDIO_WAIT
+            if r.kind == "receiver":
+                self.open_window(r.path, now)
+            else:
+                r.audio_by = now + AUDIO_WAIT
             return
         self.say(f"{self.addr(r.path)} {self.label(r)} {error} {message}")
         if cls in ("stop", "notready"):
@@ -513,9 +534,36 @@ class Engine:
         if error is not None:
             return
         why = f.get("why")
-        if f["method"] == "Connect" and why in DROP:
+        if why == "done":
+            return
+        if f["method"] == "ConnectProfile" and why not in CUT:
+            self.open_window(f["path"], now)
+        elif f["method"] == "Connect" and why in DROP:
             self.say(f"{self.addr(f['path'])} late connect after {why}, disconnecting")
             self.queue.append({"path": f["path"], "method": "Disconnect", "args": (), "tries": 0, "at": now})
+
+    def open_window(self, path, now):
+        if self.window is not None and self.window["path"] != path:
+            self.close_window(now)
+        until = now + AUDIO_WAIT
+        self.window = {"path": path, "until": until, "until_boot": self.boottime() + AUDIO_WAIT}
+        self.persist()
+
+    def close_window(self, now):
+        w, self.window = self.window, None
+        path = w["path"]
+        if self.audio_up(path, SINK_UUID):
+            self.persist()
+            return
+        addr = self.addr(path)
+        self.say(f"{addr} no a2dp in {int(AUDIO_WAIT)} s, oui {addr[:8]}")
+        self.phone_held = path
+        r = self.run
+        if r is not None and r.kind == "receiver" and r.path == path:
+            self.stop("no a2dp", now, verb="ended")
+        self.queue.append({"path": path, "method": "DisconnectProfile", "args": (AVRCP_TARGET,), "tries": 0,
+                           "at": now})
+        self.persist()
 
     def disconnect_reply(self, f, error, message, now):
         cls = classify_disconnect(error, message)
@@ -664,8 +712,12 @@ class Engine:
             t["device"] = str(props["Device"])
         if "UUID" in props:
             t["uuid"] = str(props["UUID"]).lower()
+        w = self.window
+        if w is not None and w["path"] == t["device"] and t["uuid"].startswith(SINK_UUID):
+            self.window = None
+            self.persist()
         r = self.run
-        if r is not None and r.path == t["device"] and r.kind in HEADSET_KINDS and t["uuid"].startswith(SOURCE_UUID):
+        if r is not None and r.path == t["device"] and t["uuid"].startswith(self.uuid_of(r)):
             self.done(now)
 
     def disconnected(self, path, name, message, now):
@@ -678,6 +730,8 @@ class Engine:
             return
         if self.role() == "headphones" and path == self.target:
             self.start_run("loss", path, now, now + LOSS_GAPS[0])
+        elif self.role() == "receiver" and path == self.phone and self.scopes and path != self.phone_held:
+            self.start_run("receiver", path, now, now + LOSS_GAPS[0])
         self.pump(now)
 
     def sleep(self, going, now):
@@ -694,6 +748,8 @@ class Engine:
         self.pump(now)
 
     def tick(self, now):
+        if self.window is not None and now >= self.window["until"]:
+            self.close_window(now)
         r = self.run
         if r is not None and r.audio_by is not None and now >= r.audio_by:
             r.audio_by = None
@@ -739,6 +795,8 @@ class Engine:
                     times.append(r.lost_at + self.end_of(r))
         if self.inflight is None and self.owned:
             times.extend(item["at"] for item in self.queue)
+        if self.window is not None:
+            times.append(self.window["until"])
         times.extend(at + GRACE for at in self.graces.values())
         if self.reconcile_at is not None:
             times.append(self.reconcile_at)
@@ -751,6 +809,9 @@ class Engine:
         if path == self.target:
             self.say(f"target {self.addr(path)} cleared: {why}")
             self.target = None
+            self.persist()
+        if self.window is not None and self.window["path"] == path:
+            self.window = None
             self.persist()
         if path == self.phone:
             self.say(f"phone {self.addr(path)} cleared: {why}")
@@ -777,6 +838,9 @@ class Engine:
         self.say(f"target {self.addr(path)} ({why})")
 
     def set_phone(self, path, now):
+        r = self.run
+        if r is not None and r.kind == "receiver" and r.path != path:
+            self.stop("phone", now)
         self.phone = path
         self.persist()
         self.say(f"phone {self.addr(path)}")
@@ -828,7 +892,18 @@ class Engine:
         return self.membership(self.holds, "Hold", sender, on, now)
 
     def scope(self, sender, on, now):
-        return self.membership(self.scopes, "Scope", sender, on, now)
+        live = bool(self.scopes)
+        err = self.membership(self.scopes, "Scope", sender, on, now)
+        self.scope_changed(live, now)
+        return err
+
+    def scope_changed(self, live, now):
+        if bool(self.scopes) == live:
+            return
+        if self.scopes:
+            self.phone_held = None
+        else:
+            self.stop("scope", now, ("receiver",))
 
     def membership(self, group, method, sender, on, now):
         if on and sender not in group:
@@ -873,6 +948,7 @@ class Engine:
         if name in self.scopes:
             self.scopes.discard(name)
             dropped.append("Scope")
+            self.scope_changed(True, now)
         boot = False
         if name in self.claims:
             before = self.role()
@@ -896,6 +972,14 @@ class Engine:
         count = s["count"] + 1 if same else 1
         throttled = same and 0 <= bt - s["at"] < THROTTLE
         self.start_boot = {"boot_id": self.boot_id, "at": bt, "count": count}
+        p, self.pending = self.pending, None
+        if p is not None:
+            path = device_path(p["addr"])
+            d = self.devices.get(path)
+            if self.boot_id and p["boot_id"] == self.boot_id and d is not None and d["connected"] and not self.audio_up(path, SINK_UUID):
+                left = max(0.0, p["until"] - bt)
+                self.window = {"path": path, "until": now + left, "until_boot": p["until"]}
+                self.say(f"{self.addr(path)} a2dp window from the last run, {left:.1f} s left")
         self.persist()
         self.say(f"start {count} in this boot" + (", start boot run skipped" if throttled else ""))
         self.was_stack, self.was_ready = self.stack(), self.ready()
