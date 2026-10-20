@@ -30,6 +30,13 @@ done
 grep -qE '^(BindsTo|Requires|PartOf)=.*microos-audio' "$equnit" && fail "${equnit##*/} is bound to microos-audio"
 grep -qxF "enable microos-audio.service" "$tree/usr/lib/systemd/user-preset/60-microos-steam.preset" ||
   fail "microos-audio.service is not in the user preset"
+wpdir=$tree/usr/lib/systemd/user/wireplumber.service.d/60-microos-config-dir.conf
+wpdefaults=%E/wireplumber:/etc/xdg/wireplumber:/etc/wireplumber:/usr/local/share/wireplumber:/usr/share/wireplumber
+[[ $(< "$wpdir") == $'[Service]\nEnvironment=WIREPLUMBER_CONFIG_DIR=%t/microos-audio/wireplumber:'"$wpdefaults" ]] ||
+  fail "${wpdir##*/} is not the runtime dir followed by the default lookup: $(cat "$wpdir")"
+wpenv=$(sed -n 's/^Environment=WIREPLUMBER_CONFIG_DIR=//p' "$wpdir")
+[[ ${wpenv%%:*} == %t/microos-audio/wireplumber && ${wpenv#*:} == "$wpdefaults" ]] ||
+  fail "WIREPLUMBER_CONFIG_DIR does not list the runtime dir first and every default dir after it: $wpenv"
 
 cat > "$tmp/bus.conf" << EOF
 <busconfig>
