@@ -38,7 +38,10 @@ fi
 
 if [[ $mode == rollback ]]; then
   [[ $rollback == yes ]] || { log "rollback refused: no rollback deployment"; exit 1; }
-  "$hold" BTN_SOUTH 1 0 || { log "rollback refused: A not held for 1 s"; exit 1; }
+  holdrc=0
+  "$hold" BTN_SOUTH 1 0 || holdrc=$?
+  (( holdrc != 3 )) || { log "rollback refused: another A hold is waiting"; exit 1; }
+  (( ! holdrc )) || { log "rollback refused: A not held for 1 s"; exit 1; }
   rollback "rollback from recovery" || exit 1
   systemctl reboot
   exit 0

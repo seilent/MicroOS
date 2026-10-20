@@ -218,6 +218,7 @@ if sorted(deny) != sorted(want) or not 0 <= user < no < yes:
     sys.exit("deny %s, user check at %d, NO at %d, first YES at %d" % (deny, user, no, yes))
 PY
 grep -qx 'd /run/microos/hold 0755 root root -' /usr/lib/tmpfiles.d/microos.conf || fail "tmpfiles lacks /run/microos/hold"
+grep -qx 'f /run/microos/hold/.lock 0600 root root -' /usr/lib/tmpfiles.d/microos.conf || fail "tmpfiles lacks the root 0600 hold lock"
 inputro=/usr/lib/udev/rules.d/72-microos-input-ro.rules
 [[ $(stat -c '%a %U %G' "$inputro") == '644 root root' ]] || fail "$inputro missing, mode or owner"
 udevadm verify --resolve-names=never "$inputro" > /dev/null 2>&1 || fail "$inputro does not verify"

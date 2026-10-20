@@ -512,11 +512,14 @@ cmd_format() {
     else
       log "no hint file $rundir/hold/storage"
     fi
-    if ! holderr=$("$padhold" BTN_SOUTH 1 "$holdwait" 2>&1); then
+    holdrc=0
+    holderr=$("$padhold" BTN_SOUTH 1 "$holdwait" 2>&1) || holdrc=$?
+    if (( holdrc )); then
       if [[ -n $holderr ]]; then
         echo "$holderr" >&2
         logger -t microos-pad-hold "$holderr" || true
       fi
+      (( holdrc != 3 )) || quit 53 "another A hold is waiting, nothing written"
       quit 77 "A not held for 1 s within $holdwait s, nothing written"
     fi
     rm -f "$rundir/hold/storage" ${hint:+"$hint"}
