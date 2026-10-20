@@ -15,6 +15,14 @@ cat > "$tmp/bin/logger" <<'EOF'
 printf '%s\n' "$*" >> "$LOGGER_LOG"
 EOF
 chmod +x "$tmp/bin/logger"
+cat > "$tmp/bin/busctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$BUSCTL_LOG"
+[[ -z ${BUSCTL_FAIL:-} ]] || { echo "$BUSCTL_FAIL" >&2; exit 1; }
+EOF
+chmod +x "$tmp/bin/busctl"
+mkdir -p "$tmp/run"
+lock=$tmp/run/steamos-priv-write.lock
 
 node=/sys/class/backlight/backlight/brightness
 dev=devices/platform/soc@0/c440000.spmi/spmi-0/0-05/c440000.spmi:pmic@5:leds@d800/backlight/backlight
@@ -26,18 +34,47 @@ echo 4095 > "$sys/class/backlight/other/max_brightness"
 
 run() {
   : > "$tmp/log"
+  : > "$tmp/busctl"
   r=0
-  env -i PATH="$tmp/bin:/usr/bin:/bin" LOGGER_LOG="$tmp/log" MICROOS_SYSFS="$sys" "$@" > "$tmp/out" 2>&1 || r=$?
+  env -i PATH="$tmp/bin:/usr/bin:/bin" LOGGER_LOG="$tmp/log" BUSCTL_LOG="$tmp/busctl" XDG_RUNTIME_DIR="$tmp/run" \
+    MICROOS_SYSFS="$sys" "$@" > "$tmp/out" 2>&1 || r=$?
 }
 logs() { wc -l < "$tmp/log"; }
+set_call() {
+  echo "--timeout=2 call net.seilent.MicroSet /net/seilent/MicroSet net.seilent.MicroSet1 Set sv display.brightness u $1"
+}
 
-for v in 0 123 3071 4095; do
+for v in 1:2 123:300 3071:7499 4095:10000; do
   echo 1000 > "$sys/$dev/brightness"
-  run "$helpers/steamos-priv-write" "$node" "$v"
-  (( r == 0 )) || fail "priv-write $v: exit $r: $(cat "$tmp/out")"
-  [[ $(< "$sys/$dev/brightness") == "$v" ]] || fail "priv-write $v: brightness is $(< "$sys/$dev/brightness")"
-  (( $(logs) == 0 )) || fail "priv-write $v: logged $(cat "$tmp/log")"
+  run "$helpers/steamos-priv-write" "$node" "${v%:*}"
+  (( r == 0 )) || fail "priv-write ${v%:*}: exit $r: $(cat "$tmp/out")"
+  [[ $(< "$tmp/busctl") == "$(set_call "${v#*:}")" ]] || fail "priv-write ${v%:*}: busctl $(cat "$tmp/busctl")"
+  [[ $(< "$sys/$dev/brightness") == 1000 ]] || fail "priv-write ${v%:*}: wrote the node"
+  [[ $(< "$lock") =~ ^[0-9]+$ ]] || fail "priv-write ${v%:*}: lock holds $(cat "$lock")"
+  (( $(logs) == 0 )) || fail "priv-write ${v%:*}: logged $(cat "$tmp/log")"
 done
+
+mkdir -p "$tmp/proc"
+echo "99999999999.00 0.00" > "$tmp/proc/uptime"
+echo 999999999999 > "$lock"
+run MICROOS_PROC="$tmp/proc" "$helpers/steamos-priv-write" "$node" 500
+(( r == 0 && $(logs) == 0 )) || fail "priv-write after a later helper: exit $r, $(logs) logger calls"
+[[ ! -s $tmp/busctl ]] || fail "priv-write after a later helper: busctl $(cat "$tmp/busctl")"
+[[ $(< "$lock") == 999999999999 ]] || fail "priv-write after a later helper: lock holds $(cat "$lock")"
+run "$helpers/steamos-priv-write" "$node" 500
+[[ $r == 0 && $(< "$tmp/busctl") == "$(set_call 1221)" ]] ||
+  fail "priv-write after a lock above the boot tick count: exit $r, busctl $(cat "$tmp/busctl")"
+echo 1 > "$lock"
+run "$helpers/steamos-priv-write" "$node" 500
+[[ $r == 0 && $(< "$tmp/busctl") == "$(set_call 1221)" ]] ||
+  fail "priv-write after an earlier helper: exit $r, busctl $(cat "$tmp/busctl")"
+
+echo 7 > "$lock"
+run BUSCTL_FAIL="Call failed: Access denied" "$helpers/steamos-priv-write" "$node" 500
+(( r == 1 )) || fail "priv-write with busctl failing: exit $r, want 1"
+[[ $(< "$tmp/log") == "-t steamos-priv-write set failed, Call failed: Access denied: $node 500" ]] ||
+  fail "priv-write with busctl failing: logged $(cat "$tmp/log")"
+[[ $(< "$lock") == 7 ]] || fail "priv-write with busctl failing: lock holds $(cat "$lock")"
 
 refused() {
   echo 1000 > "$sys/$dev/brightness"
@@ -46,9 +83,12 @@ refused() {
   (( r == 1 )) || fail "priv-write $*: exit $r, want 1"
   [[ $(< "$sys/$dev/brightness") == 1000 && $(< "$sys/class/backlight/other/brightness") == 1000 ]] ||
     fail "priv-write $*: a brightness node changed"
+  [[ ! -s $tmp/busctl ]] || fail "priv-write $*: busctl $(cat "$tmp/busctl")"
   (( $(logs) == 1 )) || fail "priv-write $*: $(logs) logger calls, want 1"
   grep -q '^-t steamos-priv-write ' "$tmp/log" || fail "priv-write $*: logger tag: $(cat "$tmp/log")"
 }
+refused "$node" 0
+refused "$node" 00
 refused "$node" 4096
 refused "$node" -1
 refused "$node" 12a
@@ -64,6 +104,10 @@ refused "$node"
 refused "$node" 500 extra
 refused
 
+echo 30000 > "$sys/$dev/max_brightness"
+echo 1 > "$lock"
+run "$helpers/steamos-priv-write" "$node" 1
+[[ $r == 0 && $(< "$tmp/busctl") == "$(set_call 1)" ]] || fail "priv-write 1 of 30000: exit $r, busctl $(cat "$tmp/busctl")"
 echo nope > "$sys/$dev/max_brightness"
 refused "$node" 500
 echo 4095 > "$sys/$dev/max_brightness"

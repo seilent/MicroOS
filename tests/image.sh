@@ -82,10 +82,54 @@ steamrules=/usr/share/polkit-1/rules.d/50-microos-steam.rules
 for a in inhibit-handle-power-key inhibit-handle-suspend-key suspend reboot power-off; do
   grep -qF "\"org.freedesktop.login1.$a\"" "$steamrules" || fail "$steamrules lacks org.freedesktop.login1.$a"
 done
-for r in 'RUN+="/usr/bin/chgrp wheel /sys%p/brightness"' 'RUN+="/usr/bin/chmod g+w /sys%p/brightness"' \
-  'RUN+="/usr/bin/chgrp wheel /sys%p/bl_power"' 'RUN+="/usr/bin/chmod g+w /sys%p/bl_power"'; do
+for r in 'RUN+="/usr/bin/chgrp wheel /sys%p/bl_power"' 'RUN+="/usr/bin/chmod g+w /sys%p/bl_power"'; do
   grep -qF "$r" /usr/lib/udev/rules.d/60-microos-backlight.rules || fail "60-microos-backlight.rules lacks $r"
 done
+! grep -qF '/sys%p/brightness' /usr/lib/udev/rules.d/60-microos-backlight.rules \
+  || fail "60-microos-backlight.rules still opens brightness"
+grep -qxF 'z /sys/class/backlight/backlight/brightness 0664 root microset -' /usr/lib/tmpfiles.d/microos-backlight.conf \
+  || fail "microos-backlight.conf does not give brightness to group microset"
+dtb=/usr/lib/modules/$kver/dtb/$(sed -n 's/^MICROOS_DTB=//p' /usr/lib/microos/bootimg.conf)
+light=$(python3 - "$dtb" <<'PY'
+import struct
+import sys
+
+data = open(sys.argv[1], "rb").read()
+magic, _, off_struct, off_strings = struct.unpack(">IIII", data[:16])
+assert magic == 0xD00DFEED, "not a DTB"
+
+
+def cstr(at):
+    end = data.index(b"\0", at)
+    return data[at:end].decode(), end
+
+
+pos, path, found = off_struct, [], None
+while True:
+    (token,) = struct.unpack(">I", data[pos:pos + 4])
+    pos += 4
+    if token == 1:
+        name, end = cstr(pos)
+        pos = (end + 4) & ~3
+        path.append(name)
+    elif token == 2:
+        path.pop()
+    elif token == 3:
+        size, nameoff = struct.unpack(">II", data[pos:pos + 8])
+        pos += 8
+        value = data[pos:pos + size]
+        pos = (pos + size + 3) & ~3
+        if cstr(off_strings + nameoff)[0] == "compatible" and b"qcom,pm8150l-wled" in value.split(b"\0"):
+            found = path[1:]
+    elif token == 9:
+        break
+soc, spmi, pmic, leds = found
+bus = spmi.split("@")[1] + "." + spmi.split("@")[0]
+print(f"/sys/devices/platform/{soc}/{bus}/spmi-0/0-05/{bus}:{pmic}:{leds}/backlight/backlight/brightness")
+PY
+) || fail "no WLED backlight node in $dtb"
+[[ $(< /usr/lib/systemd/system/microsetd.service.d/50-microos-backlight.conf) == $'[Service]\nReadWritePaths=-'"$light" ]] \
+  || fail "50-microos-backlight.conf does not open $light"
 grep -qE 'session\.dont-restore-off-profile"? *[=:] *true' /usr/share/wireplumber/wireplumber.conf.d/52-microos-pm2.conf \
   || fail "52-microos-pm2.conf does not set session.dont-restore-off-profile"
 grep -qE 'api\.alsa\.soft-mixer"? *[=:] *true' /usr/share/wireplumber/wireplumber.conf.d/50-microos-soft-mixer.conf \
@@ -278,6 +322,8 @@ done
 [[ $(rpm -qf /usr/share/fonts/microset/selawk.ttf) == microset-fonts-* ]] || fail "Selawik is not in microset-fonts"
 schema=/usr/share/microset/schema.d/10-microset.json
 enum() { jq -er --arg k "$1" '.keys[$k].enum | sort | join(" ")' "$schema" || fail "$schema has no enum for $1"; }
+[[ $(jq -r '.keys["display.brightness"].applier' "$schema") == backlight ]] \
+  || fail "$schema has no display.brightness with applier backlight"
 profiles=$(sed -n 's/^\[\(.*\)\]$/\1/p' /usr/lib/microos/power-profiles.conf | grep -vx tdp | sort | paste -sd' ')
 schemaprofiles=$(enum power.profile)
 [[ $schemaprofiles == "$profiles" ]] || fail "power.profile enum $schemaprofiles, power-profiles.conf $profiles"
@@ -553,6 +599,7 @@ hexgid=$(getent group hexagonrpc | cut -d: -f3) || fail "group hexagonrpc missin
 rules=$(sudo -l -U micro)
 grep -q '(ALL) ALL' <<< "$rules" || fail "micro has no wheel sudo rule"
 ! grep -q NOPASSWD <<< "$rules" || fail "micro has a NOPASSWD rule"
+! grep -qE '/tee( |,|$)' <<< "$rules" || fail "micro has a sudo rule for tee"
 
 [[ $(rpm -q --qf '%{VENDOR}' microdap) == MicroOS ]] || fail "microdap is not the MicroOS build"
 [[ ! -e /usr/lib/extension-release.d && ! -e /var/lib/extensions ]] || fail "sysext tree in the image"
