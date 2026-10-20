@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Tue, 20 Oct 2026 18:53:41 +0900
+Subject: [PATCH] ntdll: Don't call getrusage() in NtDelayExecution().
+
+Only a zero timeout returned the NtYieldExecution() status, and
+Windows may return STATUS_SUCCESS there too. Yield directly and keep
+the getrusage() pair in NtYieldExecution().
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ dlls/ntdll/unix/sync.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 67ab945..fed63c0 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -2483,10 +2483,10 @@ NTSTATUS WINAPI NtDelayExecution( BOOLEAN alertable, const LARGE_INTEGER *timeou
+             when = now.QuadPart - when;
+         }
+ 
+-        /* Note that we yield after establishing the desired timeout, but
+-           we only care about the result of the yield for zero timeouts */
+-        status = NtYieldExecution();
+-        if (!when) return status;
++#ifdef HAVE_SCHED_YIELD
++        sched_yield();
++#endif
++        if (!when) return STATUS_SUCCESS;
+ 
+         for (;;)
+         {
