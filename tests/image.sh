@@ -328,12 +328,86 @@ done
 ! grep -qE 'pwm|hwmon|thermal' /usr/libexec/microos/microos-powerd || fail "microos-powerd names a pwm, hwmon or thermal path"
 pu=/usr/lib/systemd/system/microos-powerd.service
 for l in CapabilityBoundingSet=CAP_DAC_OVERRIDE DevicePolicy=closed "DeviceAllow=char-input r" ProtectKernelTunables=yes \
-  "ReadWritePaths=/sys/devices/system/cpu -/sys/class/devfreq/3d00000.gpu /sys/fs/cgroup" \
+  "ReadWritePaths=/sys/devices/system/cpu -/sys/class/devfreq/3d00000.gpu /sys/fs/cgroup /run/microos/hold -/sys/devices/platform/soc@0/3d00000.gpu/gpu_levels" \
+  RuntimeDirectory=microos/gpu-undervolt RuntimeDirectoryPreserve=restart StateDirectory=microos/gpu-undervolt \
   "InaccessiblePaths=-/dev/shm -/dev/mqueue" ProtectKernelModules=yes ProtectKernelLogs=yes ProtectClock=yes \
   RestrictNamespaces=yes LockPersonality=yes SystemCallArchitectures=native; do
   grep -qxF "$l" "$pu" || fail "microos-powerd.service lacks $l"
 done
 ! grep -q '^PrivateDevices=' "$pu" || fail "microos-powerd.service sets PrivateDevices"
+uvconf=/usr/lib/microos/gpu-undervolt.conf
+[[ $(stat -c '%a %U %G' "$uvconf") == '644 root root' ]] || fail "$uvconf missing, mode or owner"
+python3 - "$uvconf" /usr/lib/modules/*/dtb/qcom/sm8250-ayaneo-pocket-micro2.dtb <<'PY' || fail "$uvconf rows break the level rules"
+import struct
+import sys
+
+gfx = {0, 48, 64, 128, 144, 192, 224, 256, 320, 384, 416}
+blob = open(sys.argv[2], "rb").read()
+off_struct, off_strings = struct.unpack(">II", blob[8:16])
+nodes, stack, pos = {}, [], off_struct
+while True:
+    token = struct.unpack(">I", blob[pos:pos + 4])[0]
+    pos += 4
+    if token == 1:
+        end = blob.index(b"\0", pos)
+        stack.append(blob[pos:end].decode())
+        nodes["/".join(stack)] = {}
+        pos = (end + 4) & ~3
+    elif token == 2:
+        stack.pop()
+    elif token == 3:
+        size, name = struct.unpack(">II", blob[pos:pos + 8])
+        key = blob[off_strings + name:blob.index(b"\0", off_strings + name)].decode()
+        nodes["/".join(stack)][key] = blob[pos + 8:pos + 8 + size]
+        pos = (pos + 8 + size + 3) & ~3
+    elif token == 9:
+        break
+phandles = {struct.unpack(">I", p["phandle"])[0]: n for n, p in nodes.items() if "phandle" in p}
+gpus = [p for p in nodes.values() if b"qcom,adreno\0" in p.get("compatible", b"")]
+if len(gpus) != 1:
+    sys.exit(f"{len(gpus)} GPU nodes")
+table = phandles[struct.unpack(">I", gpus[0]["operating-points-v2"])[0]]
+opps = sorted((struct.unpack(">Q", p["opp-hz"])[0], struct.unpack(">I", p["opp-level"])[0])
+              for n, p in nodes.items() if n.startswith(table + "/") and "opp-hz" in p)
+names = set()
+for raw in open(sys.argv[1]):
+    fields = raw.split()
+    if not fields:
+        continue
+    if len(fields) != 3 or fields[0] in names | {"off"}:
+        sys.exit(f"bad row {raw.strip()}")
+    names.add(fields[0])
+    row = [tuple(int(v) for v in pair.split(":")) for pair in fields[2].split(",")]
+    if [f for f, _ in row] != [f for f, _ in opps]:
+        sys.exit(f"{fields[0]}: frequencies {[f for f, _ in row]} are not the GPU OPPs {[f for f, _ in opps]}")
+    levels = [l for _, l in row]
+    for (f, l), (_, dt) in zip(row, opps):
+        if l not in gfx or l > dt:
+            sys.exit(f"{fields[0]}: {f}:{l} not a gfx.lvl level at most the DT level {dt}")
+    if levels != sorted(levels) or levels[0] < opps[0][1]:
+        sys.exit(f"{fields[0]}: levels {levels} decrease or drop below {opps[0][1]}")
+if not names:
+    sys.exit("no rows")
+PY
+grep -qxF "low Low 305000000:64,400000000:128,441600000:128,490000000:128,525000000:144,587000000:192" "$uvconf" ||
+  fail "$uvconf lacks the measured low row"
+uvrules=/usr/lib/udev/rules.d/70-microos-gpu-undervolt.rules
+udevadm verify --resolve-names=never "$uvrules" > /dev/null 2>&1 || fail "$uvrules does not verify"
+for e in 'ENV{GPU_LEVELS_FALLBACK}=="?*"' 'ENV{GPU_LEVELS_APPLIED}=="1"'; do
+  grep -F 'ACTION=="change", SUBSYSTEM=="platform", KERNEL=="3d00000.gpu", '"$e"', RUN+="/usr/bin/busctl --timeout=5 call net.seilent.MicroOs.Power /net/seilent/MicroOs/Power net.seilent.MicroOs.Power1 Reload"' \
+    "$uvrules" > /dev/null || fail "$uvrules lacks the $e rule"
+done
+uvclean=/usr/lib/systemd/system/microos-gpu-undervolt-clean.service
+for l in DefaultDependencies=no Conflicts=shutdown.target \
+  "Before=shutdown.target display-manager.service user@1000.service systemd-user-sessions.service" \
+  "After=systemd-tmpfiles-setup.service microos-powerd.service" Type=oneshot RemainAfterExit=yes \
+  ExecStop=/usr/libexec/microos/microos-gpu-undervolt-clean ProtectSystem=strict \
+  ReadWritePaths=-/var/lib/microos/gpu-undervolt CapabilityBoundingSet=; do
+  grep -qxF "$l" "$uvclean" || fail "microos-gpu-undervolt-clean.service lacks $l"
+done
+f=/usr/libexec/microos/microos-gpu-undervolt-clean
+[[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f is not a regular executable"
+! grep -q '/recorded' /usr/libexec/microos/microos-powerd "$f" || fail "the undervolt recorded marker is still named"
 [[ $(rpm -q --qf '%{VENDOR}' microset) == MicroOS ]] || fail "microset is not the MicroOS build"
 ! rpm -q microset-devel >/dev/null 2>&1 || fail "microset-devel is installed"
 [[ $(rpm -qf /usr/share/fonts/microset/selawk.ttf) == microset-fonts-* ]] || fail "Selawik is not in microset-fonts"

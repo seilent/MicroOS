@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-gpu-undervolt-clean
+state=${MICROOS_GPU_UNDERVOLT_STATE:-/var/lib/microos/gpu-undervolt}
+sysfs=${MICROOS_SYSFS:-/sys}
+proc=${MICROOS_PROC:-/proc}
+
+[[ -f $state/awake ]] || exit 0
+read -r name _ boot < "$state/awake" || true
+this=$(cat "$proc/sys/kernel/random/boot_id" 2> /dev/null) || this=""
+[[ -n $this && $boot == "$this" ]] || exit 0
+put() {
+  local tmp
+  tmp=$(mktemp "$state/.$1.XXXXXX") || { echo "$me: no temp file in $state" >&2; return 1; }
+  printf '%s\n' "$2" > "$tmp" && sync "$tmp" && mv -T "$tmp" "$state/$1" && sync -f "$state" ||
+    { rm -f "$tmp"; echo "$me: cannot write $state/$1" >&2; return 1; }
+}
+exec 9> "$state/trips.lock" || { echo "$me: cannot open $state/trips.lock" >&2; exit 1; }
+flock -x 9 || { echo "$me: cannot lock $state/trips.lock" >&2; exit 1; }
+read -r count tboot treason tuv toc _ 2> /dev/null < "$state/trips" || true
+[[ ${count:-} =~ ^[01]$ && ${tuv:-} == "$name" && ${toc:-} == off ]] || count=0
+trip=$(cat "$sysfs/devices/platform/soc@0/3d00000.gpu/gpu_levels_fallback" 2> /dev/null) || trip=""
+if [[ ! $trip =~ ^(hang|gmu|hfi|oob|start)$ ]]; then
+  put trips "0 $boot - $name off" || exit 1
+elif [[ ${tboot:-} != "$boot" || ${treason:--} == - ]]; then
+  if (( count == 0 )); then
+    put trips "1 $boot $trip $name off" || exit 1
+    echo "$me: undervolt $name tripped ($trip), kept for the next boot" >&2
+  else
+    put fallback "$trip $name off $boot" && put trips "0 $boot $trip $name off" || exit 1
+    echo "$me: undervolt $name tripped ($trip) on a second boot in a row, stock from the next boot" >&2
+  fi
+fi
+rm -f "$state/awake"
+sync -f "$state"

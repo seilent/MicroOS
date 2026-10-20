@@ -1,0 +1,2 @@
+ACTION=="change", SUBSYSTEM=="platform", KERNEL=="3d00000.gpu", ENV{GPU_LEVELS_FALLBACK}=="?*", RUN+="/usr/bin/busctl --timeout=5 call net.seilent.MicroOs.Power /net/seilent/MicroOs/Power net.seilent.MicroOs.Power1 Reload"
+ACTION=="change", SUBSYSTEM=="platform", KERNEL=="3d00000.gpu", ENV{GPU_LEVELS_APPLIED}=="1", RUN+="/usr/bin/busctl --timeout=5 call net.seilent.MicroOs.Power /net/seilent/MicroOs/Power net.seilent.MicroOs.Power1 Reload"
