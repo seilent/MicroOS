@@ -30,6 +30,8 @@ PMDOWN_MS = 5000
 ECHO_S = 2
 DEBOUNCE_MS = 200
 RETRY_MS = 1000
+CODEC_RETRY_MS = int(os.environ.get("MICROOS_AUDIO_CODEC_RETRY_MS", "1000"))
+CODEC_RETRIES = 5
 PACTL_TIMEOUT = 3
 ERRORS = (subprocess.SubprocessError, OSError, ValueError)
 SLOTS = ("headphones", "speaker", "usb", "bt")
@@ -55,7 +57,9 @@ EQ_KICKS = 3
 EQ_RESUME_MS = 300
 POWER_ON_WAITS = 10
 FULL = 65536
-CODECS = {"aptx": "aptX", "aac": "AAC", "ldac": "LDAC", "sbc": "SBC"}
+CODECS = {"aptx": "aptX", "aptx_hd": "aptX HD", "aac": "AAC", "ldac": "LDAC", "sbc": "SBC"}
+CODEC_KEYS = {"receiver": "audio.bt_codec", "headphones": "audio.bt_codec_headphones"}
+REMOTE_SINK = re.compile(r"a2dp-(sink|duplex)(-|$)")
 UPDATE = re.compile(r"update: id:0 key:'default\.configured\.audio\.sink' value:'(.*)' type:'[^']*'")
 REMOVE = re.compile(r"remove: id:0 (key:'default\.configured\.audio\.sink'|all keys)")
 
@@ -370,13 +374,18 @@ def chain_target(sink, sinks):
         return None
 
 
+def card_side(card):
+    return "headphones" if any(REMOTE_SINK.match(name) for name in card.get("profiles") or {}) else "receiver"
+
+
 def codec_profile(card, codec):
     profiles = card.get("profiles") or {}
     suffix = f"codec {CODECS[codec]})"
     for name, info in profiles.items():
         if info.get("available") is False:
             continue
-        if name == f"a2dp-sink-{codec}" or (name == "a2dp-sink" and str(info.get("description", "")).endswith(suffix)):
+        base = "a2dp-duplex" if name.startswith("a2dp-duplex") else "a2dp-sink"
+        if name == f"{base}-{codec}" or (name == base and str(info.get("description", "")).endswith(suffix)):
             return name
     return None
 
@@ -404,8 +413,9 @@ class Audio:
         self.eq = None
         self.units = None
         self.skip_logged = set()
-        self.codec = None
+        self.codec = {"receiver": None, "headphones": None}
         self.codec_done = {}
+        self.codec_fail = {}
         self.cards_dirty = True
         self.reset_pending = {}
         self.fold_logged = set()
@@ -471,7 +481,7 @@ class Audio:
             log(f"storing audio.output {output} failed: {err.message}")
 
     def sinks(self, text):
-        if " on card " in text and text.startswith("Event 'new'"):
+        if " on card " in text and text.startswith(("Event 'new'", "Event 'change'")):
             self.cards_dirty = True
         if " on sink " in text or " on card " in text:
             self.schedule()
@@ -859,11 +869,14 @@ class Audio:
         remove_conf(instance)
 
     def codecs(self):
-        if self.settling or self.codec is None or not self.cards_dirty:
+        wanted = self.codec.values()
+        if self.settling or all(v is None for v in wanted) or not self.cards_dirty:
             return
         self.cards_dirty = False
-        if self.codec == "auto":
+        if all(v in (None, "auto") for v in wanted):
             self.codec_done = {}
+            for ident in list(self.codec_fail):
+                self.drop_fail(ident)
             return
         try:
             cards = json.loads(run("pactl", "--format=json", "list", "cards"))
@@ -873,24 +886,72 @@ class Audio:
             self.again()
             return
         done = {}
+        seen = set()
         for card in cards:
             name = card.get("name") or ""
             if not name.startswith("bluez_card."):
                 continue
-            key = (name, (card.get("properties") or {}).get("object.serial", card.get("index")))
-            done[key] = self.codec
-            if self.codec_done.get(key) == self.codec:
+            side = card_side(card)
+            key, codec = CODEC_KEYS[side], self.codec[side]
+            if codec in (None, "auto"):
                 continue
-            profile = codec_profile(card, self.codec)
+            gateway = "audio-gateway" in (card.get("profiles") or {})
+            if side == "headphones" and gateway and not REMOTE_SINK.match(card.get("active_profile") or ""):
+                continue
+            ident = (name, (card.get("properties") or {}).get("object.serial", card.get("index")))
+            seen.add(ident)
+            previous = self.codec_done.get(ident)
+            if previous == (side, codec):
+                done[ident] = previous
+                continue
+            if side == "receiver":
+                done[ident] = (side, codec)
+                log(f"{key} {codec}: {name} streams from a phone, the phone picks the codec, left as is")
+                continue
+            profile = codec_profile(card, codec)
             if profile is None:
-                log(f"audio.bt_codec {self.codec}: {name} offers no profile for it, left as is")
-            elif card.get("active_profile") != profile:
+                self.drop_fail(ident)
+                done[ident] = (side, codec, None)
+                if previous != done[ident]:
+                    log(f"{key} {codec}: {name} offers no profile for it, left as is")
+                continue
+            fail = self.codec_fail.get(ident)
+            snap = (card.get("active_profile"), json.dumps(card.get("profiles"), sort_keys=True))
+            if fail and fail["snap"] != snap:
+                self.drop_fail(ident)
+                fail = None
+            if fail and fail["codec"] == codec and (fail["wait"] or fail["tries"] > CODEC_RETRIES):
+                continue
+            if card.get("active_profile") != profile:
                 try:
                     run("pactl", "set-card-profile", name, profile)
-                    log(f"audio.bt_codec {self.codec}: {name} profile {profile}")
+                    log(f"{key} {codec}: {name} profile {profile}")
                 except ERRORS as err:
-                    log(f"audio.bt_codec {self.codec}: setting {name} profile {profile} failed: {err}")
+                    if not fail or fail["codec"] != codec:
+                        self.drop_fail(ident)
+                        fail = {"codec": codec, "tries": 0, "snap": snap, "wait": None}
+                        self.codec_fail[ident] = fail
+                        log(f"{key} {codec}: setting {name} profile {profile} failed: {err}")
+                    fail["tries"] += 1
+                    if fail["tries"] <= CODEC_RETRIES:
+                        fail["wait"] = GLib.timeout_add(CODEC_RETRY_MS << (fail["tries"] - 1), self.codec_retry, ident)
+                    continue
+            self.drop_fail(ident)
+            done[ident] = (side, codec)
+        for ident in [i for i in self.codec_fail if i not in seen]:
+            self.drop_fail(ident)
         self.codec_done = done
+
+    def codec_retry(self, ident):
+        self.codec_fail[ident]["wait"] = None
+        self.cards_dirty = True
+        self.schedule()
+        return GLib.SOURCE_REMOVE
+
+    def drop_fail(self, ident):
+        fail = self.codec_fail.pop(ident, None)
+        if fail and fail["wait"]:
+            GLib.source_remove(fail["wait"])
 
     def load(self):
         self.bus.call(
@@ -908,15 +969,16 @@ class Audio:
         self.set_key("audio.max_volume", values.get("audio.max_volume", 100))
         self.set_key("audio.power_on_volume", values.get("audio.power_on_volume", 0))
         for key, value in values.items():
-            if key.startswith(CHAIN_KEYS) or key == "audio.bt_codec":
+            if key.startswith(CHAIN_KEYS) or key in CODEC_KEYS.values():
                 self.set_key(key, value)
         self.set_output(values.get("audio.output"))
 
     def set_key(self, key, value):
-        if key == "audio.bt_codec":
-            self.codec = value
-            self.cards_dirty = True
-            return
+        for side, name in CODEC_KEYS.items():
+            if key == name:
+                self.codec[side] = value
+                self.cards_dirty = True
+                return
         if key in ("audio.max_volume", "audio.power_on_volume"):
             try:
                 number = max(0, min(100, int(value)))
@@ -960,7 +1022,7 @@ class Audio:
         key, value = params.unpack()
         if key == "audio.output":
             self.set_output(value)
-        elif key.startswith(CHAIN_KEYS) or key in ("audio.bt_codec", "audio.max_volume", "audio.power_on_volume"):
+        elif key.startswith(CHAIN_KEYS) or key in (*CODEC_KEYS.values(), "audio.max_volume", "audio.power_on_volume"):
             self.set_key(key, value)
             self.schedule()
         elif key in APPLY:

@@ -50,7 +50,19 @@ case "$*" in
     echo "volume ${*:2}" >> "$STUB_DIR/log"
     ;;
   "set-sink-mute $2 $3") echo "mute $2 $3" >> "$STUB_DIR/log" ;;
-  "set-card-profile $2 $3") echo "profile $2 $3" >> "$STUB_DIR/log" ;;
+  "set-card-profile $2 $3")
+    if [[ -e $STUB_DIR/profile-fails-always ]]; then
+      echo try >> "$STUB_DIR/profile-tries"
+      echo "pactl stub: profile fails" >&2
+      exit 1
+    fi
+    if [[ -e $STUB_DIR/profile-fails ]]; then
+      rm "$STUB_DIR/profile-fails"
+      echo "pactl stub: profile fails once" >&2
+      exit 1
+    fi
+    echo "profile $2 $3" >> "$STUB_DIR/log"
+    ;;
   *)
     echo "pactl stub: $*" >&2
     exit 1
