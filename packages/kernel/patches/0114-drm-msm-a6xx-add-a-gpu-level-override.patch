@@ -1,0 +1,606 @@
+From: seilent <github@seilent.net>
+Subject: [PATCH] drm/msm/a6xx: add a GPU level override
+
+The GMU gets the GX votes for every GPU OPP once per start, built at bind
+from the OPP levels. Add three attributes on the GPU device:
+
+gpu_levels (root only) takes freq:level pairs for every GPU OPP. A write
+is checked whole: every OPP once, each level in cmd-db gfx.lvl, at most
+the OPP's DT level, non decreasing, not below the DT level of the lowest
+OPP. The votes are built at write time with the same arc vote rules and
+used from the next GMU start. An empty write clears it.
+
+gpu_levels_applied (root only) reads the table of the last GMU start,
+stock, or failed after a start on the override returned an error.
+
+gpu_levels_fallback reads the first trip of the override: a GPU hang, a
+GMU fault, an HFI or OOB timeout, or a failed start. A trip is sticky
+until the next gpu_levels write and every GMU start after it is stock.
+An HFI or OOB timeout while the override runs, outside a GMU start,
+queues a recover so the GMU restarts on stock. A trip and a change of
+the applied table send a change uevent with GPU_LEVELS_FALLBACK or
+GPU_LEVELS_APPLIED.
+
+Without a write every start is stock.
+
+---
+diff --git a/drivers/gpu/drm/msm/adreno/a6xx_gmu.c b/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
+@@ -19,6 +19,74 @@
+ #include "msm_gpu_trace.h"
+ #include "msm_mmu.h"
+ 
++static const char * const a6xx_gmu_levels_trips[] = {
++	[GMU_LEVELS_TRIP_NONE] = "",
++	[GMU_LEVELS_TRIP_HANG] = "hang",
++	[GMU_LEVELS_TRIP_GMU] = "gmu",
++	[GMU_LEVELS_TRIP_HFI] = "hfi",
++	[GMU_LEVELS_TRIP_OOB] = "oob",
++	[GMU_LEVELS_TRIP_START] = "start",
++};
++
++void a6xx_gmu_levels_trip(struct a6xx_gmu *gmu, enum a6xx_gmu_levels_trip reason)
++{
++	if (!atomic_read(&gmu->override_live))
++		return;
++
++	if (atomic_cmpxchg(&gmu->levels_trip, GMU_LEVELS_TRIP_NONE, reason))
++		return;
++
++	set_bit(GMU_LEVELS_EVENT_TRIP, &gmu->levels_events);
++	if ((reason == GMU_LEVELS_TRIP_HFI || reason == GMU_LEVELS_TRIP_OOB) &&
++	    !READ_ONCE(gmu->levels_starting))
++		set_bit(GMU_LEVELS_EVENT_RECOVER, &gmu->levels_events);
++	schedule_work(&gmu->levels_work);
++}
++
++static void a6xx_gmu_levels_applied(struct a6xx_gmu *gmu,
++		enum a6xx_gmu_levels_state state)
++{
++	size_t size = gmu->nr_gpu_freqs * sizeof(gmu->applied_levels[0]);
++
++	if (state == gmu->levels_state &&
++	    (state != GMU_LEVELS_OVERRIDE ||
++	     !memcmp(gmu->applied_levels, gmu->override_levels, size)))
++		return;
++
++	if (state == GMU_LEVELS_OVERRIDE)
++		memcpy(gmu->applied_levels, gmu->override_levels, size);
++
++	WRITE_ONCE(gmu->levels_state, state);
++
++	set_bit(GMU_LEVELS_EVENT_APPLIED, &gmu->levels_events);
++	schedule_work(&gmu->levels_work);
++}
++
++static void a6xx_gmu_levels_work(struct work_struct *work)
++{
++	struct a6xx_gmu *gmu = container_of(work, struct a6xx_gmu, levels_work);
++	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
++	struct msm_gpu *gpu = &a6xx_gpu->base.base;
++	struct kobject *kobj = &gpu->pdev->dev.kobj;
++	int trip = atomic_read(&gmu->levels_trip);
++	char env[32];
++	char *envp[] = { env, NULL };
++
++	if (test_and_clear_bit(GMU_LEVELS_EVENT_TRIP, &gmu->levels_events) && trip) {
++		snprintf(env, sizeof(env), "GPU_LEVELS_FALLBACK=%s",
++			 a6xx_gmu_levels_trips[trip]);
++		kobject_uevent_env(kobj, KOBJ_CHANGE, envp);
++	}
++
++	if (test_and_clear_bit(GMU_LEVELS_EVENT_RECOVER, &gmu->levels_events))
++		kthread_queue_work(gpu->worker, &gpu->recover_work);
++
++	if (test_and_clear_bit(GMU_LEVELS_EVENT_APPLIED, &gmu->levels_events)) {
++		snprintf(env, sizeof(env), "GPU_LEVELS_APPLIED=1");
++		kobject_uevent_env(kobj, KOBJ_CHANGE, envp);
++	}
++}
++
+ static void a6xx_gmu_fault(struct a6xx_gmu *gmu)
+ {
+ 	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
+@@ -28,6 +96,8 @@ static void a6xx_gmu_fault(struct a6xx_gmu *gmu)
+ 	/* FIXME: add a banner here */
+ 	gmu->hung = true;
+ 
++	a6xx_gmu_levels_trip(gmu, GMU_LEVELS_TRIP_GMU);
++
+ 	/* Turn off the hangcheck timer while we are resetting */
+ 	timer_delete(&gpu->hangcheck_timer);
+ 
+@@ -322,8 +392,10 @@ static int a6xx_gmu_start(struct a6xx_gmu *gmu)
+ 	ret = gmu_poll_timeout(gmu, REG_A6XX_GMU_CM3_FW_INIT_RESULT, val,
+ 		(val & mask) == reset_val, 100, 10000);
+ 
+-	if (ret)
++	if (ret) {
+ 		DRM_DEV_ERROR(gmu->dev, "GMU firmware initialization timed out\n");
++		a6xx_gmu_levels_trip(gmu, GMU_LEVELS_TRIP_START);
++	}
+ 
+ 	set_bit(GMU_STATUS_FW_START, &gmu->status);
+ 
+@@ -442,11 +514,13 @@ int a6xx_gmu_set_oob(struct a6xx_gmu *gmu, enum a6xx_gmu_oob_state state)
+ 		wait_for_completion(&a6xx_gpu->base.fault_coredump_done);
+ 	} while (true);
+ 
+-	if (ret)
++	if (ret) {
+ 		DRM_DEV_ERROR(gmu->dev,
+ 			"Timeout waiting for GMU OOB set %s: 0x%x\n",
+ 				a6xx_gmu_oob_bits[state].name,
+ 				gmu_read(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO));
++		a6xx_gmu_levels_trip(gmu, GMU_LEVELS_TRIP_OOB);
++	}
+ 
+ 	/* Clear the acknowledge interrupt */
+ 	gmu_write(gmu, REG_A6XX_GMU_GMU2HOST_INTR_CLR, 1 << ack);
+@@ -1306,6 +1380,7 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
+ 	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
+ 	struct msm_gpu *gpu = &adreno_gpu->base;
+ 	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
++	bool override = false;
+ 	int status, ret;
+ 
+ 	if (WARN(!gmu->initialized, "The GMU is not set up yet\n"))
+@@ -1336,6 +1411,12 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
+ 	/* Set the bus quota to a reasonable value for boot */
+ 	a6xx_gmu_set_initial_bw(gpu, gmu);
+ 
++	override = gmu->override_set && !atomic_read(&gmu->levels_trip);
++	memcpy(gmu->gx_arc_votes, override ? gmu->override_gx_votes : gmu->stock_gx_votes,
++	       sizeof(gmu->gx_arc_votes));
++	WRITE_ONCE(gmu->levels_starting, true);
++	atomic_set(&gmu->override_live, override);
++
+ 	/* Enable the GMU interrupt */
+ 	gmu_write(gmu, REG_A6XX_GMU_AO_HOST_INTERRUPT_CLR, ~0);
+ 	gmu_write(gmu, REG_A6XX_GMU_AO_HOST_INTERRUPT_MASK, ~A6XX_GMU_IRQ_MASK);
+@@ -1364,6 +1445,9 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
+ 	if (ret)
+ 		goto disable_irq;
+ 
++	WRITE_ONCE(gmu->levels_starting, false);
++	a6xx_gmu_levels_applied(gmu, override ? GMU_LEVELS_OVERRIDE : GMU_LEVELS_STOCK);
++
+ 	/*
+ 	 * Turn on the GMU firmware fault interrupt after we know the boot
+ 	 * sequence is successful
+@@ -1378,6 +1462,11 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
+ 	return 0;
+ 
+ disable_irq:
++	WRITE_ONCE(gmu->levels_starting, false);
++	if (override) {
++		a6xx_gmu_levels_trip(gmu, GMU_LEVELS_TRIP_START);
++		a6xx_gmu_levels_applied(gmu, GMU_LEVELS_FAILED);
++	}
+ 	disable_irq(gmu->gmu_irq);
+ 	a6xx_rpmh_stop(gmu);
+ disable_clk:
+@@ -1704,7 +1793,7 @@ static unsigned int a6xx_gmu_get_arc_level(struct device *dev,
+ 
+ static int a6xx_gmu_rpmh_arc_votes_init(struct device *dev, u32 *votes,
+ 		unsigned long *freqs, int freqs_count,
+-		const char *pri_id, const char *sec_id)
++		const char *pri_id, const char *sec_id, const u32 *levels)
+ {
+ 	int i, j;
+ 	const u16 *pri, *sec;
+@@ -1732,7 +1821,8 @@ static int a6xx_gmu_rpmh_arc_votes_init(struct device *dev, u32 *votes,
+ 	/* Construct a vote for each frequency */
+ 	for (i = 0; i < freqs_count; i++) {
+ 		u8 pindex = 0, sindex = 0;
+-		unsigned int level = a6xx_gmu_get_arc_level(dev, freqs[i]);
++		unsigned int level = levels ? levels[i] :
++			a6xx_gmu_get_arc_level(dev, freqs[i]);
+ 
+ 		/* Get the primary index that matches the arc level */
+ 		for (j = 0; j < pri_count; j++) {
+@@ -1834,13 +1924,27 @@ static int a6xx_gmu_rpmh_dep_votes_init(struct device *dev, u32 *votes,
+  * and BCM parameters to build the votes.
+  */
+ 
++static int a6xx_gmu_gx_votes_init(struct a6xx_gmu *gmu, u32 *votes,
++		const u32 *levels)
++{
++	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
++	struct msm_gpu *gpu = &a6xx_gpu->base.base;
++	const char *sec_id;
++	const u16 *gmxc;
++
++	gmxc = cmd_db_read_aux_data("gmxc.lvl", NULL);
++
++	sec_id = IS_ERR_OR_NULL(gmxc) ? "mx.lvl" : "gmxc.lvl";
++
++	return a6xx_gmu_rpmh_arc_votes_init(&gpu->pdev->dev, votes,
++		gmu->gpu_freqs, gmu->nr_gpu_freqs, "gfx.lvl", sec_id, levels);
++}
++
+ static int a6xx_gmu_rpmh_votes_init(struct a6xx_gmu *gmu)
+ {
+ 	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
+ 	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
+ 	const struct a6xx_info *info = adreno_gpu->info->a6xx;
+-	struct msm_gpu *gpu = &adreno_gpu->base;
+-	const char *sec_id;
+ 	const u16 *gmxc;
+ 	int ret;
+ 
+@@ -1848,16 +1952,12 @@ static int a6xx_gmu_rpmh_votes_init(struct a6xx_gmu *gmu)
+ 	if (gmxc == ERR_PTR(-EPROBE_DEFER))
+ 		return -EPROBE_DEFER;
+ 
+-	/* If GMxC is present, prefer that as secondary rail for GX votes */
+-	sec_id = IS_ERR_OR_NULL(gmxc) ? "mx.lvl" : "gmxc.lvl";
+-
+ 	/* Build the GX votes */
+-	ret = a6xx_gmu_rpmh_arc_votes_init(&gpu->pdev->dev, gmu->gx_arc_votes,
+-		gmu->gpu_freqs, gmu->nr_gpu_freqs, "gfx.lvl", sec_id);
++	ret = a6xx_gmu_gx_votes_init(gmu, gmu->gx_arc_votes, NULL);
+ 
+ 	/* Build the CX votes */
+ 	ret |= a6xx_gmu_rpmh_arc_votes_init(gmu->dev, gmu->cx_arc_votes,
+-		gmu->gmu_freqs, gmu->nr_gmu_freqs, "cx.lvl", "mx.lvl");
++		gmu->gmu_freqs, gmu->nr_gmu_freqs, "cx.lvl", "mx.lvl", NULL);
+ 
+ 	ret |= a6xx_gmu_rpmh_dep_votes_init(gmu->dev, gmu->dep_arc_votes,
+ 		gmu->gpu_freqs, gmu->nr_gpu_freqs);
+@@ -2452,6 +2552,7 @@ int a6xx_gmu_init(struct a6xx_gpu *a6xx_gpu, struct device_node *node)
+ 
+ 	/* Get the power levels for the GMU and GPU */
+ 	a6xx_gmu_pwrlevels_probe(gmu);
++	memcpy(gmu->stock_gx_votes, gmu->gx_arc_votes, sizeof(gmu->stock_gx_votes));
+ 
+ 	ret = a6xx_gmu_acd_probe(gmu);
+ 	if (ret)
+@@ -2492,3 +2593,212 @@ err_put_device:
+ 
+ 	return ret;
+ }
++
++static struct a6xx_gmu *a6xx_gmu_levels_gmu(struct device *dev)
++{
++	return &to_a6xx_gpu(to_adreno_gpu(dev_to_gpu(dev)))->gmu;
++}
++
++static ssize_t a6xx_gmu_levels_emit(struct a6xx_gmu *gmu, const u32 *levels,
++		char *buf)
++{
++	ssize_t len = 0;
++	int i;
++
++	for (i = 1; i < gmu->nr_gpu_freqs; i++)
++		len += sysfs_emit_at(buf, len, "%s%lu:%u", i > 1 ? "," : "",
++				     gmu->gpu_freqs[i], levels[i]);
++
++	return len + sysfs_emit_at(buf, len, "\n");
++}
++
++static ssize_t gpu_levels_show(struct device *dev,
++		struct device_attribute *attr, char *buf)
++{
++	struct a6xx_gmu *gmu = a6xx_gmu_levels_gmu(dev);
++	ssize_t len;
++
++	mutex_lock(&gmu->lock);
++	if (gmu->override_set)
++		len = a6xx_gmu_levels_emit(gmu, gmu->override_levels, buf);
++	else
++		len = sysfs_emit(buf, "\n");
++	mutex_unlock(&gmu->lock);
++
++	return len;
++}
++
++static int a6xx_gmu_levels_parse(struct a6xx_gmu *gmu, char *str, u32 *levels)
++{
++	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
++	struct device *dev = &a6xx_gpu->base.base.pdev->dev;
++	unsigned long seen = 0;
++	const u16 *gfx;
++	size_t count;
++	char *pair;
++	int i, j;
++
++	gfx = cmd_db_read_aux_data("gfx.lvl", &count);
++	if (IS_ERR(gfx))
++		return PTR_ERR(gfx);
++	count >>= 1;
++
++	while ((pair = strsep(&str, ","))) {
++		char *level = strchr(pair, ':');
++		u32 freq, val;
++
++		if (!level)
++			return -EINVAL;
++		*level++ = '\0';
++
++		if (kstrtou32(pair, 10, &freq) || kstrtou32(level, 10, &val))
++			return -EINVAL;
++
++		for (i = 1; i < gmu->nr_gpu_freqs; i++)
++			if (gmu->gpu_freqs[i] == freq)
++				break;
++
++		if (i == gmu->nr_gpu_freqs || test_and_set_bit(i, &seen))
++			return -EINVAL;
++
++		for (j = 0; j < count; j++)
++			if (gfx[j] == val)
++				break;
++
++		if (j == count || val > a6xx_gmu_get_arc_level(dev, freq))
++			return -EINVAL;
++
++		levels[i] = val;
++	}
++
++	if (hweight_long(seen) != gmu->nr_gpu_freqs - 1)
++		return -EINVAL;
++
++	if (levels[1] < a6xx_gmu_get_arc_level(dev, gmu->gpu_freqs[1]))
++		return -EINVAL;
++
++	for (i = 2; i < gmu->nr_gpu_freqs; i++)
++		if (levels[i] < levels[i - 1])
++			return -EINVAL;
++
++	return 0;
++}
++
++static ssize_t gpu_levels_store(struct device *dev,
++		struct device_attribute *attr, const char *buf, size_t count)
++{
++	struct a6xx_gmu *gmu = a6xx_gmu_levels_gmu(dev);
++	u32 levels[GMU_MAX_GX_FREQS] = { 0 };
++	u32 votes[GMU_MAX_GX_FREQS] = { 0 };
++	char str[128];
++	char *s;
++	bool set;
++	int ret;
++
++	if (count >= sizeof(str))
++		return -EINVAL;
++
++	memcpy(str, buf, count);
++	str[count] = '\0';
++	s = strim(str);
++	set = *s;
++
++	if (set) {
++		ret = a6xx_gmu_levels_parse(gmu, s, levels);
++		if (ret)
++			return ret;
++
++		if (a6xx_gmu_gx_votes_init(gmu, votes, levels))
++			return -EINVAL;
++	}
++
++	mutex_lock(&gmu->lock);
++	if (!gmu->initialized) {
++		mutex_unlock(&gmu->lock);
++		return -ENODEV;
++	}
++
++	gmu->override_set = set;
++	if (set) {
++		memcpy(gmu->override_levels, levels, sizeof(levels));
++		memcpy(gmu->override_gx_votes, votes, sizeof(votes));
++	}
++	atomic_set(&gmu->levels_trip, GMU_LEVELS_TRIP_NONE);
++	mutex_unlock(&gmu->lock);
++
++	return count;
++}
++static DEVICE_ATTR_ADMIN_RW(gpu_levels);
++
++static ssize_t gpu_levels_applied_show(struct device *dev,
++		struct device_attribute *attr, char *buf)
++{
++	struct a6xx_gmu *gmu = a6xx_gmu_levels_gmu(dev);
++	ssize_t len;
++
++	mutex_lock(&gmu->lock);
++	if (gmu->levels_state == GMU_LEVELS_OVERRIDE)
++		len = a6xx_gmu_levels_emit(gmu, gmu->applied_levels, buf);
++	else
++		len = sysfs_emit(buf, "%s\n",
++				 gmu->levels_state == GMU_LEVELS_FAILED ? "failed" : "stock");
++	mutex_unlock(&gmu->lock);
++
++	return len;
++}
++static DEVICE_ATTR_ADMIN_RO(gpu_levels_applied);
++
++static ssize_t gpu_levels_fallback_show(struct device *dev,
++		struct device_attribute *attr, char *buf)
++{
++	struct a6xx_gmu *gmu = a6xx_gmu_levels_gmu(dev);
++
++	return sysfs_emit(buf, "%s\n",
++			  a6xx_gmu_levels_trips[atomic_read(&gmu->levels_trip)]);
++}
++static DEVICE_ATTR_RO(gpu_levels_fallback);
++
++static struct attribute *a6xx_gmu_levels_attrs[] = {
++	&dev_attr_gpu_levels.attr,
++	&dev_attr_gpu_levels_applied.attr,
++	&dev_attr_gpu_levels_fallback.attr,
++	NULL
++};
++
++static const struct attribute_group a6xx_gmu_levels_group = {
++	.attrs = a6xx_gmu_levels_attrs,
++};
++
++int a6xx_gmu_levels_init(struct a6xx_gpu *a6xx_gpu)
++{
++	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
++	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
++	int ret;
++
++	if (adreno_has_gmu_wrapper(adreno_gpu) || adreno_has_rgmu(adreno_gpu) ||
++	    adreno_is_a8xx(adreno_gpu))
++		return 0;
++
++	INIT_WORK(&gmu->levels_work, a6xx_gmu_levels_work);
++
++	ret = device_add_group(&adreno_gpu->base.pdev->dev, &a6xx_gmu_levels_group);
++	if (ret)
++		return ret;
++
++	gmu->levels_sysfs = true;
++
++	return 0;
++}
++
++void a6xx_gmu_levels_remove(struct a6xx_gpu *a6xx_gpu)
++{
++	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
++
++	if (!gmu->levels_sysfs)
++		return;
++
++	device_remove_group(&a6xx_gpu->base.base.pdev->dev, &a6xx_gmu_levels_group);
++	atomic_set(&gmu->override_live, 0);
++	cancel_work_sync(&gmu->levels_work);
++	gmu->levels_sysfs = false;
++}
+diff --git a/drivers/gpu/drm/msm/adreno/a6xx_gmu.h b/drivers/gpu/drm/msm/adreno/a6xx_gmu.h
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gmu.h
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gmu.h
+@@ -4,10 +4,12 @@
+ #ifndef _A6XX_GMU_H_
+ #define _A6XX_GMU_H_
+ 
++#include <linux/atomic.h>
+ #include <linux/completion.h>
+ #include <linux/iopoll.h>
+ #include <linux/interrupt.h>
+ #include <linux/notifier.h>
++#include <linux/workqueue.h>
+ #include <linux/soc/qcom/qcom_aoss.h>
+ #include "msm_drv.h"
+ #include "adreno_gpu.h"
+@@ -24,6 +26,21 @@ struct a6xx_gmu_bo {
+ #define GMU_MAX_CX_FREQS	6
+ #define GMU_MAX_BCMS		3
+ 
++enum a6xx_gmu_levels_trip {
++	GMU_LEVELS_TRIP_NONE,
++	GMU_LEVELS_TRIP_HANG,
++	GMU_LEVELS_TRIP_GMU,
++	GMU_LEVELS_TRIP_HFI,
++	GMU_LEVELS_TRIP_OOB,
++	GMU_LEVELS_TRIP_START,
++};
++
++enum a6xx_gmu_levels_state {
++	GMU_LEVELS_STOCK,
++	GMU_LEVELS_OVERRIDE,
++	GMU_LEVELS_FAILED,
++};
++
+ struct a6xx_bcm {
+ 	char *name;
+ 	unsigned int buswidth;
+@@ -98,6 +115,7 @@ struct a6xx_gmu {
+ 	int nr_gpu_freqs;
+ 	unsigned long gpu_freqs[GMU_MAX_GX_FREQS];
+ 	u32 gx_arc_votes[GMU_MAX_GX_FREQS];
++	u32 stock_gx_votes[GMU_MAX_GX_FREQS];
+ 	u32 dep_arc_votes[GMU_MAX_GX_FREQS];
+ 	struct a6xx_hfi_acd_table acd_table;
+ 
+@@ -124,6 +142,21 @@ struct a6xx_gmu {
+ 	struct qmp *qmp;
+ 	struct a6xx_hfi_msg_bw_table *bw_table;
+ 
++	bool levels_sysfs;
++	bool override_set;
++	u32 override_levels[GMU_MAX_GX_FREQS];
++	u32 override_gx_votes[GMU_MAX_GX_FREQS];
++	atomic_t override_live;
++	atomic_t levels_trip;
++	bool levels_starting;
++	enum a6xx_gmu_levels_state levels_state;
++	u32 applied_levels[GMU_MAX_GX_FREQS];
++#define GMU_LEVELS_EVENT_TRIP		0
++#define GMU_LEVELS_EVENT_APPLIED	1
++#define GMU_LEVELS_EVENT_RECOVER	2
++	unsigned long levels_events;
++	struct work_struct levels_work;
++
+ /* To check if we can trigger sleep seq at PDC. Cleared in a6xx_rpmh_stop() */
+ #define GMU_STATUS_FW_START	0
+ /* To track if PDC sleep seq was done */
+@@ -234,6 +267,8 @@ void a6xx_hfi_stop(struct a6xx_gmu *gmu);
+ int a6xx_hfi_send_prep_slumber(struct a6xx_gmu *gmu);
+ int a6xx_hfi_set_freq(struct a6xx_gmu *gmu, u32 perf_index, u32 bw_index);
+ 
++void a6xx_gmu_levels_trip(struct a6xx_gmu *gmu, enum a6xx_gmu_levels_trip reason);
++
+ bool a6xx_gmu_gx_is_on(struct adreno_gpu *adreno_gpu);
+ bool a7xx_gmu_gx_is_on(struct adreno_gpu *adreno_gpu);
+ bool a8xx_gmu_gx_is_on(struct adreno_gpu *adreno_gpu);
+diff --git a/drivers/gpu/drm/msm/adreno/a6xx_gpu.c b/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
+@@ -1565,6 +1565,8 @@ static void a6xx_recover(struct msm_gpu *gpu)
+ 	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
+ 	int active_submits;
+ 
++	a6xx_gmu_levels_trip(gmu, gmu->hung ? GMU_LEVELS_TRIP_GMU : GMU_LEVELS_TRIP_HANG);
++
+ 	adreno_dump_info(gpu);
+ 
+ 	if (adreno_gpu->funcs->gx_is_on(adreno_gpu)) {
+@@ -2298,6 +2300,8 @@ static void a6xx_destroy(struct msm_gpu *gpu)
+ 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+ 	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(adreno_gpu);
+ 
++	a6xx_gmu_levels_remove(a6xx_gpu);
++
+ 	if (a6xx_gpu->sqe_bo) {
+ 		msm_gem_unpin_iova(a6xx_gpu->sqe_bo, gpu->vm);
+ 		drm_gem_object_put(a6xx_gpu->sqe_bo);
+@@ -2766,6 +2770,12 @@ static struct msm_gpu *a6xx_gpu_init(struct drm_device *dev)
+ 		return ERR_PTR(ret);
+ 	}
+ 
++	ret = a6xx_gmu_levels_init(a6xx_gpu);
++	if (ret) {
++		a6xx_destroy(&(a6xx_gpu->base.base));
++		return ERR_PTR(ret);
++	}
++
+ 	adreno_gpu->uche_trap_base = 0x1fffffffff000ull;
+ 
+ 	msm_mmu_set_fault_handler(to_msm_vm(gpu->vm)->mmu, gpu,
+diff --git a/drivers/gpu/drm/msm/adreno/a6xx_gpu.h b/drivers/gpu/drm/msm/adreno/a6xx_gpu.h
+--- a/drivers/gpu/drm/msm/adreno/a6xx_gpu.h
++++ b/drivers/gpu/drm/msm/adreno/a6xx_gpu.h
+@@ -281,6 +281,8 @@ void a6xx_gmu_clear_oob(struct a6xx_gmu *gmu, enum a6xx_gmu_oob_state state);
+ int a6xx_gmu_init(struct a6xx_gpu *a6xx_gpu, struct device_node *node);
+ int a6xx_gmu_wrapper_init(struct a6xx_gpu *a6xx_gpu, struct device_node *node);
+ void a6xx_gmu_remove(struct a6xx_gpu *a6xx_gpu);
++int a6xx_gmu_levels_init(struct a6xx_gpu *a6xx_gpu);
++void a6xx_gmu_levels_remove(struct a6xx_gpu *a6xx_gpu);
+ void a6xx_gmu_sysprof_setup(struct msm_gpu *gpu, bool force_on);
+ 
+ void a6xx_preempt_init(struct msm_gpu *gpu);
+diff --git a/drivers/gpu/drm/msm/adreno/a6xx_hfi.c b/drivers/gpu/drm/msm/adreno/a6xx_hfi.c
+--- a/drivers/gpu/drm/msm/adreno/a6xx_hfi.c
++++ b/drivers/gpu/drm/msm/adreno/a6xx_hfi.c
+@@ -136,6 +136,7 @@ static int a6xx_hfi_wait_for_msg_interrupt(struct a6xx_gmu *gmu, u32 id, u32 seq
+ 		DRM_DEV_ERROR(gmu->dev,
+ 			"Message %s id %d timed out waiting for response\n",
+ 			a6xx_hfi_msg_id[id], seqnum);
++		a6xx_gmu_levels_trip(gmu, GMU_LEVELS_TRIP_HFI);
+ 		return -ETIMEDOUT;
+ 	}
+ 

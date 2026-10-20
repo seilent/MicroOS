@@ -42,6 +42,10 @@ for m in snd-seq joydev hid-playstation hid-sony hid-nintendo hid-microsoft xpad
   find "$kdir" -name "$m.ko*" | grep -q . || { echo "pkg-kernel: module $m missing" >&2; exit 1; }
 done
 
+for s in gpu_levels gpu_levels_applied gpu_levels_fallback GPU_LEVELS_FALLBACK GPU_LEVELS_APPLIED; do
+  grep -qaF "$s" "$kdir/vmlinuz" || { echo "pkg-kernel: $s missing from vmlinuz" >&2; exit 1; }
+done
+
 "$here/pkg-kernel/dts-drivers.sh" "$dtbs" "$kdir/config"
 "$here/pkg-kernel/gpu-opp.sh" "$dtbs" >/dev/null
 "$here/pkg-kernel/fan-trips.sh" "$dtbs"
