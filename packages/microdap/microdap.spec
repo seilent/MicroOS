@@ -6,7 +6,7 @@ Name:           microdap
 Version:        0^%{snapdate}git%{lua:print(rpm.expand("%{commit}"):sub(1, 10))}
 Release:        1%{?dist}.microos
 Summary:        MicroDAP music player session
-License:        GPL-2.0-or-later
+License:        GPL-3.0-or-later
 URL:            https://github.com/seilent/MicroDAP
 Source0:        %{url}/archive/%{commit}/%{name}-%{commit}.tar.gz
 Vendor:         MicroOS
@@ -15,6 +15,7 @@ BuildRequires:  gcc-c++
 BuildRequires:  qt6-qtbase-devel
 BuildRequires:  qt6-qtdeclarative-devel
 BuildRequires:  pkgconfig(gstreamer-1.0)
+BuildRequires:  pkgconfig(gstreamer-controller-1.0)
 BuildRequires:  pkgconfig(taglib)
 BuildRequires:  pkgconfig(xcb)
 BuildRequires:  pkgconfig(libpulse)
@@ -77,7 +78,7 @@ session, its hotkey tables, session entry and MicroSET schema.
 %systemd_user_preun microdap-overlay.service microdap-bt.service
 
 %files
-%license LICENSE
+%license LICENSE CREDITS
 %{_bindir}/microdap-player
 %dir %{_libexecdir}/microdap
 %{_libexecdir}/microdap/microdap-bt

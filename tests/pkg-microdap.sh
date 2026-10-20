@@ -17,7 +17,7 @@ if [[ -n $(find "$dir" -maxdepth 1 -name '*.rpm' ! -name 'microdap-0^*') ]]; the
 
 if [[ $(rpm -qp --qf '%{RELEASE}' "$rpm") != *.microos ]]; then fail "release"; fi
 if [[ $(rpm -qp --qf '%{VENDOR}' "$rpm") != MicroOS ]]; then fail "vendor"; fi
-if [[ $(rpm -qp --qf '%{LICENSE}' "$rpm") != GPL-2.0-or-later ]]; then fail "license tag"; fi
+if [[ $(rpm -qp --qf '%{LICENSE}' "$rpm") != GPL-3.0-or-later ]]; then fail "license tag"; fi
 if [[ -n $srpm && $(rpm -qp --qf '%{SOURCERPM}' "$rpm") != "${srpm##*/}" ]]; then fail "SOURCERPM"; fi
 writable=$(rpm -qp --qf '[%{FILEMODES:perms} %{FILENAMES}\n]' "$rpm" | awk 'substr($1, 1, 1) != "l" && (substr($1, 6, 1) == "w" || substr($1, 9, 1) == "w")')
 if [[ -n $writable ]]; then fail "group or other writable: $writable"; fi
