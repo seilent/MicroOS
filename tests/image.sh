@@ -24,6 +24,7 @@ for u in bootloader-update.service systemd-backlight@.service systemd-hibernate.
   systemd-suspend-then-hibernate.service bootc-fetch-apply-updates.timer; do
   [[ $(readlink "/etc/systemd/system/$u") == /dev/null ]] || fail "$u is not masked"
 done
+[[ $(readlink /etc/systemd/user/mpris-proxy.service) == /dev/null ]] || fail "user mpris-proxy.service is not masked"
 
 for u in microos-boot-ok.service microos-update-applied.service microos-update.service microos-update-check.service \
   microos-update-check.timer; do

@@ -39,3 +39,4 @@ systemctl mask \
   systemd-hybrid-sleep.service \
   systemd-suspend-then-hibernate.service \
   bootc-fetch-apply-updates.timer
+systemctl --global mask mpris-proxy.service
