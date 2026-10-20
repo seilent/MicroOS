@@ -8,7 +8,9 @@ rpm=$(find "$out" -name 'microos-kernel-[0-9]*.aarch64.rpm' | head -1)
 
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
-rpm2cpio "$rpm" | (cd "$root" && cpio -idm --quiet)
+rpm2cpio "$rpm" > "$root/kernel.cpio"
+(cd "$root" && cpio -idm --quiet < kernel.cpio)
+rm "$root/kernel.cpio"
 
 mods=("$root"/usr/lib/modules/*)
 [[ ${#mods[@]} -eq 1 && -d ${mods[0]} ]] || { echo "pkg-kernel: expected one modules dir" >&2; exit 1; }
