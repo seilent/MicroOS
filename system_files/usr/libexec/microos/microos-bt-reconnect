@@ -1,0 +1,1136 @@
+#!/usr/bin/env python3
+import json
+import math
+import os
+import random
+import re
+import sys
+import time
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+PROC = os.environ.get("MICROOS_PROC", "/proc")
+
+NAME = "net.seilent.MicroOs.Reconnect"
+PATH = "/net/seilent/MicroOs/Reconnect"
+IFACE = "net.seilent.MicroOs.Reconnect1"
+PROPS = "org.freedesktop.DBus.Properties"
+BUS = "org.freedesktop.DBus"
+BUS_PATH = "/org/freedesktop/DBus"
+BLUEZ = "org.bluez"
+HCI = "/org/bluez/hci0"
+ADAPTER = "org.bluez.Adapter1"
+DEVICE = "org.bluez.Device1"
+TRANSPORT = "org.bluez.MediaTransport1"
+MANAGER = "org.freedesktop.DBus.ObjectManager"
+LOGIN = "org.freedesktop.login1"
+SOURCE_UUID = "0000110a"
+SINK_UUID = "0000110b"
+DEV = re.compile(r"/org/bluez/hci0/dev_([0-9A-F]{2}(?:_[0-9A-F]{2}){5})")
+ADDR = re.compile(r"[0-9A-F]{2}(?::[0-9A-F]{2}){5}")
+INVALID = "org.freedesktop.DBus.Error.InvalidArgs"
+LIMITS = "org.freedesktop.DBus.Error.LimitsExceeded"
+NOREPLY = "org.freedesktop.DBus.Error.NoReply"
+REASONS = ("org.bluez.Reason.Timeout", "org.bluez.Reason.Unknown")
+ROLES = ("receiver", "headphones")
+HEADSET_KINDS = ("loss", "boot", "want")
+DROP = ("hold", "role", "target", "headset")
+
+LOSS_GAPS = (1.0, 2.0, 4.0, 8.0)
+B_GAP, B_JITTER, B_END = 30.0, 5.0, 300.0
+C_GAP, C_JITTER, LOSS_END = 120.0, 20.0, 900.0
+BOOT_ATTEMPTS = 5
+BUSY_GAP, BUSY_MAX = 2.0, 3
+BOND = 3
+AUDIO_WAIT = 10.0
+RETARGET = 10.0
+WANT_GAP = 60.0
+RESUME_DELAY = 2.0
+COALESCE = 5.0
+GRACE = 3.0
+RECONCILE = 5.0
+THROTTLE = 60.0
+PAUSE_LOG = 60.0
+RESUME_GAP = 60.0
+BOOT_PAUSE_END = 300.0
+CALL_TIMEOUT_MS = 30000
+HOLD_MAX = 4
+
+GAP_MESSAGES = {"br-connection-page-timeout", "br-connection-timeout", "br-connection-sdp-search",
+                "br-connection-canceled"}
+BUSY_ERRORS = {"org.bluez.Error.InProgress", "org.bluez.Error.AlreadyConnected"}
+BUSY_MESSAGES = {"br-connection-busy", "br-connection-already-connected"}
+SLOW_MESSAGES = {"br-connection-refused", "br-connection-aborted-by-remote"}
+
+XML = f"""
+<node>
+  <interface name="{IFACE}">
+    <method name="SetRole"><arg name="role" type="s" direction="in"/></method>
+    <method name="SetTarget"><arg name="device" type="o" direction="in"/></method>
+    <method name="Hold"><arg name="on" type="b" direction="in"/></method>
+    <method name="Want"/>
+    <method name="Scope"><arg name="on" type="b" direction="in"/></method>
+    <property name="Role" type="s" access="read"/>
+    <property name="Target" type="o" access="read"/>
+    <property name="Phone" type="o" access="read"/>
+    <property name="Phase" type="s" access="read"/>
+    <property name="NextAttempt" type="t" access="read"/>
+  </interface>
+</node>
+"""
+
+
+def log(msg):
+    print(f"microos-bt-reconnect: {msg}", file=sys.stderr, flush=True)
+
+
+def classify(error, message, powered):
+    if error is None:
+        return "ok"
+    if error == NOREPLY or message in GAP_MESSAGES:
+        return "gap"
+    if message == "br-connection-unknown":
+        return "unknown"
+    if error in BUSY_ERRORS or message in BUSY_MESSAGES:
+        return "busy"
+    if error == "org.bluez.Error.NotReady" or message == "br-connection-adapter-not-powered":
+        return "busy" if powered else "notready"
+    if message in SLOW_MESSAGES:
+        return "slow"
+    if error == "org.bluez.Error.ProfileUnavailable" or message == "br-connection-key-missing":
+        return "stop"
+    return "other"
+
+
+def classify_disconnect(error, message):
+    if error is None or error == "org.bluez.Error.NotConnected":
+        return "done"
+    if error == "org.bluez.Error.InProgress" or message == "br-connection-busy":
+        return "busy"
+    return "other"
+
+
+def address(path):
+    m = DEV.fullmatch(path or "")
+    return m.group(1).replace("_", ":") if m else None
+
+
+def device_path(addr):
+    return f"{HCI}/dev_{addr.replace(':', '_')}" if addr else None
+
+
+def headset(d):
+    uuids = d["uuids"]
+    return any(u.startswith(SINK_UUID) for u in uuids) and not any(u.startswith(SOURCE_UUID) for u in uuids)
+
+
+def number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+CHECKS = {
+    "target": lambda v: isinstance(v, str) and ADDR.fullmatch(v) is not None,
+    "phone": lambda v: isinstance(v, str) and ADDR.fullmatch(v) is not None,
+    "pending_a2dp": lambda v: isinstance(v, dict) and isinstance(v.get("addr"), str) and ADDR.fullmatch(v["addr"])
+    is not None and isinstance(v.get("boot_id"), str) and number(v.get("until")),
+    "start_boot": lambda v: isinstance(v, dict) and isinstance(v.get("boot_id"), str) and number(v.get("at"))
+    and isinstance(v.get("count"), int) and not isinstance(v["count"], bool) and v["count"] >= 1,
+}
+
+
+def state_path():
+    d = os.environ.get("STATE_DIRECTORY")
+    if d:
+        return os.path.join(d.split(":")[0], "state.json")
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    return os.path.join(base, "microos-bt-reconnect", "state.json")
+
+
+def load_state(path, say):
+    state = {k: None for k in CHECKS}
+    try:
+        with open(path) as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        return state
+    except (OSError, ValueError) as e:
+        say(f"{path}: {e}, using defaults")
+        return state
+    if not isinstance(raw, dict):
+        say(f"{path}: not an object, using defaults")
+        return state
+    for key, check in CHECKS.items():
+        value = raw.get(key)
+        if value is None:
+            continue
+        if check(value):
+            state[key] = value
+        else:
+            say(f"{path}: bad {key} {value!r}, using the default")
+    return state
+
+
+def save_state(path, state):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f, sort_keys=True)
+        f.flush()
+        os.fsync(f.fileno())
+    os.rename(tmp, path)
+    fd = os.open(os.path.dirname(path), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+class Run:
+    def __init__(self, kind, path, now, at):
+        self.kind = kind
+        self.path = path
+        self.at = at
+        self.phase = "a"
+        self.step = 0
+        self.busy = 0
+        self.lost_at = now
+        self.started = now
+        self.acl = False
+        self.event = False
+        self.audio_by = None
+        self.held_at = None
+        self.paused_since = None
+
+
+class Engine:
+    def __init__(self, path, boot_id, boottime, say=log, jitter=None):
+        self.path = path
+        self.boot_id = boot_id
+        self.boottime = boottime
+        self.say = say
+        self.jitter = jitter or (lambda top: random.uniform(0, top))
+        self.calls = []
+        self.next_id = 0
+        self.owned = self.adapter = self.powered = False
+        self.discovering = self.discoverable = False
+        self.devices = {}
+        self.transports = {}
+        self.holds = set()
+        self.scopes = set()
+        self.claims = {}
+        self.seq = 0
+        self.started = self.asleep = False
+        self.was_stack = self.was_ready = False
+        self.paused = False
+        self.pause_since = None
+        self.pause_logged = False
+        self.last_resume = None
+        self.run = None
+        self.inflight = None
+        self.queue = []
+        self.unknown = 0
+        self.want_at = None
+        self.graces = {}
+        self.powered_off_at = None
+        self.ready_since = None
+        self.reconcile_at = None
+        self.boot_wait = None
+        state = load_state(path, say)
+        self.target = device_path(state["target"])
+        self.phone = device_path(state["phone"])
+        self.start_boot = state["start_boot"]
+
+    def addr(self, path):
+        return address(path) or path or "none"
+
+    def role(self):
+        if not self.claims:
+            return "headphones"
+        return max(self.claims.values(), key=lambda c: c[1])[0]
+
+    def stack(self):
+        return self.owned and self.adapter and self.powered
+
+    def ready(self):
+        return self.stack() and not self.holds and not self.asleep
+
+    def can_page(self):
+        return self.started and self.ready() and not self.paused
+
+    def phase_of(self, r):
+        if r.kind == "loss":
+            return f"loss-{r.phase}"
+        return r.kind
+
+    def label(self, r):
+        return f"{self.phase_of(r)}{r.step + 1}"
+
+    def phase(self):
+        if self.holds:
+            return "held"
+        if not (self.started and self.stack()) or self.asleep:
+            return "notready"
+        if self.run is None:
+            return "idle"
+        if self.paused:
+            return "paused"
+        return self.phase_of(self.run)
+
+    def next_attempt(self):
+        r = self.run
+        if r is None or r.at is None or not self.can_page():
+            return 0
+        return int(r.at * 1000000)
+
+    def props(self):
+        return {
+            "Role": ("s", self.role()),
+            "Target": ("o", self.target or "/"),
+            "Phone": ("o", self.phone or "/"),
+            "Phase": ("s", self.phase()),
+            "NextAttempt": ("t", self.next_attempt()),
+        }
+
+    def persist(self):
+        state = {"target": address(self.target), "phone": address(self.phone), "pending_a2dp": None,
+                 "start_boot": self.start_boot}
+        try:
+            save_state(self.path, state)
+        except OSError as e:
+            self.say(f"{self.path}: {e.strerror or e}, kept in memory")
+
+    def pageable(self, path):
+        d = self.devices.get(path)
+        return d is not None and headset(d)
+
+    def wrong(self, path):
+        d = self.devices.get(path)
+        return d is not None and bool(d["uuids"]) and not headset(d)
+
+    def unresolved(self, now):
+        self.say(f"target {self.addr(self.target)} has no UUIDs yet, not paged")
+        if self.reconcile_at is None:
+            self.reconcile_at = now + RECONCILE
+
+    def audio_up(self, path, uuid):
+        return any(t["device"] == path and t["uuid"].startswith(uuid) for t in self.transports.values())
+
+    def not_ready_why(self):
+        if not self.owned:
+            return "owner"
+        if not (self.adapter and self.powered):
+            return "power"
+        if self.asleep:
+            return "sleep"
+        return "hold"
+
+    def settle(self, now):
+        stack = self.stack()
+        ready = self.ready()
+        if not ready:
+            self.stop(self.not_ready_why(), now)
+            self.reconcile_at = None
+            self.boot_wait = None
+        paused = self.adapter and (self.discovering or self.discoverable)
+        if paused != self.paused:
+            self.pause_edge(paused, now)
+        if self.started:
+            if ready and not self.was_ready:
+                self.ready_since = now
+                self.reconcile_at = now + RECONCILE
+                for t in self.transports.values():
+                    t["at"], t["seen"] = now, False
+            if stack and not self.was_stack and not self.holds and not self.asleep:
+                self.boot(now, now)
+        self.was_stack, self.was_ready = stack, ready
+
+    def stop(self, why, now, kinds=None, verb="stopped"):
+        r = self.run
+        if r is None or (kinds and r.kind not in kinds):
+            return
+        self.say(f"{self.addr(r.path)} {self.label(r)} {verb}: {why}")
+        f = self.inflight
+        if f is not None and f.get("run") is r:
+            f["run"] = None
+            f["why"] = why
+        self.run = None
+
+    def done(self, now):
+        r = self.run
+        self.say(f"{self.addr(r.path)} {self.label(r)} done")
+        self.unknown = 0
+        f = self.inflight
+        if f is not None and f.get("run") is r:
+            f["run"] = None
+            f["why"] = "done"
+        self.run = None
+
+    def start_run(self, kind, path, now, at):
+        old = self.run
+        f = self.inflight
+        keep = old is not None and old.path == path and f is not None and f.get("run") is old
+        if old is not None and not keep:
+            self.stop("replaced", now)
+        r = Run(kind, path, now, None if keep else at)
+        if keep:
+            f["run"] = r
+        if self.paused:
+            r.paused_since = now
+        self.run = r
+        return r
+
+    def boot(self, now, at):
+        if not self.started or self.role() != "headphones" or not self.target or not self.ready():
+            return
+        r = self.run
+        if r is not None and r.kind == "boot" and now - r.started < COALESCE:
+            return
+        if self.target not in self.devices:
+            self.boot_wait = (now, at)
+            return
+        self.boot_wait = None
+        if self.wrong(self.target):
+            self.forget(self.target, "not a headset")
+            return
+        if not self.pageable(self.target):
+            self.unresolved(now)
+            return
+        if self.audio_up(self.target, SOURCE_UUID):
+            return
+        self.start_run("boot", self.target, now, at)
+
+    def send(self, path, method, args, info):
+        self.next_id += 1
+        info.update(id=self.next_id, path=path, method=method, args=tuple(args))
+        self.inflight = info
+        self.calls.append((self.next_id, path, method, tuple(args)))
+
+    def pump(self, now):
+        if not self.started or self.inflight is not None or not self.owned:
+            return
+        for item in self.queue:
+            if item["at"] <= now:
+                self.queue.remove(item)
+                self.send(item["path"], item["method"], item["args"], {"kind": "disconnect", "tries": item["tries"]})
+                return
+        r = self.run
+        if r is None or r.at is None or r.at > now or not self.can_page():
+            return
+        r.at = None
+        if r.path not in self.devices:
+            self.stop("no device", now)
+            return
+        if self.audio_up(r.path, SOURCE_UUID):
+            self.done(now)
+            return
+        if r.kind != "receiver" and not self.pageable(r.path):
+            self.stop("not a headset", now)
+            if self.wrong(r.path):
+                self.forget(r.path, "not a headset")
+            else:
+                self.unresolved(now)
+            return
+        r.acl = False
+        self.send(r.path, "Connect", (), {"kind": "attempt", "run": r})
+
+    def reply(self, cid, error, message, now):
+        f = self.inflight
+        if f is None or f["id"] != cid:
+            return
+        self.inflight = None
+        if f["kind"] == "disconnect":
+            self.disconnect_reply(f, error, message, now)
+        elif f.get("run") is not None and f["run"] is self.run:
+            self.run_reply(error, message, now)
+        else:
+            self.late(f, error, now)
+        self.settle(now)
+        self.pump(now)
+
+    def run_reply(self, error, message, now):
+        r = self.run
+        event, r.event = r.event, False
+        if self.audio_up(r.path, SOURCE_UUID):
+            self.done(now)
+            return
+        cls = classify(error, message, self.powered)
+        if cls == "ok":
+            self.unknown = 0
+            r.busy = 0
+            r.audio_by = now + AUDIO_WAIT
+            return
+        self.say(f"{self.addr(r.path)} {self.label(r)} {error} {message}")
+        if cls in ("stop", "notready"):
+            self.stop(f"{error} {message}", now)
+            return
+        if cls == "unknown":
+            if r.acl:
+                self.unknown += 1
+                if self.unknown == BOND:
+                    self.say(f"{self.addr(r.path)} likely lost bond")
+        else:
+            self.unknown = 0
+        if cls == "busy" and r.busy < BUSY_MAX and r.kind != "want":
+            r.busy += 1
+            r.at = now + BUSY_GAP
+            return
+        r.busy = 0
+        if event and r.kind != "want":
+            r.at = max(r.held_at if r.held_at is not None else 0.0, now + LOSS_GAPS[0])
+            return
+        self.gap(now, cls == "slow")
+
+    def gap(self, now, slow):
+        r = self.run
+        r.audio_by = None
+        if slow and r.kind != "boot":
+            r.phase = "c"
+        if r.kind == "want" or (r.kind == "boot" and r.step + 1 >= BOOT_ATTEMPTS):
+            self.stop("last attempt", now, verb="ended")
+            return
+        r.step += 1
+        if r.phase == "a" and r.kind == "boot":
+            gap = LOSS_GAPS[r.step - 1]
+        elif r.phase == "a" and r.step < len(LOSS_GAPS):
+            gap = LOSS_GAPS[r.step]
+        elif r.phase != "c" and now - r.lost_at < B_END:
+            r.phase = "b"
+            gap = B_GAP + self.jitter(B_JITTER)
+        else:
+            r.phase = "c"
+            gap = C_GAP + self.jitter(C_JITTER)
+        r.at = now + gap
+        if r.kind != "boot" and r.at - r.lost_at > self.end_of(r):
+            self.stop(f"{int(self.end_of(r))} s from the loss", now, verb="ended")
+
+    def end_of(self, r):
+        return B_END if r.kind == "receiver" else LOSS_END
+
+    def late(self, f, error, now):
+        if error is not None:
+            return
+        why = f.get("why")
+        if f["method"] == "Connect" and why in DROP:
+            self.say(f"{self.addr(f['path'])} late connect after {why}, disconnecting")
+            self.queue.append({"path": f["path"], "method": "Disconnect", "args": (), "tries": 0, "at": now})
+
+    def disconnect_reply(self, f, error, message, now):
+        cls = classify_disconnect(error, message)
+        if cls == "done":
+            return
+        if cls == "busy" and f["tries"] < BUSY_MAX:
+            self.queue.append({"path": f["path"], "method": f["method"], "args": f["args"], "tries": f["tries"] + 1,
+                               "at": now + BUSY_GAP})
+            return
+        self.say(f"{self.addr(f['path'])} {f['method']} {error} {message}, dropped")
+
+    def pause_edge(self, paused, now):
+        self.paused = paused
+        r = self.run
+        if paused:
+            self.pause_since = now
+            self.pause_logged = False
+            if r is not None:
+                r.paused_since = now
+            return
+        self.pause_since = None
+        if r is None:
+            return
+        since, r.paused_since = r.paused_since, None
+        if self.expired(r, now, since):
+            self.stop("deadline passed in a pause", now, verb="ended")
+            return
+        if r.at is not None and r.at <= now:
+            at = now if self.last_resume is None else max(now, self.last_resume + RESUME_GAP)
+            r.at = at
+            self.last_resume = at
+
+    def expired(self, r, now, since):
+        if r.kind == "boot":
+            return since is not None and now - since >= BOOT_PAUSE_END
+        if r.kind == "want":
+            return False
+        return now - r.lost_at >= self.end_of(r)
+
+    def owner(self, owned, now):
+        if owned == self.owned:
+            return
+        self.owned = owned
+        if not owned:
+            self.adapter = self.powered = self.discovering = self.discoverable = False
+            self.devices.clear()
+            self.transports.clear()
+            self.graces.clear()
+            self.queue.clear()
+            self.say("org.bluez gone")
+        self.settle(now)
+        self.pump(now)
+
+    def load(self, objects, now):
+        for path in sorted(objects):
+            self.add(path, objects[path], now)
+        self.settle(now)
+        self.pump(now)
+
+    def added(self, path, ifaces, now):
+        self.add(path, ifaces, now)
+        self.settle(now)
+        self.pump(now)
+
+    def add(self, path, ifaces, now):
+        if not self.owned:
+            return
+        if path == HCI and ADAPTER in ifaces:
+            self.adapter = True
+            self.adapter_props(ifaces[ADAPTER], now)
+        if DEVICE in ifaces and DEV.fullmatch(path):
+            self.devices[path] = {"uuids": [], "connected": False}
+            self.device(path, ifaces[DEVICE], now, False)
+            self.graces.pop(path, None)
+            w = self.boot_wait
+            if w is not None and path == self.target:
+                self.boot_wait = None
+                if now - w[0] <= COALESCE:
+                    self.boot(now, max(now, w[1]))
+        if TRANSPORT in ifaces:
+            self.transport(path, ifaces[TRANSPORT], now)
+
+    def removed(self, path, names, now):
+        if path == HCI and ADAPTER in names:
+            self.adapter = self.powered = self.discovering = self.discoverable = False
+            self.graces.clear()
+        if DEVICE in names and path in self.devices:
+            del self.devices[path]
+            if path in (self.target, self.phone):
+                r = self.run
+                if r is not None and r.path == path:
+                    self.stop("removed", now)
+                teardown = self.powered_off_at is not None and now - self.powered_off_at <= GRACE
+                if not teardown and self.owned and self.adapter:
+                    self.graces[path] = now
+        if TRANSPORT in names:
+            self.transports.pop(path, None)
+        self.settle(now)
+        self.pump(now)
+
+    def changed(self, path, iface, props, now):
+        if iface == ADAPTER and path == HCI and self.adapter:
+            self.adapter_props(props, now)
+        elif iface == DEVICE and path in self.devices:
+            self.device(path, props, now, True)
+        elif iface == TRANSPORT and path in self.transports:
+            self.transport(path, props, now)
+        self.settle(now)
+        self.pump(now)
+
+    def adapter_props(self, props, now):
+        if "Powered" in props:
+            powered = bool(props["Powered"])
+            if self.powered and not powered:
+                self.powered_off_at = now
+            self.powered = powered
+        if "Discovering" in props:
+            self.discovering = bool(props["Discovering"])
+        if "Discoverable" in props:
+            self.discoverable = bool(props["Discoverable"])
+
+    def device(self, path, props, now, edge):
+        d = self.devices[path]
+        was = d["connected"]
+        if "UUIDs" in props:
+            d["uuids"] = [str(u).lower() for u in props["UUIDs"]]
+        if "Connected" in props:
+            d["connected"] = bool(props["Connected"])
+        if not (edge and d["connected"] and not was):
+            return
+        r = self.run
+        if r is None:
+            return
+        f = self.inflight
+        if r.path == path and f is not None and f.get("run") is r:
+            r.acl = True
+        if r.kind in HEADSET_KINDS and path != r.path and headset(d):
+            self.say(f"{self.addr(path)} connected")
+            self.stop("headset", now)
+
+    def transport(self, path, props, now):
+        t = self.transports.get(path)
+        if t is None:
+            t = self.transports[path] = {"device": None, "uuid": "", "at": now, "seen": False}
+        if "Device" in props:
+            t["device"] = str(props["Device"])
+        if "UUID" in props:
+            t["uuid"] = str(props["UUID"]).lower()
+        r = self.run
+        if r is not None and r.path == t["device"] and r.kind in HEADSET_KINDS and t["uuid"].startswith(SOURCE_UUID):
+            self.done(now)
+
+    def disconnected(self, path, name, message, now):
+        if path in (self.target, self.phone):
+            self.say(f"{self.addr(path)} disconnected {name} {message}")
+        if name not in REASONS or not self.started or not self.ready():
+            return
+        r = self.run
+        if r is not None and r.path == path and r.kind in ("loss", "receiver"):
+            return
+        if self.role() == "headphones" and path == self.target:
+            self.start_run("loss", path, now, now + LOSS_GAPS[0])
+        self.pump(now)
+
+    def sleep(self, going, now):
+        if going:
+            self.say("sleep")
+            self.asleep = True
+            self.settle(now)
+            return
+        self.say("resume")
+        self.asleep = False
+        self.settle(now)
+        if self.stack() and not self.holds:
+            self.boot(now, now + RESUME_DELAY)
+        self.pump(now)
+
+    def tick(self, now):
+        r = self.run
+        if r is not None and r.audio_by is not None and now >= r.audio_by:
+            r.audio_by = None
+            self.gap(now, True)
+        r = self.run
+        if r is not None and self.paused and self.expired(r, now, r.paused_since):
+            self.stop("deadline passed in a pause", now, verb="ended")
+        for path, at in list(self.graces.items()):
+            if now >= at + GRACE:
+                del self.graces[path]
+                self.forget(path, "removed from BlueZ")
+        if self.reconcile_at is not None and now >= self.reconcile_at and self.ready():
+            self.reconcile()
+        if self.paused and not self.pause_logged and now - self.pause_since >= PAUSE_LOG:
+            self.pause_logged = True
+            self.say(f"paused over {int(PAUSE_LOG)} s, Discovering {self.discovering} Discoverable {self.discoverable}")
+        for t in self.transports.values():
+            if t["seen"] or now < t["at"] + RETARGET:
+                continue
+            t["seen"] = True
+            dev = t["device"]
+            if address(dev) is None:
+                continue
+            if t["uuid"].startswith(SOURCE_UUID) and dev != self.target and self.pageable(dev):
+                self.retarget(dev, now, "audio")
+            elif t["uuid"].startswith(SINK_UUID) and dev != self.phone:
+                self.set_phone(dev, now)
+        self.settle(now)
+        self.pump(now)
+
+    def wake(self):
+        times = []
+        r = self.run
+        if r is not None:
+            if r.at is not None and self.inflight is None and self.can_page():
+                times.append(r.at)
+            if r.audio_by is not None:
+                times.append(r.audio_by)
+            if self.paused:
+                if r.kind == "boot" and r.paused_since is not None:
+                    times.append(r.paused_since + BOOT_PAUSE_END)
+                elif r.kind != "want":
+                    times.append(r.lost_at + self.end_of(r))
+        if self.inflight is None and self.owned:
+            times.extend(item["at"] for item in self.queue)
+        times.extend(at + GRACE for at in self.graces.values())
+        if self.reconcile_at is not None:
+            times.append(self.reconcile_at)
+        if self.paused and not self.pause_logged:
+            times.append(self.pause_since + PAUSE_LOG)
+        times.extend(t["at"] + RETARGET for t in self.transports.values() if not t["seen"])
+        return min(times) if times else None
+
+    def forget(self, path, why):
+        if path == self.target:
+            self.say(f"target {self.addr(path)} cleared: {why}")
+            self.target = None
+            self.persist()
+        if path == self.phone:
+            self.say(f"phone {self.addr(path)} cleared: {why}")
+            self.phone = None
+            self.persist()
+
+    def reconcile(self):
+        self.reconcile_at = None
+        for path in (self.target, self.phone):
+            if path is not None and path not in self.devices:
+                self.forget(path, "no Device1")
+        if self.target is not None and not self.pageable(self.target):
+            self.forget(self.target, "not a headset")
+
+    def retarget(self, path, now, why):
+        if path == self.target:
+            return
+        r = self.run
+        if r is not None and r.kind in HEADSET_KINDS and r.path != path:
+            self.stop("target", now)
+        self.target = path
+        self.boot_wait = None
+        self.persist()
+        self.say(f"target {self.addr(path)} ({why})")
+
+    def set_phone(self, path, now):
+        self.phone = path
+        self.persist()
+        self.say(f"phone {self.addr(path)}")
+
+    def refuse(self, sender, method, arg, error, message):
+        self.say(f"{method} {arg!r} by {sender} refused: {message}")
+        return error, message
+
+    def member(self, name):
+        return name in self.holds or name in self.scopes or name in self.claims
+
+    def role_changed(self, before, now):
+        after = self.role()
+        if after != before:
+            self.say(f"role {after}")
+            self.stop("role", now, HEADSET_KINDS if after == "receiver" else ("receiver",))
+
+    def set_role(self, sender, role, now):
+        if role not in ROLES:
+            return self.refuse(sender, "SetRole", role, INVALID, f"{role!r} is not a role")
+        if sender not in self.claims and len(self.claims) >= HOLD_MAX:
+            return self.refuse(sender, "SetRole", role, LIMITS, f"{HOLD_MAX} claimers already")
+        before = self.role()
+        self.seq += 1
+        self.claims[sender] = (role, self.seq)
+        self.say(f"{role} claim by {sender}")
+        self.role_changed(before, now)
+        self.settle(now)
+        self.pump(now)
+        return None
+
+    def set_target(self, sender, path, now):
+        if path == "/":
+            if self.target is not None:
+                self.retarget(None, now, f"SetTarget by {sender}")
+            return None
+        if address(path) is None:
+            return self.refuse(sender, "SetTarget", path, INVALID, f"{path} is not a device under {HCI}")
+        known = self.owned and path in self.devices
+        if known and not headset(self.devices[path]):
+            return self.refuse(sender, "SetTarget", path, INVALID, f"{path} is not a headset")
+        self.retarget(path, now, f"SetTarget by {sender}")
+        if not known and self.ready():
+            self.reconcile_at = now + RECONCILE
+        self.pump(now)
+        return None
+
+    def hold(self, sender, on, now):
+        return self.membership(self.holds, "Hold", sender, on, now)
+
+    def scope(self, sender, on, now):
+        return self.membership(self.scopes, "Scope", sender, on, now)
+
+    def membership(self, group, method, sender, on, now):
+        if on and sender not in group:
+            if len(group) >= HOLD_MAX:
+                return self.refuse(sender, method, on, LIMITS, f"{HOLD_MAX} holders already")
+            group.add(sender)
+            self.say(f"{method} by {sender}")
+        elif not on and sender in group:
+            group.discard(sender)
+            self.say(f"{method} of {sender} released")
+        self.settle(now)
+        self.pump(now)
+        return None
+
+    def want(self, sender, now):
+        h = self.target
+        if self.role() != "headphones" or h is None or not self.can_page() or not self.pageable(h):
+            return None
+        if self.audio_up(h, SOURCE_UUID) or self.inflight is not None:
+            return None
+        if self.want_at is not None and now - self.want_at < WANT_GAP:
+            return None
+        self.want_at = now
+        r = self.run
+        if r is not None and r.audio_by is not None:
+            return None
+        if r is not None and r.path == h:
+            r.event = True
+            r.held_at = r.at
+            r.at = None
+        else:
+            r = self.start_run("want", h, now, None)
+        r.acl = False
+        self.send(h, "Connect", (), {"kind": "attempt", "run": r})
+        return None
+
+    def client_gone(self, name, now):
+        dropped = []
+        if name in self.holds:
+            self.holds.discard(name)
+            dropped.append("Hold")
+        if name in self.scopes:
+            self.scopes.discard(name)
+            dropped.append("Scope")
+        boot = False
+        if name in self.claims:
+            before = self.role()
+            top = max(self.claims, key=lambda n: self.claims[n][1])
+            del self.claims[name]
+            dropped.append("SetRole")
+            boot = before == "receiver" and top == name and self.role() == "headphones"
+            self.role_changed(before, now)
+        for what in dropped:
+            self.say(f"{what} of {name} dropped: name gone")
+        self.settle(now)
+        if boot:
+            self.boot(now, now)
+        self.pump(now)
+
+    def start(self, now):
+        self.started = True
+        s = self.start_boot
+        bt = self.boottime()
+        same = s is not None and bool(self.boot_id) and s["boot_id"] == self.boot_id
+        count = s["count"] + 1 if same else 1
+        throttled = same and 0 <= bt - s["at"] < THROTTLE
+        self.start_boot = {"boot_id": self.boot_id, "at": bt, "count": count}
+        self.persist()
+        self.say(f"start {count} in this boot" + (", start boot run skipped" if throttled else ""))
+        self.was_stack, self.was_ready = self.stack(), self.ready()
+        if self.was_ready:
+            self.ready_since = now
+            self.reconcile_at = now + RECONCILE
+        if not throttled and self.stack() and not self.holds and not self.asleep:
+            self.boot(now, now)
+        self.pump(now)
+
+
+class Service:
+    def __init__(self, engine, loop):
+        self.engine = engine
+        self.loop = loop
+        self.system = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+        self.session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.watches = {}
+        self.timer = None
+        self.last = {}
+
+    def subscribe(self):
+        s, none = self.system, Gio.DBusSignalFlags.NONE
+        s.signal_subscribe(BUS, BUS, "NameOwnerChanged", BUS_PATH, BLUEZ, none, self.on_owner)
+        for iface in (DEVICE, ADAPTER, TRANSPORT):
+            s.signal_subscribe(BLUEZ, PROPS, "PropertiesChanged", None, iface, none, self.on_props)
+        s.signal_subscribe(BLUEZ, DEVICE, "Disconnected", None, None, none, self.on_disconnected)
+        s.signal_subscribe(BLUEZ, MANAGER, "InterfacesAdded", "/", None, none, self.on_added)
+        s.signal_subscribe(BLUEZ, MANAGER, "InterfacesRemoved", "/", None, none, self.on_removed)
+        s.signal_subscribe(LOGIN, f"{LOGIN}.Manager", "PrepareForSleep", "/org/freedesktop/login1", None, none,
+                           self.on_sleep)
+
+    def start(self):
+        self.subscribe()
+        e = self.engine
+        try:
+            owned = self.system.call_sync(BUS, BUS_PATH, BUS, "NameHasOwner", GLib.Variant("(s)", (BLUEZ,)),
+                                          GLib.VariantType("(b)"), Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
+        except GLib.Error as err:
+            log(f"NameHasOwner {BLUEZ}: {err.message}")
+            owned = False
+        if owned:
+            e.owner(True, time.monotonic())
+            try:
+                objects = self.system.call_sync(BLUEZ, "/", MANAGER, "GetManagedObjects", None,
+                                                GLib.VariantType("(a{oa{sa{sv}}})"), Gio.DBusCallFlags.NONE,
+                                                CALL_TIMEOUT_MS, None).unpack()[0]
+                e.load(objects, time.monotonic())
+            except GLib.Error as err:
+                log(f"GetManagedObjects: {err.message}")
+        info = Gio.DBusNodeInfo.new_for_xml(XML)
+        self.session.register_object_with_closures2(PATH, info.interfaces[0], self.on_call, None, None)
+        reply = self.session.call_sync(BUS, BUS_PATH, BUS, "RequestName", GLib.Variant("(su)", (NAME, 4)),
+                                       GLib.VariantType("(u)"), Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
+        if reply != 1:
+            log(f"{NAME} is owned by another process")
+            return False
+        self.session.signal_subscribe(BUS, BUS, "NameLost", BUS_PATH, NAME, Gio.DBusSignalFlags.NONE,
+                                      lambda *a: self.loop.quit())
+        e.start(time.monotonic())
+        self.flush()
+        return True
+
+    def flush(self):
+        e = self.engine
+        calls, e.calls = e.calls, []
+        for cid, path, method, args in calls:
+            body = GLib.Variant("(s)", args) if args else None
+            self.system.call(BLUEZ, path, DEVICE, method, body, None, Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None,
+                             self.on_reply, cid)
+        current = e.props()
+        changed = {k: GLib.Variant(t, v) for k, (t, v) in current.items() if self.last.get(k) != (t, v)}
+        if changed and self.last:
+            self.session.emit_signal(None, PATH, PROPS, "PropertiesChanged",
+                                     GLib.Variant("(sa{sv}as)", (IFACE, changed, [])))
+        self.last = current
+        if self.timer is not None:
+            GLib.source_remove(self.timer)
+            self.timer = None
+        wake = e.wake()
+        if wake is not None:
+            ms = max(0, math.ceil((wake - time.monotonic()) * 1000)) + 1
+            self.timer = GLib.timeout_add(ms, self.on_timer)
+
+    def on_timer(self):
+        self.timer = None
+        self.engine.tick(time.monotonic())
+        self.flush()
+        return GLib.SOURCE_REMOVE
+
+    def on_reply(self, conn, result, cid):
+        error = message = None
+        try:
+            conn.call_finish(result)
+        except GLib.Error as err:
+            error = Gio.dbus_error_get_remote_error(err)
+            if error is None:
+                timed_out = err.matches(Gio.io_error_quark(), Gio.IOErrorEnum.TIMED_OUT)
+                error = NOREPLY if timed_out else f"{err.domain}.{err.code}"
+            message = err.message
+            prefix = f"GDBus.Error:{error}: "
+            if message.startswith(prefix):
+                message = message[len(prefix):]
+        self.engine.reply(cid, error, message, time.monotonic())
+        self.flush()
+
+    def on_owner(self, conn, sender, path, iface, signal, params):
+        _, _, new = params.unpack()
+        self.engine.owner(bool(new), time.monotonic())
+        if new:
+            self.system.call(BLUEZ, "/", MANAGER, "GetManagedObjects", None, GLib.VariantType("(a{oa{sa{sv}}})"),
+                             Gio.DBusCallFlags.NONE, CALL_TIMEOUT_MS, None, self.on_objects)
+        self.flush()
+
+    def on_objects(self, conn, result):
+        try:
+            objects = conn.call_finish(result).unpack()[0]
+        except GLib.Error as err:
+            log(f"GetManagedObjects: {err.message}")
+            return
+        self.engine.load(objects, time.monotonic())
+        self.flush()
+
+    def on_props(self, conn, sender, path, iface, signal, params):
+        name, changed, _ = params.unpack()
+        self.engine.changed(path, name, changed, time.monotonic())
+        self.flush()
+
+    def on_disconnected(self, conn, sender, path, iface, signal, params):
+        if params.get_type_string() != "(ss)":
+            return
+        name, message = params.unpack()
+        self.engine.disconnected(path, name, message, time.monotonic())
+        self.flush()
+
+    def on_added(self, conn, sender, path, iface, signal, params):
+        obj, ifaces = params.unpack()
+        self.engine.added(obj, ifaces, time.monotonic())
+        self.flush()
+
+    def on_removed(self, conn, sender, path, iface, signal, params):
+        obj, names = params.unpack()
+        self.engine.removed(obj, names, time.monotonic())
+        self.flush()
+
+    def on_sleep(self, conn, sender, path, iface, signal, params):
+        self.engine.sleep(params.unpack()[0], time.monotonic())
+        self.flush()
+
+    def on_call(self, conn, sender, path, iface, method, params, inv):
+        e, now = self.engine, time.monotonic()
+        if iface == PROPS:
+            props = e.props()
+            args = params.unpack()
+            if args[0] != IFACE:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownInterface", f"no interface {args[0]}")
+            elif method == "GetAll":
+                inv.return_value(GLib.Variant("(a{sv})", ({k: GLib.Variant(t, v) for k, (t, v) in props.items()},)))
+            elif method == "Get" and args[1] in props:
+                t, v = props[args[1]]
+                inv.return_value(GLib.Variant("(v)", (GLib.Variant(t, v),)))
+            elif method == "Get":
+                inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownProperty", f"no property {args[1]}")
+            else:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.PropertyReadOnly", f"{args[1]} is read only")
+            return
+        args = params.unpack()
+        if method == "SetRole":
+            err = e.set_role(sender, args[0], now)
+        elif method == "SetTarget":
+            err = e.set_target(sender, args[0], now)
+        elif method == "Hold":
+            err = e.hold(sender, args[0], now)
+        elif method == "Scope":
+            err = e.scope(sender, args[0], now)
+        elif method == "Want":
+            err = e.want(sender, now)
+        else:
+            err = ("org.freedesktop.DBus.Error.UnknownMethod", f"{iface}.{method}")
+        if err:
+            inv.return_dbus_error(*err)
+        else:
+            inv.return_value(None)
+        self.watch(sender)
+        self.flush()
+
+    def watch(self, name):
+        member = self.engine.member(name)
+        if member and name not in self.watches:
+            self.watches[name] = self.session.signal_subscribe(BUS, BUS, "NameOwnerChanged", BUS_PATH, name,
+                                                               Gio.DBusSignalFlags.NONE, self.on_client)
+            self.session.call(BUS, BUS_PATH, BUS, "NameHasOwner", GLib.Variant("(s)", (name,)),
+                              GLib.VariantType("(b)"), Gio.DBusCallFlags.NONE, 5000, None, self.on_has_owner, name)
+        elif not member and name in self.watches:
+            self.session.signal_unsubscribe(self.watches.pop(name))
+
+    def on_has_owner(self, conn, result, name):
+        try:
+            present = conn.call_finish(result).unpack()[0]
+        except GLib.Error as err:
+            log(f"NameHasOwner {name}: {err.message}")
+            present = False
+        if not present:
+            self.gone(name)
+
+    def on_client(self, conn, sender, path, iface, signal, params):
+        name, _, new = params.unpack()
+        if not new:
+            self.gone(name)
+
+    def gone(self, name):
+        if name in self.watches:
+            self.session.signal_unsubscribe(self.watches.pop(name))
+        self.engine.client_gone(name, time.monotonic())
+        self.flush()
+
+
+def boot_id():
+    try:
+        with open(f"{PROC}/sys/kernel/random/boot_id") as f:
+            return f.read().strip()
+    except OSError as e:
+        log(f"boot_id: {e.strerror}")
+        return ""
+
+
+def main():
+    loop = GLib.MainLoop()
+    engine = Engine(state_path(), boot_id(), lambda: time.clock_gettime(time.CLOCK_BOOTTIME))
+    service = Service(engine, loop)
+    if not service.start():
+        return 1
+    loop.run()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

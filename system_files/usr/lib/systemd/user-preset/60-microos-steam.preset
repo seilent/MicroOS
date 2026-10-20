@@ -1,4 +1,5 @@
 enable steamos-manager.service
 enable microos-audio-sleep.service
 enable microos-audio.service
+enable microos-bt-reconnect.service
 disable steamos-manager-session-cleanup.service

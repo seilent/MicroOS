@@ -173,7 +173,7 @@ rpm -q python3-gobject python3-evdev upower >/dev/null || fail "steam service rp
 for u in steamos-manager.service upower.service microos-powerd.service microos-vpower.service microsetd.service; do
   [[ $(systemctl is-enabled "$u") == enabled ]] || fail "$u is not enabled"
 done
-for u in steamos-manager.service microos-audio-sleep.service microos-audio.service; do
+for u in steamos-manager.service microos-audio-sleep.service microos-audio.service microos-bt-reconnect.service; do
   [[ $(systemctl --global is-enabled "$u") == enabled ]] || fail "user $u is not enabled"
 done
 [[ $(systemctl --global is-enabled steamos-manager-session-cleanup.service) != enabled ]] \
@@ -501,6 +501,14 @@ execs() {
 btd=$(timeout 5 /usr/libexec/bluetooth/bluetoothd -n -d 2>&1 || true)
 grep -qF 'parsing /etc/bluetooth/main.conf' <<< "$btd" && grep -qF 'General.Experimental = true' <<< "$btd" \
   || fail "bluetoothd does not read Experimental = true from /etc/bluetooth/main.conf"
+! grep -qE 'Unknown (key|group)' <<< "$btd" || fail "bluetoothd rejects a key in /etc/bluetooth/main.conf: $(grep -E 'Unknown (key|group)' <<< "$btd")"
+attempts=$(python3 -c 'from gi.repository import GLib
+k = GLib.KeyFile()
+k.load_from_file("/etc/bluetooth/main.conf", GLib.KeyFileFlags.NONE)
+print(k.get_integer("Policy", "ReconnectAttempts"))') || fail "no Policy.ReconnectAttempts in /etc/bluetooth/main.conf"
+[[ $attempts == 0 ]] || fail "Policy.ReconnectAttempts is $attempts"
+! grep -rqs 'bluez5\.auto-connect' /usr/share/wireplumber /etc/wireplumber || fail "a WirePlumber config sets bluez5.auto-connect"
+systemd-analyze cat-config systemd/logind.conf | grep -qx 'UserStopDelaySec=infinity' || fail "logind.conf lacks UserStopDelaySec=infinity"
 starting="-/bin/sh -c '/usr/bin/plymouth display-message --text=microos-starting; /usr/bin/plymouth deactivate || /usr/bin/plymouth quit'"
 [[ $(execs plymouth-quit.service ExecStart) == "$starting" ]] || fail "effective plymouth-quit.service ExecStart: $(execs plymouth-quit.service ExecStart)"
 execs sddm.service ExecStartPre | grep -qxF -- "$quit" || fail "sddm.service has no plymouth deactivate ExecStartPre"
