@@ -1,0 +1,453 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+import sys
+import tempfile
+import time
+
+import numpy as np
+
+RATE = 48000
+QUANTUM = 1024
+TWO_Q = 2 * QUANTUM / RATE
+ONE_Q = QUANTUM / RATE
+GRAPHIC = [31.25 * 2 ** k for k in range(10)]
+TYPES = {"peak": 0, "lowshelf": 1, "highshelf": 2, "bandpass": 3, "lowpass": 4, "highpass": 5, "allpass": 6,
+         "matchedpeak": 7}
+W5, W25, WC25, WC40 = 240, 1200, 1920, 1200
+RC = 0
+TMP = tempfile.mkdtemp(prefix="live-", dir=os.environ.get("TMPDIR", "/tmp"))
+
+
+def fail(msg):
+    global RC
+    RC = 1
+    print(f"FAIL: {msg}", flush=True)
+
+
+def ok(msg):
+    print(f"audio-eq: live: {msg}", flush=True)
+
+
+def graphic(preamp, gains):
+    return preamp, [("matchedpeak", f, g, 0.92) for f, g in zip(GRAPHIC, gains)]
+
+
+def at(band, value):
+    g = [0.0] * 10
+    g[GRAPHIC.index(band)] = value
+    return g
+
+
+SETS = {
+    "C": graphic(-12.0, at(1000.0, 12.0)), "FLAT": graphic(0.0, [0.0] * 10),
+    "A": graphic(-6.0, at(31.25, 6.0)), "B": graphic(-6.0, at(16000.0, 6.0)),
+    "S2 +12": (-12.0, [("matchedpeak", 31.25, 12.0, 0.92)]), "S2 -12": (0.0, [("matchedpeak", 31.25, -12.0, 0.92)]),
+    "S5 +12": (-12.0, [("matchedpeak", 20.0, 12.0, 10.0)]), "S5 -12": (0.0, [("matchedpeak", 20.0, -12.0, 10.0)]),
+}
+
+
+def params(name):
+    preamp, bands = SETS[name]
+    unused = [("peak", 1000.0, 0.0, 1.0)] * (10 - len(bands))
+    out = []
+    for side in "LR":
+        out += [f'"eq{side}:Preamp" {preamp!r}', f'"eq{side}:Count" {float(len(bands))!r}']
+        for n, (kind, f, g, q) in enumerate(bands + unused, 1):
+            out += [f'"eq{side}:Type{n}" {float(TYPES[kind])!r}', f'"eq{side}:Freq{n}" {f!r}',
+                    f'"eq{side}:Gain{n}" {g!r}', f'"eq{side}:Q{n}" {q!r}']
+    return "{ params = [ " + " ".join(out) + " ] }"
+
+
+def filters(name):
+    preamp, bands = SETS[name]
+    items = [f"'preamp {preamp:g}'"] + [f"'{k} {f:g} {g:g} {q:g}'" for k, f, g, q in bands]
+    return "<[" + ", ".join(items) + "]>"
+
+
+def setp(node, name):
+    proc = subprocess.run(["pw-cli", "s", node, "Props", params(name)], capture_output=True, text=True, timeout=5)
+    if proc.returncode != 0 or "Error" in proc.stdout + proc.stderr:
+        raise SystemExit(f"pw-cli s {node} failed: {proc.stdout} {proc.stderr}")
+
+
+def poke(key, value):
+    subprocess.run(["gdbus", "call", "--system", "-d", "net.seilent.MicroSet", "-o", "/net/seilent/MicroSet", "-m",
+                    "test.Stub.Poke", f"'{key}'", value], check=True, capture_output=True)
+
+
+def pactl(*args):
+    subprocess.run(["pactl", *args], check=True, capture_output=True)
+
+
+class Player:
+    def __init__(self, freqs, amp, seconds):
+        t = np.arange(int(RATE * seconds)) / RATE
+        sig = sum(amp * np.sin(2 * np.pi * f * t) for f in freqs)
+        self.path = os.path.join(TMP, f"tone-{'-'.join(map(str, freqs))}.raw")
+        sig.astype("<f4").tofile(self.path)
+        self.start()
+
+    def start(self):
+        self.proc = subprocess.Popen(["pw-play", "--raw", "--rate", str(RATE), "--channels", "1", "--format", "f32",
+                                      "-P", "{ media.name = microos-eq-live-tone }", self.path],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        time.sleep(0.5)
+
+    def stop(self):
+        self.proc.terminate()
+        self.proc.wait()
+
+
+class Capture:
+    count = 0
+
+    def __init__(self, hw):
+        Capture.count += 1
+        name = f"microos-eq-live-rec{Capture.count}"
+        self.path = os.path.join(TMP, f"{name}.raw")
+        self.proc = subprocess.Popen(["pw-record", "--raw", "--rate", str(RATE), "--channels", "1", "--format", "f32",
+                                      "-P", f"{{ node.name = {name} node.autoconnect = false }}", self.path],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        for _ in range(100):
+            if f"{name}:input_MONO" in subprocess.run(["pw-link", "-i"], capture_output=True, text=True).stdout:
+                break
+            time.sleep(0.05)
+        subprocess.run(["pw-link", f"{hw}:monitor_FL", f"{name}:input_MONO"], check=True, capture_output=True)
+        for _ in range(100):
+            if self.pos() > RATE // 10:
+                break
+            time.sleep(0.05)
+
+    def pos(self):
+        try:
+            return os.path.getsize(self.path) // 4
+        except OSError:
+            return 0
+
+    def stop(self):
+        time.sleep(0.1)
+        self.proc.terminate()
+        self.proc.wait()
+        return np.fromfile(self.path, dtype="<f4").astype(np.float64)
+
+
+def rms_db(y, win):
+    c = np.concatenate([[0.0], np.cumsum(y * y)])
+    return 10 * np.log10(np.maximum((c[win:] - c[:-win]) / win, 1e-24))
+
+
+def steady(y, a, b, win):
+    return float(np.median(rms_db(y[a:b], win)))
+
+
+def reached(lv, start, want, end=None, tol=0.1):
+    end = len(lv) if end is None else end
+    off = np.nonzero(np.abs(lv[start:end] - want) > tol)[0]
+    hit = start + int(off[-1]) + 1 if len(off) else start
+    return hit if hit < end else None
+
+
+def hammer(node, hw):
+    play = Player([1000, 4000], 0.1, 120)
+    cap = Capture(hw)
+    lv = {}
+    for name in ("C", "FLAT"):
+        setp(node, name)
+        time.sleep(1.0)
+        p = cap.pos()
+        time.sleep(0.6)
+        lv[name] = (p, cap.pos())
+    t0 = time.monotonic()
+    writes = []
+    for k in range(200):
+        while time.monotonic() < t0 + 0.2 * k:
+            time.sleep(0.002)
+        writes.append((cap.pos(), "C" if k % 2 == 0 else "FLAT"))
+        setp(node, writes[-1][1])
+    time.sleep(0.5)
+    pre_fast = cap.pos()
+    setp(node, "C")
+    time.sleep(0.5)
+    fast_t, fast = [], []
+    cli = subprocess.Popen(["pw-cli"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           text=True)
+    for k in range(100):
+        name = "C" if k % 2 == 0 else "FLAT"
+        fast.append((cap.pos(), name))
+        fast_t.append(time.monotonic())
+        cli.stdin.write(f"s {node} Props {params(name)}\n")
+        cli.stdin.flush()
+        time.sleep(0.015)
+    time.sleep(1.0)
+    finish(cli)
+    end_fast = cap.pos()
+    y = cap.stop()
+    play.stop()
+    c5, f5 = (steady(y, *lv[n], W5) for n in ("C", "FLAT"))
+    c25, f25 = (steady(y, *lv[n], W25) for n in ("C", "FLAT"))
+    target25 = {"C": c25, "FLAT": f25}
+    l5, l25 = rms_db(y, W5), rms_db(y, W25)
+    span = slice(writes[0][0], pre_fast)
+    over = float(l5[span].max() - max(c5, f5))
+    bad = []
+    for k, (p, name) in enumerate(writes):
+        nxt = writes[k + 1][0] if k + 1 < len(writes) else pre_fast
+        got = float(rms_db(y[nxt - W25:nxt], W25)[0])
+        if abs(got - target25[name]) > 0.1:
+            bad.append((k, name, round(got - target25[name], 3)))
+    last = float(rms_db(y[pre_fast - W25:pre_fast], W25)[0])
+    before = float(rms_db(y[fast[0][0] - W25:fast[0][0]], W25)[0])
+    if over > 0.5 or bad or abs(last - f25) > 0.1:
+        fail(f"hammer: over {over:+.3f} dB, levels off at {bad[:10]} ({len(bad)} writes), end {last - f25:+.3f} dB")
+    else:
+        ok(f"hammer: 200 writes 200 ms apart, C {c25:.2f} dB and FLAT {f25:.2f} dB on 25 ms windows, every level reached "
+           f"before the next write, worst 5 ms window {over:+.3f} dB over max(C, FLAT), ends on FLAT")
+    gaps = np.diff(fast_t)
+    lastp = fast[-1][0]
+    hit = reached(l25, lastp, f25, end_fast - W25)
+    seg = l25[fast[0][0]:end_fast - W25]
+    hi, lo = float(seg.max() - max(c25, f25)), float(seg.min() - min(c25, f25))
+    stays = hit is not None
+    delay = (hit - lastp) / RATE if hit is not None else float("inf")
+    if gaps.max() >= TWO_Q or not stays or delay > 0.182 or hi > 0.5 or lo < -1.0 or abs(before - c25) > 0.1:
+        fail(f"hammer fast: spacing max {gaps.max() * 1000:.1f} ms, FLAT reached {delay * 1000:.1f} ms after the last "
+             f"write (stays {stays}), windows {hi:+.3f} over and {lo:+.3f} under")
+    else:
+        ok(f"hammer fast: 100 writes on one pw-cli, spacing max {gaps.max() * 1000:.1f} ms, FLAT reached "
+           f"{delay * 1000:.1f} ms after the last write (bound 182), windows {hi:+.3f} dB over, {lo:+.3f} dB under")
+
+
+def slow(node, hw):
+    play = Player([25], 0.25, 120)
+    cap = Capture(hw)
+    lv = {}
+    for name in ("S5 +12", "S5 -12"):
+        setp(node, name)
+        time.sleep(3.0)
+        p = cap.pos()
+        time.sleep(0.8)
+        lv[name] = (p, cap.pos())
+    t0 = time.monotonic()
+    writes = []
+    for k in range(20):
+        while time.monotonic() < t0 + 1.2 * k:
+            time.sleep(0.002)
+        writes.append((cap.pos(), "S5 +12" if k % 2 == 0 else "S5 -12"))
+        setp(node, writes[-1][1])
+    while time.monotonic() < t0 + 1.2 * 20:
+        time.sleep(0.002)
+    pre_fast = cap.pos()
+    setp(node, "S5 +12")
+    time.sleep(1.5)
+    fast_t, fast = [], []
+    cli = subprocess.Popen(["pw-cli"], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           text=True)
+    for k in range(20):
+        name = "S5 +12" if k % 2 == 0 else "S5 -12"
+        fast.append((cap.pos(), name))
+        fast_t.append(time.monotonic())
+        cli.stdin.write(f"s {node} Props {params(name)}\n")
+        cli.stdin.flush()
+        time.sleep(0.015)
+    time.sleep(2.5)
+    finish(cli)
+    end = cap.pos()
+    y = cap.stop()
+    play.stop()
+    target = {n: steady(y, *lv[n], WC25) for n in lv}
+    lc = rms_db(y, WC25)
+    bad = []
+    for k, (p, name) in enumerate(writes):
+        nxt = writes[k + 1][0] if k + 1 < len(writes) else pre_fast
+        got = float(rms_db(y[nxt - WC25:nxt], WC25)[0])
+        if abs(got - target[name]) > 0.1:
+            bad.append((k, name, round(got - target[name], 3)))
+    seg = lc[writes[0][0]:end - WC25]
+    hi = float(seg.max() - max(target.values()))
+    lo = float(seg.min() - min(target.values()))
+    lastp = fast[-1][0]
+    hit = reached(lc, lastp, target["S5 -12"], end - WC25)
+    stays = hit is not None
+    delay = (hit - lastp) / RATE if hit is not None else float("inf")
+    gaps = np.diff(fast_t)
+    before = float(rms_db(y[fast[0][0] - WC25:fast[0][0]], WC25)[0])
+    if bad or hi > 0.5 or lo < -1.0 or gaps.max() >= TWO_Q or not stays or delay > 1.461 or abs(before - target["S5 +12"]) > 0.1:
+        fail(f"hammer slow: levels off at {bad} ({len(bad)} of 20), windows {hi:+.3f} over and {lo:+.3f} under, spacing "
+             f"max {gaps.max() * 1000:.1f} ms, S5 -12 reached {delay * 1000:.1f} ms after the last write (stays {stays})")
+    else:
+        ok(f"hammer slow: S5 +12 {target['S5 +12']:.2f} dB and S5 -12 {target['S5 -12']:.2f} dB at 25 Hz, 20 writes "
+           f"1200 ms apart each reached, windows {hi:+.3f} dB over, {lo:+.3f} dB under; 20 fast writes (spacing max "
+           f"{gaps.max() * 1000:.1f} ms) end on S5 -12 reached {delay * 1000:.1f} ms after the last write (bound 1461)")
+
+
+def finish(cli):
+    try:
+        cli.stdin.write("quit\n")
+        cli.stdin.close()
+        cli.wait(timeout=3)
+    except (BrokenPipeError, subprocess.TimeoutExpired):
+        cli.kill()
+        cli.wait()
+
+
+def first_sound(y, start, floor=1e-4):
+    idx = np.nonzero(np.abs(y[start:]) > floor)[0]
+    return start + int(idx[0]) if len(idx) else None
+
+
+def instances(err):
+    try:
+        with open(err) as f:
+            return sum("instantiate eq eqL[0]" in line for line in f)
+    except OSError:
+        return -1
+
+
+def resume(node, hw, chain, err):
+    play = Player([1000, 4000], 0.1, 120)
+    cap = Capture(hw)
+    setp(node, "FLAT")
+    time.sleep(0.8)
+    pf = cap.pos()
+    time.sleep(0.6)
+    flat = (pf, cap.pos())
+    setp(node, "C")
+    time.sleep(0.8)
+    pc = cap.pos()
+    time.sleep(0.6)
+    c = (pc, cap.pos())
+    n0 = instances(err)
+    pactl("suspend-sink", chain, "1")
+    time.sleep(0.5)
+    r1 = cap.pos()
+    pactl("suspend-sink", chain, "0")
+    time.sleep(1.0)
+    n1 = instances(err)
+    pactl("suspend-sink", chain, "1")
+    time.sleep(0.3)
+    setp(node, "FLAT")
+    time.sleep(0.3)
+    r2 = cap.pos()
+    pactl("suspend-sink", chain, "0")
+    time.sleep(1.0)
+    n2 = instances(err)
+    e2 = cap.pos()
+    setp(node, "C")
+    time.sleep(1.0)
+    play.stop()
+    time.sleep(7.0)
+    r3 = cap.pos()
+    play.start()
+    time.sleep(1.0)
+    n3 = instances(err)
+    paths = {"suspend": n1 - n0, "suspend with FLAT": n2 - n1, "player stop and start": n3 - n2}
+    print(f"audio-eq: live: resume: new eqL instances per cycle {paths} (log lines before {n0})", flush=True)
+    if n0 < 1 or paths["suspend"] != 0 or paths["suspend with FLAT"] != 0 or paths["player stop and start"] not in (0, 1):
+        try:
+            with open(err) as f:
+                head = f.read()[:600]
+        except OSError as e:
+            head = str(e)
+        fail(f"resume: a suspend made a new eqL instance, or the count is not readable: {paths}, before {n0}; {err}: {head!r}")
+    y = cap.stop()
+    play.stop()
+    c5, c25, f25 = steady(y, *c, W5), steady(y, *c, W25), steady(y, *flat, W25)
+    l25 = rms_db(y, W25)
+    bound = TWO_Q + 0.070 + ONE_Q + 0.020
+    out = []
+    for label, r in (("suspend and resume", r1), ("player stop and start", r3)):
+        s = first_sound(y, r)
+        got = float(rms_db(y[s:s + W5], W5)[0]) if s is not None else float("-inf")
+        out.append((label, got - c5))
+    s2 = first_sound(y, r2)
+    hit = reached(l25, s2, f25, e2 - W25) if s2 is not None else None
+    delay = (hit - s2) / RATE if hit is not None else float("inf")
+    bad = [o for o in out if abs(o[1]) > 1.0]
+    if bad or delay > bound:
+        fail(f"resume: first 5 ms window against C {out}, FLAT written while suspended reached {delay * 1000:.1f} ms "
+             f"after the resume (bound {bound * 1000:.1f})")
+    else:
+        ok(f"resume: first 5 ms window {out[0][1]:+.3f} dB from C after a suspend, {out[1][1]:+.3f} dB after a player "
+           f"stop and start; FLAT written while suspended in {delay * 1000:.1f} ms (bound {bound * 1000:.1f})")
+    play = Player([25], 0.25, 60)
+    cap = Capture(hw)
+    setp(node, "S5 -12")
+    time.sleep(3.0)
+    p = cap.pos()
+    time.sleep(0.8)
+    lo12 = (p, cap.pos())
+    setp(node, "S5 +12")
+    time.sleep(3.0)
+    pactl("suspend-sink", chain, "1")
+    time.sleep(0.3)
+    setp(node, "S5 -12")
+    time.sleep(0.3)
+    r = cap.pos()
+    pactl("suspend-sink", chain, "0")
+    time.sleep(2.5)
+    y = cap.stop()
+    play.stop()
+    want = steady(y, *lo12, WC25)
+    lc = rms_db(y, WC25)
+    s = first_sound(y, r)
+    hit = reached(lc, s, want) if s is not None else None
+    delay = (hit - s) / RATE if hit is not None else float("inf")
+    bound = TWO_Q + 0.3691 + ONE_Q + 0.020
+    if delay > bound:
+        fail(f"resume: S5 -12 written while suspended reached {delay * 1000:.1f} ms after the resume (bound {bound * 1000:.1f})")
+    else:
+        ok(f"resume: S5 -12 written while suspended reached {delay * 1000:.1f} ms after the resume (bound {bound * 1000:.1f})")
+
+
+def continuity(hw):
+    for label, freqs, a, b, win in (("S3 C to FLAT", [1000, 4000], "C", "FLAT", W5),
+                                    ("S3 FLAT to C", [1000, 4000], "FLAT", "C", W5),
+                                    ("S4 A to B", [1000, 4000], "A", "B", W5), ("S2 up", [40], "S2 -12", "S2 +12", WC40),
+                                    ("S2 down", [40], "S2 +12", "S2 -12", WC40)):
+        play = Player(freqs, 0.25 if len(freqs) == 1 else 0.1, 30)
+        poke("audio.eq.headphones.filters", filters(a))
+        time.sleep(2.0)
+        cap = Capture(hw)
+        time.sleep(1.0)
+        p = cap.pos()
+        poke("audio.eq.headphones.filters", filters(b))
+        time.sleep(2.0)
+        y = cap.stop()
+        play.stop()
+        lv = rms_db(y, win)
+        old = float(np.median(lv[p - RATE // 2:p - win]))
+        new = float(np.median(lv[len(lv) - RATE // 2:]))
+        seg = lv[p:]
+        hi, lo = float(seg.max() - max(old, new)), float(seg.min() - min(old, new))
+        settle = 0.0
+        if abs(new - old) <= 0.2:
+            fail(f"continuity {label}: old {old:.2f} and new {new:.2f} dB too close for the settle check")
+        else:
+            move = next((i for i in range(p, len(lv)) if abs(lv[i] - old) > 0.1), None)
+            tail = lv[move + RATE // 10:] if move is not None else lv[-1:] + 99
+            settle = float(np.abs(tail - new).max())
+        if hi > 0.5 or lo < -1.0 or settle > 0.1:
+            fail(f"continuity {label}: old {old:.2f} new {new:.2f} dB, windows {hi:+.3f} over {lo:+.3f} under, "
+                 f"{settle:.3f} dB off the new level from 100 ms after it moves")
+        else:
+            ok(f"continuity {label}: old {old:.2f} new {new:.2f} dB, windows {hi:+.3f} dB over and {lo:+.3f} dB under, "
+               f"within {settle:.3f} dB of the new level from 100 ms after it moves")
+
+
+def main():
+    cmd = sys.argv[1]
+    if cmd == "hammer":
+        hammer(sys.argv[2], sys.argv[3])
+    elif cmd == "slow":
+        slow(sys.argv[2], sys.argv[3])
+    elif cmd == "resume":
+        resume(sys.argv[2], sys.argv[3], sys.argv[2], sys.argv[4])
+    elif cmd == "continuity":
+        continuity(sys.argv[2])
+    else:
+        sys.exit(f"live: unknown command {cmd}")
+    sys.exit(RC)
+
+
+main()
