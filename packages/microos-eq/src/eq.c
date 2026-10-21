@@ -10,6 +10,7 @@ enum { IN, OUT, PREAMP };
 enum { PEAK, LOWSHELF, HIGHSHELF, BANDPASS, LOWPASS, HIGHPASS, ALLPASS, MATCHEDPEAK, TYPES };
 
 void microos_eq_rbj(int type, double freq, double gain, double q, double rate, double c[5]);
+const LADSPA_Descriptor *microos_eq_crossfeed(void);
 
 #ifdef MICROOS_EQ_TEST
 EXPORT void (*microos_eq_test_mid)(void *);
@@ -445,5 +446,7 @@ static const LADSPA_Descriptor eq_descriptor = {
 
 EXPORT const LADSPA_Descriptor *ladspa_descriptor(unsigned long index)
 {
-	return index == 0 ? &eq_descriptor : NULL;
+	if (index == 0)
+		return &eq_descriptor;
+	return index == 1 ? microos_eq_crossfeed() : NULL;
 }
