@@ -17,6 +17,7 @@ own=(
   microset/microset-settings
   microset/microset-fonts
   hexagonrpc/hexagonrpc
+  microos-eq/microos-eq
   microdap/microdap
   es-de/es-de
   microemu/microemu
