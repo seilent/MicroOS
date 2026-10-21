@@ -89,7 +89,8 @@ Retroid kernel is [lineageos-on-retroid/android_kernel_retroid_sm8250_ack](https
 | Stick LED frame in `microsetd` (format, written new) | [ROCKNIX](https://github.com/ROCKNIX/distribution) `57cf10c23e` AYANEO Pocket EVO `analog_sticks_ledcontrol` (MCU envelope); AYANEO RGB app on stock Android (PM2 frame body) | tiopex, AYANEO | GPL-2.0 (ROCKNIX); format only from the app |
 | SSC wire format in the InputPlumber SSC source and `microsetd` (format, written new) | [libssc](https://codeberg.org/DylanVanAssche/libssc) `54dd13e` | Dylan Van Assche | GPL-3.0-or-later |
 | Crossfeed design in `microos-audio` (bs2b `init` formulas, written new) | [libbs2b](https://github.com/alexmarsev/libbs2b) `3.1.0` `src/bs2b.c` | Boris Mikhaylov | MIT |
-| Matched peak band design in `microos-audio` (method, written new) | M. Vicanek, "Matched Second Order Digital Filters" (2016) | Martin Vicanek | paper |
+| Matched peak band design in `microos-audio` and the `microos-eq` plugin (method, written new) | M. Vicanek, "Matched Second Order Digital Filters" (2016) | Martin Vicanek | paper |
+| RBJ band designs in the `microos-eq` plugin (ported) | [PipeWire](https://gitlab.freedesktop.org/pipewire/pipewire) `1.6.9` `spa/plugins/audioconvert/biquad.c` | The Chromium OS Authors, Google | BSD-3-Clause |
 | Selawik font in `microset-fonts`, for the recovery screen and MicroDAP | [microsoft/Selawik](https://github.com/microsoft/Selawik) `1.01` | Microsoft Corporation | OFL-1.1 |
 | Doto font, rendered into the boot splash wordmark (font not shipped) | [oliverlalan/Doto](https://github.com/oliverlalan/Doto) `1.000` | Óliver Lalan | OFL-1.1 |
 | `mkbootimg`, `unpack_bootimg` | AOSP `platform/system/tools/mkbootimg`, Fedora `android-tools` | The Android Open Source Project | Apache-2.0 |

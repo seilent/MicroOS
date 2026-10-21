@@ -29,9 +29,9 @@ python3 -c 'import gi, numpy' || { echo "FAIL: python3-gobject or numpy missing"
 for f in "$wpconf" "$bypass"; do
   [[ -f $f ]] || { echo "FAIL: ${f#"$tree"} missing" >&2; exit 1; }
 done
-g++ -std=c++20 -O2 -o "$tmp/biquad-ref" "$here/fixtures/eq/biquad-ref.cpp" "$here/fixtures/eq/Biquad.cpp"
-g++ -std=c++20 -O2 -ffp-contract=off -o "$tmp/flatdap-ref" "$here/fixtures/eq/flatdap-ref.cpp"
-python3 - "$tmp/flatdap-ref" "$here/fixtures/eq/flatdap-987ddd3.txt" << 'PY' || fail "flatdap-ref differs from flatdap 987ddd3 design_biquad or xfeed_design"
+g++ -std=c++20 -O2 -o "$tmp/biquad-ref" "$here/pkg-microos-eq/fixtures/biquad-ref.cpp" "$here/pkg-microos-eq/fixtures/Biquad.cpp"
+g++ -std=c++20 -O2 -ffp-contract=off -o "$tmp/flatdap-ref" "$here/pkg-microos-eq/fixtures/flatdap-ref.cpp"
+python3 - "$tmp/flatdap-ref" "$here/pkg-microos-eq/fixtures/flatdap-987ddd3.txt" << 'PY' || fail "flatdap-ref differs from flatdap 987ddd3 design_biquad or xfeed_design"
 import subprocess, sys
 ref, golden = sys.argv[1], sys.argv[2]
 one, bad = 1 << 30, []

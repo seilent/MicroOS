@@ -94,6 +94,13 @@ pkghash c >/dev/null 2>&1 && fail "accepts a missing dep"
 echo ../a > "$tmp/packages/c/DEPS"
 pkghash c >/dev/null 2>&1 && fail "accepts a path as dep"
 
+pin() { (. "$1" && printf '%s\n' "${KOJI_URL:-}" "${KOJI_KEY:-}" "${PIPEWIRE_EVR:-}" "${PIPEWIRE_SRPM_SHA256:-}"); }
+aptx=$(pin "$root/packages/pipewire-aptx/SOURCE.env")
+eq=$(pin "$root/packages/microos-eq/SOURCE.env")
+if [[ $aptx != "$eq" || -z ${aptx//[[:space:]]/} ]]; then
+  fail "PipeWire SRPM pin of packages/microos-eq/SOURCE.env ($(tr '\n' ' ' <<<"$eq")) differs from packages/pipewire-aptx/SOURCE.env ($(tr '\n' ' ' <<<"$aptx"))"
+fi
+
 base=${PKG_HASH_BASE:-main}
 if old=$(git -C "$root" show "$base:build/pkg-hash.sh" 2>/dev/null); then
   mkdir -p "$tmp/base/build"

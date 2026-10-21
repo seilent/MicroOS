@@ -11,9 +11,12 @@ for evr in "$pw" "$wp"; do
 done
 src=$(cd "$(dirname "$0")" && pwd)
 if [[ -z ${BUMP_IN_FEDORA:-} ]]; then
-  exec podman run --rm -e BUMP_IN_FEDORA=1 -v "$src:/src:Z" "$fedora" /src/bump.sh "$pw" "$wp"
+  eqdir=$(cd "$src/../microos-eq" && pwd)
+  exec podman run --rm -e BUMP_IN_FEDORA=1 -e BUMP_EQ_DIR=/eq -v "$src:/src:Z" -v "$eqdir:/eq:Z" "$fedora" \
+    /src/bump.sh "$pw" "$wp"
 fi
 env=$src/SOURCE.env
+eqenv=${BUMP_EQ_DIR:?}/SOURCE.env
 . "$src/SOURCE.env"
 
 tmp=$(mktemp -d)
@@ -68,5 +71,14 @@ $wplist
 "
 END
 chmod 644 "$out"
+eqout=$(mktemp "$eqenv.XXXXXX")
+cat > "$eqout" <<END
+KOJI_URL=$KOJI_URL
+KOJI_KEY=$key
+PIPEWIRE_EVR=$pw
+PIPEWIRE_SRPM_SHA256=$srpm
+END
+chmod 644 "$eqout"
 mv "$out" "$env"
-echo "SOURCE.env: pipewire $pw, wireplumber $wp, signed by $key"
+mv "$eqout" "$eqenv"
+echo "SOURCE.env: pipewire $pw, wireplumber $wp, signed by $key; microos-eq SOURCE.env pipewire $pw"
