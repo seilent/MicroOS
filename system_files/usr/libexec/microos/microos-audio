@@ -552,8 +552,8 @@ class Audio:
     def refresh(self):
         self.pending = None
         sinks = None
-        if self.cycles or (not self.settling and (self.max_volume is not None or self.output not in (None, "auto")
-                                                  or self.eq_wanted() or eq_slot(self.configured))):
+        if self.cycles or self.max_volume is not None or (not self.settling and (
+                self.output not in (None, "auto") or self.eq_wanted() or eq_slot(self.configured))):
             try:
                 sinks = list_sinks()
             except ERRORS as err:
@@ -562,7 +562,8 @@ class Audio:
                 return GLib.SOURCE_REMOVE
         if sinks is not None:
             self.cap(sinks)
-            self.fold(sinks)
+            if self.cycles or not self.settling:
+                self.fold(sinks)
         self.reconcile(sinks)
         self.power_on_volume(sinks)
         self.equalize(sinks)
