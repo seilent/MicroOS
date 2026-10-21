@@ -34,11 +34,11 @@ pkg name:
     if [[ " microset microdap microemu " == *" $1 "* && -n ${!srcvar:-} ]]; then
       mounts+=(-v "$(realpath "${!srcvar}"):/$1-src:ro,Z" -e "$srcvar=/$1-src")
     fi
-    podman build -t {{builder}} -f build/pkg.Containerfile build
+    podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -t {{builder}} -f build/pkg.Containerfile build
     img={{builder}}
     if [[ -f packages/$1/Containerfile ]]; then
       img={{builder}}-$1
-      podman build -t "$img" -f "packages/$1/Containerfile" "packages/$1"
+      podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -t "$img" -f "packages/$1/Containerfile" "packages/$1"
     fi
     rm -rf "$out"
     mkdir -p "$out"
@@ -51,31 +51,31 @@ pkg name:
       work=out/work/$1
       rm -rf "$work"
       mkdir -p "$work"
-      podman run --rm \
+      podman run --rm --memory=14g --cpus=8 \
         -v "$PWD/packages/$1:/src:ro,Z" \
         -v "$PWD/$work:/work:Z" \
         "$img" /src/fetch.sh /work
-      podman run --rm --network=none "${cache[@]}" "${mounts[@]}" \
+      podman run --rm --memory=14g --cpus=8 --network=none "${cache[@]}" "${mounts[@]}" \
         -v "$PWD/packages/$1:/src:ro,Z" \
         -v "$PWD/$work:/work:ro,Z" \
         -v "$PWD/$out:/out:Z" \
         "$img" /src/build.sh /out /work
       rm -rf "$work"
     else
-      podman run --rm "${cache[@]}" "${mounts[@]}" \
+      podman run --rm --memory=14g --cpus=8 "${cache[@]}" "${mounts[@]}" \
         -v "$PWD/packages/$1:/src:ro,Z" \
         -v "$PWD/$out:/out:Z" \
         "$img" /src/build.sh /out
     fi
     if [[ -f tests/pkg-$1.sh ]]; then
-      podman run --rm --security-opt apparmor=unconfined "${mounts[@]}" \
+      podman run --rm --memory=14g --cpus=8 --security-opt apparmor=unconfined "${mounts[@]}" \
         -v "$PWD/tests:/tests:ro,Z" \
         -v "$PWD/$out:/out:ro,Z" \
         "$img" "/tests/pkg-$1.sh" /out
     fi
     rm -rf "$depdir"
     [[ ! -e $out/dirty ]] || dirty=1
-    podman build -f build/pkg-wrap.Containerfile --label "microos.dirty=$dirty" -t "$tag" "$out"
+    podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -f build/pkg-wrap.Containerfile --label "microos.dirty=$dirty" -t "$tag" "$out"
     echo "$tag"
 
 kernel:
@@ -159,7 +159,7 @@ test-services:
     esac
     fedora=registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
     dnf="dnf -yq --setopt=install_weak_deps=False install"
-    run() { podman run --rm --arch "$arch" -v "$PWD:/repo:ro,Z" "$@"; }
+    run() { podman run --rm --memory=14g --cpus=8 --arch "$arch" -v "$PWD:/repo:ro,Z" "$@"; }
     run "$fedora" sh -c "$dnf python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/steamos-manager-config.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh"
     run -v "$PWD/system_files/usr/bin/steamos-update:/usr/bin/steamos-update:ro,Z" "$fedora" \
       sh -c "$dnf systemd-udev && /repo/tests/helpers.sh"
