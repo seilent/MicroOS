@@ -748,10 +748,11 @@ start_audio_boot() {
   pids+=("$as")
 }
 m=$(mark)
-t0=$(date +%s%N)
+uptime_ms() { awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime; }
+t0=$(uptime_ms)
 start_audio_boot 4
 waitlog "$m" "volume $hp $cap60 $cap60" || fail "max volume: $hp above the cap at start was not folded: $(since "$m")"
-(($(date +%s%N) - t0 < 2500000000)) || fail "max volume: $hp above the cap at start waited for the settle"
+(($(uptime_ms) - t0 < 2500)) || fail "max volume: $hp above the cap at start waited for the settle"
 waitlog "$m" "volume $spk $cap60 $cap60" || fail "max volume: $spk above the cap at start was not folded: $(since "$m")"
 vol[$hp]=$cap60 vol[$spk]=$cap60
 sinks_changed
