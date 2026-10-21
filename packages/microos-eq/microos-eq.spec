@@ -14,7 +14,8 @@ BuildRequires:  ladspa-devel
 
 %description
 LADSPA plugin with the MicroOS EQ chain: label eq, a preamp and ten bands
-designed at the graph rate, a new set swapped in with a warm start crossfade.
+designed at the graph rate, a new set swapped in with a warm start crossfade;
+label crossfeed, bs2b with a 50 ms share ramp.
 
 %prep
 %autosetup -n %{name}

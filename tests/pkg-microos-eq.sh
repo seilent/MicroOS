@@ -28,7 +28,7 @@ trap 'rm -rf "${work:?}"' EXIT
 (cd "$work" && rpm2cpio "$rpm" | cpio -idm --quiet && rpm2cpio "$srpm" | cpio -idm --quiet)
 so=$work/usr/lib64/ladspa/microos-eq.so
 exports=$(nm -D --defined-only "$so" | awk '{print $3}' | sort | tr '\n' ' ')
-if [[ $exports != 'ladspa_descriptor microos_eq_design ' ]]; then fail "exports: $exports"; fi
+if [[ $exports != 'ladspa_descriptor microos_eq_design microos_eq_xfeed_design ' ]]; then fail "exports: $exports"; fi
 lic=$work/usr/share/licenses/microos-eq
 if ! grep -qx ' *Version 2, June 1991' "$lic/LICENSE"; then fail "LICENSE"; fi
 if ! grep -qx 'Copyright (c) 2013 The Chromium OS Authors. All rights reserved.' "$lic/LICENSE.BSD-3-Clause" \

@@ -447,3 +447,105 @@ PHASES = [("peak", math.pi / 2), ("zero", 0.0)] + [(f"phase {k}/64", 2 * math.pi
 def tone(freq, rate, s, n_total, phase):
     n = np.arange(n_total)
     return (AMP * np.sin(2 * np.pi * freq / rate * (n - s) + phase)).astype(np.float32)
+
+
+XFEED = {"default": (700.0, 4.5), "chuMoy": (700.0, 6.0), "janMeier": (650.0, 9.5)}
+TINY = 2.2250738585072014e-308
+
+
+def xdesign(fc, level, rate):
+    gb_lo, gb_hi = level * -5.0 / 6.0 - 3.0, level / 6.0 - 3.0
+    g_lo = math.pow(10, gb_lo / 20.0)
+    g_hi = 1.0 - math.pow(10, gb_hi / 20.0)
+    fc_hi = fc * math.pow(2.0, (gb_lo - 20.0 * math.log10(g_hi)) / 12.0)
+    gain = 1.0 / (1.0 - g_hi + g_lo)
+    xl, xh = math.exp(-2 * math.pi * fc / rate), math.exp(-2 * math.pi * fc_hi / rate)
+    lo = gain * g_lo * (1 - xl)
+    hi = gain * (1 - g_hi * (1 - xh))
+    return (lo, 0.0, 0.0, -xl, 0.0), (hi, (1.0 - lo / (1 - xl)) * (1 - xh) - hi, 0.0, -xh, 0.0)
+
+
+def xcontrols(on, preset=None, fc=None, level=None):
+    if preset is not None:
+        fc, level = XFEED[preset]
+    return np.array([1.0 if on else 0.0, 700.0 if fc is None else fc, 4.5 if level is None else level], dtype=np.float32)
+
+
+def xresponse(fc, level, rate, f):
+    lo, hi = xdesign(fc, level, rate)
+    z = np.exp(-1j * 2 * np.pi * np.asarray(f) / rate)
+    return (hi[0] + hi[1] * z) / (1 + hi[3] * z), lo[0] / (1 + lo[3] * z)
+
+
+def xsim(x, rate, block, snaps, resets=()):
+    x = np.asarray(x, dtype=np.float32)
+    n_total = x.shape[1]
+    out = np.zeros((2, n_total), dtype=np.float32)
+    ramp = max(1, int(math.floor(T_S * rate + 0.5)))
+    st = {"have": False, "k": 0, "applied": None, "wanted": None, "prev": None, "change": False, "on": False,
+          "c": None, "s": [0.0] * 6, "resets": []}
+
+    def apply(v):
+        st["applied"] = st["wanted"] = v
+        st["change"] = False
+        st["on"] = float(v[0]) > 0
+        fc = clampd(float(v[1]), 300, 2000)
+        level = clampd(float(v[2]), 1, 15)
+        st["c"] = xdesign(fc, level, rate)
+        st["s"] = [0.0] * 6
+
+    def process(f0, f1):
+        for i in range(f0, f1):
+            if st["change"] and st["k"] == 0:
+                st["resets"].append((i, st["k"]))
+                apply(st["wanted"])
+            l, r = float(x[0, i]), float(x[1, i])
+            if not st["on"] and st["k"] == 0:
+                out[0, i], out[1, i] = x[0, i], x[1, i]
+            else:
+                lo, hi = st["c"]
+                s = st["s"]
+                lo_l = lo[0] * l - lo[3] * s[0]
+                lo_r = lo[0] * r - lo[3] * s[1]
+                hi_l = hi[0] * l + hi[1] * s[4] - hi[3] * s[2]
+                hi_r = hi[0] * r + hi[1] * s[5] - hi[3] * s[3]
+                st["s"] = [lo_l, lo_r, hi_l, hi_r, l, r]
+                sh = st["k"] / ramp
+                out[0, i] = np.float32((1 - sh) * l + sh * (hi_l + lo_r))
+                out[1, i] = np.float32((1 - sh) * r + sh * (hi_r + lo_l))
+            if not st["change"] and st["on"]:
+                st["k"] = min(ramp, st["k"] + 1)
+            elif st["k"] > 0:
+                st["k"] -= 1
+
+    def flush():
+        st["s"] = [v if v != 0 and math.isfinite(v) and abs(v) >= TINY else 0.0 for v in st["s"]]
+
+    for b, snap in enumerate(snaps):
+        f0 = b * block
+        if f0 >= n_total:
+            break
+        f1 = min(f0 + block, n_total)
+        top, end = snap if isinstance(snap, tuple) else (snap, snap)
+        if b in resets and st["have"]:
+            apply(st["wanted"])
+            st["k"] = ramp if st["on"] else 0
+        if not st["have"]:
+            apply(top)
+            st["k"] = ramp if st["on"] else 0
+            process(f0, f1)
+            st["prev"] = end
+            if key(top) == key(end):
+                st["have"] = True
+            else:
+                out[:, f0:f1] = 0
+                st["s"] = [0.0] * 6
+        else:
+            confirmed = key(top) == key(st["prev"])
+            st["prev"] = top
+            if confirmed:
+                st["wanted"] = top
+                st["change"] = key(top) != key(st["applied"])
+            process(f0, f1)
+        flush()
+    return out, st["resets"]

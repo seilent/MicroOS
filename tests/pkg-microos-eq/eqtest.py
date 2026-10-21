@@ -63,6 +63,10 @@ class Plugin:
         self.lib.ladspa_descriptor.argtypes = [ctypes.c_ulong]
         self.dp = self.lib.ladspa_descriptor(0)
         self.d = self.dp.contents
+        self.xdp = self.lib.ladspa_descriptor(1)
+        self.xd = self.xdp.contents
+        self.lib.microos_eq_xfeed_design.argtypes = [ctypes.c_double] * 3 + [ctypes.POINTER(ctypes.c_double)] * 2
+        self.lib.microos_eq_xfeed_design.restype = None
         self.names = [self.d.PortNames[i].decode() for i in range(self.d.PortCount)]
         self.lib.microos_eq_design.argtypes = [ctypes.c_int] + [ctypes.c_double] * 4 + [ctypes.POINTER(ctypes.c_double)]
         self.lib.microos_eq_design.restype = ctypes.c_int
@@ -287,10 +291,10 @@ def leg_hints(p):
         if lo is None or d.PortDescriptors[i] != 0x1 | 0x4 or not hint.HintDescriptor & 0x1 or not hint.HintDescriptor & 0x2 \
                 or hint.LowerBound != np.float32(lo) or hint.UpperBound != np.float32(hi) or bool(hint.HintDescriptor & 0x20) != integer:
             bad.append(name)
-    if want or bad or p.lib.ladspa_descriptor(1):
+    if want or bad:
         fail(f"hints: {bad} missing {sorted(want)}")
     else:
-        ok("hints: 42 controls bounded at MicroSET's ranges, Count and Type integer, one label")
+        ok("hints: 42 controls bounded at MicroSET's ranges, Count and Type integer")
 
 
 def leg_identity(p, pt):
@@ -595,6 +599,293 @@ def fade_one(args):
     return out
 
 
+class XInst:
+    def __init__(self, p, rate, ctrl=None):
+        self.p = p
+        self.d = p.xd
+        self.h = self.d.instantiate(p.xdp, rate)
+        self.ctrl = np.zeros(3, dtype=np.float32) if ctrl is None else ctrl
+        base = self.ctrl.ctypes.data
+        for k in range(3):
+            self.d.connect_port(self.h, 4 + k, ctypes.cast(base + 4 * k, FP))
+        self.d.activate(self.h)
+
+    def reset(self):
+        if self.d.deactivate:
+            self.d.deactivate(self.h)
+        self.d.activate(self.h)
+
+    def close(self):
+        self.d.cleanup(self.h)
+
+    def t(self, name, res=ctypes.c_double):
+        f = getattr(self.p.lib, f"microos_eq_test_{name}")
+        f.argtypes, f.restype = [ctypes.c_void_p], res
+        return f(self.h)
+
+
+def xdrive(inst, x, snaps, resets=(), block=1024, share=False):
+    x = np.ascontiguousarray(x, dtype=np.float32)
+    y = np.zeros_like(x)
+    shares = []
+    lib = inst.p.lib
+    slot = ctypes.c_void_p.in_dll(lib, "microos_eq_test_mid") if hasattr(lib, "microos_eq_test_mid") else None
+    keep = None
+    for b, snap in enumerate(snaps):
+        f0 = b * block
+        if f0 >= x.shape[1]:
+            break
+        n = min(block, x.shape[1] - f0)
+        top, mid = snap if isinstance(snap, tuple) else (snap, None)
+        if b in resets:
+            inst.reset()
+        inst.ctrl[:] = top
+        if slot is not None:
+            if mid is not None:
+                def write(_, m=mid):
+                    inst.ctrl[:] = m
+                keep = MID(write)
+                slot.value = ctypes.cast(keep, ctypes.c_void_p).value
+            else:
+                slot.value = None
+        elif mid is not None:
+            raise SystemExit("mid write needs the test build")
+        for c in range(2):
+            inst.d.connect_port(inst.h, c, ctypes.cast(x[c].ctypes.data + 4 * f0, FP))
+            inst.d.connect_port(inst.h, 2 + c, ctypes.cast(y[c].ctypes.data + 4 * f0, FP))
+        inst.d.run(inst.h, n)
+        if share:
+            shares.append(inst.t("share"))
+    if slot is not None:
+        slot.value = None
+    return y, np.array(shares)
+
+
+def stereo(fl, fr, rate, n_total, al=0.25, ar=0.25, phase=0.0):
+    t = np.arange(n_total) / rate
+    return np.array([al * np.sin(2 * np.pi * fl * t), ar * np.sin(2 * np.pi * fr * t + phase)], dtype=np.float32)
+
+
+def xcheck(name, q, rate, x, snaps, resets=(), block=1024):
+    inst = XInst(q, rate)
+    y, _ = xdrive(inst, x, snaps, resets, block)
+    inst.close()
+    ref, rs = V.xsim(x, rate, block, snaps, resets)
+    e = maxerr(y, ref)
+    if e > 1e-6 or not np.isfinite(y).all():
+        fail(f"crossfeed {name}: max diff {e:.3g} against v3ref.xsim")
+    else:
+        ok(f"crossfeed {name} (max diff {e:.2g}, resets at {[r[0] for r in rs]})")
+    return y, ref, rs
+
+
+def leg_xdesign(p, fixture, flatdap_ref):
+    lines = [ln.split() for ln in open(fixture) if ln.startswith("xcoef ")]
+    worst = 0.0
+    lo, hi = (ctypes.c_double * 5)(), (ctypes.c_double * 5)()
+    for ln in lines:
+        preset, rate = ln[1], float(ln[2])
+        want = [float(t) for t in subprocess.check_output([flatdap_ref, "xcoef", preset, ln[2]]).split()]
+        fc, level = V.XFEED[preset]
+        p.lib.microos_eq_xfeed_design(ctypes.c_double(fc), ctypes.c_double(level), ctypes.c_double(rate), lo, hi)
+        worst = max(worst, max(abs(a - b) for a, b in zip(list(lo) + list(hi), want)))
+    if worst > 1e-12 or len(lines) != 54:
+        fail(f"crossfeed design: against flatdap-ref xcoef, {len(lines)} lines, worst {worst:.3g}")
+    else:
+        ok(f"crossfeed design: first order sets equal flatdap-ref xcoef on {len(lines)} preset and rate pairs, worst {worst:.3g}")
+
+
+def leg_xhints(p):
+    d = p.xd
+    names = [d.PortNames[i].decode() for i in range(d.PortCount)]
+    h = [d.PortRangeHints[i] for i in range(d.PortCount)]
+    good = d.Label == b"crossfeed" and names == ["InL", "InR", "OutL", "OutR", "On", "Fc", "Level"] \
+        and [d.PortDescriptors[i] for i in range(4)] == [9, 9, 10, 10] and all(d.PortDescriptors[i] == 5 for i in range(4, 7)) \
+        and h[4].HintDescriptor & 0x4 and (h[5].HintDescriptor & 0x3, h[5].LowerBound, h[5].UpperBound) == (3, 300, 2000) \
+        and (h[6].HintDescriptor & 0x3, h[6].LowerBound, h[6].UpperBound) == (3, 1, 15) and not p.lib.ladspa_descriptor(2)
+    if good:
+        ok("crossfeed hints: label crossfeed at index 1, On toggled, Fc 300 to 2000 Hz, Level 1 to 15 dB (libbs2b limits)")
+    else:
+        fail(f"crossfeed hints: {d.Label} {names}")
+
+
+def leg_xlevels(p):
+    want = {44100: (-3.2392, -11.5655), 48000: (-3.2344, -11.5661), 96000: (-3.2068, -11.5684)}
+    bad = []
+    for rate, (wl, wr) in want.items():
+        n_total = 2 * rate
+        x = stereo(700, 700, rate, n_total, 0.25, 0.0)
+        inst = XInst(p, rate)
+        y, _ = xdrive(inst, x, [V.xcontrols(True, "default")] * blocks_for(n_total))
+        inst.close()
+        a, b = rate // 2, n_total
+        rin = np.sqrt(np.mean(x[0, a:b].astype(np.float64) ** 2))
+        gl = 20 * np.log10(np.sqrt(np.mean(y[0, a:b].astype(np.float64) ** 2)) / rin)
+        gr = 20 * np.log10(np.sqrt(np.mean(y[1, a:b].astype(np.float64) ** 2)) / rin)
+        x2 = stereo(40, 40, rate, n_total)
+        inst = XInst(p, rate)
+        y2, _ = xdrive(inst, x2, [V.xcontrols(True, "default")] * blocks_for(n_total))
+        inst.close()
+        g40 = 20 * np.log10(np.sqrt(np.mean(y2[0, a:b].astype(np.float64) ** 2)) / np.sqrt(np.mean(x2[0, a:b].astype(np.float64) ** 2)))
+        if abs(gl - wl) > 0.01 or abs(gr - wr) > 0.01 or abs(g40 + 0.007) > 0.01:
+            bad.append((rate, round(gl, 4), round(gr, 4), round(g40, 4)))
+        print(f"  crossfeed DEFAULT {rate}: 700 Hz L only own {gl:.4f} dB (probe {wl}), cross {gr:.4f} dB (probe {wr}); 40 Hz L = R {g40:+.4f} dB")
+    if bad:
+        fail(f"crossfeed levels: {bad}")
+    else:
+        ok("crossfeed levels: 700 Hz L only at 44100, 48000, 96000 match audio-chain-probe.md section B within 0.01 dB")
+
+
+def ramp_run(pt, rate, x, snaps):
+    inst = XInst(pt, rate)
+    y, sh = xdrive(inst, x, snaps, block=1, share=True)
+    resets, rk = inst.t("resets", ctypes.c_ulong), inst.t("reset_share", ctypes.c_long)
+    inst.close()
+    ref, rs = V.xsim(x, rate, 1, snaps)
+    return y, sh, resets, rk, maxerr(y, ref), rs
+
+
+def leg_xramp(pt):
+    rate = 48000
+    n = V.fade_frames(rate)
+    a, b = V.xcontrols(True, "default"), V.xcontrols(True, "janMeier")
+    w = 2000
+    n_total = w + 4 * n
+    x = stereo(700, 300, rate, n_total)
+    c = w + 1
+    y, sh, resets, rk, e, rs = ramp_run(pt, rate, x, [a] * w + [b] * (n_total - w))
+    down, up = sh[c - 1:c + n], sh[c + n - 1:c + 2 * n]
+    good = (sh[c - 1] == 1 and sh[c + n - 1] == 0 and sh[c + 2 * n - 1] == 1 and np.all(np.diff(down) < 0)
+            and np.all(np.diff(up) > 0) and resets == 1 and rk == 0 and [r[0] for r in rs] == [c + n] and e <= 1e-6)
+    if good:
+        ok(f"crossfeed ramp: a preset change confirmed at frame {c} reaches share 0 after {n} frames (50 ms), resets the "
+           f"filters there at share 0, is back at 1 after {2 * n} frames, monotonic each way (max diff {e:.2g})")
+    else:
+        fail(f"crossfeed ramp: shares {sh[c - 1]} {sh[c + n - 1]} {sh[c + 2 * n - 1]}, resets {resets} at share {rk}, "
+             f"reference resets {rs}, max diff {e:.3g}")
+    back = c + n // 2
+    y, sh, resets, rk, e, rs = ramp_run(pt, rate, x, [a] * w + [b] * (back - 1 - w) + [a] * (n_total - back + 1))
+    turn = sh[back - 1]
+    good = (np.all(np.diff(sh[c - 1:back]) < 0) and np.all(np.diff(sh[back - 1:back + n // 2]) > 0)
+            and sh.min() > 0 and resets == 0 and abs(turn - 0.5) < 2 / n and e <= 1e-6)
+    if good:
+        ok(f"crossfeed ramp: the old preset confirmed again at 25 ms turns back up from share {turn:.3f}, no reset (max diff {e:.2g})")
+    else:
+        fail(f"crossfeed ramp: reversal at share {turn}, min {sh.min()}, resets {resets}, max diff {e:.3g}")
+
+
+def leg_xonoff(pt):
+    rate = 48000
+    n = V.fade_frames(rate)
+    w = 2000
+    n_total = w + 3 * n
+    x = stereo(700, 300, rate, n_total)
+    on, off = V.xcontrols(True, "default"), V.xcontrols(False, "default")
+    y, sh, resets, rk, e, rs = ramp_run(pt, rate, x, [on] * w + [off] * (n_total - w))
+    c = w + 1
+    exact = np.array_equal(y[:, c + n:].view(np.uint32), x[:, c + n:].view(np.uint32))
+    if exact and sh[c + n - 1] == 0 and np.all(np.diff(sh[c - 1:c + n]) < 0) and e <= 1e-6:
+        ok(f"crossfeed On 0: ramps down over {n} frames, then out equals in bit for bit (max diff {e:.2g})")
+    else:
+        fail(f"crossfeed On 0: bit exact {exact}, share {sh[c + n - 1]}, max diff {e:.3g}")
+    y, sh, resets, rk, e, rs = ramp_run(pt, rate, x, [off] * w + [on] * (n_total - w))
+    straight = np.array_equal(y[:, :c + 1].view(np.uint32), x[:, :c + 1].view(np.uint32))
+    if straight and resets == 1 and rk == 0 and [r[0] for r in rs] == [c] and sh[c + n - 1] == 1 \
+            and np.all(np.diff(sh[c - 1:c + n]) > 0) and e <= 1e-6:
+        ok(f"crossfeed On 0 to 1: straight path up to the confirmation, reset there at share 0, full share after {n} frames "
+           f"(max diff {e:.2g})")
+    else:
+        fail(f"crossfeed On 0 to 1: straight {straight}, resets {resets} {rs}, share {sh[c + n - 1]}, max diff {e:.3g}")
+
+
+def leg_xpeak(p):
+    rate = 48000
+    worst, bad, n_case = -math.inf, [], 0
+    blocks = 40
+    n_total = blocks * BLOCK
+    for p1, p2 in (("default", "janMeier"), ("chuMoy", "default"), ("janMeier", "chuMoy")):
+        snaps = [V.xcontrols(False, p1)] * 4 + [V.xcontrols(True, p1)] * 10 + [V.xcontrols(True, p2)] * 10 \
+            + [V.xcontrols(False, p2)] * (blocks - 24)
+        for f in (100, 700, 3000):
+            g = 0.0
+            for pr in (p1, p2):
+                hh, hl = V.xresponse(*V.XFEED[pr], rate, f)
+                g = max(g, abs(hh) + abs(hl))
+            for cfg, (ar, ph) in (("L only", (0.0, 0.0)), ("L = R", (0.25, 0.0)), ("L = -R", (0.25, math.pi))):
+                x = stereo(f, f, rate, n_total, 0.25, ar, ph)
+                inst = XInst(p, rate)
+                y, _ = xdrive(inst, x, snaps)
+                inst.close()
+                peak_in = np.abs(x).max()
+                ratio = np.abs(y).max() / (peak_in * max(1.0, g))
+                worst = max(worst, ratio)
+                n_case += 1
+                if ratio > 1 + 1e-6:
+                    bad.append(f"{p1} {p2} {f} Hz {cfg}: {20 * np.log10(ratio):+.4f} dB over")
+    if bad:
+        fail(f"crossfeed peak: {bad}")
+    else:
+        ok(f"crossfeed peak: through OFF, preset, change and OFF ramps on {n_case} cases no sample exceeds the input peak "
+           f"times the design gain at the tone (worst {20 * np.log10(worst):+.4f} dB against it)")
+
+
+def leg_xlifecycle(p, pt):
+    rate = 48000
+    nb = 30
+    x = stereo(700, 300, rate, nb * BLOCK)
+    a, b, c = V.xcontrols(True, "default"), V.xcontrols(True, "janMeier"), V.xcontrols(True, "chuMoy")
+    zero = np.zeros(3, dtype=np.float32)
+    xcheck("lifecycle: the first block plays the first read at the full share", p, rate, x, [a] * nb)
+    y, ref, _ = xcheck("lifecycle: deactivate and activate keeps the applied set over a set written before it", p, rate, x,
+                       [a] * 5 + [b] * (nb - 5), resets={5})
+    full, _ = V.xsim(x[:, 5 * BLOCK:6 * BLOCK], rate, BLOCK, [a])
+    if maxerr(y[:, 5 * BLOCK:6 * BLOCK], full) > 1e-6:
+        fail("crossfeed lifecycle: the block after the reset is not the applied set at the full share from reset filters")
+    y, _, _ = xcheck("lifecycle: a write between the two reads silences the first block", pt, rate, x,
+                     [(a, b)] + [b] * (nb - 1))
+    if y[:, :BLOCK].any() or not y[:, BLOCK:2 * BLOCK].any():
+        fail("crossfeed lifecycle: the silent block is not exactly block 0")
+    _, _, rs = xcheck("lifecycle: all zero controls after the first block start the ramp at the second block", pt, rate, x,
+                      [a] + [zero] * (nb - 1))
+    if [r[0] for r in rs] != [2 * BLOCK + V.fade_frames(rate)]:
+        fail(f"crossfeed lifecycle: zero controls reset at {rs}")
+    y, _, _ = xcheck("lifecycle: a reset during a preset change ramp plays the new preset at the full share", p, rate, x,
+                     [a] * 5 + [b] * (nb - 5), resets={7})
+    full, _ = V.xsim(x[:, 7 * BLOCK:8 * BLOCK], rate, BLOCK, [b])
+    if maxerr(y[:, 7 * BLOCK:8 * BLOCK], full) > 1e-6:
+        fail("crossfeed lifecycle: the block at the reset is not the new preset at the full share from zero state")
+    else:
+        ok("crossfeed lifecycle: the block at the reset equals the new preset alone from zero state")
+    n = V.fade_frames(rate)
+    fa, fc = 3 * BLOCK, 5 * BLOCK
+    total = fc + 3 * n
+    xr = stereo(700, 300, rate, total)
+    _, sh, resets, rk, e, rs = ramp_run(pt, rate, xr, [V.xcontrols(False, "default")] * fa + [a] * (fc - fa) + [c] * (total - fc))
+    turn = sh[fc]
+    want = (fc - fa) / n
+    low = fc + 1 + (fc - fa)
+    good = (np.all(np.diff(sh[fa:fc + 1]) > 0) and np.all(np.diff(sh[fc:low]) < 0) and sh[fa] == 0
+            and abs(turn - want) < 1e-12 and sh[low - 1] == 0 and resets == 2 and rk == 0
+            and [r[0] for r in rs] == [fa + 1, low] and e <= 1e-6)
+    if good:
+        ok(f"crossfeed lifecycle: a change during a ramp up turns down from share {turn:.4f}, monotonic each way, "
+           f"resets at {[r[0] for r in rs]} (max diff {e:.2g})")
+    else:
+        fail(f"crossfeed lifecycle: ramp up turn {turn} want {want}, resets {resets} {rs} at share {rk}, max diff {e:.3g}")
+    xn = x.copy()
+    xn[0, 3 * BLOCK + 50] = np.nan
+    inst = XInst(p, rate)
+    y, _ = xdrive(inst, xn, [a] * nb)
+    inst.close()
+    ref, _ = V.xsim(xn, rate, BLOCK, [a] * nb)
+    tail, rtail = y[:, 4 * BLOCK:], ref[:, 4 * BLOCK:]
+    if not np.isfinite(tail).all() or maxerr(tail, rtail) > 1e-6:
+        fail(f"crossfeed NaN recovery: finite {bool(np.isfinite(tail).all())}, max diff {maxerr(tail, rtail):.3g}")
+    else:
+        ok(f"crossfeed NaN recovery: the blocks after a NaN sample are finite and match the flushed reference "
+           f"(max diff {maxerr(tail, rtail):.2g})")
+
+
 def worker_count():
     n = len(os.sched_getaffinity(0))
     try:
@@ -784,6 +1075,13 @@ def main():
     leg_warm(pt)
     leg_tau_guards(pt)
     leg_gate(p, plugin(o.nogate))
+    leg_xdesign(p, o.fixture, o.flatdap_ref)
+    leg_xhints(p)
+    leg_xlevels(p)
+    leg_xramp(pt)
+    leg_xonoff(pt)
+    leg_xpeak(p)
+    leg_xlifecycle(p, pt)
     n = worker_count()
     with multiprocessing.get_context("fork").Pool(n) as pool:
         t0 = time.monotonic()
