@@ -574,7 +574,7 @@ EOF
 [[ $(< /etc/plymouth/plymouthd.conf) == $'[Daemon]\nTheme=microos\nShowDelay=0\nDeviceScale=1' ]] || fail "plymouthd.conf"
 [[ $(plymouth-set-default-theme) == microos ]] || fail "plymouth default theme is $(plymouth-set-default-theme)"
 for f in /usr/libexec/microos/microos-splash-quit /usr/libexec/microos/microos-splash-update \
-  /usr/libexec/microos/microos-splash-switch /usr/libexec/microos/microos-splash-gate; do
+  /usr/libexec/microos/microos-splash-switch /usr/libexec/microos/microos-splash-gate /usr/libexec/microos/microos-shm-reap; do
   [[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f missing, mode or owner"
 done
 [[ -L /etc/systemd/system/display-manager.service.wants/microos-splash-quit.service ]] \
@@ -585,6 +585,34 @@ pre=$(systemctl --global cat gamescope-session-plus@microdap.service | awk 'inde
   END { for (i = 1; i <= n; i++) print l[i] }') || fail "systemctl --global cat gamescope-session-plus@microdap.service"
 grep -qxF -- '-/usr/libexec/microos/microos-splash-gate' <<< "$pre" \
   || fail "effective gamescope-session-plus@microdap.service ExecStartPre lacks the splash gate: $pre"
+for s in steam microdap microemu; do
+  for k in ExecStartPre ExecStopPost; do
+    v=$(systemctl --global cat "gamescope-session-plus@$s.service" | awk -v k="$k=" 'index($0, k) == 1 { v = substr($0, length(k) + 1); if (v == "") n = 0; else l[++n] = v }
+      END { for (i = 1; i <= n; i++) print l[i] }') || fail "systemctl --global cat gamescope-session-plus@$s.service"
+    grep -qxF -- '-/usr/bin/systemctl --user start --no-block microos-shm-reap-request.service' <<< "$v" \
+      || fail "effective gamescope-session-plus@$s.service $k lacks the shm reap request with the - prefix: $v"
+  done
+done
+on=$'[Unit]\nOnSuccess=microos-shm-reap-request.service\nOnFailure=microos-shm-reap-request.service'
+for d in app-steam-.scope.d microemu-game.scope.d; do
+  [[ $(< "/usr/lib/systemd/user/$d/50-microos-shm-reap.conf") == "$on" ]] || fail "$d shm reap drop-in"
+done
+reaper=$(systemctl cat microos-shm-reap@1000.service) || fail "systemctl cat microos-shm-reap@1000.service"
+for l in 'CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH CAP_SETUID' NoNewPrivileges=yes \
+  ProtectSystem=strict TimeoutStartSec=30 ProtectHome=yes PrivateNetwork=yes RestrictAddressFamilies=AF_UNIX \
+  ProtectKernelTunables=yes ProtectKernelModules=yes ProtectKernelLogs=yes ProtectControlGroups=yes RestrictNamespaces=yes \
+  LockPersonality=yes SystemCallArchitectures=native RestrictSUIDSGID=yes; do
+  grep -qxF "$l" <<< "$reaper" || fail "microos-shm-reap@.service lacks $l"
+done
+! grep -qE '^(PrivateDevices|ProtectProc|AmbientCapabilities|User)=' <<< "$reaper" || fail "microos-shm-reap@.service hides /dev/shm or /proc or drops CAP_SETUID"
+[[ $(< /usr/share/polkit-1/rules.d/50-microos-shm-reap.rules) == 'polkit.addRule(function(action, subject) {
+  if (action.id != "org.freedesktop.systemd1.manage-units" || subject.user != "micro") {
+    return;
+  }
+  if (action.lookup("verb") == "start" && action.lookup("unit") == "microos-shm-reap@1000.service") {
+    return polkit.Result.YES;
+  }
+});' ]] || fail "50-microos-shm-reap.rules"
 quit="-/bin/sh -c '/usr/bin/plymouth deactivate || /usr/bin/plymouth quit'"
 execs() {
   systemctl cat "$1" | awk -v k="$2=" 'index($0, k) == 1 { v = substr($0, length(k) + 1); if (v == "") n = 0; else l[++n] = v }
@@ -628,6 +656,9 @@ mkdir -p "$tmp/xdg"
 XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no \
   /usr/lib/systemd/user/microos-*.service /usr/lib/systemd/user/steamos-manager.service gamescope-session-plus@steam.service \
   /usr/lib/systemd/user/game.slice || fail "systemd-analyze verify --user"
+SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no microos-shm-reap@1000.service || fail "systemd-analyze verify microos-shm-reap@1000.service"
+XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no microos-shm-reap-request.service \
+  || fail "systemd-analyze verify --user microos-shm-reap-request.service"
 [[ -f /usr/lib/systemd/user/microos-steam-seed.service ]] || fail "microos-steam-seed.service missing"
 grep -qxF CPUWeight=100 /usr/lib/systemd/user/game.slice || fail "game.slice lacks CPUWeight=100"
 [[ $(systemctl --global is-enabled game.slice) == enabled ]] || fail "user game.slice is not enabled"
