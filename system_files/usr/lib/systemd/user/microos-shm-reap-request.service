@@ -1,0 +1,6 @@
+[Unit]
+Description=Request a reap of orphaned Steam shared memory
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl start --no-block microos-shm-reap@%U.service

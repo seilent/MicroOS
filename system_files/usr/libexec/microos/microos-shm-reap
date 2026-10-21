@@ -1,0 +1,164 @@
+#!/usr/bin/python3
+import ctypes
+import os
+import re
+import stat
+import sys
+import time
+
+ME = "microos-shm-reap"
+SHM = os.environ.get("MICROOS_SHM_DIR", "/dev/shm")
+PROC = os.environ.get("MICROOS_PROC", "/proc")
+AGE = 30
+GONE = (FileNotFoundError, ProcessLookupError)
+
+
+class Unreadable(Exception):
+    pass
+
+
+class Abort(Exception):
+    pass
+
+
+def log(msg):
+    print(f"{ME}: {msg}", flush=True)
+
+
+def key(st):
+    return (os.major(st.st_dev), os.minor(st.st_dev), st.st_ino)
+
+
+def candidates(uid):
+    prefix = f"u{uid}-Shm_"
+    dev = os.stat(SHM).st_dev
+    now = time.time()
+    found = {}
+    for name in os.listdir(SHM):
+        if not name.startswith(prefix):
+            continue
+        try:
+            st = os.lstat(f"{SHM}/{name}")
+        except FileNotFoundError:
+            continue
+        if stat.S_ISREG(st.st_mode) and st.st_uid == uid and st.st_dev == dev and now - st.st_mtime > AGE:
+            found[name] = st
+    return found
+
+
+def state(base):
+    with open(f"{base}/status") as f:
+        for line in f:
+            if line.startswith("State:"):
+                return line.split()[1]
+    return ""
+
+
+def read(base, held):
+    fds = os.listdir(f"{base}/fd")
+    for fd in fds:
+        link = f"{base}/fd/{fd}"
+        try:
+            if not os.readlink(link).startswith(SHM + "/"):
+                continue
+            held.add(key(os.stat(link)))
+        except FileNotFoundError:
+            pass
+    lines = 0
+    with open(f"{base}/maps") as f:
+        for line in f:
+            lines += 1
+            p = line.split()
+            if len(p) < 5 or ":" not in p[3]:
+                continue
+            major, _, minor = p[3].partition(":")
+            held.add((int(major, 16), int(minor, 16), int(p[4])))
+    return len(fds) + lines
+
+
+def holds(pid, held):
+    base = f"{PROC}/{pid}"
+    if state(base) != "Z" and read(base, held):
+        return
+    for tid in sorted((t for t in os.listdir(f"{base}/task") if t.isdigit() and t != pid), key=int):
+        try:
+            if state(f"{base}/task/{tid}") == "Z":
+                continue
+            read(f"{base}/task/{tid}", held)
+            return
+        except GONE:
+            continue
+
+
+def scan():
+    held = set()
+    for pid in sorted((p for p in os.listdir(PROC) if p.isdigit()), key=int):
+        try:
+            holds(pid, held)
+        except GONE:
+            continue
+        except OSError as e:
+            raise Unreadable(f"pid {pid}: {e.strerror}")
+    return held
+
+
+def fsuid(libc, uid):
+    libc.setfsuid(uid)
+    now = libc.setfsuid(-1)
+    if now != uid:
+        raise Abort(f"fsuid is {now}, not {uid}")
+
+
+def main():
+    if len(sys.argv) != 2 or not re.fullmatch(r"[0-9]+", sys.argv[1]) or int(sys.argv[1]) < 1000:
+        log(f"refusing instance {sys.argv[1:]}")
+        return 2
+    uid = int(sys.argv[1])
+    libc = ctypes.CDLL(None, use_errno=True)
+    libc.setfsuid.argtypes = [ctypes.c_uint]
+    found = candidates(uid)
+    if not found:
+        return 0
+    held = scan()
+    left = {n: st for n, st in found.items() if key(st) not in held}
+    if not left:
+        return 0
+    held = scan()
+    count = 0
+    size = 0
+    for name, st in left.items():
+        path = f"{SHM}/{name}"
+        try:
+            now = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        if key(now) != key(st) or key(now) in held:
+            continue
+        fsuid(libc, uid)
+        try:
+            os.unlink(path)
+            count += 1
+            size += now.st_size
+        except FileNotFoundError:
+            pass
+        except (PermissionError, IsADirectoryError):
+            log(f"{name} changed before the unlink, kept")
+        finally:
+            fsuid(libc, 0)
+    if count:
+        log(f"removed {count} of {len(found)} old segments, {size} bytes")
+    return 0
+
+
+try:
+    rc = main()
+except Unreadable as e:
+    log(f"reap skipped, {e}")
+    rc = 0
+except Abort as e:
+    log(f"aborted, {e}")
+    rc = 1
+except Exception as e:
+    log(f"error: {e}")
+    rc = 1
+sys.exit(rc)
