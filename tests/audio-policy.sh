@@ -739,17 +739,19 @@ poke audio.power_on_volume "<uint32 80>"
 cap60=$((65536 * 60 / 100)) cap50=$((65536 * 50 / 100))
 novol() { sleep 1; ! since "$1" | grep -q "^volume "; }
 poweron() {
-  for _ in {1..40}; do since "$1" | grep -qxF "$2" && break; sleep 0.1; done
+  for _ in {1..80}; do since "$1" | grep -qxF "$2" && break; sleep 0.1; done
   (($(since "$1" | grep -cxF "$2") == 1))
 }
 start_audio_boot() {
-  PATH=$here/audio-policy:$PATH MICROOS_AUDIO_SYSFS=$sys MICROOS_AUDIO_SETTLE=2 MICROOS_AUDIO_BOOT_ID=$tmp/boot_id \
+  PATH=$here/audio-policy:$PATH MICROOS_AUDIO_SYSFS=$sys MICROOS_AUDIO_SETTLE=${1:-2} MICROOS_AUDIO_BOOT_ID=$tmp/boot_id \
     setsid python3 "$audio" 2>> "$tmp/audio.err" & as=$!
   pids+=("$as")
 }
 m=$(mark)
-start_audio_boot
+t0=$(date +%s%N)
+start_audio_boot 4
 waitlog "$m" "volume $hp $cap60 $cap60" || fail "max volume: $hp above the cap at start was not folded: $(since "$m")"
+(($(date +%s%N) - t0 < 2500000000)) || fail "max volume: $hp above the cap at start waited for the settle"
 waitlog "$m" "volume $spk $cap60 $cap60" || fail "max volume: $spk above the cap at start was not folded: $(since "$m")"
 vol[$hp]=$cap60 vol[$spk]=$cap60
 sinks_changed
