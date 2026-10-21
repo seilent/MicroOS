@@ -24,3 +24,8 @@
 0112-ASoC-qcom-sm8250-keep-the-pcm-backend-format.patch
 0113-ASoC-codecs-wsa881x-restore-the-pa-gain-after-power-up.patch
 0114-drm-msm-a6xx-add-a-gpu-level-override.patch
+0014-net-qrtr-send-hello-message-on-endpoint-register.patch
+0015-net-qrtr-resend-hello-on-mhi-resume.patch
+0016-net-qrtr-ns-keep-going-when-an-announcement-cannot-be-sent.patch
+0017-net-qrtr-hold-control-packets-behind-the-hello-gate-instead-of-dropping-them.patch
+0121-net-qrtr-smd-stop-rx-delivery-before-unregistering-the-endpoint.patch
