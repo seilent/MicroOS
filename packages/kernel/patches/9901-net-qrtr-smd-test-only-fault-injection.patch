@@ -1,0 +1,88 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 01:41:06 +0900
+Subject: [PATCH] net: qrtr: smd: test only fault injection
+
+Not for merging. inject_rx_drop drops the first rx packet on each
+IPCRTR channel whose device name contains inject_dev and logs its
+header. inject_tx_hello fails the first outbound HELLO on that channel
+with -EAGAIN. Both log every outbound HELLO on that channel.
+---
+ net/qrtr/smd.c | 36 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 36 insertions(+)
+
+diff --git a/net/qrtr/smd.c b/net/qrtr/smd.c
+index a402d4322..7c08e5e27 100644
+--- a/net/qrtr/smd.c
++++ b/net/qrtr/smd.c
+@@ -7,14 +7,29 @@
+ #include <linux/module.h>
+ #include <linux/skbuff.h>
+ #include <linux/rpmsg.h>
++#include <linux/unaligned.h>
+ #include <linux/spinlock.h>
+ 
++#include <linux/qrtr.h>
++
+ #include "qrtr.h"
+ 
++static bool inject_rx_drop = true;
++module_param(inject_rx_drop, bool, 0644);
++
++static bool inject_tx_hello;
++module_param(inject_tx_hello, bool, 0644);
++
++static char *inject_dev = "17300000.remoteproc";
++module_param(inject_dev, charp, 0444);
++
+ struct qrtr_smd_dev {
+ 	struct qrtr_endpoint ep;
+ 	struct rpmsg_endpoint *channel;
+ 	struct device *dev;
++	bool inject;
++	bool rx_dropped;
++	bool tx_failed;
+ 	spinlock_t lock;
+ 	bool stopped;
+ };
+@@ -30,6 +45,14 @@ static int qcom_smd_qrtr_callback(struct rpmsg_device *rpdev,
+ 	if (!qdev)
+ 		return -EAGAIN;
+ 
++	if (inject_rx_drop && qdev->inject && !qdev->rx_dropped && len >= 16) {
++		qdev->rx_dropped = true;
++		dev_info(qdev->dev, "inject: dropped rx ver %u type %u src %u:%u len %d\n",
++			 get_unaligned_le32(data), get_unaligned_le32(data + 4),
++			 get_unaligned_le32(data + 8), get_unaligned_le32(data + 12), len);
++		return 0;
++	}
++
+ 	spin_lock_irqsave(&qdev->lock, flags);
+ 	if (qdev->stopped) {
+ 		spin_unlock_irqrestore(&qdev->lock, flags);
+@@ -56,6 +79,18 @@ static int qcom_smd_qrtr_send(struct qrtr_endpoint *ep, struct sk_buff *skb)
+ 	if (rc)
+ 		goto out;
+ 
++	if ((inject_rx_drop || inject_tx_hello) && qdev->inject && skb->len >= 28 &&
++	    get_unaligned_le32(skb->data + 4) == QRTR_TYPE_HELLO) {
++		if (inject_tx_hello && !qdev->tx_failed) {
++			qdev->tx_failed = true;
++			rc = -EAGAIN;
++		}
++		dev_info(qdev->dev, "inject: tx hello dst %d rc %d\n",
++			 (int)get_unaligned_le32(skb->data + 24), rc);
++		if (rc)
++			goto out;
++	}
++
+ 	rc = rpmsg_send(qdev->channel, skb->data, skb->len);
+ 
+ out:
+@@ -78,6 +113,7 @@ static int qcom_smd_qrtr_probe(struct rpmsg_device *rpdev)
+ 	qdev->channel = rpdev->ept;
+ 	qdev->dev = &rpdev->dev;
+ 	qdev->ep.xmit = qcom_smd_qrtr_send;
++	qdev->inject = strstr(dev_name(&rpdev->dev), inject_dev);
+ 	spin_lock_init(&qdev->lock);
+ 
+ 	rc = qrtr_endpoint_register(&qdev->ep, QRTR_EP_NID_AUTO);
