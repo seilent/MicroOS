@@ -1,0 +1,79 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 01:40:35 +0900
+Subject: [PATCH] net: qrtr: smd: stop rx delivery before unregistering the
+ endpoint
+
+rpmsg_dev_remove() calls the driver remove before it destroys the
+endpoint, so the rx callback can still run while
+qcom_smd_qrtr_remove() unregisters the QRTR endpoint. qrtr_endpoint_post()
+then reads ep->node after qrtr_endpoint_unregister() has released the
+node and set it to NULL.
+
+Mark the device stopped under a lock that the callback holds across
+qrtr_endpoint_post(), before the endpoint is unregistered, and drop
+packets that arrive after that.
+---
+ net/qrtr/smd.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/net/qrtr/smd.c b/net/qrtr/smd.c
+index c91bf030f..a402d4322 100644
+--- a/net/qrtr/smd.c
++++ b/net/qrtr/smd.c
+@@ -7,6 +7,7 @@
+ #include <linux/module.h>
+ #include <linux/skbuff.h>
+ #include <linux/rpmsg.h>
++#include <linux/spinlock.h>
+ 
+ #include "qrtr.h"
+ 
+@@ -14,6 +15,8 @@ struct qrtr_smd_dev {
+ 	struct qrtr_endpoint ep;
+ 	struct rpmsg_endpoint *channel;
+ 	struct device *dev;
++	spinlock_t lock;
++	bool stopped;
+ };
+ 
+ /* from smd to qrtr */
+@@ -21,12 +24,19 @@ static int qcom_smd_qrtr_callback(struct rpmsg_device *rpdev,
+ 				  void *data, int len, void *priv, u32 addr)
+ {
+ 	struct qrtr_smd_dev *qdev = dev_get_drvdata(&rpdev->dev);
++	unsigned long flags;
+ 	int rc;
+ 
+ 	if (!qdev)
+ 		return -EAGAIN;
+ 
++	spin_lock_irqsave(&qdev->lock, flags);
++	if (qdev->stopped) {
++		spin_unlock_irqrestore(&qdev->lock, flags);
++		return 0;
++	}
+ 	rc = qrtr_endpoint_post(&qdev->ep, data, len);
++	spin_unlock_irqrestore(&qdev->lock, flags);
+ 	if (rc == -EINVAL) {
+ 		dev_err(qdev->dev, "invalid ipcrouter packet\n");
+ 		/* return 0 to let smd drop the packet */
+@@ -68,6 +78,7 @@ static int qcom_smd_qrtr_probe(struct rpmsg_device *rpdev)
+ 	qdev->channel = rpdev->ept;
+ 	qdev->dev = &rpdev->dev;
+ 	qdev->ep.xmit = qcom_smd_qrtr_send;
++	spin_lock_init(&qdev->lock);
+ 
+ 	rc = qrtr_endpoint_register(&qdev->ep, QRTR_EP_NID_AUTO);
+ 	if (rc)
+@@ -83,6 +94,11 @@ static int qcom_smd_qrtr_probe(struct rpmsg_device *rpdev)
+ static void qcom_smd_qrtr_remove(struct rpmsg_device *rpdev)
+ {
+ 	struct qrtr_smd_dev *qdev = dev_get_drvdata(&rpdev->dev);
++	unsigned long flags;
++
++	spin_lock_irqsave(&qdev->lock, flags);
++	qdev->stopped = true;
++	spin_unlock_irqrestore(&qdev->lock, flags);
+ 
+ 	qrtr_endpoint_unregister(&qdev->ep);
+ 
