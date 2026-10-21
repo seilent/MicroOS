@@ -207,7 +207,7 @@ jobs:
       - name: EQ chains
         run: |
           podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
-            sh -c '/repo/build/pin-pipewire.sh /repo/packages/pipewire-aptx/SOURCE.env pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ util-linux && /repo/tests/audio-eq.sh'
+            sh -c '/repo/build/pin-pipewire.sh /repo/packages/pipewire-aptx/SOURCE.env pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ ladspa-devel util-linux && /repo/tests/audio-eq.sh'
 
       - name: Test
         env:

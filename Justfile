@@ -165,7 +165,7 @@ test-services:
       sh -c "$dnf systemd-udev && /repo/tests/helpers.sh"
     pin="/repo/build/pin-pipewire.sh /repo/packages/pipewire-aptx/SOURCE.env"
     run "$fedora" sh -c "$pin alsa-ucm alsa-ucm-utils alsa-utils systemd-udev pulseaudio-utils && /repo/tests/audio.sh"
-    run "$fedora" sh -c "$pin pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ util-linux && /repo/tests/audio-eq.sh"
+    run "$fedora" sh -c "$pin pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ ladspa-devel util-linux && /repo/tests/audio-eq.sh"
     run "$fedora" sh -c "$dnf jq util-linux systemd-udev && /repo/tests/storage.sh"
     run "$fedora" sh -c "$dnf jq python3 util-linux systemd && /repo/tests/microos-session.sh"
     run "$fedora" sh -c "$dnf python3 rpm-build rpm-sign gnupg2 cpio && /repo/tests/openh264.sh"

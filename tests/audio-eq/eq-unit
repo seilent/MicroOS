@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 conf=$XDG_RUNTIME_DIR/microos-audio/eq/$1.conf
 while :; do
-  pipewire -c "$conf" &
+  PIPEWIRE_DEBUG=I pipewire -c "$conf" &
   echo $! > "$EQ_SHIM_DIR/$1.pid"
   wait $!
   rc=$?
