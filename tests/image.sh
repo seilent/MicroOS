@@ -48,6 +48,9 @@ for p in libfreeaptx pipewire-codec-aptx; do
 done
 [[ -f /usr/lib64/spa-0.2/bluez5/libspa-codec-bluez5-aptx.so ]] || fail "aptX codec module missing"
 ! ldd /usr/lib64/spa-0.2/bluez5/libspa-codec-bluez5-aptx.so | grep -q 'not found' || fail "aptX codec module has unresolved libraries"
+[[ $(rpm -q --qf '%{VENDOR}' microos-eq) == MicroOS ]] || fail "microos-eq is not the MicroOS build"
+[[ -f /usr/lib64/ladspa/microos-eq.so ]] || fail "EQ plugin /usr/lib64/ladspa/microos-eq.so missing"
+! ldd /usr/lib64/ladspa/microos-eq.so | grep -q 'not found' || fail "EQ plugin has unresolved libraries"
 rpm -q bluez bluez-obexd >/dev/null || fail "bluez or bluez-obexd missing"
 grep -qx 'SystemdService=dbus-org.bluez.obex.service' /usr/share/dbus-1/services/org.bluez.obex.service \
   || fail "obexd is not activated through dbus-org.bluez.obex.service"
