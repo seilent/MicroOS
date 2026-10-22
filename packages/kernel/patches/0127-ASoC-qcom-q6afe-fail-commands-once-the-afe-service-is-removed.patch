@@ -1,0 +1,86 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 09:23:39 +0900
+Subject: [PATCH] ASoC: qcom: q6afe: fail commands once the AFE service is
+ removed
+
+When the ADSP goes down, the AFE APR device is removed before its child
+devices, and the clock and DAI drivers that unbind with them still send
+AFE commands. Each command waits the full 3 s timeout for a reply that
+never comes, many of them under the clock prepare lock.
+
+Add a remove callback that marks the AFE service gone and wakes every
+command waiting on the AFE and port wait queues. afe_apr_send_pkt()
+returns -ENODEV without sending once the service is gone, and returns
+-ENODEV when a wait ends because the service went away instead of on
+the expected reply.
+---
+ sound/soc/qcom/qdsp6/q6afe.c | 27 +++++++++++++++++++++++++--
+ 1 file changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index 4160478dd..22ccee25c 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -383,6 +383,7 @@ struct q6afe {
+ 	struct list_head port_list;
+ 	spinlock_t port_list_lock;
+ 	uint32_t hw_vote_handle;
++	bool gone;
+ };
+ 
+ struct afe_port_cmd_device_start {
+@@ -1048,6 +1049,11 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
+ 		wait = &afe->wait;
+ 	}
+ 
++	if (READ_ONCE(afe->gone)) {
++		ret = -ENODEV;
++		goto err;
++	}
++
+ 	result->opcode = 0;
+ 	result->status = 0;
+ 
+@@ -1058,9 +1064,12 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
+ 		goto err;
+ 	}
+ 
+-	ret = wait_event_timeout(*wait, (result->opcode == rsp_opcode),
++	ret = wait_event_timeout(*wait, (result->opcode == rsp_opcode) ||
++				 READ_ONCE(afe->gone),
+ 				 msecs_to_jiffies(TIMEOUT_MS));
+-	if (!ret) {
++	if (result->opcode != rsp_opcode && READ_ONCE(afe->gone)) {
++		ret = -ENODEV;
++	} else if (!ret) {
+ 		ret = -ETIMEDOUT;
+ 	} else if (result->status > 0) {
+ 		dev_err(afe->dev, "DSP returned error[%x]\n",
+@@ -1932,6 +1941,19 @@ static int q6afe_probe(struct apr_device *adev)
+ 	return devm_of_platform_populate(dev);
+ }
+ 
++static void q6afe_remove(struct apr_device *adev)
++{
++	struct q6afe *afe = dev_get_drvdata(&adev->dev);
++	struct q6afe_port *p;
++
++	WRITE_ONCE(afe->gone, true);
++	wake_up_all(&afe->wait);
++
++	guard(spinlock_irqsave)(&afe->port_list_lock);
++	list_for_each_entry(p, &afe->port_list, node)
++		wake_up_all(&p->wait);
++}
++
+ #ifdef CONFIG_OF
+ static const struct of_device_id q6afe_device_id[]  = {
+ 	{ .compatible = "qcom,q6afe" },
+@@ -1942,6 +1964,7 @@ MODULE_DEVICE_TABLE(of, q6afe_device_id);
+ 
+ static struct apr_driver qcom_q6afe_driver = {
+ 	.probe = q6afe_probe,
++	.remove = q6afe_remove,
+ 	.callback = q6afe_callback,
+ 	.driver = {
+ 		.name = "qcom-q6afe",

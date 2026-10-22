@@ -37,6 +37,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0125 ASoC: codecs: lpass-macro: balance runtime PM and clocks on remove | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0126 soundwire: qcom: balance runtime PM and the iface clock on remove | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0130 soundwire: qcom: take the controller irq trigger from the device tree | written new 2026-10-22; mainline `qcom.c` still requests the irq with `IRQF_TRIGGER_RISING` (checked 2026-10-22) | seilent | none | CONFIRMED |
+| 0127 ASoC: qcom: q6afe: fail commands once the AFE service is removed | written new 2026-10-22 | seilent | none | CONFIRMED |
 | PM2 DTS | my Armada `pocket-micro-2-build` tree | seilent; block layout and many lines shared with mainline `qrb5165-rb5.dts`, `sm8250-retroidpocket-common.dtsi`, `sm8250-ayn-thorlite.dts`; the `gpio-sbu-mux` block follows Tom's Retroid routing (Armada `9741312`, 2026-09-19) with PM2 GPIOs | own | CONFIRMED. 403 of 677 non trivial lines also appear in mainline board files, 145 only in the sibling files |
 
 ## Why and test
@@ -75,6 +76,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0125 | va and wsa remove dropped their runtime clocks a second time when suspended and left runtime PM enabled | no "already unprepared" or "Unbalanced pm_runtime_enable" after an ADSP restart |
 | 0126 | the soundwire master remove did the same with its iface clock, and runtime resume went on to the registers when the iface clock failed to enable | same as 0125 |
 | 0130 | the soundwire master requested its irq with `IRQF_TRIGGER_RISING` over the DT's `IRQ_TYPE_LEVEL_HIGH`, so a reprobe after an ADSP restart failed in `of_irq_get()` with a type mismatch and had no irq | both soundwire masters have their irq after an ADSP restart, `/proc/interrupts` soundwire counts with no storm |
+| 0127 | AFE commands sent after the AFE service went waited 3 s each, many under the clock prepare lock | ADSP restart teardown time |
 | PM2 DTS | the board | `dts-drivers.sh`, `gpu-opp.sh` |
 
 ## patch-id
