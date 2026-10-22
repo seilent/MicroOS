@@ -1,0 +1,147 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 09:21:33 +0900
+Subject: [PATCH] ASoC: codecs: wcd938x: keep the irq domain for the device
+ lifetime
+
+wcd938x_bind() creates the irq domain and its mapping on every bind and
+nothing removes them, so each unbind and bind of the component leaks a
+domain. After the unbind the TX slave keeps its slave_irq pointer and its
+interrupt callback stays live while the regmap irq chip is freed.
+
+Create the domain and its mapping once in probe, and remove them with a
+devm action when the platform device goes. Each bind still adds the
+regmap irq chip on the TX slave regmap. On unbind, and when the bind
+fails after slave_irq is set, mask every codec interrupt source with the
+reset value of the mask registers and clear slave_irq on both slaves
+before the chip is freed. The slave interrupt callback returns
+IRQ_HANDLED when there is no domain or no mapping.
+---
+ sound/soc/codecs/wcd938x-sdw.c | 10 +++++--
+ sound/soc/codecs/wcd938x.c     | 50 ++++++++++++++++++++++++++++++----
+ 2 files changed, 52 insertions(+), 8 deletions(-)
+
+diff --git a/sound/soc/codecs/wcd938x-sdw.c b/sound/soc/codecs/wcd938x-sdw.c
+index 99b874297..094003cbb 100644
+--- a/sound/soc/codecs/wcd938x-sdw.c
++++ b/sound/soc/codecs/wcd938x-sdw.c
+@@ -144,11 +144,15 @@ static int wcd9380_interrupt_callback(struct sdw_slave *slave,
+ 				      struct sdw_slave_intr_status *status)
+ {
+ 	struct wcd938x_sdw_priv *wcd = dev_get_drvdata(&slave->dev);
+-	
+-	if (!wcd->is_tx || !wcd->slave_irq)
++	struct irq_domain *slave_irq = READ_ONCE(wcd->slave_irq);
++
++	if (!wcd->is_tx)
+ 		return IRQ_NONE;
+ 
+-	return wcd_interrupt_callback(slave, wcd->slave_irq, WCD938X_DIGITAL_INTR_STATUS_0,
++	if (!slave_irq || !irq_find_mapping(slave_irq, 0))
++		return IRQ_HANDLED;
++
++	return wcd_interrupt_callback(slave, slave_irq, WCD938X_DIGITAL_INTR_STATUS_0,
+ 				WCD938X_DIGITAL_INTR_STATUS_1, WCD938X_DIGITAL_INTR_STATUS_2);
+ }
+ 
+diff --git a/sound/soc/codecs/wcd938x.c b/sound/soc/codecs/wcd938x.c
+index ff91d331d..dc43abf06 100644
+--- a/sound/soc/codecs/wcd938x.c
++++ b/sound/soc/codecs/wcd938x.c
+@@ -2999,8 +2999,17 @@ static const struct irq_domain_ops wcd_domain_ops = {
+ 	.map = wcd_irq_chip_map,
+ };
+ 
+-static int wcd938x_irq_init(struct wcd938x_priv *wcd, struct device *dev)
++static void wcd938x_irq_domain_remove(void *data)
+ {
++	struct irq_domain *virq = data;
++
++	irq_dispose_mapping(irq_find_mapping(virq, 0));
++	irq_domain_remove(virq);
++}
++
++static int wcd938x_irq_domain_init(struct wcd938x_priv *wcd, struct device *dev)
++{
++	int ret;
+ 
+ 	wcd->virq = irq_domain_create_linear(NULL, 1, &wcd_domain_ops, NULL);
+ 	if (!(wcd->virq)) {
+@@ -3008,8 +3017,32 @@ static int wcd938x_irq_init(struct wcd938x_priv *wcd, struct device *dev)
+ 		return -EINVAL;
+ 	}
+ 
++	ret = devm_add_action_or_reset(dev, wcd938x_irq_domain_remove, wcd->virq);
++	if (ret)
++		return ret;
++
++	if (!irq_create_mapping(wcd->virq, 0))
++		return -EINVAL;
++
++	return 0;
++}
++
++static void wcd938x_irq_release(struct wcd938x_priv *wcd938x)
++{
++	static const unsigned int mask[] = { 0xff, 0xff, 0x3f };
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(mask); i++)
++		regmap_write(wcd938x->regmap, WCD938X_DIGITAL_INTR_MASK_0 + i, mask[i]);
++
++	WRITE_ONCE(wcd938x->sdw_priv[AIF1_PB]->slave_irq, NULL);
++	WRITE_ONCE(wcd938x->sdw_priv[AIF1_CAP]->slave_irq, NULL);
++}
++
++static int wcd938x_irq_init(struct wcd938x_priv *wcd, struct device *dev)
++{
+ 	return devm_regmap_add_irq_chip(dev, wcd->regmap,
+-					irq_create_mapping(wcd->virq, 0),
++					irq_find_mapping(wcd->virq, 0),
+ 					IRQF_ONESHOT, 0, &wcd938x_regmap_irq_chip,
+ 					&wcd->irq_chip);
+ }
+@@ -3397,8 +3430,8 @@ static int wcd938x_bind(struct device *dev)
+ 		goto err_remove_rx_link;
+ 	}
+ 
+-	wcd938x->sdw_priv[AIF1_PB]->slave_irq = wcd938x->virq;
+-	wcd938x->sdw_priv[AIF1_CAP]->slave_irq = wcd938x->virq;
++	WRITE_ONCE(wcd938x->sdw_priv[AIF1_PB]->slave_irq, wcd938x->virq);
++	WRITE_ONCE(wcd938x->sdw_priv[AIF1_CAP]->slave_irq, wcd938x->virq);
+ 
+ 	wcd938x_set_micbias_data(dev, wcd938x);
+ 
+@@ -3407,11 +3440,13 @@ static int wcd938x_bind(struct device *dev)
+ 	if (ret) {
+ 		dev_err(dev, "%s: Codec registration failed\n",
+ 				__func__);
+-		goto err_remove_rx_link;
++		goto err_irq_release;
+ 	}
+ 
+ 	return 0;
+ 
++err_irq_release:
++	wcd938x_irq_release(wcd938x);
+ err_remove_rx_link:
+ 	device_link_remove(dev, wcd938x->rxdev);
+ err_remove_tx_link:
+@@ -3433,6 +3468,7 @@ static void wcd938x_unbind(struct device *dev)
+ 	struct wcd938x_priv *wcd938x = dev_get_drvdata(dev);
+ 
+ 	snd_soc_unregister_component(dev);
++	wcd938x_irq_release(wcd938x);
+ 	device_link_remove(dev, wcd938x->txdev);
+ 	device_link_remove(dev, wcd938x->rxdev);
+ 	device_link_remove(wcd938x->rxdev, wcd938x->txdev);
+@@ -3501,6 +3537,10 @@ static int wcd938x_probe(struct platform_device *pdev)
+ 
+ 	wcd938x_reset(wcd938x);
+ 
++	ret = wcd938x_irq_domain_init(wcd938x, dev);
++	if (ret)
++		return ret;
++
+ 	ret = component_master_add_with_match(dev, &wcd938x_comp_ops, match);
+ 	if (ret)
+ 		return ret;
