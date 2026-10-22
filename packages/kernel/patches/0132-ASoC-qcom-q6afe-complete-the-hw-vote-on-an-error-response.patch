@@ -1,0 +1,52 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 16:30:59 +0900
+Subject: [PATCH] ASoC: qcom: q6afe: complete the hw vote on an error response
+
+The ADSP answers a failed LPASS core hw vote with a basic response that
+q6afe_callback() does not handle, so the vote waits the full 3 s timeout
+with afe->lock held. The vote response handler also reads a status
+field past its 4 byte payload.
+
+A basic response with an error status for the vote now completes the
+wait with that status; success still comes with the vote response. The
+vote response sets the handle and a status of 0 when its payload holds
+the handle, and ADSP_EBADPARAM when it is shorter, so the vote fails at
+once.
+---
+ sound/soc/qcom/qdsp6/q6afe.c | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index d7e5e4c70..7fe42f3bf 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -996,6 +996,13 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
+ 				wake_up(&afe->wait);
+ 			}
+ 			break;
++		case AFE_CMD_REMOTE_LPASS_CORE_HW_VOTE_REQUEST:
++			if (res->status) {
++				afe->result.opcode = AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST;
++				afe->result.status = res->status;
++				wake_up(&afe->wait);
++			}
++			break;
+ 		case AFE_CMD_REMOTE_LPASS_CORE_HW_DEVOTE_REQUEST:
+ 			break;
+ 		default:
+@@ -1005,9 +1012,13 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
+ 	}
+ 		break;
+ 	case AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST:
+-		afe->hw_vote_handle = *(const uint32_t *)data->payload;
+ 		afe->result.opcode = hdr->opcode;
+-		afe->result.status = res->status;
++		if (data->payload_size < sizeof(afe->hw_vote_handle)) {
++			afe->result.status = ADSP_EBADPARAM;
++		} else {
++			afe->hw_vote_handle = *(const uint32_t *)data->payload;
++			afe->result.status = 0;
++		}
+ 		wake_up(&afe->wait);
+ 		break;
+ 	default:
