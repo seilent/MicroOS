@@ -40,6 +40,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0127 ASoC: qcom: q6afe: fail commands once the AFE service is removed | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0131 ASoC: qcom: q6afe: wait for the ADSP before adding the clock controller | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0132 ASoC: qcom: q6afe: complete the hw vote on an error response | written new 2026-10-22 | seilent | none | CONFIRMED |
+| 0134 ASoC: qcom: q6afe: retry a rejected lpass core hw vote | written new 2026-10-22 | seilent | none | CONFIRMED |
 | PM2 DTS | my Armada `pocket-micro-2-build` tree | seilent; block layout and many lines shared with mainline `qrb5165-rb5.dts`, `sm8250-retroidpocket-common.dtsi`, `sm8250-ayn-thorlite.dts`; the `gpio-sbu-mux` block follows Tom's Retroid routing (Armada `9741312`, 2026-09-19) with PM2 GPIOs | own | CONFIRMED. 403 of 677 non trivial lines also appear in mainline board files, 145 only in the sibling files |
 
 ## Why and test
@@ -81,6 +82,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0127 | AFE commands sent after the AFE service went waited 3 s each, many under the clock prepare lock | ADSP restart teardown time |
 | 0131 | the q6afe probe defers until q6core reports the ADSP ready, so the clock controller and its consumers probe after that; without it the va macro vote failed (error 0x16) a few ms after an ADSP restart and the card stayed down | no "AFE failed to vote" after an ADSP restart |
 | 0132 | a failed LPASS core vote came back as a basic response q6afe did not handle ("Unknown cmd 0x100f4"), so the vote waited 3 s under `afe->lock`; the vote response read a status past its 4 byte payload | a rejected vote fails at once with "DSP returned error" |
+| 0134 | a rejected LPASS core vote is sent again up to 10 times, 20 ms apart; the va macro vote was rejected (error 0x16) 53 ms after an ADSP restart although 0131's check had passed, and va failed its probe | no "AFE failed to vote" over the T2 injected restarts; `vote ... rejected` lines with dyndbg on q6afe |
 | PM2 DTS | the board | `dts-drivers.sh`, `gpu-opp.sh` |
 
 ## patch-id

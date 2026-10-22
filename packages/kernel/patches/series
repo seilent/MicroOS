@@ -44,3 +44,4 @@
 0127-ASoC-qcom-q6afe-fail-commands-once-the-afe-service-is-removed.patch
 0131-ASoC-qcom-q6afe-wait-for-the-adsp-before-adding-the-clock-controller.patch
 0132-ASoC-qcom-q6afe-complete-the-hw-vote-on-an-error-response.patch
+0134-ASoC-qcom-q6afe-retry-a-rejected-lpass-core-hw-vote.patch

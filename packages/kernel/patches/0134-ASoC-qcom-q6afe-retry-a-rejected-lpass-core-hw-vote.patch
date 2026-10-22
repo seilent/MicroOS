@@ -1,0 +1,116 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 18:05:47 +0900
+Subject: [PATCH] ASoC: qcom: q6afe: retry a rejected lpass core hw vote
+
+Right after an ADSP restart the ADSP can reject an LPASS core hw vote
+for a short time even after q6core reports it ready, and the macro that
+sent the vote fails its probe.
+
+When the ADSP rejects the vote, q6afe_vote_lpass_core_hw() now sends it
+again up to 10 times, 20 ms apart, and returns -EINVAL with the last
+status only when every try is rejected. A timeout, a send failure or a
+removed AFE service still fails at once. The packet send is split so the
+vote sees the ADSP status, and the AFE lock is not held while it sleeps.
+---
+ sound/soc/qcom/qdsp6/q6afe.c | 52 +++++++++++++++++++++++++++++-------
+ 1 file changed, 43 insertions(+), 9 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index 7fe42f3bf..3b4f5711a 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -369,6 +369,8 @@
+ #define AFE_API_VERSION_CODEC_DMA_CONFIG	1
+ 
+ #define TIMEOUT_MS 3000
++#define AFE_HW_VOTE_RETRIES	10
++#define AFE_HW_VOTE_RETRY_MS	20
+ #define AFE_CMD_RESP_AVAIL	0
+ #define AFE_CMD_RESP_NONE	1
+ #define AFE_CLK_TOKEN		1024
+@@ -1044,8 +1046,9 @@ int q6afe_get_port_id(int index)
+ }
+ EXPORT_SYMBOL_GPL(q6afe_get_port_id);
+ 
+-static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
+-			    struct q6afe_port *port, uint32_t rsp_opcode)
++static int __afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
++			      struct q6afe_port *port, uint32_t rsp_opcode,
++			      u32 *dsp_status)
+ {
+ 	wait_queue_head_t *wait;
+ 	struct aprv2_ibasic_rsp_result_t *result;
+@@ -1082,11 +1085,8 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
+ 		ret = -ENODEV;
+ 	} else if (!ret) {
+ 		ret = -ETIMEDOUT;
+-	} else if (result->status > 0) {
+-		dev_err(afe->dev, "DSP returned error[%x]\n",
+-			result->status);
+-		ret = -EINVAL;
+ 	} else {
++		*dsp_status = result->status;
+ 		ret = 0;
+ 	}
+ 
+@@ -1096,6 +1096,24 @@ static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
+ 	return ret;
+ }
+ 
++static int afe_apr_send_pkt(struct q6afe *afe, struct apr_pkt *pkt,
++			    struct q6afe_port *port, uint32_t rsp_opcode)
++{
++	u32 status;
++	int ret;
++
++	ret = __afe_apr_send_pkt(afe, pkt, port, rsp_opcode, &status);
++	if (ret)
++		return ret;
++
++	if (status) {
++		dev_err(afe->dev, "DSP returned error[%x]\n", status);
++		return -EINVAL;
++	}
++
++	return 0;
++}
++
+ static int q6afe_set_param(struct q6afe *afe, struct q6afe_port *port,
+ 			   void *data, int param_id, int module_id, int psize,
+ 			   int token)
+@@ -1897,7 +1915,8 @@ int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
+ 	struct q6afe *afe = dev_get_drvdata(dev->parent);
+ 	struct afe_cmd_remote_lpass_core_hw_vote_request *vote_cfg;
+ 	struct apr_pkt *pkt;
+-	int ret = 0;
++	u32 status;
++	int retry, ret = 0;
+ 	int pkt_size = APR_HDR_SIZE + sizeof(*vote_cfg);
+ 
+ 	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
+@@ -1919,8 +1938,23 @@ int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
+ 	strscpy(vote_cfg->client_name, client_name,
+ 			sizeof(vote_cfg->client_name));
+ 
+-	ret = afe_apr_send_pkt(afe, pkt, NULL,
+-			       AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST);
++	for (retry = 0; ; retry++) {
++		ret = __afe_apr_send_pkt(afe, pkt, NULL,
++					 AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST,
++					 &status);
++		if (ret || !status || retry == AFE_HW_VOTE_RETRIES)
++			break;
++
++		dev_dbg(afe->dev, "vote %d rejected [%x], retry %d\n",
++			hw_block_id, status, retry + 1);
++		msleep(AFE_HW_VOTE_RETRY_MS);
++	}
++
++	if (!ret && status) {
++		dev_err(afe->dev, "DSP returned error[%x]\n", status);
++		ret = -EINVAL;
++	}
++
+ 	if (ret)
+ 		dev_err(afe->dev, "AFE failed to vote (%d)\n", hw_block_id);
+ 	else if (of_machine_is_compatible("ayaneo,pocket-micro2"))
