@@ -13,6 +13,7 @@
 0018-ASoC-codecs-lpass-tx-macro-switch-to-pm-clock-framework-for-runtime-pm.patch
 0019-ASoC-codecs-lpass-rx-macro-switch-to-pm-clock-framework-for-runtime-pm.patch
 0020-ASoC-codecs-lpass-tx-rx-macro-check-clk_set_rate-return-value.patch
+0021-ASoC-codecs-lpass-wsa-macro-use-devm_clk_hw_register-for-mclk-output.patch
 0101-drm-panel-add-ayaneo-ar18-panel.patch
 0102-input-touchscreen-add-sitronix-st7123.patch
 0103-hid-add-ayaneo-pocket-micro2-force-feedback.patch
