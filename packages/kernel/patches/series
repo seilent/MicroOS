@@ -40,3 +40,4 @@
 0135-ASoC-codecs-wcd938x-hold-the-codec-in-reset-while-its-soundwire-devices-are-gone.patch
 0125-ASoC-codecs-lpass-macro-balance-runtime-pm-and-clocks-on-remove.patch
 0126-soundwire-qcom-balance-runtime-pm-and-the-iface-clock-on-remove.patch
+0130-soundwire-qcom-take-the-controller-irq-trigger-from-the-device-tree.patch

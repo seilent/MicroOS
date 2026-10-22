@@ -1,0 +1,29 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 15:14:12 +0900
+Subject: [PATCH] soundwire: qcom: take the controller irq trigger from the
+ device tree
+
+qcom_swrm_probe() requests the controller irq with IRQF_TRIGGER_RISING,
+which overrides the trigger type the device tree gives. On sm8250 the
+device tree says IRQ_TYPE_LEVEL_HIGH, so the first probe changes the
+mapping to edge, and a later probe of the same controller fails in
+of_irq_get() with a type mismatch and has no irq.
+
+Request the irq with IRQF_ONESHOT only, so the trigger comes from the
+device tree and a reprobe gets the same mapping back.
+---
+ drivers/soundwire/qcom.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index 4a4fded10..5cacccec2 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -1626,7 +1626,6 @@ static int qcom_swrm_probe(struct platform_device *pdev)
+ 
+ 	ret = devm_request_threaded_irq(dev, ctrl->irq, NULL,
+ 					qcom_swrm_irq_handler,
+-					IRQF_TRIGGER_RISING |
+ 					IRQF_ONESHOT,
+ 					"soundwire", ctrl);
+ 	if (ret) {
