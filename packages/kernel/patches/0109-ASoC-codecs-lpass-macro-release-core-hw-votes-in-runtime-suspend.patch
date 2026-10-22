@@ -97,7 +97,7 @@ index 58a579882..058ff4708 100644
  
  
 diff --git a/sound/soc/codecs/lpass-wsa-macro.c b/sound/soc/codecs/lpass-wsa-macro.c
-index 4da70e255..67540cec5 100644
+index be5de17dd..c7c43113e 100644
 --- a/sound/soc/codecs/lpass-wsa-macro.c
 +++ b/sound/soc/codecs/lpass-wsa-macro.c
 @@ -418,6 +418,7 @@ struct wsa_macro {
@@ -108,7 +108,7 @@ index 4da70e255..67540cec5 100644
  	struct clk *fsgen;
  	struct clk_hw hw;
  };
-@@ -2767,6 +2768,7 @@ static int wsa_macro_probe(struct platform_device *pdev)
+@@ -2770,6 +2771,7 @@ static int wsa_macro_probe(struct platform_device *pdev)
  		return PTR_ERR(wsa->regmap);
  
  	dev_set_drvdata(dev, wsa);
@@ -116,7 +116,7 @@ index 4da70e255..67540cec5 100644
  
  	wsa->dev = dev;
  
-@@ -2860,6 +2862,11 @@ static int wsa_macro_runtime_suspend(struct device *dev)
+@@ -2863,6 +2865,11 @@ static int wsa_macro_runtime_suspend(struct device *dev)
  	clk_disable_unprepare(wsa->npl);
  	clk_disable_unprepare(wsa->mclk);
  
@@ -128,7 +128,7 @@ index 4da70e255..67540cec5 100644
  	return 0;
  }
  
-@@ -2868,10 +2875,20 @@ static int wsa_macro_runtime_resume(struct device *dev)
+@@ -2871,10 +2878,20 @@ static int wsa_macro_runtime_resume(struct device *dev)
  	struct wsa_macro *wsa = dev_get_drvdata(dev);
  	int ret;
  
@@ -150,7 +150,7 @@ index 4da70e255..67540cec5 100644
  	}
  
  	ret = clk_prepare_enable(wsa->npl);
-@@ -2894,6 +2911,12 @@ static int wsa_macro_runtime_resume(struct device *dev)
+@@ -2897,6 +2914,12 @@ static int wsa_macro_runtime_resume(struct device *dev)
  	clk_disable_unprepare(wsa->npl);
  err_npl:
  	clk_disable_unprepare(wsa->mclk);

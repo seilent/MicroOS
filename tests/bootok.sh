@@ -455,7 +455,7 @@ run || fail "pass with nothing to do: $(cat "$tmp/out")"
 sys=$tmp/sysroot
 boot=$tmp/boot
 bootcsum=$(c f)
-kver=7.2.6-microos
+kver=7.2.12-microos
 bdir=$boot/ostree/default-$bootcsum
 . "$conf"
 fixture() {

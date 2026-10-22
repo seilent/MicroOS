@@ -75,7 +75,7 @@ sys=$tmp/sysroot
 boot=$tmp/boot
 esp=$tmp/esp
 run=$tmp/run
-kver=7.2.6-microos
+kver=7.2.12-microos
 bdir=$boot/ostree/default-$bootcsum
 mkdir -p "$bdir/dtb/qcom" "$boot/loader/entries" "$esp" "$sys/ostree/boot.1/default/$bootcsum"
 for c in "$csum_a" "$csum_b"; do
