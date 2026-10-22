@@ -10,6 +10,9 @@
 0010-serial-qcom-geni-add-force-suspend-resume-to-system-sleep-callbacks.patch
 0011-crypto-qce-add-runtime-pm-and-interconnect-bandwidth-scaling-support.patch
 0012-PCI-allow-d3-for-native-hotplug-capable-root-ports-on-non-x86-platforms.patch
+0018-ASoC-codecs-lpass-tx-macro-switch-to-pm-clock-framework-for-runtime-pm.patch
+0019-ASoC-codecs-lpass-rx-macro-switch-to-pm-clock-framework-for-runtime-pm.patch
+0020-ASoC-codecs-lpass-tx-rx-macro-check-clk_set_rate-return-value.patch
 0101-drm-panel-add-ayaneo-ar18-panel.patch
 0102-input-touchscreen-add-sitronix-st7123.patch
 0103-hid-add-ayaneo-pocket-micro2-force-feedback.patch
