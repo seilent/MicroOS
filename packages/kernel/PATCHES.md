@@ -33,6 +33,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0122 ASoC: qcom: q6dsp-lpass-clocks: initialise the clocks before registering them | written new 2026-10-22; torvalds master still sets the driver data after the clocks register (fetched 2026-10-22) | seilent | none | CONFIRMED |
 | 0123 ASoC: qcom: q6dsp-lpass-clocks: link the clock consumers to the clock controller | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0124 ASoC: codecs: wcd938x: keep the irq domain for the device lifetime | written new 2026-10-22 | seilent | none | CONFIRMED |
+| 0135 ASoC: codecs: wcd938x: hold the codec in reset while its soundwire devices are gone | written new 2026-10-22 | seilent | none | CONFIRMED |
 | PM2 DTS | my Armada `pocket-micro-2-build` tree | seilent; block layout and many lines shared with mainline `qrb5165-rb5.dts`, `sm8250-retroidpocket-common.dtsi`, `sm8250-ayn-thorlite.dts`; the `gpio-sbu-mux` block follows Tom's Retroid routing (Armada `9741312`, 2026-09-19) with PM2 GPIOs | own | CONFIRMED. 403 of 677 non trivial lines also appear in mainline board files, 145 only in the sibling files |
 
 ## Why and test
@@ -67,6 +68,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0122 | the q6dsp clock prepare op read NULL driver data when a clock registered over a prepared orphan of a consumer, an oops on every ADSP restart | ADSP restart with audio running, no oops |
 | 0123 | fw_devlink moves the links of the q6dsp clock consumers (rx, tx, va, wsa macros, LPASS TLMM) to the remoteproc, so they stayed bound over an ADSP restart on dead clocks and audio did not come back | a devlink from `q6afecc` to each of the five consumers, active; speaker, headphones and mic after an ADSP restart |
 | 0124 | every wcd938x rebind leaked an irq domain, and the TX slave interrupt callback kept a stale `slave_irq` | `/proc/interrupts` wcd938x lines the same after every ADSP restart |
+| 0135 | unbind and a failed bind hold the codec in reset and bind releases it, so the codec starts clean when its soundwire slaves come back; without it 3 of 7 ADSP restarts lost the wcd938x slaves ("trf on Slave 0 failed", "Initialization not complete") and the headphone path | WCD Playback and the headphone path after every T2 and T3 restart, no "Initialization not complete" |
 | PM2 DTS | the board | `dts-drivers.sh`, `gpu-opp.sh` |
 
 ## patch-id

@@ -37,3 +37,4 @@
 0122-ASoC-qcom-q6dsp-lpass-clocks-initialise-the-clocks-before-registering-them.patch
 0123-ASoC-qcom-q6dsp-lpass-clocks-link-the-clock-consumers-to-the-clock-controller.patch
 0124-ASoC-codecs-wcd938x-keep-the-irq-domain-for-the-device-lifetime.patch
+0135-ASoC-codecs-wcd938x-hold-the-codec-in-reset-while-its-soundwire-devices-are-gone.patch
