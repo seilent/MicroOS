@@ -1,0 +1,48 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 09:19:47 +0900
+Subject: [PATCH] ASoC: qcom: q6dsp-lpass-clocks: initialise the clocks before
+ registering them
+
+q6dsp_clock_dev_probe() sets the driver data after it has registered
+every clock. Registering a clock can prepare it right away, when a
+prepared orphan clock of a consumer is reparented to it, and the prepare
+op reads the driver data. After an ADSP restart the old consumers still
+hold such orphans, and the prepare dereferences a NULL q6dsp_cc.
+
+Set the driver data before the first clock is registered, and start each
+clock with the valid attribute LPASS_CLK_ATTRIBUTE_COUPLE_NO instead of
+LPASS_CLK_ATTRIBUTE_INVALID, so an op run during registration sends a
+valid attribute.
+---
+ sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c b/sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c
+index 03838582a..2ec6c2cf5 100644
+--- a/sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c
++++ b/sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c
+@@ -144,6 +144,7 @@ int q6dsp_clock_dev_probe(struct platform_device *pdev)
+ 
+ 	cc->desc = desc;
+ 	cc->dev = dev;
++	dev_set_drvdata(dev, cc);
+ 	q6dsp_clks = desc->clks;
+ 
+ 	for (i = 0; i < desc->num_clks; i++) {
+@@ -159,6 +160,7 @@ int q6dsp_clock_dev_probe(struct platform_device *pdev)
+ 
+ 		clk->dev = dev;
+ 		clk->q6dsp_clk_id = q6dsp_clks[i].q6dsp_clk_id;
++		clk->attributes = LPASS_CLK_ATTRIBUTE_COUPLE_NO;
+ 		clk->rate = q6dsp_clks[i].rate;
+ 		clk->hw.init = &init;
+ 
+@@ -178,8 +180,6 @@ int q6dsp_clock_dev_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 
+-	dev_set_drvdata(dev, cc);
+-
+ 	return 0;
+ }
+ EXPORT_SYMBOL_GPL(q6dsp_clock_dev_probe);
