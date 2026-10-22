@@ -1,0 +1,36 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 09:19:27 +0900
+Subject: [PATCH] driver core: leave the link status alone when the supplier
+ check defers
+
+device_links_check_suppliers() sets links.status to DL_DEV_PROBING also
+when it returns -EPROBE_DEFER. really_probe() then returns without
+calling device_links_no_driver(), so a device that waits for a supplier
+keeps reading DL_DEV_PROBING while it sits on the deferred probe list.
+
+A managed link added to such a device starts in DL_STATE_CONSUMER_PROBE
+instead of DL_STATE_DORMANT. The bind of the new supplier then skips the
+link and never queues the consumer for probe, and an unbind of the
+supplier loops in device_links_unbind_consumers() waiting for a probe
+that is not running.
+
+Set DL_DEV_PROBING only when the device goes on to probe, on 0 and on the
+best effort -EAGAIN, and leave the status as it was on -EPROBE_DEFER.
+---
+ drivers/base/core.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/base/core.c b/drivers/base/core.c
+index 4d0266829..3f77f22a3 100644
+--- a/drivers/base/core.c
++++ b/drivers/base/core.c
+@@ -1164,7 +1164,8 @@ int device_links_check_suppliers(struct device *dev)
+ 		}
+ 		WRITE_ONCE(link->status, DL_STATE_CONSUMER_PROBE);
+ 	}
+-	dev->links.status = DL_DEV_PROBING;
++	if (ret != -EPROBE_DEFER)
++		dev->links.status = DL_DEV_PROBING;
+ 
+ 	device_links_write_unlock();
+ 

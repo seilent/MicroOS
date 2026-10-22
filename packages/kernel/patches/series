@@ -33,3 +33,4 @@
 0016-net-qrtr-ns-keep-going-when-an-announcement-cannot-be-sent.patch
 0017-net-qrtr-hold-control-packets-behind-the-hello-gate-instead-of-dropping-them.patch
 0121-net-qrtr-smd-stop-rx-delivery-before-unregistering-the-endpoint.patch
+0129-driver-core-leave-the-link-status-alone-when-the-supplier-check-defers.patch
