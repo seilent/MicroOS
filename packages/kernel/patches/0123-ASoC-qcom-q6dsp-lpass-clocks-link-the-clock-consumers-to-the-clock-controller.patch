@@ -1,0 +1,97 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 09:20:24 +0900
+Subject: [PATCH] ASoC: qcom: q6dsp-lpass-clocks: link the clock consumers to
+ the clock controller
+
+The consumers of the q6dsp clocks get no device link to the clock
+controller. fw_devlink moves their links to the remoteproc when it
+binds, as the ADSP subtree has no devices yet. An ADSP restart then
+removes the clock controller and unregisters its clocks while the
+consumers stay bound, with their clocks prepared and their clk handles
+pointing at the removed clocks, and audio does not come back.
+
+Before the clocks are registered, add a managed DL_FLAG_AUTOPROBE_CONSUMER
+link to the controller from every available DT node whose clocks property
+references it. The consumers are then unbound before the controller goes
+away and probed again once the new controller binds. The link is added
+under the consumer's device lock, so it is never added while the consumer
+probes. q6prm-clocks shares this probe and gets the links too.
+---
+ sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c | 50 +++++++++++++++++++++++
+ 1 file changed, 50 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c b/sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c
+index 2ec6c2cf5..accc87b3a 100644
+--- a/sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c
++++ b/sound/soc/qcom/qdsp6/q6dsp-lpass-clocks.c
+@@ -8,6 +8,7 @@
+ #include <linux/device.h>
+ #include <linux/platform_device.h>
+ #include <linux/of.h>
++#include <linux/of_platform.h>
+ #include <linux/slab.h>
+ #include <dt-bindings/sound/qcom,q6dsp-lpass-ports.h>
+ #include "q6dsp-lpass-clocks.h"
+@@ -126,6 +127,53 @@ static struct clk_hw *q6dsp_of_clk_hw_get(struct of_phandle_args *clkspec,
+ 	return ERR_PTR(-ENOENT);
+ }
+ 
++static void q6dsp_clock_link_consumer(struct device *dev, struct device_node *np)
++{
++	struct platform_device *pdev;
++	struct device_link *link;
++
++	pdev = of_find_device_by_node(np);
++	if (!pdev) {
++		dev_dbg(dev, "%pOF is not a platform device, not linked\n", np);
++		return;
++	}
++
++	device_lock(&pdev->dev);
++	if (device_is_bound(&pdev->dev))
++		dev_err(dev, "%s is bound before its clocks\n", dev_name(&pdev->dev));
++
++	link = device_link_add(&pdev->dev, dev, DL_FLAG_AUTOPROBE_CONSUMER);
++	if (!link)
++		dev_err(dev, "failed to link %s\n", dev_name(&pdev->dev));
++	device_unlock(&pdev->dev);
++
++	put_device(&pdev->dev);
++}
++
++static void q6dsp_clock_link_consumers(struct device *dev)
++{
++	struct of_phandle_args args;
++	struct device_node *np;
++	int count, i;
++
++	for_each_node_with_property(np, "clocks") {
++		if (!of_device_is_available(np))
++			continue;
++
++		count = of_count_phandle_with_args(np, "clocks", "#clock-cells");
++		for (i = 0; i < count; i++) {
++			if (of_parse_phandle_with_args(np, "clocks", "#clock-cells", i, &args))
++				continue;
++
++			of_node_put(args.np);
++			if (args.np == dev->of_node) {
++				q6dsp_clock_link_consumer(dev, np);
++				break;
++			}
++		}
++	}
++}
++
+ int q6dsp_clock_dev_probe(struct platform_device *pdev)
+ {
+ 	struct q6dsp_cc *cc;
+@@ -147,6 +195,8 @@ int q6dsp_clock_dev_probe(struct platform_device *pdev)
+ 	dev_set_drvdata(dev, cc);
+ 	q6dsp_clks = desc->clks;
+ 
++	q6dsp_clock_link_consumers(dev);
++
+ 	for (i = 0; i < desc->num_clks; i++) {
+ 		unsigned int id = q6dsp_clks[i].clk_id;
+ 		struct clk_init_data init = {

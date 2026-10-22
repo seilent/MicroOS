@@ -31,6 +31,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0114 drm/msm/a6xx: add a GPU level override | written new 2026-10-20; mainline `a6xx_gmu.c` at `v7.2.6` builds the GX votes only from the OPP levels and has no override | seilent | none | CONFIRMED |
 | 0129 driver core: leave the link status alone when the supplier check defers | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0122 ASoC: qcom: q6dsp-lpass-clocks: initialise the clocks before registering them | written new 2026-10-22; torvalds master still sets the driver data after the clocks register (fetched 2026-10-22) | seilent | none | CONFIRMED |
+| 0123 ASoC: qcom: q6dsp-lpass-clocks: link the clock consumers to the clock controller | written new 2026-10-22 | seilent | none | CONFIRMED |
 | PM2 DTS | my Armada `pocket-micro-2-build` tree | seilent; block layout and many lines shared with mainline `qrb5165-rb5.dts`, `sm8250-retroidpocket-common.dtsi`, `sm8250-ayn-thorlite.dts`; the `gpio-sbu-mux` block follows Tom's Retroid routing (Armada `9741312`, 2026-09-19) with PM2 GPIOs | own | CONFIRMED. 403 of 677 non trivial lines also appear in mainline board files, 145 only in the sibling files |
 
 ## Why and test
@@ -63,6 +64,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0114 | GPU undervolt presets: powerd writes `gpu_levels` at boot, a GPU hang or GMU fault turns it back to stock | invalid tables refused, `gpu_levels_applied` follows the next GMU start, a forced hang reads `hang` in `gpu_levels_fallback` and `stock` applied |
 | 0129 | a device deferred at the supplier check kept `DL_DEV_PROBING`, so a device link added to it while it waited started in `CONSUMER_PROBE`: the supplier bind skipped it and a later supplier unbind looped on it | the 0123 links read active on every boot, no device link WARN |
 | 0122 | the q6dsp clock prepare op read NULL driver data when a clock registered over a prepared orphan of a consumer, an oops on every ADSP restart | ADSP restart with audio running, no oops |
+| 0123 | fw_devlink moves the links of the q6dsp clock consumers (rx, tx, va, wsa macros, LPASS TLMM) to the remoteproc, so they stayed bound over an ADSP restart on dead clocks and audio did not come back | a devlink from `q6afecc` to each of the five consumers, active; speaker, headphones and mic after an ADSP restart |
 | PM2 DTS | the board | `dts-drivers.sh`, `gpu-opp.sh` |
 
 ## patch-id
