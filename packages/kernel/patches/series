@@ -41,3 +41,4 @@
 0125-ASoC-codecs-lpass-macro-balance-runtime-pm-and-clocks-on-remove.patch
 0126-soundwire-qcom-balance-runtime-pm-and-the-iface-clock-on-remove.patch
 0130-soundwire-qcom-take-the-controller-irq-trigger-from-the-device-tree.patch
+0127-ASoC-qcom-q6afe-fail-commands-once-the-afe-service-is-removed.patch
