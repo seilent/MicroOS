@@ -1,0 +1,62 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 09:23:12 +0900
+Subject: [PATCH] soundwire: qcom: balance runtime PM and the iface clock on
+ remove
+
+qcom_swrm_remove() drops the iface clock whatever the runtime PM state
+and leaves runtime PM enabled. A controller that was runtime suspended
+at unbind drops the clock a second time, and the next probe finds
+runtime PM still enabled. swrm_runtime_resume() also ignores a failure
+to enable the iface clock and goes on to access the registers.
+
+Runtime resume now fails when the iface clock cannot be enabled, before
+any register access, with the wake irq left as it was found, so the
+controller stays suspended. After the bus master is deleted, remove
+disables runtime PM, drops the iface clock only when the controller is
+active, then marks it suspended and stops using autosuspend.
+---
+ drivers/soundwire/qcom.c | 20 +++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/soundwire/qcom.c b/drivers/soundwire/qcom.c
+index b288218f6..4a4fded10 100644
+--- a/drivers/soundwire/qcom.c
++++ b/drivers/soundwire/qcom.c
+@@ -1698,20 +1698,34 @@ static void qcom_swrm_remove(struct platform_device *pdev)
+ 	struct qcom_swrm_ctrl *ctrl = dev_get_drvdata(&pdev->dev);
+ 
+ 	sdw_bus_master_delete(&ctrl->bus);
+-	clk_disable_unprepare(ctrl->hclk);
++
++	pm_runtime_disable(&pdev->dev);
++	if (!pm_runtime_status_suspended(&pdev->dev))
++		clk_disable_unprepare(ctrl->hclk);
++
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_dont_use_autosuspend(&pdev->dev);
+ }
+ 
+ static int __maybe_unused swrm_runtime_resume(struct device *dev)
+ {
+ 	struct qcom_swrm_ctrl *ctrl = dev_get_drvdata(dev);
++	bool wake_disabled = false;
+ 	int ret;
+ 
+ 	if (ctrl->wake_irq > 0) {
+-		if (!irqd_irq_disabled(irq_get_irq_data(ctrl->wake_irq)))
++		if (!irqd_irq_disabled(irq_get_irq_data(ctrl->wake_irq))) {
+ 			disable_irq_nosync(ctrl->wake_irq);
++			wake_disabled = true;
++		}
+ 	}
+ 
+-	clk_prepare_enable(ctrl->hclk);
++	ret = clk_prepare_enable(ctrl->hclk);
++	if (ret) {
++		if (wake_disabled)
++			enable_irq(ctrl->wake_irq);
++		return ret;
++	}
+ 
+ 	if (ctrl->clock_stop_not_supported) {
+ 		reinit_completion(&ctrl->enumeration);
