@@ -38,3 +38,4 @@
 0123-ASoC-qcom-q6dsp-lpass-clocks-link-the-clock-consumers-to-the-clock-controller.patch
 0124-ASoC-codecs-wcd938x-keep-the-irq-domain-for-the-device-lifetime.patch
 0135-ASoC-codecs-wcd938x-hold-the-codec-in-reset-while-its-soundwire-devices-are-gone.patch
+0125-ASoC-codecs-lpass-macro-balance-runtime-pm-and-clocks-on-remove.patch
