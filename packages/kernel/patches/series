@@ -35,3 +35,4 @@
 0121-net-qrtr-smd-stop-rx-delivery-before-unregistering-the-endpoint.patch
 0129-driver-core-leave-the-link-status-alone-when-the-supplier-check-defers.patch
 0122-ASoC-qcom-q6dsp-lpass-clocks-initialise-the-clocks-before-registering-them.patch
+0123-ASoC-qcom-q6dsp-lpass-clocks-link-the-clock-consumers-to-the-clock-controller.patch
