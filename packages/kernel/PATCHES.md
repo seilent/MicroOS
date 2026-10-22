@@ -35,6 +35,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0124 ASoC: codecs: wcd938x: keep the irq domain for the device lifetime | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0135 ASoC: codecs: wcd938x: hold the codec in reset while its soundwire devices are gone | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0125 ASoC: codecs: lpass-macro: balance runtime PM and clocks on remove | written new 2026-10-22 | seilent | none | CONFIRMED |
+| 0126 soundwire: qcom: balance runtime PM and the iface clock on remove | written new 2026-10-22 | seilent | none | CONFIRMED |
 | PM2 DTS | my Armada `pocket-micro-2-build` tree | seilent; block layout and many lines shared with mainline `qrb5165-rb5.dts`, `sm8250-retroidpocket-common.dtsi`, `sm8250-ayn-thorlite.dts`; the `gpio-sbu-mux` block follows Tom's Retroid routing (Armada `9741312`, 2026-09-19) with PM2 GPIOs | own | CONFIRMED. 403 of 677 non trivial lines also appear in mainline board files, 145 only in the sibling files |
 
 ## Why and test
@@ -71,6 +72,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0124 | every wcd938x rebind leaked an irq domain, and the TX slave interrupt callback kept a stale `slave_irq` | `/proc/interrupts` wcd938x lines the same after every ADSP restart |
 | 0135 | unbind and a failed bind hold the codec in reset and bind releases it, so the codec starts clean when its soundwire slaves come back; without it 3 of 7 ADSP restarts lost the wcd938x slaves ("trf on Slave 0 failed", "Initialization not complete") and the headphone path | WCD Playback and the headphone path after every T2 and T3 restart, no "Initialization not complete" |
 | 0125 | va and wsa remove dropped their runtime clocks a second time when suspended and left runtime PM enabled | no "already unprepared" or "Unbalanced pm_runtime_enable" after an ADSP restart |
+| 0126 | the soundwire master remove did the same with its iface clock, and runtime resume went on to the registers when the iface clock failed to enable | same as 0125 |
 | PM2 DTS | the board | `dts-drivers.sh`, `gpu-opp.sh` |
 
 ## patch-id
