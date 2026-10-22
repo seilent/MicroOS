@@ -74,3 +74,4 @@ rpmbuild -bb --target aarch64 \
   "$src/microos-kernel.spec"
 
 find "$top/rpm/RPMS" -name '*.rpm' -exec cp -t "$out" {} +
+install -Dm644 "$tree/drivers/gpu/drm/msm/dp/dp_display.c" "$out/src/drivers/gpu/drm/msm/dp/dp_display.c"
