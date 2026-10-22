@@ -48,7 +48,7 @@ in each package); the others are built as is. License texts in `packages/gamesco
 
 ## Kernel
 
-Linux 7.2.6 from [kernel.org](https://www.kernel.org/), GPL-2.0-only WITH Linux-syscall-note. Patches and their
+Linux 7.2.12 from [kernel.org](https://www.kernel.org/), GPL-2.0-only WITH Linux-syscall-note. Patches and their
 origins in `packages/kernel/PATCHES.md`.
 
 | What | Origin | Author | License |

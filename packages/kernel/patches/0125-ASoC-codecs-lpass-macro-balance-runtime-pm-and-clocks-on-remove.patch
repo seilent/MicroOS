@@ -77,10 +77,10 @@ index 058ff4708..82c838ec2 100644
  	lpass_macro_pds_exit(va->pds);
  }
 diff --git a/sound/soc/codecs/lpass-wsa-macro.c b/sound/soc/codecs/lpass-wsa-macro.c
-index 67540cec5..6c67e4344 100644
+index c7c43113e..e0c0244e5 100644
 --- a/sound/soc/codecs/lpass-wsa-macro.c
 +++ b/sound/soc/codecs/lpass-wsa-macro.c
-@@ -2821,10 +2821,13 @@ static int wsa_macro_probe(struct platform_device *pdev)
+@@ -2824,10 +2824,13 @@ static int wsa_macro_probe(struct platform_device *pdev)
  
  	ret = wsa_macro_register_mclk_output(wsa);
  	if (ret)
@@ -95,7 +95,7 @@ index 67540cec5..6c67e4344 100644
  err_clkout:
  	clk_disable_unprepare(wsa->fsgen);
  err_fsgen:
-@@ -2843,12 +2846,24 @@ static int wsa_macro_probe(struct platform_device *pdev)
+@@ -2846,12 +2849,24 @@ static int wsa_macro_probe(struct platform_device *pdev)
  static void wsa_macro_remove(struct platform_device *pdev)
  {
  	struct wsa_macro *wsa = dev_get_drvdata(&pdev->dev);

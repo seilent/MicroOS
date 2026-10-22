@@ -1,6 +1,6 @@
 # Kernel patches
 
-Base: kernel.org `v7.2.6` (`SOURCE.env`). `patches/series` applies in order with `patch -p1 -F0`, zero fuzz.
+Base: kernel.org `v7.2.12` (`SOURCE.env`). `patches/series` applies in order with `patch -p1 -F0`, zero fuzz.
 `00NN` are third party, `01NN` are my PM2 patches. The PM2 DTS is `dts/sm8250-ayaneo-pocket-micro2.dts`, copied into
 `arch/arm64/boot/dts/qcom/` by `build.sh`.
 
@@ -28,7 +28,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0101 to 0111 | my Armada `pocket-micro-2-build` and ROCKNIX `pocket-micro2` trees | seilent; 0101 is based on danyi's AR16 driver (ROCKNIX SM8550 `0064`, `aa418ad72e`, 2026-08-13), 0102 on the Sitronix and Waveshare ST7123 driver (raspberrypi/linux `6d4adb6bfea6`, 2026-07-16), 0103 uses the rumble report format of the stock Android 4.19.157 `hid-ayaneo` | own | CONFIRMED |
 | 0112 ASoC: qcom: sm8250: keep the PCM backend format | written new 2026-10-13; the S16_LE force is torvalds `89be3c15a58b` (lore `20250228161430.373961-1-alexey.klimov@linaro.org`, v6.15); the idea of dropping it for PCM is ROCKNIX-old `f7b53cc4b244`, 2025-06-02, `SM8250/0100-revert-force-16bit-audio.patch` | seilent; idea rmake (ROCKNIX-old), force Alexey Klimov | ROCKNIX-old `f7b53cc4b244`, ROCKNIX `9f1fab30f6` (squash import), removed in `4c7e4ab631` and restored in `7a554eedb9` (Philippe Simons), Armada `0100`, batocera and other SM8250 trees carry the same file; patchwork has no revert or follow up on the list | CONFIRMED. The ROCKNIX copy tests `dai_link->compr_ops`, which is never set on a backend link, so it drops the force for compressed playback too; 0112 keeps S16_LE when the format mask is empty (compressed) |
 | 0113 ASoC: codecs: wsa881x: restore the PA gain after power up | written new 2026-10-15; mainline `wsa881x.c` has no fix up to `e857b163c8f4` (2026-07-09) | seilent | none | CONFIRMED |
-| 0114 drm/msm/a6xx: add a GPU level override | written new 2026-10-20; mainline `a6xx_gmu.c` at `v7.2.6` builds the GX votes only from the OPP levels and has no override | seilent | none | CONFIRMED |
+| 0114 drm/msm/a6xx: add a GPU level override | written new 2026-10-20; mainline `a6xx_gmu.c` at `v7.2.6` and `v7.2.12` builds the GX votes only from the OPP levels and has no override | seilent | none | CONFIRMED |
 | 0129 driver core: leave the link status alone when the supplier check defers | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0122 ASoC: qcom: q6dsp-lpass-clocks: initialise the clocks before registering them | written new 2026-10-22; torvalds master still sets the driver data after the clocks register (fetched 2026-10-22) | seilent | none | CONFIRMED |
 | 0123 ASoC: qcom: q6dsp-lpass-clocks: link the clock consumers to the clock controller | written new 2026-10-22 | seilent | none | CONFIRMED |
@@ -59,7 +59,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0009 | s2idle: the lane clock refcount leak kept `gpll0` and XO on | s2idle residency |
 | 0010 | s2idle: QUP clocks held across system sleep | s2idle residency |
 | 0011 | s2idle: qce held its 393600 interconnect vote across system sleep | `1dfa000.crypto` runtime status `suspended` at idle, no qce vote in the suspend flush trace |
-| 0012 | s2idle: the PCIe0 Root Port advertises hotplug (Slot Capabilities HPC, set by `pcie-qcom.c` since `f176c47683bf`), so 7.2.6 kept it in D0 and the host never deinit in suspend; with `HOTPLUG_PCI_PCIE=y` in `pm2.config` the port is native pciehp and may enter D3hot | `pcieport 0000:00:00.0: PCI PM: Suspend power state: D3hot` in a suspend with pci dyndbg, PCIe0 clocks and `bi_tcxo` unprepared |
+| 0012 | s2idle: the PCIe0 Root Port advertises hotplug (Slot Capabilities HPC, set by `pcie-qcom.c` since `f176c47683bf`), so without this patch the kernel keeps it in D0 and the host never deinit in suspend; with `HOTPLUG_PCI_PCIE=y` in `pm2.config` the port is native pciehp and may enter D3hot | `pcieport 0000:00:00.0: PCI PM: Suspend power state: D3hot` in a suspend with pci dyndbg, PCIe0 clocks and `bi_tcxo` unprepared |
 | 0018 to 0020 | the rx and tx macros drop every clock, the macro and dcodec votes too, in runtime suspend as PM clocks with a 100 ms autosuspend, and have no remove callback to unbalance them on an ADSP restart | s2idle residency (0108 to 0111 check), audio after an ADSP restart |
 | 0021 | the wsa macro registered its `mclk` output with `clk_hw_register()` and never unregistered it, so its reprobe after an ADSP restart failed with -EEXIST | wsa macro and the card back after an ADSP restart |
 | 0101 | AR18 panel | panel lights up |
