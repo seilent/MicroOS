@@ -1,0 +1,127 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 09:22:48 +0900
+Subject: [PATCH] ASoC: codecs: lpass-macro: balance runtime PM and clocks on
+ remove
+
+The va and wsa macro remove callbacks drop every clock once, whatever
+the runtime PM state, and leave runtime PM enabled. A macro that was
+runtime suspended at unbind drops its runtime clocks a second time, and
+the next probe finds runtime PM still enabled.
+
+On remove, disable runtime PM first, then drop the runtime held clocks
+only when the device is active and the clocks held since probe always;
+the macro and dcodec votes count as runtime held when the core votes are
+dropped in runtime suspend. Then mark the device suspended and stop
+using autosuspend. Probe errors after runtime PM is enabled disable it
+again.
+---
+ sound/soc/codecs/lpass-va-macro.c  | 29 ++++++++++++++++++++++-------
+ sound/soc/codecs/lpass-wsa-macro.c | 27 +++++++++++++++++++++------
+ 2 files changed, 43 insertions(+), 13 deletions(-)
+
+diff --git a/sound/soc/codecs/lpass-va-macro.c b/sound/soc/codecs/lpass-va-macro.c
+index 058ff4708..82c838ec2 100644
+--- a/sound/soc/codecs/lpass-va-macro.c
++++ b/sound/soc/codecs/lpass-va-macro.c
+@@ -1677,16 +1677,19 @@ static int va_macro_probe(struct platform_device *pdev)
+ 
+ 	ret = va_macro_register_fsgen_output(va);
+ 	if (ret)
+-		goto err_clkout;
++		goto err_rpm;
+ 
+ 	va->fsgen = devm_clk_hw_get_clk(dev, &va->hw, "fsgen");
+ 	if (IS_ERR(va->fsgen)) {
+ 		ret = PTR_ERR(va->fsgen);
+-		goto err_clkout;
++		goto err_rpm;
+ 	}
+ 
+ 	return 0;
+ 
++err_rpm:
++	pm_runtime_disable(dev);
++	pm_runtime_dont_use_autosuspend(dev);
+ err_clkout:
+ 	if (va->has_npl_clk)
+ 		clk_disable_unprepare(va->npl);
+@@ -1705,13 +1708,25 @@ static int va_macro_probe(struct platform_device *pdev)
+ static void va_macro_remove(struct platform_device *pdev)
+ {
+ 	struct va_macro *va = dev_get_drvdata(&pdev->dev);
++	bool active;
+ 
+-	if (va->has_npl_clk)
+-		clk_disable_unprepare(va->npl);
++	pm_runtime_disable(&pdev->dev);
++	active = !pm_runtime_status_suspended(&pdev->dev);
+ 
+-	clk_disable_unprepare(va->mclk);
+-	clk_disable_unprepare(va->dcodec);
+-	clk_disable_unprepare(va->macro);
++	if (active) {
++		if (va->has_npl_clk)
++			clk_disable_unprepare(va->npl);
++
++		clk_disable_unprepare(va->mclk);
++	}
++
++	if (active || !va->drop_core_votes) {
++		clk_disable_unprepare(va->dcodec);
++		clk_disable_unprepare(va->macro);
++	}
++
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_dont_use_autosuspend(&pdev->dev);
+ 
+ 	lpass_macro_pds_exit(va->pds);
+ }
+diff --git a/sound/soc/codecs/lpass-wsa-macro.c b/sound/soc/codecs/lpass-wsa-macro.c
+index 67540cec5..6c67e4344 100644
+--- a/sound/soc/codecs/lpass-wsa-macro.c
++++ b/sound/soc/codecs/lpass-wsa-macro.c
+@@ -2821,10 +2821,13 @@ static int wsa_macro_probe(struct platform_device *pdev)
+ 
+ 	ret = wsa_macro_register_mclk_output(wsa);
+ 	if (ret)
+-		goto err_clkout;
++		goto err_rpm;
+ 
+ 	return 0;
+ 
++err_rpm:
++	pm_runtime_disable(dev);
++	pm_runtime_dont_use_autosuspend(dev);
+ err_clkout:
+ 	clk_disable_unprepare(wsa->fsgen);
+ err_fsgen:
+@@ -2843,12 +2846,24 @@ static int wsa_macro_probe(struct platform_device *pdev)
+ static void wsa_macro_remove(struct platform_device *pdev)
+ {
+ 	struct wsa_macro *wsa = dev_get_drvdata(&pdev->dev);
++	bool active;
+ 
+-	clk_disable_unprepare(wsa->macro);
+-	clk_disable_unprepare(wsa->dcodec);
+-	clk_disable_unprepare(wsa->mclk);
+-	clk_disable_unprepare(wsa->npl);
+-	clk_disable_unprepare(wsa->fsgen);
++	pm_runtime_disable(&pdev->dev);
++	active = !pm_runtime_status_suspended(&pdev->dev);
++
++	if (active) {
++		clk_disable_unprepare(wsa->fsgen);
++		clk_disable_unprepare(wsa->npl);
++		clk_disable_unprepare(wsa->mclk);
++	}
++
++	if (active || !wsa->drop_core_votes) {
++		clk_disable_unprepare(wsa->dcodec);
++		clk_disable_unprepare(wsa->macro);
++	}
++
++	pm_runtime_set_suspended(&pdev->dev);
++	pm_runtime_dont_use_autosuspend(&pdev->dev);
+ }
+ 
+ static int wsa_macro_runtime_suspend(struct device *dev)
