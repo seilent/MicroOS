@@ -49,4 +49,5 @@ done
 "$here/pkg-kernel/dts-drivers.sh" "$dtbs" "$kdir/config"
 "$here/pkg-kernel/gpu-opp.sh" "$dtbs" >/dev/null
 "$here/pkg-kernel/fan-trips.sh" "$dtbs"
+"$here/pkg-kernel/dp-mode-valid.sh" "$out/src"
 echo "pkg-kernel: $(basename "$rpm") ok"
