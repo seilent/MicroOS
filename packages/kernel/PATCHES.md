@@ -55,7 +55,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0105 | backlight | brightness changes |
 | 0106 | boot with the dock attached | boot docked |
 | 0107 | DP start after a clean stop | DP audio after a replug |
-| 0108 to 0111 | s2idle drain, each gated on `ayaneo,pocket-micro2` | s2idle residency |
+| 0108 to 0111 | s2idle drain, each gated on `ayaneo,pocket-micro2`; 0109 covers the va and wsa macros, rx and tx drop the votes through 0018 to 0020 | s2idle residency |
 | 0112 | PCM backends ran at 16 bit (`params_format()` picks the lowest bit of FE format plus S16_LE), 24 bit streams truncated in the DSP | speaker and headphones play S24_LE without noise; DP audio |
 | 0113 | the SPKR PGA power up writes PA gain 12 dB (`SPKR_DRV_GAIN 0x41`) over the PA Volume value, with no event | `SpkrLeft PA Volume` reads the set value after a speaker stream starts |
 | 0114 | GPU undervolt presets: powerd writes `gpu_levels` at boot, a GPU hang or GMU fault turns it back to stock | invalid tables refused, `gpu_levels_applied` follows the next GMU start, a forced hang reads `hang` in `gpu_levels_fallback` and `stock` applied |
