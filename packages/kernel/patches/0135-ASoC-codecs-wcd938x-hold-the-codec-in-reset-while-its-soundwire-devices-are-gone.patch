@@ -1,0 +1,58 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 19:30:53 +0900
+Subject: [PATCH] ASoC: codecs: wcd938x: hold the codec in reset while its
+ soundwire devices are gone
+
+wcd938x resets the codec only in probe. The platform device stays bound
+over an ADSP restart while its soundwire slave devices are removed and
+created again with the soundwire masters, so the codec keeps the state
+of the old bus and its slaves may not enumerate on the new one.
+
+wcd938x_unbind() now asserts the reset line after the codec interrupt
+sources are masked, and a failed wcd938x_bind() asserts it once the
+slave components are unbound, so the codec stays in reset while its
+soundwire devices are gone. wcd938x_bind() releases it, with the same
+20 us settle time as wcd938x_reset(), before it binds the slave
+components. At boot the line is already released by probe.
+---
+ sound/soc/codecs/wcd938x.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/codecs/wcd938x.c b/sound/soc/codecs/wcd938x.c
+index dc43abf06..cd24a01f2 100644
+--- a/sound/soc/codecs/wcd938x.c
++++ b/sound/soc/codecs/wcd938x.c
+@@ -3368,11 +3368,14 @@ static int wcd938x_bind(struct device *dev)
+ 	struct wcd938x_priv *wcd938x = dev_get_drvdata(dev);
+ 	int ret;
+ 
++	gpiod_set_value(wcd938x->reset_gpio, 0);
++	usleep_range(20, 30);
++
+ 	ret = component_bind_all(dev, wcd938x);
+ 	if (ret) {
+ 		dev_err(dev, "%s: Slave bind failed, ret = %d\n",
+ 			__func__, ret);
+-		return ret;
++		goto err_reset;
+ 	}
+ 
+ 	wcd938x->rxdev = of_sdw_find_device_by_node(wcd938x->rxnode);
+@@ -3459,6 +3462,8 @@ static int wcd938x_bind(struct device *dev)
+ 	put_device(wcd938x->rxdev);
+ err_unbind:
+ 	component_unbind_all(dev, wcd938x);
++err_reset:
++	gpiod_set_value(wcd938x->reset_gpio, 1);
+ 
+ 	return ret;
+ }
+@@ -3469,6 +3474,8 @@ static void wcd938x_unbind(struct device *dev)
+ 
+ 	snd_soc_unregister_component(dev);
+ 	wcd938x_irq_release(wcd938x);
++	gpiod_set_value(wcd938x->reset_gpio, 1);
++
+ 	device_link_remove(dev, wcd938x->txdev);
+ 	device_link_remove(dev, wcd938x->rxdev);
+ 	device_link_remove(wcd938x->rxdev, wcd938x->txdev);
