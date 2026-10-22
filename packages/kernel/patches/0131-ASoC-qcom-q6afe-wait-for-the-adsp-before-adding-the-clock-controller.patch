@@ -1,0 +1,31 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 16:30:59 +0900
+Subject: [PATCH] ASoC: qcom: q6afe: wait for the ADSP before adding the clock
+ controller
+
+q6afe_probe() adds its child devices, the clock controller among them,
+as soon as the AFE service is registered. After an ADSP restart the
+clock consumers probe again within a few milliseconds and send their
+LPASS core votes, and some of those votes fail.
+
+The probe now defers until q6core reports the ADSP ready, as q6prm does.
+When q6core is not bound yet the check fails and the probe is retried
+once q6core binds.
+---
+ sound/soc/qcom/qdsp6/q6afe.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6afe.c b/sound/soc/qcom/qdsp6/q6afe.c
+index 22ccee25c..d7e5e4c70 100644
+--- a/sound/soc/qcom/qdsp6/q6afe.c
++++ b/sound/soc/qcom/qdsp6/q6afe.c
+@@ -1924,6 +1924,9 @@ static int q6afe_probe(struct apr_device *adev)
+ 	struct q6afe *afe;
+ 	struct device *dev = &adev->dev;
+ 
++	if (!q6core_is_adsp_ready())
++		return dev_err_probe(dev, -EPROBE_DEFER, "ADSP not ready\n");
++
+ 	afe = devm_kzalloc(dev, sizeof(*afe), GFP_KERNEL);
+ 	if (!afe)
+ 		return -ENOMEM;
