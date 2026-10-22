@@ -1,0 +1,101 @@
+From: seilent <github@seilent.net>
+Date: Thu, 22 Oct 2026 16:31:00 +0900
+Subject: [PATCH] ASoC: soc-core: keep a copy of the dai names parsed from the
+ device tree
+
+snd_soc_of_get_dai_link_codecs() and snd_soc_of_get_dai_link_cpus()
+store the DAI name pointer of the component that provides the DAI. A
+component may allocate its DAI names per device, so when it is unbound
+and probed again the card keeps a pointer to the freed name and never
+matches the new DAI.
+
+Look up the DAI and store a copy of its name, managed by the card
+device, under client_mutex, so the component cannot be unregistered
+between the lookup and the copy.
+---
+ sound/soc/soc-core.c | 41 +++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/sound/soc/soc-core.c b/sound/soc/soc-core.c
+index 44f9bb447..26058d9ca 100644
+--- a/sound/soc/soc-core.c
++++ b/sound/soc/soc-core.c
+@@ -3426,11 +3426,11 @@ int snd_soc_get_dai_id(struct device_node *ep)
+ }
+ EXPORT_SYMBOL_GPL(snd_soc_get_dai_id);
+ 
+-int snd_soc_get_dlc(const struct of_phandle_args *args, struct snd_soc_dai_link_component *dlc)
++static int __snd_soc_get_dlc(const struct of_phandle_args *args,
++			     struct snd_soc_dai_link_component *dlc)
+ {
+ 	struct snd_soc_component *pos;
+ 	int ret = -EPROBE_DEFER;
+-	guard(mutex)(&client_mutex);
+ 
+ 	for_each_component(pos) {
+ 		struct device_node *component_of_node = soc_component_to_node(pos);
+@@ -3488,6 +3488,13 @@ int snd_soc_get_dlc(const struct of_phandle_args *args, struct snd_soc_dai_link_
+ 
+ 	return ret;
+ }
++
++int snd_soc_get_dlc(const struct of_phandle_args *args, struct snd_soc_dai_link_component *dlc)
++{
++	guard(mutex)(&client_mutex);
++
++	return __snd_soc_get_dlc(args, dlc);
++}
+ EXPORT_SYMBOL_GPL(snd_soc_get_dlc);
+ 
+ int snd_soc_of_get_dlc(struct device_node *of_node,
+@@ -3586,6 +3593,32 @@ static int __snd_soc_of_get_dai_link_component_alloc(
+ 	return 0;
+ }
+ 
++static int __snd_soc_of_get_dlc_copy(struct device *dev, struct device_node *of_node,
++				     struct snd_soc_dai_link_component *dlc, int index)
++{
++	struct of_phandle_args args;
++	int ret;
++
++	guard(mutex)(&client_mutex);
++
++	ret = of_parse_phandle_with_args(of_node, "sound-dai",
++					 "#sound-dai-cells", index, &args);
++	if (ret)
++		return ret;
++
++	ret = __snd_soc_get_dlc(&args, dlc);
++	if (ret)
++		return ret;
++
++	if (dlc->dai_name) {
++		dlc->dai_name = devm_kstrdup_const(dev, dlc->dai_name, GFP_KERNEL);
++		if (!dlc->dai_name)
++			return -ENOMEM;
++	}
++
++	return 0;
++}
++
+ /*
+  * snd_soc_of_put_dai_link_codecs - Dereference device nodes in the codecs array
+  * @dai_link: DAI link
+@@ -3630,7 +3663,7 @@ int snd_soc_of_get_dai_link_codecs(struct device *dev,
+ 
+ 	/* Parse the list */
+ 	for_each_link_codecs(dai_link, index, component) {
+-		ret = snd_soc_of_get_dlc(of_node, NULL, component, index);
++		ret = __snd_soc_of_get_dlc_copy(dev, of_node, component, index);
+ 		if (ret)
+ 			goto err;
+ 	}
+@@ -3685,7 +3718,7 @@ int snd_soc_of_get_dai_link_cpus(struct device *dev,
+ 
+ 	/* Parse the list */
+ 	for_each_link_cpus(dai_link, index, component) {
+-		ret = snd_soc_of_get_dlc(of_node, NULL, component, index);
++		ret = __snd_soc_of_get_dlc_copy(dev, of_node, component, index);
+ 		if (ret)
+ 			goto err;
+ 	}

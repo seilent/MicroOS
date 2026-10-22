@@ -46,3 +46,4 @@
 0132-ASoC-qcom-q6afe-complete-the-hw-vote-on-an-error-response.patch
 0134-ASoC-qcom-q6afe-retry-a-rejected-lpass-core-hw-vote.patch
 0128-ASoC-qcom-sm8250-create-the-headset-jack-on-every-card-bind.patch
+0133-ASoC-soc-core-keep-a-copy-of-the-dai-names-parsed-from-the-device-tree.patch
