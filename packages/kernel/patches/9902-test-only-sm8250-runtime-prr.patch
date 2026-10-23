@@ -1,0 +1,243 @@
+From: seilent <github@seilent.net>
+Date: Fri, 23 Oct 2026 18:44:22 +0900
+Subject: [PATCH] drm/msm: test only: software prr for adreno smmus without prr
+
+Test only, never shipped.
+
+Adreno smmus without the PRR callbacks (sm8250) report no PRR, so
+MSM_PARAM_HAS_PRR reads 0 and MAP_NULL is refused. Writing 1 to the prr
+debugfs file of the msm drm minor turns on a software PRR: a zeroed page
+is allocated for the gpu iommu while pagetables exist, MAP_NULL ranges
+are mapped to it read write through the existing PRR map path, and
+HAS_PRR reads 1. No PRR register is written. The page is freed with the
+last pagetable and allocated again with the next first one. Writing 0
+after that fails with -EBUSY.
+---
+ drivers/gpu/drm/msm/msm_debugfs.c |  30 ++++++++
+ drivers/gpu/drm/msm/msm_gpu.h     |   5 +-
+ drivers/gpu/drm/msm/msm_iommu.c   | 114 ++++++++++++++++++++++++------
+ drivers/gpu/drm/msm/msm_mmu.h     |   2 +
+ 4 files changed, 129 insertions(+), 22 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/msm_debugfs.c b/drivers/gpu/drm/msm/msm_debugfs.c
+index f12701e28..cd4e90e8e 100644
+--- a/drivers/gpu/drm/msm/msm_debugfs.c
++++ b/drivers/gpu/drm/msm/msm_debugfs.c
+@@ -289,6 +289,33 @@ DEFINE_DEBUGFS_ATTRIBUTE(stall_reenable_time_fops,
+ 			 stall_reenable_time_get, NULL,
+ 			 "%lld\n");
+ 
++static int prr_get(void *data, u64 *val)
++{
++	struct msm_drm_private *priv = data;
++
++	if (!priv->gpu)
++		return -ENODEV;
++
++	*val = adreno_smmu_has_prr(priv->gpu);
++
++	return 0;
++}
++
++static int prr_set(void *data, u64 val)
++{
++	struct msm_drm_private *priv = data;
++
++	if (!priv->gpu || !priv->gpu->vm)
++		return -ENODEV;
++
++	if (!val)
++		return adreno_smmu_has_prr(priv->gpu) ? -EBUSY : 0;
++
++	return msm_iommu_prr_soft_enable(to_msm_vm(priv->gpu->vm)->mmu);
++}
++
++DEFINE_DEBUGFS_ATTRIBUTE(prr_fops, prr_get, prr_set, "%llu\n");
++
+ static int msm_gem_show(struct seq_file *m, void *arg)
+ {
+ 	struct drm_info_node *node = m->private;
+@@ -375,6 +402,9 @@ static void msm_debugfs_gpu_init(struct drm_minor *minor)
+ 	debugfs_create_file("stall_reenable_time_us", 0400, minor->debugfs_root,
+ 		priv, &stall_reenable_time_fops);
+ 
++	debugfs_create_file_unsafe("prr", 0600, minor->debugfs_root,
++				   priv, &prr_fops);
++
+ 	gpu_devfreq = debugfs_create_dir("devfreq", minor->debugfs_root);
+ 
+ 	debugfs_create_bool("idle_clamp",0600, gpu_devfreq,
+diff --git a/drivers/gpu/drm/msm/msm_gpu.h b/drivers/gpu/drm/msm/msm_gpu.h
+index 6c83b8cbb..bfdfe8920 100644
+--- a/drivers/gpu/drm/msm/msm_gpu.h
++++ b/drivers/gpu/drm/msm/msm_gpu.h
+@@ -299,7 +299,10 @@ adreno_smmu_has_prr(struct msm_gpu *gpu)
+ 	if (!adreno_smmu)
+ 		return false;
+ 
+-	return adreno_smmu && adreno_smmu->set_prr_addr;
++	if (adreno_smmu->set_prr_addr)
++		return true;
++
++	return gpu->vm && msm_iommu_prr_soft(to_msm_vm(gpu->vm)->mmu);
+ }
+ 
+ /* It turns out that all targets use the same ringbuffer size */
+diff --git a/drivers/gpu/drm/msm/msm_iommu.c b/drivers/gpu/drm/msm/msm_iommu.c
+index 897e42c8d..b41fd9a8e 100644
+--- a/drivers/gpu/drm/msm/msm_iommu.c
++++ b/drivers/gpu/drm/msm/msm_iommu.c
+@@ -18,6 +18,7 @@ struct msm_iommu {
+ 	struct mutex init_lock;  /* protects pagetables counter and prr_page */
+ 	int pagetables;
+ 	struct page *prr_page;
++	bool prr_soft;
+ 
+ 	struct kmem_cache *pt_cache;
+ };
+@@ -131,6 +132,87 @@ static int msm_iommu_pagetable_unmap(struct msm_mmu *mmu, u64 iova,
+ 	return ret;
+ }
+ 
++static int msm_iommu_prr_init(struct msm_iommu *iommu,
++			      struct adreno_smmu_priv *adreno_smmu)
++{
++	phys_addr_t phys;
++
++	iommu->prr_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
++	if (!iommu->prr_page)
++		return -ENOMEM;
++
++	phys = page_to_phys(iommu->prr_page);
++
++	if (!adreno_smmu->set_prr_bit) {
++		dev_info(iommu->base.dev, "prr: %s[%d] software PRR page %pa\n",
++			 current->comm, task_pid_nr(current), &phys);
++		return 0;
++	}
++
++	adreno_smmu->set_prr_addr(adreno_smmu->cookie, phys);
++	adreno_smmu->set_prr_bit(adreno_smmu->cookie, true);
++
++	return 0;
++}
++
++static void msm_iommu_prr_fini(struct msm_iommu *iommu,
++			       struct adreno_smmu_priv *adreno_smmu)
++{
++	if (adreno_smmu->set_prr_bit)
++		adreno_smmu->set_prr_bit(adreno_smmu->cookie, false);
++	else
++		dev_info(iommu->base.dev, "prr: %s[%d] software PRR page freed\n",
++			 current->comm, task_pid_nr(current));
++
++	__free_page(iommu->prr_page);
++	iommu->prr_page = NULL;
++}
++
++int msm_iommu_prr_soft_enable(struct msm_mmu *mmu)
++{
++	struct adreno_smmu_priv *adreno_smmu = dev_get_drvdata(mmu->dev);
++	struct msm_iommu *iommu;
++	int ret = 0;
++
++	if (mmu->type != MSM_MMU_IOMMU || !adreno_smmu || !adreno_smmu->cookie)
++		return -ENODEV;
++
++	if (adreno_smmu->set_prr_addr)
++		return -EOPNOTSUPP;
++
++	iommu = to_msm_iommu(mmu);
++
++	mutex_lock(&iommu->init_lock);
++	if (!iommu->prr_soft) {
++		dev_info(mmu->dev, "prr: %s[%d] software PRR requested, %d pagetables\n",
++			 current->comm, task_pid_nr(current), iommu->pagetables);
++		if (iommu->pagetables)
++			ret = msm_iommu_prr_init(iommu, adreno_smmu);
++		if (!ret)
++			iommu->prr_soft = true;
++	}
++	mutex_unlock(&iommu->init_lock);
++
++	return ret;
++}
++
++bool msm_iommu_prr_soft(struct msm_mmu *mmu)
++{
++	struct msm_iommu *iommu;
++	bool enabled;
++
++	if (mmu->type != MSM_MMU_IOMMU)
++		return false;
++
++	iommu = to_msm_iommu(mmu);
++
++	mutex_lock(&iommu->init_lock);
++	enabled = iommu->prr_soft;
++	mutex_unlock(&iommu->init_lock);
++
++	return enabled;
++}
++
+ static int msm_iommu_pagetable_map_prr(struct msm_mmu *mmu, u64 iova, size_t len, int prot)
+ {
+ 	struct msm_iommu_pagetable *pagetable = to_pagetable(mmu);
+@@ -233,11 +315,8 @@ static void msm_iommu_pagetable_destroy(struct msm_mmu *mmu)
+ 	if (--iommu->pagetables == 0) {
+ 		adreno_smmu->set_ttbr0_cfg(adreno_smmu->cookie, NULL);
+ 
+-		if (adreno_smmu->set_prr_bit) {
+-			adreno_smmu->set_prr_bit(adreno_smmu->cookie, false);
+-			__free_page(iommu->prr_page);
+-			iommu->prr_page = NULL;
+-		}
++		if (iommu->prr_page)
++			msm_iommu_prr_fini(iommu, adreno_smmu);
+ 	}
+ 	mutex_unlock(&iommu->init_lock);
+ 
+@@ -592,22 +671,15 @@ struct msm_mmu *msm_iommu_pagetable_create(struct msm_mmu *parent, bool kernel_m
+ 		}
+ 
+ 		BUG_ON(iommu->prr_page);
+-		if (adreno_smmu->set_prr_bit) {
+-			/*
+-			 * We need a zero'd page for two reasons:
+-			 *
+-			 * 1) Reserve a known physical address to use when
+-			 *    mapping NULL / sparsely resident regions
+-			 * 2) Read back zero
+-			 *
+-			 * It appears the hw drops writes to the PRR region
+-			 * on the floor, but reads actually return whatever
+-			 * is in the PRR page.
+-			 */
+-			iommu->prr_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
+-			adreno_smmu->set_prr_addr(adreno_smmu->cookie,
+-						  page_to_phys(iommu->prr_page));
+-			adreno_smmu->set_prr_bit(adreno_smmu->cookie, true);
++		if (adreno_smmu->set_prr_bit || iommu->prr_soft)
++			ret = msm_iommu_prr_init(iommu, adreno_smmu);
++		if (ret) {
++			adreno_smmu->set_ttbr0_cfg(adreno_smmu->cookie, NULL);
++			iommu->pagetables--;
++			mutex_unlock(&iommu->init_lock);
++			free_io_pgtable_ops(pagetable->pgtbl_ops);
++			kfree(pagetable);
++			return ERR_PTR(ret);
+ 		}
+ 	}
+ 	mutex_unlock(&iommu->init_lock);
+diff --git a/drivers/gpu/drm/msm/msm_mmu.h b/drivers/gpu/drm/msm/msm_mmu.h
+index 8915662fb..62116c0a7 100644
+--- a/drivers/gpu/drm/msm/msm_mmu.h
++++ b/drivers/gpu/drm/msm/msm_mmu.h
+@@ -91,5 +91,7 @@ int msm_iommu_pagetable_params(struct msm_mmu *mmu, phys_addr_t *ttbr,
+ 			       int *asid);
+ int msm_iommu_pagetable_walk(struct msm_mmu *mmu, unsigned long iova, uint64_t ptes[4]);
+ struct iommu_domain_geometry *msm_iommu_get_geometry(struct msm_mmu *mmu);
++int msm_iommu_prr_soft_enable(struct msm_mmu *mmu);
++bool msm_iommu_prr_soft(struct msm_mmu *mmu);
+ 
+ #endif /* __MSM_MMU_H__ */
