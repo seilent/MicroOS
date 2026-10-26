@@ -2,6 +2,8 @@ ARG KERNEL_REF
 
 FROM ${KERNEL_REF} AS kernel
 
+FROM ghcr.io/armada-os/armada/pkg/lepton@sha256:9cee5dbc9fbb9e3a8faeb2cbac3c11f1991d600029737c016db25950a12bd681 AS lepton
+
 FROM scratch AS ctx
 COPY build/steps /steps
 COPY system_files /system_files
@@ -20,6 +22,10 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx /ctx/steps/20-release.sh
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=bind,from=pkgs,source=/,target=/pkgs \
     /ctx/steps/30-packages.sh
+
+RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
+    --mount=type=bind,from=lepton,source=/,target=/lepton \
+    /ctx/steps/35-lepton.sh
 
 RUN --mount=type=bind,from=ctx,source=/,target=/ctx /ctx/steps/40-system-files.sh
 
