@@ -2,7 +2,7 @@ ARG KERNEL_REF
 
 FROM ${KERNEL_REF} AS kernel
 
-FROM ghcr.io/armada-os/armada/pkg/lepton@sha256:9cee5dbc9fbb9e3a8faeb2cbac3c11f1991d600029737c016db25950a12bd681 AS lepton
+FROM ghcr.io/armada-os/armada/pkg/lepton@sha256:ee6f27cb9d6b812c8da3685ad9e6c3b8ff55ec32a698aa292d676ea164aead24 AS lepton
 
 FROM scratch AS ctx
 COPY build/steps /steps
