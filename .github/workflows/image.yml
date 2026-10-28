@@ -229,6 +229,7 @@ jobs:
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-launcher.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-seed.sh
           podman run --rm -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-libs.sh
+          podman run --rm -v "$PWD/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/lsfg-vk:/lsfg-vk:ro" "$IMAGE:$TAG" /tests/lsfg-loader.sh /lsfg-vk
 
       - name: Source RPMs
         env:
