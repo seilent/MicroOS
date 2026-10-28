@@ -1,0 +1,8 @@
+FROM localhost/microos-pkg-builder
+
+COPY lsfg-vk.spec SOURCE.env /tmp/lsfg-vk/
+RUN . /tmp/lsfg-vk/SOURCE.env \
+ && dnf -y --setopt=install_weak_deps=False builddep \
+      --define "commit $LSFGVK_REF" --define "snapdate $LSFGVK_DATE" /tmp/lsfg-vk/lsfg-vk.spec \
+ && dnf clean all \
+ && rm -rf /tmp/lsfg-vk
