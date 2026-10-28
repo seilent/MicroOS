@@ -151,6 +151,17 @@ if ! dnf -y install \
   gtk3 \
   python3-cairo \
   xprop \
+  podman \
+  passt \
+  catatonit \
+  attr \
+  util-linux \
+  util-linux-core \
+  procps-ng \
+  ncurses \
+  iproute \
+  inotify-tools \
+  which \
   "${rpms[@]}"; then
   echo "30-packages: pipewire is pinned at $PIPEWIRE_EVR and wireplumber at $WIREPLUMBER_EVR; if a package needs newer ones, run packages/pipewire-aptx/bump.sh <pipewire EVR> <wireplumber EVR>" >&2
   exit 1

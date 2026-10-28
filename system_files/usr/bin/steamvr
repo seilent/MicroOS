@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+data=${XDG_DATA_HOME:-}
+[[ $data == /* ]] || data=$HOME/.local/share
+state=${XDG_STATE_HOME:-}
+[[ $state == /* ]] || state=$HOME/.local/state
+case ${1:-} in
+  path) d=$data/microos-lepton/steamvr/runtime ;;
+  configpath) d=$data/microos-lepton/steamvr/config ;;
+  logpath) d=$state/microos-lepton/steamvr-logs ;;
+  *) echo "steamvr: $(printf %q "${1:-}") is not supported" >&2; exit 1 ;;
+esac
+mkdir -p "$d"
+printf '%s\n' "$d"

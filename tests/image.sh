@@ -537,6 +537,37 @@ hits=$(grep -rlE 'armada|/run/armada|session-control|date \+%s|EPOCHREALTIME' /u
   /usr/lib/microos/hotkeys.d/microemu.conf /usr/share/gamescope-session-plus/sessions.d/microemu /usr/share/microemu/retroarch || true)
 [[ -z $hits ]] || fail "Armada names or wall clock waits in MicroEMU files: $hits"
 
+rpm -q podman passt catatonit attr jq android-tools util-linux util-linux-core procps-ng ncurses iproute inotify-tools which \
+  >/dev/null || fail "Lepton host rpms missing"
+for c in podman pasta setpgid flock pgrep pkill tput setfattr inotifywait which jq ip adb systemctl awk sha256sum timeout \
+  realpath readlink xargs; do
+  command -v "$c" >/dev/null || fail "$c is not on PATH (Lepton)"
+done
+! command -v avahi-publish-service >/dev/null || fail "avahi-publish-service is on PATH"
+! compgen -G '/usr/share/steam/compatibilitytools.d/lepton*' >/dev/null || fail "a Lepton compat tool in /usr/share/steam/compatibilitytools.d"
+[[ -z $(find /etc/systemd /usr/lib/systemd -name usr-share-guestos-android.mount) ]] || fail "usr-share-guestos-android.mount in the image"
+adb=/usr/lib/android-sdk/platform-tools/adb
+[[ -L $adb && $adb -ef /usr/bin/adb ]] || fail "$adb does not resolve to /usr/bin/adb"
+[[ $(stat -c '%a %U %G' /usr/bin/steamvr) == '755 root root' ]] || fail "/usr/bin/steamvr mode or owner"
+! grep -qi armada /usr/bin/steamvr || fail "/usr/bin/steamvr names Armada"
+for v in 'path .local/share/microos-lepton/steamvr/runtime' 'configpath .local/share/microos-lepton/steamvr/config' \
+  'logpath .local/state/microos-lepton/steamvr-logs'; do
+  vrdir=$(env -u XDG_DATA_HOME -u XDG_STATE_HOME HOME="$tmp/steamvr" steamvr "${v%% *}") || fail "steamvr ${v%% *} failed"
+  [[ $vrdir == "$tmp/steamvr/${v#* }" && -d $vrdir ]] || fail "steamvr ${v%% *} printed $vrdir"
+done
+[[ $(env XDG_DATA_HOME="$tmp/steamvr/data" HOME="$tmp/steamvr" steamvr configpath) == "$tmp/steamvr/data/microos-lepton/steamvr/config" ]] \
+  || fail "steamvr configpath ignores XDG_DATA_HOME"
+[[ $(env XDG_STATE_HOME="$tmp/steamvr/state" HOME="$tmp/steamvr" steamvr logpath) == "$tmp/steamvr/state/microos-lepton/steamvr-logs" ]] \
+  || fail "steamvr logpath ignores XDG_STATE_HOME"
+[[ $(cd "$tmp" && env XDG_DATA_HOME=data HOME="$tmp/steamvr" steamvr path) == "$tmp/steamvr/.local/share/microos-lepton/steamvr/runtime" ]] \
+  || fail "steamvr path takes a relative XDG_DATA_HOME"
+[[ $(cd "$tmp" && env XDG_STATE_HOME=state HOME="$tmp/steamvr" steamvr logpath) == "$tmp/steamvr/.local/state/microos-lepton/steamvr-logs" ]] \
+  || fail "steamvr logpath takes a relative XDG_STATE_HOME"
+[[ ! -e $tmp/data && ! -e $tmp/state ]] || fail "steamvr made a dir from a relative XDG value"
+rc=0
+env HOME="$tmp/steamvr" steamvr launch >/dev/null 2>&1 || rc=$?
+[[ $rc == 1 ]] || fail "steamvr launch exited $rc, not 1"
+
 seedrpm=(/seed-rpm/microos-steam-seed-*.aarch64.rpm)
 [[ ${#seedrpm[@]} -eq 1 && -f ${seedrpm[0]} ]] || fail "expected one microos-steam-seed RPM in /seed-rpm"
 ! rpm -q microos-steam-seed >/dev/null 2>&1 || fail "microos-steam-seed is installed as an RPM"
