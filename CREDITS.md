@@ -65,6 +65,9 @@ origins in `packages/kernel/PATCHES.md`.
 | qcom-geni force suspend in system sleep | Linux `d0cd9c8d0fd5` | Praveen Talari | GPL-2.0 |
 | qce runtime PM and interconnect scaling | Linux `6f5569203bb6` | Udit Tiwari | GPL-2.0-only |
 | D3 for native hotplug Root Ports on non-x86 | Linux `d4c79b63d82d` | Manivannan Sadhasivam | GPL-2.0 |
+| qrtr HELLO on endpoint register | Linux `544d85de4dc2` | Chris Lew | GPL-2.0-only |
+| qrtr resend HELLO on MHI resume | Linux `6a5719cc3ef2` | Daniel J Blueman | GPL-2.0-only |
+| qrtr HELLO gate for control packets | lore `20261019-upstream-qrtr-hello-gate-fix_b4-v1` | Igor Opaniuk | GPL-2.0-only |
 | lpass rx and tx macro PM clocks for runtime PM, clk_set_rate() check, wsa macro MCLK output with devm | Linux `b9b23e72abef`, `b05482e7ce1b`, `b8ca90fafe6a`, `541735571578` | Ajay Kumar Nandam, Ravi Hothi | GPL-2.0-only |
 | AR16 panel driver, base of the AR18 driver | ROCKNIX SM8550 `0064`, `aa418ad72e` | danyi | GPL-2.0-only |
 | Sitronix ST7123 driver, base of the ST7123 driver | [raspberrypi/linux](https://github.com/raspberrypi/linux) `6d4adb6bfea6` | Waveshare, Sitronix | GPL-2.0 |
