@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "profiles": {
+    "292120": {"tool": "proton-11.0-", "set": {"fex.tso": "off", "wine.sync": "fsync"}}
+  }
+}
