@@ -1,8 +1,10 @@
 #!/usr/bin/python3
+import fcntl
 import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -24,6 +26,9 @@ VALUE_LIMIT = 131072 - len("STEAM_COMPAT_TOOL_MAPPINGS=") - 1
 LOG_LIMIT = 8 << 20
 STATE_LIMIT = 4 << 20
 SHOWN = 10
+LOCK_WAIT = 10.0
+SHUTDOWN = 15
+MAPPINGS = b"STEAM_COMPAT_TOOL_MAPPINGS="
 CLIENT = b"Client version:"
 MAPPED = re.compile(rb'Mapping AppID ([0-9]+) to tool "([^"\n]*)" with priority 250\r?$', re.M)
 
@@ -275,7 +280,151 @@ def compare(root, prev, deadline):
 def paths():
     home = os.environ.get("HOME") or os.path.expanduser("~")
     base = os.environ.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state")
-    return os.path.join(home, ".local", "share", "Steam"), os.path.join(base, ME)
+    return home, os.path.join(home, ".local", "share", "Steam"), os.path.join(base, ME)
+
+
+def take_lock():
+    run = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    path = f"{run}/microos-steam.lock"
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError as e:
+        log(f"{path}: {e.strerror}, going on without the lock")
+        return -1
+    end = time.monotonic() + LOCK_WAIT
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() > end:
+                os.close(fd)
+                return None
+            time.sleep(0.1)
+
+
+def busy(home, root):
+    try:
+        p = subprocess.run(["systemctl", "--user", "list-units", "--type=scope", "--state=active", "--plain",
+                            "--no-legend", "app-steam-app*"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"systemctl: {e}"
+    if p.returncode != 0:
+        return f"systemctl exit {p.returncode}"
+    if p.stdout.strip():
+        return "a game scope is active"
+    try:
+        libs = ms.libraries.library_paths(root)
+    except (OSError, ValueError) as e:
+        return f"libraryfolders.vdf: {e}"
+    for lib in libs:
+        try:
+            with os.scandir(f"{lib}/steamapps/downloading") as it:
+                if next(it, None) is not None:
+                    return f"a download is in {lib}/steamapps/downloading"
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            return f"{lib}/steamapps/downloading: {e.strerror}"
+    try:
+        data, _ = ms.vdf.read(f"{root}/config/loginusers.vdf", 1 << 20)
+        users = ms.vdf.get(ms.vdf.loads(data.decode("utf-8", "replace")), "users")
+    except FileNotFoundError:
+        return "no config/loginusers.vdf"
+    except (OSError, ValueError) as e:
+        return f"config/loginusers.vdf: {e}"
+    if not isinstance(users, dict) or not any(ms.vdf.get(u, "MostRecent") == "1" for u in users.values()):
+        return "no logged in user in config/loginusers.vdf"
+    pipe = f"{home}/.steam/steam.pipe"
+    try:
+        fd = os.open(pipe, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as e:
+        return f"{pipe} has no reader ({e.strerror})"
+    try:
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            return f"{pipe} is not a FIFO"
+    finally:
+        os.close(fd)
+    return None
+
+
+def client_mapped(home):
+    try:
+        data, _ = ms.vdf.read(f"{home}/.steam/steam.pid", 64)
+    except (OSError, ValueError):
+        return None
+    m = re.fullmatch(rb"\s*([0-9]{1,10})\s*", data)
+    if not m:
+        return None
+    pid, pipe = str(int(m.group(1))), os.path.realpath(f"{home}/.steam/steam.pipe")
+    try:
+        fds = os.listdir(f"/proc/{pid}/fd")
+    except OSError:
+        return None
+    for fd in fds:
+        try:
+            if os.readlink(f"/proc/{pid}/fd/{fd}") != pipe:
+                continue
+            with open(f"/proc/{pid}/fdinfo/{fd}") as f:
+                flags = [int(line.split()[1], 8) for line in f if line.startswith("flags:")]
+        except (OSError, ValueError, IndexError):
+            continue
+        if flags and (flags[0] & os.O_ACCMODE) != os.O_WRONLY:
+            break
+    else:
+        return None
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            env = f.read().split(b"\0")
+    except OSError:
+        return None
+    return pid if any(e.startswith(MAPPINGS) and len(e) > len(MAPPINGS) for e in env) else None
+
+
+def first(home, root, state, result, entries):
+    stamp = f"{state}/first-restart"
+    prev = load(f"{state}/start")
+    if os.path.lexists(stamp) or not isinstance(prev, dict) or prev.get("result") != "absent":
+        return 0
+    if result not in ("computed", "cached") or not entries:
+        log(f"first session: {result}, {len(entries)} titles, no restart")
+        return 0
+    fd = take_lock()
+    if fd is None:
+        log("first session: microos-steam.lock held, no restart now")
+        return 0
+    try:
+        prev = load(f"{state}/start")
+        if os.path.lexists(stamp) or not isinstance(prev, dict) or prev.get("result") != "absent":
+            return 0
+        why = busy(home, root)
+        if why:
+            log(f"first session: {why}, no restart now")
+            return 0
+        try:
+            save(stamp, {"version": 1, "titles": len(entries)})
+        except OSError as e:
+            log(f"first session: {stamp} not written, {e}, no restart")
+            return 0
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    pid = client_mapped(home)
+    if pid:
+        log(f"first session: client {pid} has STEAM_COMPAT_TOOL_MAPPINGS, no restart")
+        return 0
+    log(f"first session: restarting Steam once so its next start maps {len(entries)} titles")
+    try:
+        p = subprocess.run(["timeout", str(SHUTDOWN + 5), "systemd-run", "--user", "--wait", "--quiet", "--collect",
+                            "-p", f"RuntimeMaxSec={SHUTDOWN}", "/usr/bin/steam", "-shutdown"],
+                           capture_output=True, text=True, timeout=SHUTDOWN + 15)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"steam -shutdown failed, {e}")
+        return 1
+    if p.returncode != 0:
+        log(f"steam -shutdown failed, exit {p.returncode}")
+        return 1
+    return 0
 
 
 def alive(pid):
@@ -309,7 +458,7 @@ def sweep(state):
         log(f"{state}/{name} removed, its writer is gone")
 
 
-def refresh(root, state):
+def refresh(home, root, state):
     deadline = time.monotonic() + REFRESH_BUDGET
     path = f"{root}/appcache/appinfo.vdf"
     sweep(state)
@@ -319,7 +468,7 @@ def refresh(root, state):
         if stat_of(path) == before:
             break
         log("appcache/appinfo.vdf changed while it was read")
-    return result, entries
+    return first(home, root, state, result, entries)
 
 
 def ask_refresh():
@@ -337,10 +486,9 @@ def main():
     if mode not in ("start", "forward", "refresh"):
         log(f"usage: {ME} start|forward|refresh")
         return 2
-    root, state = paths()
+    home, root, state = paths()
     if mode == "refresh":
-        refresh(root, state)
-        return 0
+        return refresh(home, root, state)
     deadline = time.monotonic() + BUDGET
     result, entries = compute(root, state, deadline, START_LIMIT)
     value, entries = bound(entries)

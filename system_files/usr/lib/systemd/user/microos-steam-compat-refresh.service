@@ -4,7 +4,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
-TimeoutStartSec=40
+TimeoutStartSec=90
 Nice=10
 IOSchedulingClass=idle
 ExecStart=/usr/libexec/microos/microos-steam-compat refresh
