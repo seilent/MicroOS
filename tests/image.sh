@@ -679,6 +679,13 @@ SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no microos-shm-reap@1000.
 XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no microos-shm-reap-request.service \
   || fail "systemd-analyze verify --user microos-shm-reap-request.service"
 [[ -f /usr/lib/systemd/user/microos-steam-seed.service ]] || fail "microos-steam-seed.service missing"
+steampy=/usr/share/microos/python/microos_steam
+for f in __init__ vdf appinfo compat config libraries; do
+  [[ -f $steampy/$f.py && ! -L $steampy/$f.py && $(stat -c '%a %U %G' "$steampy/$f.py") == '644 root root' ]] \
+    || fail "$steampy/$f.py missing, mode or owner"
+done
+python3 -B -c 'import sys; sys.path.insert(0, "/usr/share/microos/python"); import microos_steam as m; assert m.compat.vdf is m.vdf' \
+  || fail "microos_steam does not import"
 grep -qxF CPUWeight=100 /usr/lib/systemd/user/game.slice || fail "game.slice lacks CPUWeight=100"
 [[ $(systemctl --global is-enabled game.slice) == enabled ]] || fail "user game.slice is not enabled"
 [[ $(< /usr/lib/systemd/user/app-steam-.scope.d/50-microos-game-slice.conf) == $'[Scope]\nSlice=game.slice' ]] \
