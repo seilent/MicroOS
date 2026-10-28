@@ -1,0 +1,23 @@
+[Unit]
+Description=GPU Vulkan features for the Steam compat mapping
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=60
+ExecStart=/usr/libexec/microos/microos-vk-features
+Environment=MESA_SHADER_CACHE_DISABLE=true
+ProtectSystem=strict
+RuntimeDirectory=microos/vk
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+DevicePolicy=closed
+DeviceAllow=/dev/char/226:128 rw
+
+[Install]
+WantedBy=multi-user.target

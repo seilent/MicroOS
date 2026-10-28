@@ -14,6 +14,7 @@ sys.path.insert(0, PYDIR)
 import microos_steam as ms
 
 ME = "microos-steam-compat"
+VK = os.environ.get("MICROOS_VK_FEATURES", "/run/microos/vk/features")
 BUDGET = 2.0
 START_LIMIT = 8 << 20
 REFRESH_BUDGET = 30.0
@@ -141,13 +142,35 @@ def cached(root, last, st, code, deadline):
     return branches_of(root, appids, deadline, read=False)[1] == key["manifests"]
 
 
+def needed():
+    try:
+        data, _ = ms.vdf.read(VK, 4096)
+        fields = dict(line.split("=", 1) for line in data.decode().splitlines() if "=" in line)
+        value = fields.get("storageBuffer8BitAccess")
+        if value not in ("0", "1"):
+            raise ValueError(f"storageBuffer8BitAccess {value!r}")
+    except FileNotFoundError:
+        log(f"{VK} missing, mapping")
+        return True
+    except (OSError, ValueError) as e:
+        log(f"{VK} unreadable, {e}, mapping")
+        return True
+    if value == "1":
+        log(f"storageBuffer8BitAccess=1 in {VK}, no mappings")
+        return False
+    return True
+
+
 def compute(root, state, deadline, limit, always=False):
     gate = None
-    try:
-        users = ms.config.user_mappings(f"{root}/config/config.vdf", deadline)
-    except (OSError, ValueError) as e:
-        log(f"config/config.vdf unreadable, {e}, no mappings")
-        gate = "config-failed"
+    if not needed():
+        gate = "not-needed"
+    else:
+        try:
+            users = ms.config.user_mappings(f"{root}/config/config.vdf", deadline)
+        except (OSError, ValueError) as e:
+            log(f"config/config.vdf unreadable, {e}, no mappings")
+            gate = "config-failed"
     if gate and not always:
         return gate, []
     last = load(f"{state}/last")

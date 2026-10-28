@@ -1,0 +1,105 @@
+#!/usr/bin/python3
+import os
+import re
+import subprocess
+import sys
+import time
+
+ME = "microos-vk-features"
+OUT = os.environ.get("MICROOS_VK_FEATURES", "/run/microos/vk/features")
+DRI = os.environ.get("MICROOS_DRI", "/dev/dri")
+WAIT = float(os.environ.get("MICROOS_VK_WAIT", "10"))
+BOUND = int(os.environ.get("MICROOS_VK_TIMEOUT", "20"))
+LIMIT = 16 << 20
+GPU = re.compile(r"GPU([0-9]+):")
+FIELD = re.compile(r"\s+([A-Za-z0-9_]+)\s*=\s*(.*?)\s*")
+CPU = "PHYSICAL_DEVICE_TYPE_CPU"
+
+
+def log(msg):
+    print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+
+
+def render_node():
+    try:
+        names = sorted(n for n in os.listdir(DRI) if n.startswith("renderD"))
+    except OSError:
+        return None
+    for n in names:
+        try:
+            return f"{n} minor {os.minor(os.stat(os.path.join(DRI, n)).st_rdev)}"
+        except OSError:
+            continue
+    return None
+
+
+def parse(text):
+    devices = []
+    for line in text.splitlines():
+        if GPU.fullmatch(line.rstrip()):
+            devices.append({"type": None, "name": None, "values": []})
+            continue
+        m = FIELD.fullmatch(line)
+        if not devices or not m:
+            continue
+        key, value = m.groups()
+        d = devices[-1]
+        if key == "deviceType" and d["type"] is None:
+            d["type"] = value
+        elif key == "deviceName" and d["name"] is None:
+            d["name"] = value
+        elif key == "storageBuffer8BitAccess":
+            d["values"].append(value)
+    gpus = [d for d in devices if d["type"] and d["type"] != CPU]
+    if not gpus:
+        raise ValueError(f"no GPU among {len(devices)} devices")
+    for d in gpus:
+        if not d["values"] or len(set(d["values"])) != 1 or d["values"][0] not in ("true", "false"):
+            raise ValueError(f"{d['name']}: storageBuffer8BitAccess {d['values']}")
+    return 1 if all(d["values"][0] == "true" for d in gpus) else 0, [d["name"] for d in gpus]
+
+
+def write(value):
+    tmp = f"{OUT}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o644)
+    with os.fdopen(fd, "w") as f:
+        f.write(f"storageBuffer8BitAccess={value}\n")
+    os.chmod(tmp, 0o644)
+    os.rename(tmp, OUT)
+
+
+def remove():
+    try:
+        os.remove(OUT)
+    except FileNotFoundError:
+        pass
+
+
+def main():
+    end = time.monotonic() + WAIT
+    while not (node := render_node()):
+        if time.monotonic() > end:
+            remove()
+            log(f"no render node in {DRI} after {WAIT:g} s, {OUT} not written")
+            return
+        time.sleep(0.2)
+    try:
+        p = subprocess.run(["timeout", "-k", "2", str(BOUND), "vulkaninfo"], stdout=subprocess.PIPE,
+                           stderr=subprocess.DEVNULL, timeout=BOUND + 5)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        remove()
+        log(f"vulkaninfo on {node}: {e}, {OUT} not written")
+        return
+    try:
+        if len(p.stdout) > LIMIT:
+            raise ValueError(f"{len(p.stdout)} bytes of output")
+        value, names = parse(p.stdout.decode("utf-8", "replace"))
+    except ValueError as e:
+        remove()
+        log(f"vulkaninfo exit {p.returncode} on {node}: {e}, {OUT} not written")
+        return
+    write(value)
+    log(f"storageBuffer8BitAccess={value} ({', '.join(names)}) on {node}")
+
+
+main()

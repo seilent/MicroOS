@@ -10,6 +10,16 @@ command -v python3 > /dev/null || { echo "FAIL: python3 missing" >&2; exit 1; }
 
 MICROOS_TREE=$tree python3 "$here/steam-compat/module.py" || fail "module tests"
 MICROOS_TREE=$tree python3 "$here/steam-compat/helper.py" || fail "helper tests"
+MICROOS_TREE=$tree python3 "$here/steam-compat/vk.py" || fail "vk features tests"
+
+unit=$tree/usr/lib/systemd/system/microos-vk-features.service
+grep -q '^ReadWritePaths=' "$unit" && fail "microos-vk-features.service has ReadWritePaths"
+for line in Type=oneshot RemainAfterExit=yes Before=display-manager.service \
+  ExecStart=/usr/libexec/microos/microos-vk-features Environment=MESA_SHADER_CACHE_DISABLE=true ProtectSystem=strict \
+  RuntimeDirectory=microos/vk NoNewPrivileges=yes CapabilityBoundingSet= DevicePolicy=closed 'DeviceAllow=/dev/char/226:128 rw' \
+  WantedBy=multi-user.target; do
+  grep -qxF "$line" "$unit" || fail "microos-vk-features.service lacks $line"
+done
 
 path=$tree/usr/lib/systemd/user/microos-steam-compat-refresh.path
 for line in DefaultDependencies=no BindsTo=gamescope-session-plus@steam.service After=gamescope-session-plus@steam.service \
