@@ -6,4 +6,5 @@ kargs = [
   "quiet",
   "splash",
   "loglevel=3",
+  "audit=0",
 ]

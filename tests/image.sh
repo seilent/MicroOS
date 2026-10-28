@@ -77,6 +77,22 @@ yama=/usr/lib/sysctl.d/60-microos-yama.conf
 grep -qx 'kernel.yama.ptrace_scope = 1' "$yama" || fail "$yama does not set ptrace_scope 1"
 last=$(/usr/lib/systemd/systemd-sysctl --cat-config | awk '/^# \/[^ ]*\.conf( -> |$)/ { f = $2 } /^-?kernel[.\/]yama[.\/]ptrace_scope[[:space:]]*=/ { l = f " " $0 } END { print l }')
 [[ $last == "$yama kernel.yama.ptrace_scope = 1" ]] || fail "the last ptrace_scope setting is not $yama: $last"
+mem=/usr/lib/sysctl.d/60-microos-memory.conf
+for kv in 'vm.swappiness = 180' 'vm.page-cluster = 0' 'vm.watermark_boost_factor = 0' 'vm.watermark_scale_factor = 125'; do
+  grep -qxF "$kv" "$mem" || fail "$mem does not set $kv"
+  re=${kv%% =*}
+  re=${re//./[./]}
+  last=$(/usr/lib/systemd/systemd-sysctl --cat-config | awk -v re="^-?${re}[[:space:]]*=" '/^# \/[^ ]*\.conf( -> |$)/ { f = $2 } $0 ~ re { l = f " " $0 } END { print l }')
+  [[ $last == "$mem $kv" ]] || fail "the last ${kv%% =*} setting is not $mem: $last"
+done
+zram=/usr/lib/systemd/zram-generator.conf
+rpm -q zram-generator >/dev/null || fail "zram-generator is not installed"
+[[ $(<"$zram") == $'[zram0]\nzram-size = ram\ncompression-algorithm = zstd\nswap-priority = 100' ]] || fail "$zram is not the zram0 zstd swap"
+[[ ! -e /etc/systemd/zram-generator.conf ]] || fail "/etc/systemd/zram-generator.conf overrides $zram"
+drirc=/usr/share/drirc.d/01-microos-turnip.conf
+grep -q '<engine engine_name_match="vkd3d">' "$drirc" || fail "$drirc has no vkd3d engine entry"
+grep -q '<option name="tu_dont_reserve_descriptor_set" value="true" />' "$drirc" || fail "$drirc does not keep every descriptor set"
+grep -qx '  "audit=0",' /usr/lib/bootc/kargs.d/10-microos.toml || fail "10-microos.toml does not set audit=0"
 uhid=$(grep -rsnE 'KERNEL=="[^"]*uhid|/dev/uhid' /usr/lib/udev/rules.d /etc/udev/rules.d || true)
 [[ -z $uhid ]] || fail "a udev rule names uhid, InputPlumber's uhid adoption needs /dev/uhid root only: $uhid"
 
