@@ -28,7 +28,7 @@ for line in DefaultDependencies=no BindsTo=gamescope-session-plus@steam.service 
 done
 grep -q '^PartOf=' "$path" && fail "microos-steam-compat-refresh.path has PartOf="
 refresh=$tree/usr/lib/systemd/user/microos-steam-compat-refresh.service
-for line in StartLimitIntervalSec=0 Type=oneshot TimeoutStartSec=40 Nice=10 IOSchedulingClass=idle \
+for line in StartLimitIntervalSec=0 Type=oneshot TimeoutStartSec=90 Nice=10 IOSchedulingClass=idle \
   'ExecStart=/usr/libexec/microos/microos-steam-compat refresh'; do
   grep -qxF "$line" "$refresh" || fail "microos-steam-compat-refresh.service lacks $line"
 done

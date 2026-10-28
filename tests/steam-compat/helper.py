@@ -14,6 +14,8 @@ sys.path.insert(0, here)
 sys.dont_write_bytecode = True
 import fixture as fx
 
+os.environ.pop("STEAM_COMPAT_TOOL_MAPPINGS", None)
+
 tree = os.environ.get("MICROOS_TREE", os.path.join(here, "..", "..", "system_files"))
 HELPER = os.path.join(tree, "usr/libexec/microos/microos-steam-compat")
 T = "proton_11-arm64"
@@ -595,9 +597,194 @@ def case_vk_features():
     h.clean()
 
 
-CASES = [case_vk_features, case_computed, case_forward_usage, case_default_tool, case_config_failed, case_failed_absent,
-         case_corrupt_app, case_target_and_shadows, case_cache, case_compat_log, case_bound, case_refresh, case_budget,
-         case_refresh_change, case_bad_state, case_detached, case_tmp, case_branch_timeout]
+def case_first():
+    h = Home()
+    stub = h.stub
+    run = os.path.join(h.dir, "run")
+    os.makedirs(run)
+    fx.write(f"{stub}/systemctl", '#!/bin/sh\necho "$*" >> "$STUB_LOG"\n[ -f "$SCOPES" ] && cat "$SCOPES"\nexit "${SYSTEMCTL_RC:-0}"\n', 0o755)
+    fx.write(f"{stub}/systemd-run", '#!/bin/sh\necho "systemd-run $*" >> "$STUB_LOG"\nexit "${RUN_RC:-0}"\n', 0o755)
+    log = os.path.join(h.dir, "stub.log")
+    scopes = os.path.join(h.dir, "scopes")
+    env = {"PATH": f"{stub}:/usr/bin:/bin", "XDG_RUNTIME_DIR": run, "STUB_LOG": log, "SCOPES": scopes}
+    pipe = f"{h.home}/.steam/steam.pipe"
+    stamp = os.path.join(h.state, "first-restart")
+    shutdown = "systemd-run --user --wait --quiet --collect -p RuntimeMaxSec=15 /usr/bin/steam -shutdown"
+
+    def calls():
+        try:
+            with open(log) as f:
+                lines = f.read().splitlines()
+        except FileNotFoundError:
+            lines = []
+        open(log, "w").close()
+        return lines
+
+    def ready():
+        h.appinfo(exp_games(200, 201))
+        fx.write(f"{h.root}/config/loginusers.vdf", fx.loginusers([("76561190000000001", "1")]))
+        os.makedirs(f"{h.root}/steamapps/downloading", exist_ok=True)
+        if not os.path.exists(pipe):
+            os.makedirs(os.path.dirname(pipe), exist_ok=True)
+            os.mkfifo(pipe)
+
+    h.run("start")
+    check(h.record("start")["result"] == "absent", "first: absent start")
+    ready()
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    for name, setup, undo, why in (
+            ("game", lambda: fx.write(scopes, "app-steam-app200-1.scope loaded active running\n"),
+             lambda: os.remove(scopes), "a game scope is active"),
+            ("systemctl", lambda: env.update(SYSTEMCTL_RC="1"), lambda: env.pop("SYSTEMCTL_RC"), "systemctl exit 1"),
+            ("download", lambda: os.mkdir(f"{h.root}/steamapps/downloading/200"),
+             lambda: os.rmdir(f"{h.root}/steamapps/downloading/200"), "a download is in"),
+            ("no login", lambda: os.remove(f"{h.root}/config/loginusers.vdf"), ready, "no config/loginusers.vdf"),
+            ("not recent", lambda: fx.write(f"{h.root}/config/loginusers.vdf", fx.loginusers([("76561190000000001", "0")])),
+             ready, "no logged in user"),
+            ("no reader", lambda: os.close(reader), None, "has no reader"),
+    ):
+        calls()
+        setup()
+        rc = h.run("refresh", env)
+        c = calls()
+        check(rc == "" and h.rc == 0 and not any(x.startswith("systemd-run") for x in c), f"first {name}: rc {h.rc} calls {c}")
+        check(h.has(why) and h.has("no restart now") and not os.path.exists(stamp), f"first {name}: {h.lines()}")
+        if undo:
+            undo()
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    os.remove(pipe)
+    fx.write(pipe, "")
+    calls()
+    h.run("refresh", env)
+    check(h.has("is not a FIFO") and not os.path.exists(stamp), f"first regular pipe file: {h.lines()}")
+    os.remove(pipe)
+    os.close(reader)
+    os.mkfifo(pipe)
+    reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
+    h.appinfo({200: fx.game(200, deck="proton-stable")})
+    calls()
+    h.run("refresh", env)
+    check(h.has("computed: 0 titles") and h.has("first session: computed, 0 titles, no restart") and not calls()
+          and not os.path.exists(stamp), f"first nothing to map: {h.lines()}")
+    ready()
+    fx.write(h.vk, "storageBuffer8BitAccess=1\n")
+    calls()
+    h.run("refresh", env)
+    check(h.has("first session: not-needed, 0 titles, no restart") and not calls(), f"first not needed: {h.lines()}")
+    fx.write(h.vk, "storageBuffer8BitAccess=0\n")
+    h.appinfo(exp_games(200), magic=0x07564428)
+    calls()
+    h.run("refresh", env)
+    check(h.has("first session: failed, ") and h.has("titles, no restart") and not calls(), f"first failed: {h.lines()}")
+    ready()
+    h.appinfo({**exp_games(200, 201), 202: padded(202, START)})
+    lockf = os.path.join(run, "microos-steam.lock")
+    absent = json.dumps({"version": 1, "result": "absent", "entries": []})
+
+    def locked(during=None):
+        held, go = os.path.join(h.dir, "held"), os.path.join(h.dir, "go")
+        for f in (held, go):
+            if os.path.exists(f):
+                os.remove(f)
+        holder = subprocess.Popen(["flock", "-o", lockf, "sh", "-c",
+                                   ': > "$1"; n=0; while [ ! -e "$2" ] && [ "$n" -lt 6000 ]; do sleep 0.01; n=$((n + 1)); done',
+                                   "sh", held, go])
+        p = None
+        try:
+            check(until(lambda: os.path.exists(held)), "first: the holder did not take microos-steam.lock")
+            p = h.spawn("refresh", env)
+            check(until(lambda: p.poll() is not None or opened(p.pid, lockf), 20) and p.poll() is None,
+                  "first: the run did not wait on microos-steam.lock")
+            if during:
+                during()
+        finally:
+            fx.write(go, "")
+            holder.wait()
+            if p:
+                h.collect(p)
+
+    def rewrite():
+        fx.write(os.path.join(h.state, "start"), json.dumps({"version": 1, "result": "computed", "entries": [[200, T], [201, T]]}))
+
+    calls()
+    locked(rewrite)
+    c = calls()
+    check(h.rc == 0 and not c and not os.path.exists(stamp) and h.has(f"computed: 2 titles to {T}") and not h.has("first session"),
+          f"first start rewritten under the lock: rc {h.rc} {c} {h.lines()}")
+    fx.write(os.path.join(h.state, "start"), absent)
+
+    pidfile = f"{h.home}/.steam/steam.pid"
+
+    def holder(mappings, how="os.O_RDONLY | os.O_NONBLOCK", listed=True):
+        opener = f"os.open(sys.argv[1], {how})\n" if how else ""
+        p = subprocess.Popen([sys.executable, "-c", f"import os, sys\n{opener}print(flush=True)\nsys.stdin.read()\n", pipe],
+                             env={**os.environ, "STEAM_COMPAT_TOOL_MAPPINGS": mappings}, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, text=True)
+        check(p.stdout.readline() == "\n", f"first: a holder with {how} did not start")
+        if listed:
+            fx.write(pidfile, f"{p.pid}\n")
+        elif os.path.exists(pidfile):
+            os.remove(pidfile)
+        return p
+
+    def close(p):
+        p.stdin.close()
+        p.wait()
+
+    for how in ("os.O_RDONLY | os.O_NONBLOCK", "os.O_RDWR"):
+        mapped = holder(value(200), how)
+        calls()
+        h.run("refresh", env)
+        c = calls()
+        check(h.rc == 0 and not any(x.startswith("systemd-run") for x in c) and os.path.exists(stamp)
+              and h.has(f"first session: client {mapped.pid} has STEAM_COMPAT_TOOL_MAPPINGS, no restart")
+              and not h.has("restarting"), f"first with a mapped client, {how}: {c} {h.lines()}")
+        close(mapped)
+        os.remove(stamp)
+    for name, how, listed in (("write only holder", "os.O_WRONLY | os.O_NONBLOCK", True), ("no pipe", None, True),
+                              ("reader not in steam.pid", "os.O_RDONLY | os.O_NONBLOCK", False)):
+        other = holder(value(200), how, listed)
+        calls()
+        h.run("refresh", env)
+        close(other)
+        c = calls()
+        check(h.rc == 0 and c[-1:] == [shutdown] and os.path.exists(stamp) and not h.has("STEAM_COMPAT_TOOL_MAPPINGS")
+              and h.has("first session: restarting Steam once"), f"first with a {name} carrying a value: {c} {h.lines()}")
+        os.remove(stamp)
+    empty = holder("")
+    calls()
+    locked()
+    close(empty)
+    c = calls()
+    check(c[-1:] == [shutdown] and os.path.exists(stamp) and not h.has("STEAM_COMPAT_TOOL_MAPPINGS"),
+          f"first restart: {c} {h.lines()}")
+    check(h.has(f"computed: 2 titles to {T}") and h.has("first session: restarting Steam once so its next start maps 2 titles"),
+          f"first line over the start cap: {h.lines()}")
+    check(any("--type=scope --state=active" in x and "app-steam-app*" in x for x in c), f"first scope query: {c}")
+    with open(stamp) as f:
+        check(json.load(f) == {"version": 1, "titles": 2}, "first stamp")
+    h.run("refresh", env)
+    check(not calls() and h.has("computed: 2 titles") and not h.has("first session"), f"first after the stamp: {h.lines()}")
+    os.remove(stamp)
+    h.run("start")
+    check(h.record("start")["result"] in ("computed", "cached"), f"first: computed start {h.record('start')}")
+    calls()
+    h.run("refresh", env)
+    check(not calls() and not h.has("first session"), f"first after a computed start: {h.lines()}")
+    os.remove(os.path.join(h.state, "start"))
+    h.run("refresh", env)
+    check(not calls() and not h.has("first session"), f"first with no start record: {h.lines()}")
+    fx.write(os.path.join(h.state, "start"), absent)
+    env["RUN_RC"] = "1"
+    h.run("refresh", env)
+    check(h.rc == 1 and h.has("steam -shutdown failed, exit 1") and os.path.exists(stamp), f"first shutdown fails: {h.lines()}")
+    os.close(reader)
+    h.clean()
+
+
+CASES = [case_first, case_vk_features, case_computed, case_forward_usage, case_default_tool, case_config_failed,
+         case_failed_absent, case_corrupt_app, case_target_and_shadows, case_cache, case_compat_log, case_bound, case_refresh,
+         case_budget, case_refresh_change, case_bad_state, case_detached, case_tmp, case_branch_timeout]
 
 
 def main():
