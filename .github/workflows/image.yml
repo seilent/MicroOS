@@ -22,6 +22,7 @@ env:
   BIB: quay.io/centos-bootc/bootc-image-builder@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b
   SOURCE_TYPE: application/vnd.microos.source.v1
   FEDORA: registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
+  PYTHON313: docker.io/library/python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb
 
 jobs:
   packages:
@@ -209,6 +210,10 @@ jobs:
           podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
             sh -c '/repo/build/pin-pipewire.sh /repo/packages/pipewire-aptx/SOURCE.env pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ ladspa-devel util-linux && /repo/tests/audio-eq.sh'
 
+      - name: Steam module on Python 3.13
+        run: |
+          podman run --rm -v "$PWD:/repo:ro" "$PYTHON313" python3 /repo/tests/steam-compat/module.py
+
       - name: Test
         env:
           TAG: ${{ steps.version.outputs.push_tag }}
@@ -216,7 +221,7 @@ jobs:
           git fetch --no-tags --depth=1 origin main
           PKG_HASH_BASE=FETCH_HEAD tests/pkg-hash.sh
           podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
-            sh -c 'dnf -yq --setopt=install_weak_deps=False install python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh'
+            sh -c 'dnf -yq --setopt=install_weak_deps=False install python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh && /repo/tests/steam-compat.sh'
           podman run --rm -v "$PWD/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/seed-rpm:ro" "$IMAGE:$TAG" /tests/image.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/helpers.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/storage.sh
