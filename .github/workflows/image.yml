@@ -79,6 +79,16 @@ jobs:
             [[ $name != kernel ]] || continue
             hash=$(build/pkg-hash.sh "$name")
             repo=$IMAGE/pkg/$name
+            if [[ -n $(git ls-files -- "packages/$name/LOCAL") ]] && ! err=$(skopeo inspect --no-creds --raw "docker://$repo:$hash" 2>&1 > /dev/null); then
+              if [[ $err == *'manifest unknown'* ]]; then
+                echo "::error::$repo:$hash is missing, it comes from the build PC: just pkg-push $name"
+              elif [[ $err == *403* || $err == *denied* ]]; then
+                echo "::error::skopeo inspect $repo:$hash failed: $err, or never pushed: just pkg-push $name"
+              else
+                echo "::error::skopeo inspect $repo:$hash failed: $err"
+              fi
+              exit 1
+            fi
             digest=sha256:$(skopeo inspect --no-creds --raw "docker://$repo:$hash" | sha256sum | cut -d' ' -f1)
             cosign verify --key "$PUBKEY" "$repo@$digest" > /dev/null
             oci=$RUNNER_TEMP/oci/$name

@@ -36,6 +36,7 @@ jobs:
           withdeps=()
           for name in $(git ls-files -- 'packages/*/build.sh' | cut -d/ -f2); do
             if [[ -n $(git ls-files -- "packages/$name/DEPS") ]]; then
+              [[ -z $(git ls-files -- "packages/$name/LOCAL") ]] || { echo "::error::packages/$name has DEPS and LOCAL, build-deps has no LOCAL case"; exit 1; }
               withdeps+=("$name")
             else
               plain+=("$name")
@@ -137,6 +138,7 @@ jobs:
         run: |
           hash=$(build/pkg-hash.sh "$PKG")
           echo "hash=$hash" >> "$GITHUB_OUTPUT"
+          [[ -z $(git ls-files -- "packages/$PKG/LOCAL") ]] || echo "local=true" >> "$GITHUB_OUTPUT"
 
       - name: Check registry
         id: check
@@ -194,12 +196,18 @@ jobs:
       - name: Wait for the build PC
         id: local
         if: >-
-          (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && matrix.package == 'kernel'
-          && !(github.event_name == 'workflow_dispatch' && github.workflow == 'packages')
+          (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true')
+          && (steps.hash.outputs.local == 'true'
+            || matrix.package == 'kernel' && !(github.event_name == 'workflow_dispatch' && github.workflow == 'packages'))
         env:
           HASH: ${{ steps.hash.outputs.hash }}
+          LOCAL: ${{ steps.hash.outputs.local }}
         run: |
-          echo "::notice::$REPO:$HASH comes from the build PC (just pkg-push kernel); run packages.yml by hand to build it here"
+          if [[ $LOCAL == true ]]; then
+            echo "::notice::$REPO:$HASH comes from the build PC (just pkg-push $PKG): $(head -n 1 "packages/$PKG/LOCAL")"
+          else
+            echo "::notice::$REPO:$HASH comes from the build PC (just pkg-push kernel); run packages.yml by hand to build it here"
+          fi
           echo "skip=true" >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
@@ -441,8 +449,8 @@ jobs:
               echo "$PKG was not built in this run, $REPO:$hash exists"
               exit 0
             fi
-            if [[ $PKG == kernel && $DISPATCH != true ]]; then
-              echo "::warning::$REPO:$hash is missing and comes from the build PC (just pkg-push kernel)"
+            if [[ -n $(git ls-files -- "packages/$PKG/LOCAL") || ($PKG == kernel && $DISPATCH != true) ]]; then
+              echo "::warning::$REPO:$hash is missing and comes from the build PC (just pkg-push $PKG)"
               exit 0
             fi
             echo "::error::$PKG was not built in this run and $REPO:$hash is not readable: $err"
@@ -464,6 +472,7 @@ jobs:
           DISPATCH: ${{ github.event_name == 'workflow_dispatch' && github.workflow == 'packages' }}
         run: |
           [[ $PKG != kernel || $DISPATCH == true ]] || { echo "::error::kernel artifact outside a packages.yml dispatch"; exit 1; }
+          [[ -z $(git ls-files -- "packages/$PKG/LOCAL") ]] || { echo "::error::$PKG artifact, packages/$PKG/LOCAL keeps it off CI"; exit 1; }
           mapfile -t names < <(awk '$1 == "Name:" { n = $2; print n } $1 == "%package" { print ($2 == "-n" ? $3 : n "-" $2) }' "packages/$PKG"/*.spec)
           (( ${#names[@]} )) || { echo "::error::no spec Name in packages/$PKG"; exit 1; }
           bad=$(printf '%s\n' "${names[@]}" | grep -vE '^[A-Za-z0-9._+-]+$' || true)
