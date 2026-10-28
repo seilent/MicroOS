@@ -1,0 +1,342 @@
+#!/usr/bin/python3
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+HERE = os.path.dirname(os.path.realpath(__file__))
+PYDIR = os.path.normpath(os.path.join(HERE, "..", "..", "share", "microos", "python"))
+sys.path.insert(0, PYDIR)
+import microos_steam as ms
+
+ME = "microos-steam-compat"
+BUDGET = 2.0
+START_LIMIT = 8 << 20
+REFRESH_BUDGET = 30.0
+REFRESH_PASSES = 3
+REFRESH = "microos-steam-compat-refresh.service"
+VALUE_LIMIT = 131072 - len("STEAM_COMPAT_TOOL_MAPPINGS=") - 1
+LOG_LIMIT = 8 << 20
+STATE_LIMIT = 4 << 20
+SHOWN = 10
+CLIENT = b"Client version:"
+MAPPED = re.compile(rb'Mapping AppID ([0-9]+) to tool "([^"\n]*)" with priority 250\r?$', re.M)
+
+
+def log(msg):
+    print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+
+
+def ids(appids):
+    shown = " ".join(str(a) for a in appids[:SHOWN])
+    return shown + (f" and {len(appids) - SHOWN} more" if len(appids) > SHOWN else "")
+
+
+def stat_of(path):
+    try:
+        st = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    return [st.st_ino, st.st_size, st.st_mtime_ns]
+
+
+def code_hash():
+    h = hashlib.sha256()
+    pkg = os.path.join(PYDIR, "microos_steam")
+    for path in [os.path.realpath(__file__)] + [os.path.join(pkg, n) for n in sorted(os.listdir(pkg)) if n.endswith(".py")]:
+        with open(path, "rb") as f:
+            h.update(path.encode() + b"\0" + f.read() + b"\0")
+    return h.hexdigest()
+
+
+def load(path):
+    try:
+        data, _ = ms.vdf.read(path, STATE_LIMIT)
+        value = json.loads(data)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, RecursionError) as e:
+        log(f"{path}: {e}, ignored")
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def save(path, value):
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(value, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def entries_of(value):
+    out = []
+    for e in value.get("entries", []) if isinstance(value, dict) else []:
+        if (isinstance(e, list) and len(e) == 2 and isinstance(e[0], int) and isinstance(e[1], str)
+                and ms.compat.NAME.fullmatch(e[1])):
+            out.append((e[0], e[1]))
+    return out
+
+
+def valid_last(last):
+    return (isinstance(last, dict) and isinstance(last.get("titles"), list)
+            and all(isinstance(a, int) for a in last["titles"])
+            and all(isinstance(last.get(t), dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in last[t].items())
+                    for t in ("aliases", "own"))
+            and isinstance(last.get("shadows"), list)
+            and all(isinstance(x, list) and len(x) == 3 for x in last["shadows"])
+            and isinstance(last.get("target"), bool) and isinstance(last.get("key"), dict))
+
+
+def branches_of(root, appids, deadline, read=True):
+    branches, stats = {}, {}
+    if not appids:
+        return branches, stats
+    try:
+        libs = ms.libraries.library_paths(root, deadline)
+    except TimeoutError:
+        raise
+    except (OSError, ValueError) as e:
+        if read:
+            log(f"libraryfolders.vdf: {e}, branch scoped entries do not count")
+        return branches, {str(a): None for a in appids}
+    for appid in appids:
+        path = ms.libraries.app_manifest(libs, appid)
+        stats[str(appid)] = stat_of(path) if path else None
+        if path and read:
+            try:
+                branches[appid] = ms.libraries.installed_branch(path, deadline)
+            except TimeoutError:
+                raise
+            except (OSError, ValueError) as e:
+                log(f"{path}: {e}, its branch scoped entries do not count")
+    return branches, stats
+
+
+def cached(root, last, st, code, deadline):
+    key = last["key"]
+    if key.get("appinfo") != st or key.get("code") != code or not isinstance(key.get("manifests"), dict):
+        return False
+    appids = [int(a) for a in key["manifests"] if a.isdigit()]
+    return branches_of(root, appids, deadline, read=False)[1] == key["manifests"]
+
+
+def compute(root, state, deadline, limit, always=False):
+    gate = None
+    try:
+        users = ms.config.user_mappings(f"{root}/config/config.vdf", deadline)
+    except (OSError, ValueError) as e:
+        log(f"config/config.vdf unreadable, {e}, no mappings")
+        gate = "config-failed"
+    if gate and not always:
+        return gate, []
+    last = load(f"{state}/last")
+    if not valid_last(last):
+        last = None
+    path = f"{root}/appcache/appinfo.vdf"
+    code = code_hash()
+    st = stat_of(path)
+    found, result, reason, kept = None, "absent", "no appcache/appinfo.vdf", False
+    if st is not None:
+        try:
+            if last and cached(root, last, st, code, deadline):
+                found, result, kept = last, "cached", True
+            else:
+                a = ms.appinfo.read(path, deadline, limit, keep=ms.compat.KEEP)
+                result, reason = a["state"], a["error"] or "no appcache/appinfo.vdf"
+                if a["state"] == "ok":
+                    branches, stats = branches_of(root, ms.compat.branch_titles(a["apps"]), deadline)
+                    f = ms.compat.experimental_titles(a["apps"], a["bad"], branches, deadline)
+                    result, found = "computed", {
+                        "version": 1, "titles": f["titles"], "shadows": f["shadows"], "aliases": f["aliases"],
+                        "own": f["own"], "target": f["target"],
+                        "key": {"appinfo": a["stat"], "code": code, "manifests": stats}}
+        except (ms.compat.Failed, TimeoutError) as e:
+            result, reason = "failed", str(e)
+        except Exception as e:
+            result, reason = "failed", f"{type(e).__name__}: {e}"
+        if result == "computed":
+            if a["bad"]:
+                log(f"{len(a['bad'])} apps unreadable in appinfo.vdf and skipped: {ids(sorted(a['bad']))}")
+            try:
+                save(f"{state}/last", found)
+                kept = True
+            except OSError as e:
+                log(f"{state}/last not written: {e}")
+    if gate:
+        if found:
+            log(f"{result}: {len(found['titles'])} titles " + ("kept for a later start" if kept else "not kept"))
+        else:
+            log(f"{result}: {reason}")
+        return gate, []
+    if found is None and last:
+        found = last
+    entries, skipped, note = ms.compat.mappings(found, users) if found else ([], 0, None)
+    tool = entries[0][1] if entries else ms.compat.TARGET
+    if result in ("computed", "cached"):
+        log(f"computed: {len(entries)} titles to {tool}, {skipped} skipped by user entries"
+            + (", cached" if result == "cached" else ""))
+    else:
+        last_note = f"{len(entries)} titles from the last computed list" if found else "no last computed list"
+        log(f"{result}: {reason}, {last_note}")
+    if note:
+        log(note)
+    if found:
+        for appid, top, prio in found.get("shadows", [])[:SHOWN]:
+            log(f"{appid}: Valve's {top} at {prio} wins, runs as proton-stable, not mapped")
+        if len(found.get("shadows", [])) > SHOWN:
+            log(f"{len(found['shadows']) - SHOWN} more titles not mapped for the same reason")
+        stable = found["aliases"].get("proton-stable")
+        if stable != ms.compat.TARGET:
+            log(f"proton-stable resolves to {stable or 'no arm64 tool'}, not {ms.compat.TARGET}")
+    return result, entries
+
+
+def bound(entries):
+    out, n = [], 0
+    for appid, tool in entries:
+        item = f"{appid} 250 {tool}"
+        if n + len(item) + (1 if out else 0) > VALUE_LIMIT:
+            log(f"value over {VALUE_LIMIT} bytes, {len(entries) - len(out)} titles left out")
+            break
+        n += len(item) + (1 if out else 0)
+        out.append(item)
+    return ",".join(out), entries[: len(out)]
+
+
+def compare(root, prev, deadline):
+    want = entries_of(prev)
+    if not want:
+        return
+    if time.monotonic() > deadline:
+        log("previous start: compat_log.txt check skipped, time budget spent")
+        return
+    try:
+        data, _ = ms.vdf.read(f"{root}/logs/compat_log.txt", LOG_LIMIT, deadline, tail=True)
+    except FileNotFoundError:
+        log("previous start: no logs/compat_log.txt")
+        return
+    except (OSError, ValueError) as e:
+        log(f"previous start: logs/compat_log.txt unreadable, {e}")
+        return
+    i = data.rfind(CLIENT)
+    if i < 0:
+        log("previous start: no client start in logs/compat_log.txt")
+        return
+    seen = {(int(a), t.decode("utf-8", "replace")) for a, t in MAPPED.findall(data, i)}
+    missed = [a for a, t in want if (a, t) not in seen]
+    if missed:
+        log(f"previous start: {len(missed)} of {len(want)} mappings not in logs/compat_log.txt: {ids(missed)}")
+
+
+def paths():
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state")
+    return os.path.join(home, ".local", "share", "Steam"), os.path.join(base, ME)
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, OverflowError):
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+def sweep(state):
+    try:
+        names = os.listdir(state)
+    except OSError:
+        return
+    for name in names:
+        if not name.endswith(".tmp"):
+            continue
+        pid = name.removesuffix(".tmp").rpartition(".")[2]
+        if pid.isdigit() and 0 < int(pid) != os.getpid() and alive(int(pid)):
+            continue
+        try:
+            os.unlink(os.path.join(state, name))
+        except FileNotFoundError:
+            continue
+        except OSError as e:
+            log(f"{state}/{name} not removed: {e.strerror}")
+            continue
+        log(f"{state}/{name} removed, its writer is gone")
+
+
+def refresh(root, state):
+    deadline = time.monotonic() + REFRESH_BUDGET
+    path = f"{root}/appcache/appinfo.vdf"
+    sweep(state)
+    for _ in range(REFRESH_PASSES):
+        before = stat_of(path)
+        result, entries = compute(root, state, deadline, ms.appinfo.LIMIT, always=True)
+        if stat_of(path) == before:
+            break
+        log("appcache/appinfo.vdf changed while it was read")
+    return result, entries
+
+
+def ask_refresh():
+    try:
+        subprocess.Popen(["systemctl", "--user", "start", "--no-block", REFRESH], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError as e:
+        log(f"{REFRESH} not started: {e}")
+        return
+    log(f"systemctl --user start --no-block {REFRESH} started, its exit is not checked")
+
+
+def main():
+    mode = sys.argv[1] if len(sys.argv) == 2 else ""
+    if mode not in ("start", "forward", "refresh"):
+        log(f"usage: {ME} start|forward|refresh")
+        return 2
+    root, state = paths()
+    if mode == "refresh":
+        refresh(root, state)
+        return 0
+    deadline = time.monotonic() + BUDGET
+    result, entries = compute(root, state, deadline, START_LIMIT)
+    value, entries = bound(entries)
+    if mode == "start":
+        compare(root, load(f"{state}/start"), deadline)
+        try:
+            save(f"{state}/start", {"version": 1, "result": result, "entries": [list(e) for e in entries]})
+        except OSError as e:
+            log(f"{state}/start not written: {e}")
+        if result == "failed":
+            ask_refresh()
+    sys.stdout.write(value)
+    sys.stdout.flush()
+    return 0
+
+
+try:
+    rc = main()
+except Exception as e:
+    log(f"error: {type(e).__name__}: {e}")
+    rc = 1
+sys.exit(rc)

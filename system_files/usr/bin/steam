@@ -5,15 +5,60 @@ root=$HOME/.local/share/Steam
 client=$root/steamrtarm64/steam
 [[ -x $client ]] || { echo "steam: $client is missing or not executable" >&2; exit 127; }
 
-running=0
-while read -r p; do
-  [[ $p == "$$" || $(awk '/^PPid:/ {print $2}' "/proc/$p/status" 2>/dev/null) == "$$" ]] || running=1
-done < <(pgrep -u "$UID" -x steam)
-if (( ! running )); then
-  rm -f "$root/.crash" "$root/steam.pid" "$HOME/.steam/steam.pid" \
-    "$root/config/htmlcache/SingletonLock" "$root/config/htmlcache/SingletonCookie" \
-    "$root/config/htmlcache/SingletonSocket"
-fi
+case ${1:-} in
+  -ifrunning | -shutdown) ;;
+  *)
+    lock=${XDG_RUNTIME_DIR:-/run/user/$UID}/microos-steam.lock
+    if ! { exec 9<> "$lock" && flock -w 10 9; } 2> /dev/null; then
+      echo "steam: $lock not taken, going on without it" >&2
+    fi
+
+    running=0
+    while read -r p; do
+      [[ $p == "$$" || $(awk '/^PPid:/ {print $2}' "/proc/$p/status" 2>/dev/null) == "$$" ]] || running=1
+    done < <(pgrep -u "$UID" -x steam)
+    if (( running )); then
+      mode=forward
+    else
+      mode=start
+      rm -f "$root/.crash" "$root/steam.pid" "$HOME/.steam/steam.pid" \
+        "$root/config/htmlcache/SingletonLock" "$root/config/htmlcache/SingletonCookie" \
+        "$root/config/htmlcache/SingletonSocket"
+    fi
+
+    m=$(timeout -k 1 3 /usr/libexec/microos/microos-steam-compat "$mode") || m=""
+    re='^[0-9]+ 250 [A-Za-z0-9_.-]+(,[0-9]+ 250 [A-Za-z0-9_.-]+)*$'
+    if [[ -n $m && ! $m =~ $re ]]; then
+      echo "steam: compat mappings from the helper refused" >&2
+      m=""
+    fi
+    if [[ -n $m && -n ${STEAM_COMPAT_TOOL_MAPPINGS:-} ]]; then
+      declare -A have=()
+      IFS=, read -ra es <<< "$STEAM_COMPAT_TOOL_MAPPINGS"
+      for e in "${es[@]}"; do
+        if [[ $e =~ ^[[:space:]]*([0-9]{1,18}) ]]; then
+          have[$((10#${BASH_REMATCH[1]}))]=1
+        fi
+      done
+      merged=$STEAM_COMPAT_TOOL_MAPPINGS
+      IFS=, read -ra es <<< "$m"
+      for e in "${es[@]}"; do
+        if [[ -z ${have[${e%% *}]:-} ]]; then
+          merged+=,$e
+        fi
+      done
+      m=$merged
+    fi
+    if [[ -n $m ]] && (( $(printf %s "$m" | wc -c) > 131044 )); then
+      echo "steam: compat mappings over the environment string limit, not exported" >&2
+      m=""
+    fi
+    if [[ -n $m ]]; then
+      export STEAM_COMPAT_TOOL_MAPPINGS=$m
+    fi
+    exec 9>&-
+    ;;
+esac
 
 export SteamDeck=1
 export LD_LIBRARY_PATH=$root/steamrtarm64:$root/lib/aarch64-linux-gnu${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
