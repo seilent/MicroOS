@@ -1,0 +1,10 @@
+[Unit]
+Description=Compat mapping list from the Steam app cache
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+TimeoutStartSec=40
+Nice=10
+IOSchedulingClass=idle
+ExecStart=/usr/libexec/microos/microos-steam-compat refresh

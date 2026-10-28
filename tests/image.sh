@@ -678,6 +678,11 @@ XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user
 SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no microos-shm-reap@1000.service || fail "systemd-analyze verify microos-shm-reap@1000.service"
 XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no microos-shm-reap-request.service \
   || fail "systemd-analyze verify --user microos-shm-reap-request.service"
+XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no \
+  /usr/lib/systemd/user/microos-steam-compat-refresh.path /usr/lib/systemd/user/microos-steam-compat-refresh.service \
+  || fail "systemd-analyze verify --user microos-steam-compat-refresh"
+systemctl --global cat gamescope-session-plus@steam.service | grep -qxF Wants=microos-steam-compat-refresh.path \
+  || fail "gamescope-session-plus@steam.service does not want microos-steam-compat-refresh.path"
 [[ -f /usr/lib/systemd/user/microos-steam-seed.service ]] || fail "microos-steam-seed.service missing"
 steampy=/usr/share/microos/python/microos_steam
 for f in __init__ vdf appinfo compat config libraries; do
@@ -686,6 +691,26 @@ for f in __init__ vdf appinfo compat config libraries; do
 done
 python3 -B -c 'import sys; sys.path.insert(0, "/usr/share/microos/python"); import microos_steam as m; assert m.compat.vdf is m.vdf' \
   || fail "microos_steam does not import"
+compat=/usr/libexec/microos/microos-steam-compat
+[[ -f $compat && ! -L $compat && $(stat -c '%a %U %G' "$compat") == '755 root root' ]] || fail "$compat missing, mode or owner"
+python3 -B - "$steampy" <<'PY' || fail "$steampy has no checked hash bytecode for its sources"
+import importlib.util
+import pathlib
+import sys
+
+for src in pathlib.Path(sys.argv[1]).glob("*.py"):
+    head = pathlib.Path(importlib.util.cache_from_source(str(src))).read_bytes()[:16]
+    assert head[:8] == importlib.util.MAGIC_NUMBER + b"\3\0\0\0", src
+    assert head[8:] == importlib.util.source_hash(src.read_bytes()), src
+PY
+grep -qxF '    m=$(timeout -k 1 3 /usr/libexec/microos/microos-steam-compat "$mode") || m=""' /usr/bin/steam \
+  || fail "/usr/bin/steam does not run $compat"
+mkdir -p "$tmp/compat-home"
+[[ -z $(HOME=$tmp/compat-home "$compat" forward 2> "$tmp/compat-err") ]] || fail "$compat prints mappings for an empty home"
+grep -qF 'absent: no appcache/appinfo.vdf' "$tmp/compat-err" || fail "$compat in the image: $(cat "$tmp/compat-err")"
+out=$(HOME=$tmp/compat-home "$compat" refresh 2> "$tmp/compat-err") || fail "$compat refresh exit $?: $(cat "$tmp/compat-err")"
+[[ -z $out ]] || fail "$compat refresh prints on stdout"
+grep -qF 'absent: no appcache/appinfo.vdf' "$tmp/compat-err" || fail "$compat refresh in the image: $(cat "$tmp/compat-err")"
 grep -qxF CPUWeight=100 /usr/lib/systemd/user/game.slice || fail "game.slice lacks CPUWeight=100"
 [[ $(systemctl --global is-enabled game.slice) == enabled ]] || fail "user game.slice is not enabled"
 [[ $(< /usr/lib/systemd/user/app-steam-.scope.d/50-microos-game-slice.conf) == $'[Scope]\nSlice=game.slice' ]] \
