@@ -1,0 +1,351 @@
+#!/usr/bin/python3
+import fcntl
+import os
+import pwd
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+
+ME = "microos-proton-hook"
+SHARE = os.environ.get("MICROOS_SHARE", "/usr/share/microos")
+STUB = f"{SHARE}/proton/user_settings_stub.py"
+MARK = b"MICROOS_PROTON_HOOK"
+ARM = "4185400"
+CAP = 1 << 20
+PASSES = 5
+MOUNT_WAIT = 5.0
+LIB = "microos-proton-hook-lib@{}.path"
+DIR = "microos-proton-hook-dir@{}.path"
+MEDIA = "microos-proton-hook-media.path"
+UNITS = "microos-proton-hook-*.path"
+TEMP = re.compile(r"\.user_settings\.py\.[a-z0-9_]{8}")
+VALID = frozenset(b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ:_.")
+
+
+def log(msg):
+    print(f"{ME}: {msg}", flush=True)
+
+
+def key(path):
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return None
+    return st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size, st.st_ctime_ns, st.st_nlink
+
+
+def look(seen, path, how=key):
+    if path not in seen:
+        seen[path] = how, how(path)
+
+
+def escape(path):
+    p = os.fsencode(re.sub(r"/+", "/", path).strip("/"))
+    if not p:
+        return "-"
+    out = []
+    for i, b in enumerate(p):
+        if b == ord("/"):
+            out.append("-")
+        elif b in VALID and not (i == 0 and b == ord(".")):
+            out.append(chr(b))
+        else:
+            out.append(f"\\x{b:02x}")
+    return "".join(out)
+
+
+def unit(template, path):
+    try:
+        text = os.fsencode(path).decode("utf-8")
+    except UnicodeError:
+        text = None
+    if text is None or any(0xFDD0 <= ord(c) <= 0xFDEF or ord(c) & 0xFFFE == 0xFFFE for c in text):
+        log(f"{path}: name is not UTF-8, not watched")
+        return None
+    name = template.format(escape(path))
+    if len(name) > 255:
+        log(f"{path}: unit name over 255 characters, not watched")
+        return None
+    return name
+
+
+def systemctl(*args):
+    p = subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, timeout=20)
+    if p.returncode != 0:
+        log(f"systemctl {args[0]} failed: {p.stderr.strip()}")
+    return p
+
+
+def same(a, b):
+    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+
+def mounting(lib, media, wait):
+    if not lib.startswith(media + "/"):
+        return
+    mount = os.path.join(media, lib[len(media) + 1:].split("/")[0])
+    slept = False
+    while os.path.isdir(mount) and not os.path.ismount(mount) and not os.path.isdir(f"{lib}/steamapps"):
+        if not wait:
+            wait.append(time.monotonic() + MOUNT_WAIT)
+        if time.monotonic() >= wait[0]:
+            if slept:
+                log(f"{mount}: not mounted after {MOUNT_WAIT:g} s, {lib} left for the next scan")
+            return
+        time.sleep(0.1)
+        slept = True
+
+
+def libraries(ms, root, seen, media, wait):
+    look(seen, f"{root}/steamapps", os.path.isdir)
+    look(seen, f"{root}/steamapps/libraryfolders.vdf")
+    try:
+        paths = ms.libraries.library_paths(root)
+    except (OSError, ms.vdf.Error) as e:
+        log(f"{root}/steamapps/libraryfolders.vdf: {e}, internal library only")
+        paths = [root]
+    out = []
+    for p in paths:
+        r = os.path.realpath(p)
+        if r in out:
+            continue
+        if out:
+            mounting(r, media, wait)
+            look(seen, f"{r}/steamapps", os.path.isdir)
+            if not os.path.isdir(f"{r}/steamapps"):
+                continue
+        out.append(r)
+    return out
+
+
+def arm_tool(ms, d, seen):
+    look(seen, f"{d}/proton")
+    try:
+        if not stat.S_ISREG(os.lstat(f"{d}/proton").st_mode):
+            return False
+        look(seen, f"{d}/toolmanifest.vdf")
+        data, _ = ms.vdf.read(f"{d}/toolmanifest.vdf", 64 << 10)
+        manifest = ms.vdf.get(ms.vdf.loads(data.decode("utf-8", "replace")), "manifest")
+        return ms.vdf.get(manifest, "require_tool_appid") == ARM
+    except FileNotFoundError:
+        return False
+    except (OSError, ms.vdf.Error) as e:
+        log(f"{d}: toolmanifest.vdf not read, {e}")
+        return False
+
+
+def dirs(base):
+    try:
+        names = sorted(os.listdir(base))
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    out = []
+    for n in names:
+        p = f"{base}/{n}"
+        try:
+            if stat.S_ISDIR(os.lstat(p).st_mode):
+                out.append(p)
+        except FileNotFoundError:
+            pass
+    return out
+
+
+def keep(path, st, target):
+    try:
+        os.link(path, target, follow_symlinks=False)
+        return True
+    except FileExistsError:
+        try:
+            return same(os.lstat(target), st)
+        except FileNotFoundError:
+            return False
+
+
+def drop_pyc(d):
+    try:
+        fd = os.open(f"{d}/__pycache__", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        for name in os.listdir(fd):
+            if name.startswith("user_settings.cpython-") and name.endswith(".pyc"):
+                try:
+                    os.unlink(name, dir_fd=fd)
+                    log(f"{d}: removed __pycache__/{name}")
+                except FileNotFoundError:
+                    pass
+    finally:
+        os.close(fd)
+
+
+def install(ms, d, stub, seen):
+    us = f"{d}/user_settings.py"
+    for n in os.listdir(d):
+        if TEMP.fullmatch(n):
+            try:
+                if stat.S_ISREG(os.lstat(f"{d}/{n}").st_mode):
+                    os.unlink(f"{d}/{n}")
+                    log(f"{d}: removed the stale {n}")
+            except FileNotFoundError:
+                pass
+    look(seen, us)
+    try:
+        st = os.lstat(us)
+    except FileNotFoundError:
+        st = None
+    if st is not None:
+        if not stat.S_ISREG(st.st_mode):
+            log(f"{d}: user_settings.py is not a regular file, left as it is")
+            return False
+        try:
+            data, _ = ms.vdf.read(us, CAP)
+        except ms.vdf.Error:
+            data = b""
+        if data == stub:
+            return True
+        if MARK in data:
+            for n in range(1, 1000):
+                target = f"{us}.pre-stub.{n}.bak"
+                try:
+                    if keep(us, st, target):
+                        break
+                except OSError as e:
+                    log(f"{d}: older stub not kept as {os.path.basename(target)}: {e.strerror}, both files left")
+                    return False
+            else:
+                log(f"{d}: no free user_settings.py.pre-stub.<n>.bak name, left as it is")
+                return False
+            what = f"older stub kept as {os.path.basename(target)}"
+        else:
+            try:
+                if not keep(us, st, f"{d}/user_settings_local.py"):
+                    log(f"{d}: user_settings.py is not the stub and user_settings_local.py exists, both left")
+                    return False
+            except OSError as e:
+                log(f"{d}: user_settings.py not linked to user_settings_local.py: {e.strerror}, both left")
+                return False
+            what = "user_settings.py kept as user_settings_local.py"
+    else:
+        what = "stub written"
+    fd, tmp = tempfile.mkstemp(prefix=".user_settings.py.", dir=d)
+    try:
+        try:
+            os.fchmod(fd, 0o644)
+        except OSError:
+            pass
+        view = memoryview(stub)
+        while view:
+            view = view[os.write(fd, view):]
+        os.fsync(fd)
+        mine = os.fstat(fd)
+        os.close(fd)
+        fd = -1
+        try:
+            now = os.lstat(us)
+        except FileNotFoundError:
+            now = None
+        if (now is None) != (st is None) or (now is not None and not same(now, st)):
+            log(f"{d}: user_settings.py changed during the scan, left for the next one")
+            os.unlink(tmp)
+            return False
+        drop_pyc(d)
+        os.rename(tmp, us)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+    now = key(us)
+    if now is None or now[:4] != (mine.st_dev, mine.st_ino, mine.st_mtime_ns, mine.st_size):
+        now = "replaced"
+    seen[us] = key, now
+    try:
+        dfd = os.open(d, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    except OSError:
+        pass
+    log(f"{d}: {what}")
+    return True
+
+
+def units(want):
+    listed = systemctl("list-units", "--all", "--plain", "--no-legend", "--full", UNITS)
+    have = {}
+    for line in listed.stdout.splitlines():
+        f = line.split()
+        if len(f) >= 3:
+            have[f[0]] = f[2]
+    failed = [u for u in have if have[u] == "failed"]
+    if failed:
+        systemctl("reset-failed", *failed)
+    start = [u for u in want if have.get(u) != "active"]
+    if start:
+        systemctl("start", *start)
+    stop = [u for u in have if u not in want and have[u] != "failed"]
+    if stop:
+        systemctl("stop", *stop)
+
+
+def scan(ms, stub, media):
+    root = os.path.realpath(os.path.join(os.environ["HOME"], ".local/share/Steam"))
+    wait = []
+    for _ in range(PASSES):
+        seen = {}
+        want = [MEDIA]
+        tools = []
+        for lib in libraries(ms, root, seen, media, wait):
+            want.append(unit(LIB, lib))
+            look(seen, f"{lib}/steamapps/common")
+            candidates = dirs(f"{lib}/steamapps/common")
+            if lib == root:
+                look(seen, f"{lib}/compatibilitytools.d")
+                hand = dirs(f"{lib}/compatibilitytools.d")
+                want.extend(unit(DIR, d) for d in hand)
+                candidates += hand
+            for d in candidates:
+                if arm_tool(ms, d, seen):
+                    tools.append(d)
+                    want.append(unit(DIR, d))
+        for d in tools:
+            try:
+                install(ms, d, stub, seen)
+            except Exception as e:
+                log(f"{d}: {type(e).__name__}: {e}")
+        units(list(dict.fromkeys(u for u in want if u)))
+        if all(how(p) == k for p, (how, k) in seen.items()):
+            return 0
+    log(f"Steam files still changing after {PASSES} passes, left for the next scan")
+    return 0
+
+
+def main():
+    sys.stdout.reconfigure(errors="backslashreplace")
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, f"{SHARE}/python")
+    import microos_steam as ms
+    stub, _ = ms.vdf.read(STUB, 64 << 10)
+    media = os.environ.get("MICROOS_MEDIA") or f"/run/media/{pwd.getpwuid(os.getuid()).pw_name}"
+    run = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    lock = os.open(f"{run}/{ME}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        return scan(ms, stub, media)
+    finally:
+        os.close(lock)
+
+
+try:
+    rc = main()
+except Exception as e:
+    log(f"error: {type(e).__name__}: {e}")
+    rc = 1
+sys.exit(rc)

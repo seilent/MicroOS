@@ -1,0 +1,11 @@
+[Unit]
+Description=Put the Proton hook stub into the Steam tool dirs
+After=microos-steam-seed.service
+Before=gamescope-session-plus@steam.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+TimeoutStartSec=30s
+ExecStart=/usr/libexec/microos/microos-proton-hook

@@ -726,6 +726,23 @@ for f in hook.py user_settings_stub.py; do
   python3 -B -c 'import sys; compile(open(sys.argv[1], "rb").read(), sys.argv[1], "exec", dont_inherit=True)' "$protonhook/$f" \
     || fail "$protonhook/$f does not compile"
 done
+[[ $(stat -c '%a %U' /usr/libexec/microos/microos-proton-hook) == '755 root' ]] || fail "microos-proton-hook mode"
+for u in microos-proton-hook.service microos-proton-hook-lib@.path microos-proton-hook-dir@.path microos-proton-hook-media.path; do
+  [[ -f /usr/lib/systemd/user/$u ]] || fail "$u missing"
+done
+XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no microos-proton-hook-media.path \
+  'microos-proton-hook-lib@var-home-micro-.local-share-Steam.path' \
+  'microos-proton-hook-dir@var-home-micro-.local-share-Steam-steamapps-common-Proton\x2011.0\x20\x28ARM64\x29.path' \
+  || fail "systemd-analyze verify --user microos-proton-hook path units"
+grep -qx 'Wants=microos-proton-hook.service' /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf \
+  || fail "the Steam session does not pull in microos-proton-hook.service"
+pt="$tmp/proton-home/.local/share/Steam/steamapps/common/Proton 11.0 (ARM64)"
+mkdir -p "$pt"
+printf '#!/bin/sh\n' > "$pt/proton"
+printf '"manifest"\n{\n\t"require_tool_appid"\t\t"4185400"\n}\n' > "$pt/toolmanifest.vdf"
+HOME=$tmp/proton-home XDG_RUNTIME_DIR=$tmp/xdg /usr/libexec/microos/microos-proton-hook > "$tmp/proton-hook.log" 2>&1 \
+  || fail "microos-proton-hook: $(cat "$tmp/proton-hook.log")"
+cmp -s "$pt/user_settings.py" "$protonhook/user_settings_stub.py" || fail "microos-proton-hook did not write the image stub"
 grep -qxF CPUWeight=100 /usr/lib/systemd/user/game.slice || fail "game.slice lacks CPUWeight=100"
 [[ $(systemctl --global is-enabled game.slice) == enabled ]] || fail "user game.slice is not enabled"
 [[ $(< /usr/lib/systemd/user/app-steam-.scope.d/50-microos-game-slice.conf) == $'[Scope]\nSlice=game.slice' ]] \
