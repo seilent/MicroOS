@@ -44,15 +44,20 @@ Projects MicroOS builds, with their authors and license.
 | `microos-android-guestos` Fossilize layer | [ValveSoftware/Fossilize](https://github.com/ValveSoftware/Fossilize) `556da9ff7d` | Hans-Kristian Arntzen and Fossilize contributors | MIT; built in: miniz 2.0.8 (Rich Geldreich, RAD Game Tools and Valve Software, MIT), Khronos Vulkan headers (Apache-2.0, `vulkan_core.h` Apache-2.0 OR MIT) |
 | RapidJSON in the Fossilize layer, Fossilize's `rapidjson` submodule | [Tencent/rapidjson](https://github.com/Tencent/rapidjson) `8f4c021fa2` | THL A29 Limited (Tencent), Milo Yip | MIT |
 | C++ runtime, startup objects and system headers in `microos-android-guestos` | Android NDK r30 (30.0.16248370): `libc++_static`, `libc++abi`, `libunwind` and compiler-rt builtins linked statically, `crtbegin_so.o`, `crtend_so.o`, the sysroot headers | LLVM project contributors; The Android Open Source Project, the University of California and the other authors in the NDK sysroot `NOTICE` | Apache-2.0 WITH LLVM-exception; the sysroot headers per the NDK sysroot `NOTICE` |
+| `lsfg-vk` | [PancakeTAS/lsfg-vk](https://github.com/PancakeTAS/lsfg-vk), built from my fork [seilent/lsfg-vk-arm64](https://github.com/seilent/lsfg-vk-arm64) `bd4b8201e7` | PancakeTAS and lsfg-vk contributors | GPL-3.0-or-later; the code from before `5bedd8d` MIT |
+| `lsfg-vk` ARM64 descriptor fallbacks | [FrankBarretta/lsfg-vk-android](https://github.com/FrankBarretta/lsfg-vk-android) `a9edb2f515`, `48bf76348a`, ported to v2 in [xXJSONDeruloXx/lsfg-vk-arm64](https://github.com/xXJSONDeruloXx/lsfg-vk-arm64) `337788901e` | FrankBarretta, xXJSONDeruloXx | MIT, GPL-3.0-or-later |
+| `lsfg-vk` glibc layer build | xXJSONDeruloXx/lsfg-vk-arm64 `d2498550e7` | xXJSONDeruloXx | GPL-3.0-or-later |
+| toml++ in `lsfg-vk` | [marzer/tomlplusplus](https://github.com/marzer/tomlplusplus) `v3.4.0` | Mark Gillard | MIT |
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
 carries Fedora's packaging patches, five of mine and an OGC patch backported by me (`0003` to `0008`, `0006` from
 OGC), `mangohud` carries ten upstream MangoHud patches, five of them backported by me, and five of mine, `plymouth`
 carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine, `es-de` carries my launch path
-escape patch and `inputplumber` carries three of mine and my polkit rule (`PATCHES.md` in each package); the others
-are built as is. License texts in `packages/gamescope/`, `packages/gamescope-session/`, `packages/es-de/`,
-`packages/hexagonrpc/`, `packages/inputplumber/`, `packages/mangohud/`, `packages/plymouth/` and
-`packages/steamos-manager/`.
+escape patch, `inputplumber` carries three of mine and my polkit rule, and `lsfg-vk` is my fork's `microos-layer`
+branch (`PATCHES.md` in each package); the others are built as is. License texts in `packages/gamescope/`,
+`packages/gamescope-session/`, `packages/es-de/`, `packages/hexagonrpc/`, `packages/inputplumber/`,
+`packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and `packages/steamos-manager/`.
+
 
 ## Kernel
 
