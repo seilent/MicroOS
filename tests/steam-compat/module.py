@@ -507,7 +507,7 @@ def case_libraries(ms, tmp):
 
 
 CASES = [case_text, case_binary, case_read, case_tiers, case_branch, case_states, case_names, case_keep, case_config,
-         case_mappings, case_libraries]
+         case_accounts, case_mappings, case_libraries]
 
 
 def main():
