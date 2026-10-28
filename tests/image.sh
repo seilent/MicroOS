@@ -719,6 +719,13 @@ grep -qx 'Before=display-manager.service' /usr/lib/systemd/system/microos-vk-fea
   || fail "microos-vk-features.service is not before display-manager.service"
 SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no microos-vk-features.service \
   || fail "systemd-analyze verify microos-vk-features.service"
+protonhook=/usr/share/microos/proton
+for f in hook.py user_settings_stub.py; do
+  [[ -f $protonhook/$f && ! -L $protonhook/$f && $(stat -c '%a %U %G' "$protonhook/$f") == '644 root root' ]] \
+    || fail "$protonhook/$f missing, mode or owner"
+  python3 -B -c 'import sys; compile(open(sys.argv[1], "rb").read(), sys.argv[1], "exec", dont_inherit=True)' "$protonhook/$f" \
+    || fail "$protonhook/$f does not compile"
+done
 grep -qxF CPUWeight=100 /usr/lib/systemd/user/game.slice || fail "game.slice lacks CPUWeight=100"
 [[ $(systemctl --global is-enabled game.slice) == enabled ]] || fail "user game.slice is not enabled"
 [[ $(< /usr/lib/systemd/user/app-steam-.scope.d/50-microos-game-slice.conf) == $'[Scope]\nSlice=game.slice' ]] \
