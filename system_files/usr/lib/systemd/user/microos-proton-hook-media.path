@@ -1,0 +1,8 @@
+[Unit]
+Description=Proton hook scan when a card shows under /run/media/%u
+
+[Path]
+PathChanged=/run/media/%u
+Unit=microos-proton-hook.service
+TriggerLimitIntervalSec=2s
+TriggerLimitBurst=200

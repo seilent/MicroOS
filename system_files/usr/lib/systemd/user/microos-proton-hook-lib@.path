@@ -1,0 +1,10 @@
+[Unit]
+Description=Proton hook scan on changes in the Steam library %f
+
+[Path]
+PathChanged=%f/steamapps
+PathChanged=%f/steamapps/common
+PathChanged=%f/compatibilitytools.d
+Unit=microos-proton-hook.service
+TriggerLimitIntervalSec=2s
+TriggerLimitBurst=200
