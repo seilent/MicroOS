@@ -8,7 +8,7 @@ dropin=$tree/usr/lib/systemd/user/gamescope-session-plus@.service.d/10-microos-t
 tmp=$(mktemp -d)
 ticker=""
 holder=""
-trap '[[ -z $ticker ]] || kill "$ticker" 2> /dev/null; [[ -z $holder ]] || kill "$holder" 2> /dev/null; rm -rf "$tmp"' EXIT
+trap '[[ -z $ticker ]] || { : > "$tmp/stop"; wait "$ticker" 2> /dev/null || true; }; [[ -z $holder ]] || kill "$holder" 2> /dev/null; rm -rf "$tmp"' EXIT
 rc=0
 fail() { echo "FAIL: $*" >&2; rc=1; }
 
@@ -21,7 +21,7 @@ stubpath=$here/splash-switch:$PATH
 echo 0 > "$tmp/skip"
 tick() { awk -v s="$(< "$tmp/skip")" '{ printf "%.2f\n", $1 + s }' /proc/uptime > "$tmp/clock.new" && mv -f "$tmp/clock.new" "$tmp/clock" 2> /dev/null; }
 tick
-while :; do tick; sleep 0.02; done &
+until [[ -e $tmp/stop ]]; do tick; sleep 0.02; done &
 ticker=$!
 skip() { echo "$1" > "$tmp/skip"; }
 

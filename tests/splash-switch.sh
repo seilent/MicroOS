@@ -7,7 +7,7 @@ script=$tree/usr/libexec/microos/microos-splash-switch
 unit=$tree/usr/lib/systemd/system/microos-splash-switch.service
 tmp=$(mktemp -d)
 ticker=""
-trap '[[ -z $ticker ]] || kill "$ticker" 2> /dev/null; rm -rf "$tmp"' EXIT
+trap '[[ -z $ticker ]] || { : > "$tmp/stop"; wait "$ticker" 2> /dev/null || true; }; rm -rf "$tmp"' EXIT
 rc=0
 fail() { echo "FAIL: $*" >&2; rc=1; }
 
@@ -21,7 +21,7 @@ stubpath=$here/splash-switch:$PATH
 echo 0 > "$tmp/skip"
 tick() { awk -v s="$(< "$tmp/skip")" '{ printf "%.2f\n", $1 + s }' /proc/uptime > "$tmp/clock.new" && mv -f "$tmp/clock.new" "$tmp/clock" 2> /dev/null; }
 tick
-while :; do tick; sleep 0.02; done &
+until [[ -e $tmp/stop ]]; do tick; sleep 0.02; done &
 ticker=$!
 skip() { echo "$1" > "$tmp/skip"; }
 

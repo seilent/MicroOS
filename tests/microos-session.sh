@@ -8,7 +8,7 @@ libexec=$tree/usr/libexec/microos
 units=$tree/usr/lib/systemd
 tmp=$(mktemp -d)
 ticker=""
-trap '[[ -z $ticker ]] || kill "$ticker" 2> /dev/null; rm -rf "$tmp"' EXIT
+trap '[[ -z $ticker ]] || { : > "$tmp/stop"; wait "$ticker" 2> /dev/null || true; }; rm -rf "$tmp"' EXIT
 rc=0
 fail() { echo "FAIL: $*" >&2; rc=1; }
 
@@ -30,7 +30,7 @@ boot=0123456789abcdef0123456789abcdef
 echo 01234567-89ab-cdef-0123-456789abcdef > "$tmp/boot_id"
 tick() { awk '{ printf "%.2f 0\n", $1 + 100000 }' /proc/uptime > "$tmp/uptime.new" && mv -f "$tmp/uptime.new" "$tmp/uptime"; }
 tick
-while :; do tick; sleep 0.05; done &
+until [[ -e $tmp/stop ]]; do tick; sleep 0.05; done &
 ticker=$!
 TRACK=$libexec/microos-session-track
 export MICROOS_SYSFS=$tmp/sys MICROOS_DEV=$tmp/dev
