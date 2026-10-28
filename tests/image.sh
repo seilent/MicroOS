@@ -469,6 +469,10 @@ rpm -q sddm sddm-wayland-generic steam-devices dbus-tools gtk2 openal-soft sdl2-
 [[ $(rpm -q --qf '%{VENDOR}' mangohud) == MicroOS ]] || fail "mangohud is not the MicroOS build"
 command -v mangoapp >/dev/null || fail "mangoapp is not on PATH"
 ! rpm -q mangohud-mangoplot >/dev/null 2>&1 || fail "mangohud-mangoplot is installed"
+[[ $(rpm -q --qf '%{VENDOR}' lsfg-vk) == MicroOS ]] || fail "lsfg-vk is not the MicroOS build"
+[[ -f /usr/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.aarch64.json ]] || fail "lsfg-vk layer manifest missing"
+[[ -f /usr/lib64/liblsfg-vk-layer.so ]] || fail "lsfg-vk layer library missing"
+! rpm -q lsfg-vk-tests >/dev/null 2>&1 || fail "lsfg-vk-tests is installed"
 for p in gamescope gamescope-session gamescope-session-steam; do
   [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
 done

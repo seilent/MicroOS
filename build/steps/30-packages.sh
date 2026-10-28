@@ -12,6 +12,7 @@ own=(
   gamescope-session/gamescope-session-steam
   steamos-manager/steamos-manager
   mangohud/mangohud
+  lsfg-vk/lsfg-vk
   microset/microset
   microset/microset-recovery
   microset/microset-settings
