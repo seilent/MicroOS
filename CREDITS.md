@@ -37,14 +37,18 @@ Projects MicroOS builds, with their authors and license.
 | `plymouth` RPM spec | Fedora [rpms/plymouth](https://src.fedoraproject.org/rpms/plymouth) `1541161014` | Fedora packagers | MIT |
 | `plymouth` Fedora only patches | Fedora rpms/plymouth, `e6f09b0570`, `36f45f9d11` | Adam Williamson, Hans de Goede | GPL-2.0-or-later |
 | `plymouth` CloseFB on retain | SteamOS plymouth `22.02.122-7.7` `0010` | Robert Beckett (Collabora) | GPL-2.0-or-later |
+| `lsfg-vk` | [PancakeTAS/lsfg-vk](https://github.com/PancakeTAS/lsfg-vk), built from my fork [seilent/lsfg-vk-arm64](https://github.com/seilent/lsfg-vk-arm64) `bd4b8201e7` | PancakeTAS and lsfg-vk contributors | GPL-3.0-or-later; the code from before `5bedd8d` MIT |
+| `lsfg-vk` ARM64 descriptor fallbacks | [FrankBarretta/lsfg-vk-android](https://github.com/FrankBarretta/lsfg-vk-android) `a9edb2f515`, `48bf76348a`, ported to v2 in [xXJSONDeruloXx/lsfg-vk-arm64](https://github.com/xXJSONDeruloXx/lsfg-vk-arm64) `337788901e` | FrankBarretta, xXJSONDeruloXx | MIT, GPL-3.0-or-later |
+| `lsfg-vk` glibc layer build | xXJSONDeruloXx/lsfg-vk-arm64 `d2498550e7` | xXJSONDeruloXx | GPL-3.0-or-later |
+| toml++ in `lsfg-vk` | [marzer/tomlplusplus](https://github.com/marzer/tomlplusplus) `v3.4.0` | Mark Gillard | MIT |
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
 carries Fedora's packaging patches, `mangohud` carries ten upstream MangoHud patches, five of them backported by
 me, and five of mine, `plymouth` carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine,
 `es-de` carries my launch path escape patch and `inputplumber` carries three of mine and my polkit rule (`PATCHES.md`
-in each package); the others are built as is. License texts in `packages/gamescope/`, `packages/gamescope-session/`,
-`packages/es-de/`, `packages/hexagonrpc/`, `packages/inputplumber/`, `packages/mangohud/`, `packages/plymouth/` and
-`packages/steamos-manager/`.
+in each package); `lsfg-vk` is my fork's `microos-layer` branch; the others are built as is. License texts in
+`packages/gamescope/`, `packages/gamescope-session/`, `packages/es-de/`, `packages/hexagonrpc/`,
+`packages/inputplumber/`, `packages/mangohud/`, `packages/plymouth/` and `packages/steamos-manager/`.
 
 ## Kernel
 
