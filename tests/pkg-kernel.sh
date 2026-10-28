@@ -31,14 +31,25 @@ builtin=(
   TYPEC TYPEC_TCPM TYPEC_QCOM_PMIC TYPEC_MUX_GPIO_SBU REGULATOR_QCOM_USB_VBUS
   FTRACE TRACING EVENT_TRACING TRACEPOINTS PM_DEBUG PM_SLEEP_DEBUG HIDRAW NTSYNC LRU_GEN_ENABLED
   SECURITY_YAMA HOTPLUG_PCI_PCIE UCLAMP_TASK UCLAMP_TASK_GROUP CGROUP_BPF BPF_SYSCALL
+  ANDROID_BINDER_IPC ANDROID_BINDERFS NETFILTER_NETLINK IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES IPV6_MULTIPLE_TABLES FIB_RULES
 )
 for s in "${builtin[@]}"; do
   grep -qx "CONFIG_$s=y" "$kdir/config" || { echo "pkg-kernel: CONFIG_$s is not built in" >&2; exit 1; }
 done
 
 grep -qE '^CONFIG_LSM="([^"]*,)?yama(,[^"]*)?"$' "$kdir/config" || { echo "pkg-kernel: CONFIG_LSM lacks yama: $(grep '^CONFIG_LSM=' "$kdir/config")" >&2; exit 1; }
+grep -qx 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"' "$kdir/config" || { echo "pkg-kernel: CONFIG_ANDROID_BINDER_DEVICES is not the Kconfig default: $(grep '^CONFIG_ANDROID_BINDER_DEVICES=' "$kdir/config")" >&2; exit 1; }
 
-for m in snd-seq joydev hid-playstation hid-sony hid-nintendo hid-microsoft xpad zram exfat ntfs3; do
+off=(
+  NF_TABLES NF_TABLES_INET NF_NAT NFT_CT NFT_NAT NFT_MASQ NFT_REDIR NFT_REJECT NFT_REJECT_INET NFT_COMPAT NFT_LIMIT NFT_LOG
+  NETFILTER_XT_TARGET_MASQUERADE NETFILTER_XT_MATCH_COMMENT NETFILTER_XT_MATCH_MARK NETFILTER_XT_TARGET_MARK
+  NETFILTER_XT_MATCH_MULTIPORT XFRM_USER NET_KEY
+)
+for s in "${off[@]}"; do
+  ! grep -qE "^CONFIG_$s=[ym]$" "$kdir/config" || { echo "pkg-kernel: CONFIG_$s is set" >&2; exit 1; }
+done
+
+for m in snd-seq joydev hid-playstation hid-sony hid-nintendo hid-microsoft xpad zram exfat ntfs3 nfnetlink_log; do
   find "$kdir" -name "$m.ko*" | grep -q . || { echo "pkg-kernel: module $m missing" >&2; exit 1; }
 done
 
