@@ -71,8 +71,10 @@ class Home:
         self.helper = helper
         self.stub = os.path.join(self.dir, "stub")
         self.asks = os.path.join(self.dir, "systemctl.log")
+        self.vk = os.path.join(self.dir, "vk-features")
         os.makedirs(self.root)
         fx.write(f"{self.stub}/systemctl", f"#!/bin/sh\necho \"$*\" >> '{self.asks}'\n", 0o755)
+        fx.write(self.vk, "storageBuffer8BitAccess=0\n")
 
     def appinfo(self, games=None, x86_maps=None, arm_maps=None, **kw):
         apps = {891390: fx.x86(x86_maps), 3043620: fx.arm(arm_maps, kw.pop("target", True))}
@@ -83,7 +85,7 @@ class Home:
         fx.write(f"{self.root}/config/config.vdf", fx.config_vdf(entries, extra))
 
     def spawn(self, mode="start", env=None):
-        e = {"HOME": self.home, "PATH": f"{self.stub}:/usr/bin:/bin"}
+        e = {"HOME": self.home, "PATH": f"{self.stub}:/usr/bin:/bin", "MICROOS_VK_FEATURES": self.vk}
         e.update(env or {})
         self.t0 = time.monotonic()
         return subprocess.Popen([self.helper] + ([mode] if mode else []), env=e, stdout=subprocess.PIPE,
@@ -557,9 +559,45 @@ def case_bound():
     h.clean()
 
 
-CASES = [case_computed, case_forward_usage, case_default_tool, case_config_failed, case_failed_absent, case_corrupt_app,
-         case_target_and_shadows, case_cache, case_compat_log, case_bound, case_refresh, case_budget, case_refresh_change,
-         case_bad_state, case_detached, case_tmp, case_branch_timeout]
+def case_vk_features():
+    h = Home()
+    h.appinfo(exp_games(190, 191))
+    check(h.run() == value(190, 191) and not h.has("vk-features"), f"vk 0: {h.lines()}")
+    fx.write(h.vk, "storageBuffer8BitAccess=1\n")
+    out = h.run()
+    check(out == "" and h.has(f"storageBuffer8BitAccess=1 in {h.vk}, no mappings"), f"vk 1: {out!r} {h.lines()}")
+    check(h.record("start") == {"version": 1, "result": "not-needed", "entries": []}, f"vk 1 record {h.record('start')}")
+    os.remove(h.vk)
+    out = h.run()
+    check(out == value(190, 191) and h.has(f"{h.vk} missing, mapping"), f"vk missing: {out!r} {h.lines()}")
+    for name, setup in (("garbage", lambda: fx.write(h.vk, "nonsense\n")),
+                        ("value 2", lambda: fx.write(h.vk, "storageBuffer8BitAccess=2\n")),
+                        ("empty", lambda: fx.write(h.vk, "")),
+                        ("binary", lambda: fx.write(h.vk, b"\xff\xfe=\x00")),
+                        ("fifo", lambda: os.mkfifo(h.vk)),
+                        ("dir", lambda: os.mkdir(h.vk))):
+        if os.path.isdir(h.vk):
+            os.rmdir(h.vk)
+        elif os.path.lexists(h.vk):
+            os.remove(h.vk)
+        setup()
+        out = h.run()
+        check(out == value(190, 191) and h.has(f"{h.vk} unreadable") and h.took < 5, f"vk {name}: {out!r} {h.lines()}")
+    os.rmdir(h.vk)
+    fx.write(h.vk, "storageBuffer8BitAccess=1\n")
+    h.appinfo(exp_games(190, 191, 192))
+    out = h.run("refresh")
+    check(out == "" and h.rc == 0 and h.has("computed: 3 titles kept for a later start")
+          and h.record("last")["titles"] == [190, 191, 192], f"vk 1 refresh: {out!r} rc {h.rc} {h.lines()}")
+    fx.write(h.vk, "storageBuffer8BitAccess=0\n")
+    out = h.run()
+    check(out == value(190, 191, 192) and h.has("cached"), f"start after a vk 1 refresh: {out!r} {h.lines()}")
+    h.clean()
+
+
+CASES = [case_vk_features, case_computed, case_forward_usage, case_default_tool, case_config_failed, case_failed_absent,
+         case_corrupt_app, case_target_and_shadows, case_cache, case_compat_log, case_bound, case_refresh, case_budget,
+         case_refresh_change, case_bad_state, case_detached, case_tmp, case_branch_timeout]
 
 
 def main():

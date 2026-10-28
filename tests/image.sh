@@ -711,6 +711,14 @@ grep -qF 'absent: no appcache/appinfo.vdf' "$tmp/compat-err" || fail "$compat in
 out=$(HOME=$tmp/compat-home "$compat" refresh 2> "$tmp/compat-err") || fail "$compat refresh exit $?: $(cat "$tmp/compat-err")"
 [[ -z $out ]] || fail "$compat refresh prints on stdout"
 grep -qF 'absent: no appcache/appinfo.vdf' "$tmp/compat-err" || fail "$compat refresh in the image: $(cat "$tmp/compat-err")"
+vkf=/usr/libexec/microos/microos-vk-features
+[[ -f $vkf && ! -L $vkf && $(stat -c '%a %U %G' "$vkf") == '755 root root' ]] || fail "$vkf missing, mode or owner"
+command -v vulkaninfo > /dev/null || fail "vulkaninfo is not on PATH"
+[[ $(systemctl is-enabled microos-vk-features.service) == enabled ]] || fail "microos-vk-features.service is not enabled"
+grep -qx 'Before=display-manager.service' /usr/lib/systemd/system/microos-vk-features.service \
+  || fail "microos-vk-features.service is not before display-manager.service"
+SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no microos-vk-features.service \
+  || fail "systemd-analyze verify microos-vk-features.service"
 grep -qxF CPUWeight=100 /usr/lib/systemd/user/game.slice || fail "game.slice lacks CPUWeight=100"
 [[ $(systemctl --global is-enabled game.slice) == enabled ]] || fail "user game.slice is not enabled"
 [[ $(< /usr/lib/systemd/user/app-steam-.scope.d/50-microos-game-slice.conf) == $'[Scope]\nSlice=game.slice' ]] \

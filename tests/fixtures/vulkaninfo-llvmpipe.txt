@@ -1,0 +1,137 @@
+==========
+VULKANINFO
+==========
+
+Vulkan Instance Version: 1.4.341
+
+
+Instance Extensions: count = 26
+===============================
+	VK_EXT_acquire_drm_display             : extension revision 1
+	VK_EXT_acquire_xlib_display            : extension revision 1
+	VK_EXT_debug_report                    : extension revision 10
+	VK_EXT_debug_utils                     : extension revision 2
+	VK_EXT_direct_mode_display             : extension revision 1
+	VK_EXT_display_surface_counter         : extension revision 1
+	VK_EXT_headless_surface                : extension revision 1
+	VK_EXT_layer_settings                  : extension revision 2
+	VK_EXT_surface_maintenance1            : extension revision 1
+	VK_EXT_swapchain_colorspace            : extension revision 5
+	VK_KHR_device_group_creation           : extension revision 1
+	VK_KHR_display                         : extension revision 23
+	VK_KHR_external_fence_capabilities     : extension revision 1
+	VK_KHR_external_memory_capabilities    : extension revision 1
+	VK_KHR_external_semaphore_capabilities : extension revision 1
+	VK_KHR_get_display_properties2         : extension revision 1
+	VK_KHR_get_physical_device_properties2 : extension revision 2
+	VK_KHR_get_surface_capabilities2       : extension revision 1
+	VK_KHR_portability_enumeration         : extension revision 1
+	VK_KHR_surface                         : extension revision 25
+	VK_KHR_surface_maintenance1            : extension revision 1
+	VK_KHR_surface_protected_capabilities  : extension revision 1
+	VK_KHR_wayland_surface                 : extension revision 6
+	VK_KHR_xcb_surface                     : extension revision 6
+	VK_KHR_xlib_surface                    : extension revision 6
+	VK_LUNARG_direct_driver_loading        : extension revision 1
+
+Layers: count = 2
+=================
+VK_LAYER_MESA_anti_lag (Open-source implementation of the VK_AMD_anti_lag extension.) Vulkan version 1.4.303, layer version 1:
+	Layer Extensions: count = 0
+	Devices: count = 1
+		GPU id = 0 (llvmpipe (LLVM 22.1.8, 256 bits))
+		Layer-Device Extensions: count = 1
+			VK_AMD_anti_lag : extension revision 1
+
+VK_LAYER_MESA_device_select (Linux device selection layer) Vulkan version 1.4.303, layer version 1:
+	Layer Extensions: count = 1
+		VK_EXT_layer_settings : extension revision 2
+	Devices: count = 1
+		GPU id = 0 (llvmpipe (LLVM 22.1.8, 256 bits))
+		Layer-Device Extensions: count = 0
+
+Device Properties and Extensions:
+=================================
+GPU0:
+VkPhysicalDeviceProperties:
+---------------------------
+	apiVersion        = 1.4.354 (4211042)
+	driverVersion     = 26.2.5 (109060101)
+	vendorID          = 0x10005
+	deviceID          = 0x0000
+	deviceType        = PHYSICAL_DEVICE_TYPE_CPU
+	deviceName        = llvmpipe (LLVM 22.1.8, 256 bits)
+	pipelineCacheUUID = 32362e32-2e35-6161-6161-616161616161
+
+
+VkPhysicalDeviceVulkan11Features:
+---------------------------------
+	storageBuffer16BitAccess           = true
+	uniformAndStorageBuffer16BitAccess = true
+	storagePushConstant16              = true
+	storageInputOutput16               = false
+	multiview                          = true
+	multiviewGeometryShader            = true
+	multiviewTessellationShader        = true
+	variablePointersStorageBuffer      = true
+	variablePointers                   = true
+	protectedMemory                    = false
+	samplerYcbcrConversion             = true
+	shaderDrawParameters               = true
+
+VkPhysicalDeviceVulkan12Features:
+---------------------------------
+	samplerMirrorClampToEdge                           = true
+	drawIndirectCount                                  = true
+	storageBuffer8BitAccess                            = true
+	uniformAndStorageBuffer8BitAccess                  = true
+	storagePushConstant8                               = true
+	shaderBufferInt64Atomics                           = true
+	shaderSharedInt64Atomics                           = true
+	shaderFloat16                                      = true
+	shaderInt8                                         = true
+	descriptorIndexing                                 = true
+	shaderInputAttachmentArrayDynamicIndexing          = true
+	shaderUniformTexelBufferArrayDynamicIndexing       = true
+	shaderStorageTexelBufferArrayDynamicIndexing       = true
+	shaderUniformBufferArrayNonUniformIndexing         = true
+	shaderSampledImageArrayNonUniformIndexing          = true
+	shaderStorageBufferArrayNonUniformIndexing         = true
+	shaderStorageImageArrayNonUniformIndexing          = true
+	shaderInputAttachmentArrayNonUniformIndexing       = true
+	shaderUniformTexelBufferArrayNonUniformIndexing    = true
+	shaderStorageTexelBufferArrayNonUniformIndexing    = true
+	descriptorBindingUniformBufferUpdateAfterBind      = true
+	descriptorBindingSampledImageUpdateAfterBind       = true
+	descriptorBindingStorageImageUpdateAfterBind       = true
+	descriptorBindingStorageBufferUpdateAfterBind      = true
+	descriptorBindingUniformTexelBufferUpdateAfterBind = true
+	descriptorBindingStorageTexelBufferUpdateAfterBind = true
+	descriptorBindingUpdateUnusedWhilePending          = true
+	descriptorBindingPartiallyBound                    = true
+	descriptorBindingVariableDescriptorCount           = true
+	runtimeDescriptorArray                             = true
+	samplerFilterMinmax                                = true
+	scalarBlockLayout                                  = true
+	imagelessFramebuffer                               = true
+	uniformBufferStandardLayout                        = true
+	shaderSubgroupExtendedTypes                        = true
+	separateDepthStencilLayouts                        = true
+	hostQueryReset                                     = true
+	timelineSemaphore                                  = true
+	bufferDeviceAddress                                = true
+	bufferDeviceAddressCaptureReplay                   = false
+	bufferDeviceAddressMultiDevice                     = false
+	vulkanMemoryModel                                  = true
+	vulkanMemoryModelDeviceScope                       = true
+	vulkanMemoryModelAvailabilityVisibilityChains      = true
+	shaderOutputViewportIndex                          = true
+	shaderOutputLayer                                  = true
+	subgroupBroadcastDynamicId                         = true
+
+VkPhysicalDeviceVulkan13Features:
+---------------------------------
+------------------------------------------------------
+	zeroInitializeDeviceMemory = true
+
+
