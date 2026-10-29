@@ -385,7 +385,12 @@ def case_install():
     h.run("detect")
     st = h.st()
     check(st["install"] == "installed" and st["library"] == sd and st["branch"] == "lsfg-vk"
-          and st["branch_ok"] is False, f"installed SD, beta branch: {st}")
+          and st["branch_ok"] is True, f"installed SD, lsfg-vk branch: {st}")
+    for beta, ok in (("public", True), ("beta", False), ("legacy_3.1", False)):
+        h.manifest(sd, beta=beta)
+        h.run("detect")
+        st = h.st()
+        check(st["branch"] == beta and st["branch_ok"] is ok, f"installed SD, {beta} branch: {st}")
     os.remove(f"{sd}/steamapps/common/Lossless Scaling/Lossless.dll")
     h.run("detect")
     check(h.st()["install"] == "installing", f"manifest without DLL: {h.st()}")
@@ -615,8 +620,23 @@ def case_branches():
     shutil.copy2(PROGRAM, program)
     shutil.copytree(os.path.join(tree, "usr/share/microos/python"), os.path.join(base, "usr/share/microos/python"))
     data = os.path.join(base, "usr/share/microos/lsfg/branches.json")
-    with open(os.path.join(tree, "usr/share/microos/lsfg/branches.json")) as f:
-        check(json.load(f) == {"version": 1, "working": ["public"]}, "image branches.json")
+    image = os.path.join(tree, "usr/share/microos/lsfg/branches.json")
+    with open(image) as f:
+        check(json.load(f) == {"version": 1, "working": ["public", "lsfg-vk"]}, "image branches.json")
+    shutil.copy2(image, data)
+    h = Home(program)
+    h.owned()
+    h.start_client()
+    h.run("detect")
+    check(len(h.sends()) == 1 and h.timer() == "start" and h.st()["send"]["result"] == "sent",
+          f"image branches, automatic send: {h.st()} {h.err}")
+    for beta in (None, "public", "lsfg-vk"):
+        h.manifest(beta=beta)
+        h.run("detect")
+        st = h.st()
+        check(st["install"] == "installed" and st["branch_ok"] is True and h.timer() == "stop",
+              f"image branches, {beta} installed: {st}")
+    h.clean()
     h = Home(program)
     h.owned()
     h.start_client()
