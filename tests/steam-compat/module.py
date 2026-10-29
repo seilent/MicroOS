@@ -415,6 +415,39 @@ def case_config(ms, tmp):
     return out
 
 
+def case_accounts(ms, tmp):
+    path = os.path.join(tmp, "loginusers.vdf")
+    base = 76561197960265728
+    out = {}
+    try:
+        out["missing"] = ms.config.accounts(path)
+    except FileNotFoundError:
+        out["missing"] = "missing"
+    for name, users in (("recent", {1: {"MostRecent": "1", "Timestamp": "1"}, 2: {"Timestamp": "9"}}),
+                        ("two recent", {2: {"MostRecent": "1", "Timestamp": "1"}, 1: {"MostRecent": "1", "Timestamp": "9"}}),
+                        ("only", {3: {"timestamp": "1"}}), ("only bare", {3: {}}),
+                        ("newest", {1: {"Timestamp": "5"}, 2: {"TIMESTAMP": "6"}, 3: {}}),
+                        ("tie", {1: {"Timestamp": "6"}, 2: {"Timestamp": "6"}}), ("none", {})):
+        fx.write(path, fx.kv_text({"users": {str(base + a): u for a, u in users.items()}}))
+        out[name] = ms.config.accounts(path)
+    fx.write(path, fx.kv_text({"users": {"7656119": {"MostRecent": "1"}, str(base): {"MostRecent": "1"},
+                                         str(base + (1 << 32)): {"MostRecent": "1"}, str(base + 4): {}}}))
+    out["keys"] = ms.config.accounts(path)
+    text = fx.kv_text({"users": {str(base + 1): {"MostRecent": "1"}}})
+    for name, make in (("large", lambda: (fx.write(path, text), os.truncate(path, ms.config.LOGIN_LIMIT + 1))),
+                       ("cut", lambda: fx.write(path, text[: len(text) // 2])),
+                       ("fifo", lambda: (os.remove(path), os.mkfifo(path)))):
+        make()
+        try:
+            out[name] = ms.config.accounts(path)
+        except ms.vdf.Error:
+            out[name] = "error"
+    check(out == {"missing": "missing", "recent": ([1, 2], 1), "two recent": ([2, 1], 2), "only": ([3], 3),
+                  "only bare": ([3], 3), "newest": ([1, 2, 3], 2), "tie": ([1, 2], None), "none": ([], None),
+                  "keys": ([4], 4), "large": "error", "cut": "error", "fifo": "error"}, f"accounts {out}")
+    return out
+
+
 def case_mappings(ms, tmp):
     found = titles(ms, tmp, apps_base({50: fx.game(50, deck="proton-experimental"),
                                        51: fx.game(51, deck="proton-experimental")}))
@@ -571,8 +604,8 @@ def case_packageinfo(ms, tmp):
     return out
 
 
-CASES = [case_text, case_binary, case_read, case_tiers, case_branch, case_states, case_keep, case_config, case_mappings,
-         case_libraries, case_licensecache, case_packageinfo]
+CASES = [case_text, case_binary, case_read, case_tiers, case_branch, case_states, case_keep, case_config, case_accounts,
+         case_mappings, case_libraries, case_licensecache, case_packageinfo]
 
 
 def main():
