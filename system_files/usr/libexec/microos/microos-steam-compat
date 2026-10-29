@@ -327,13 +327,12 @@ def busy(home, root):
         except OSError as e:
             return f"{lib}/steamapps/downloading: {e.strerror}"
     try:
-        data, _ = ms.vdf.read(f"{root}/config/loginusers.vdf", 1 << 20)
-        users = ms.vdf.get(ms.vdf.loads(data.decode("utf-8", "replace")), "users")
+        _, account = ms.config.accounts(f"{root}/config/loginusers.vdf")
     except FileNotFoundError:
         return "no config/loginusers.vdf"
     except (OSError, ValueError) as e:
         return f"config/loginusers.vdf: {e}"
-    if not isinstance(users, dict) or not any(ms.vdf.get(u, "MostRecent") == "1" for u in users.values()):
+    if account is None:
         return "no logged in user in config/loginusers.vdf"
     pipe = f"{home}/.steam/steam.pipe"
     try:
