@@ -745,7 +745,8 @@ HOME=$tmp/proton-home XDG_RUNTIME_DIR=$tmp/xdg /usr/libexec/microos/microos-prot
 cmp -s "$pt/user_settings.py" "$protonhook/user_settings_stub.py" || fail "microos-proton-hook did not write the image stub"
 [[ -f $protonhook/profiles.json && ! -L $protonhook/profiles.json && $(stat -c '%a %U %G' "$protonhook/profiles.json") == '644 root root' ]] \
   || fail "$protonhook/profiles.json missing, mode or owner"
-python3 -B -c 'import json, sys; json.load(open(sys.argv[1]))' "$protonhook/profiles.json" || fail "$protonhook/profiles.json is not JSON"
+QT_FORCE_STDERR_LOGGING=1 /usr/libexec/microsetd --check-profiles "$protonhook/profiles.json" > "$tmp/check-profiles.log" 2>&1 \
+  || fail "microsetd --check-profiles $protonhook/profiles.json: $(cat "$tmp/check-profiles.log")"
 grep -qxF CPUWeight=100 /usr/lib/systemd/user/game.slice || fail "game.slice lacks CPUWeight=100"
 [[ $(systemctl --global is-enabled game.slice) == enabled ]] || fail "user game.slice is not enabled"
 [[ $(< /usr/lib/systemd/user/app-steam-.scope.d/50-microos-game-slice.conf) == $'[Scope]\nSlice=game.slice' ]] \
