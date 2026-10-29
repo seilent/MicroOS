@@ -1,6 +1,7 @@
 import os
 import random
 import struct
+import zlib
 
 MAGIC = 0x07564429
 LANGS = ("english", "french", "german", "italian", "spanish", "japanese", "koreana", "schinese", "tchinese", "russian",
@@ -122,14 +123,14 @@ def config_vdf(entries, extra=None):
     return kv_text({"InstallConfigStore": {"Software": {"Valve": {"Steam": steam}}}})
 
 
-def appmanifest(appid, beta=None, user_beta=None):
+def appmanifest(appid, beta=None, user_beta=None, state="4"):
     user = {"language": "english"}
     mounted = {"language": "english"}
     if user_beta is not None:
         user["BetaKey"] = user_beta
     if beta is not None:
         mounted["BetaKey"] = beta
-    return kv_text({"AppState": {"appid": str(appid), "universe": "1", "name": f"Game {appid}", "StateFlags": "4",
+    return kv_text({"AppState": {"appid": str(appid), "universe": "1", "name": f"Game {appid}", "StateFlags": state,
                                  "installdir": f"Game {appid}", "buildid": "1",
                                  "InstalledDepots": {str(appid + 1): {"manifest": "1", "size": "1"}},
                                  "UserConfig": user, "MountedConfig": mounted}})
@@ -212,3 +213,89 @@ def loginusers(users):
     return kv_text({"users": {sid: {"AccountName": "a", "PersonaName": "p", "RememberPassword": "1",
                                     "WantsOfflineMode": "0", "SkipOfflineModeWarning": "0", "AllowAutoLogin": "1",
                                     "MostRecent": most, "Timestamp": "1790000000"} for sid, most in users}})
+
+
+class Ran1:
+    def __init__(self, seed):
+        self.idum = -seed
+        self.iy = 0
+        self.iv = [0] * 32
+
+    def advance(self):
+        k = self.idum // 127773
+        self.idum = 16807 * (self.idum - k * 127773) - 2836 * k
+        if self.idum < 0:
+            self.idum += 2147483647
+
+    def next(self):
+        if self.idum <= 0 or self.iy == 0:
+            self.idum = max(-self.idum, 1)
+            for j in range(39, -1, -1):
+                self.advance()
+                if j < 32:
+                    self.iv[j] = self.idum
+            self.iy = self.iv[0]
+        self.advance()
+        j = self.iy // (1 + 2147483646 // 32)
+        self.iy = self.iv[j]
+        self.iv[j] = self.idum
+        return self.iy
+
+    def byte(self):
+        while True:
+            n = self.next()
+            if n <= 0x7FFFFFFF - (0x80000000 % 95):
+                return 32 + n % 95
+
+
+def varint(n):
+    n &= 0xFFFFFFFFFFFFFFFF
+    out = bytearray()
+    while n >= 0x80:
+        out.append(n & 0x7F | 0x80)
+        n >>= 7
+    return bytes(out + bytes([n]))
+
+
+def license_list(licenses, eresult=1):
+    number = {"package_id": 1, "minute_limit": 4, "minutes_used": 5, "flags": 7, "license_type": 9, "owner_id": 12}
+    body = b"" if eresult is None else varint(1 << 3) + varint(eresult)
+    for lic in licenses:
+        sub = varint(2 << 3 | 5) + struct.pack("<I", 1790000000)
+        for name, value in lic.items():
+            sub += varint(number[name] << 3) + varint(value)
+        sub += varint(8 << 3 | 2) + varint(2) + b"JP"
+        body += varint(2 << 3 | 2) + varint(len(sub)) + sub
+    return body
+
+
+def licensecache(account, body, crc=None):
+    plain = body + struct.pack("<I", zlib.crc32(body) if crc is None else crc)
+    r = Ran1(account)
+    return bytes(c ^ r.byte() for c in plain)
+
+
+def packageinfo(packages, magic=0x06565528):
+    out = bytearray(struct.pack("<II", magic, 1))
+    for package, apps in packages.items():
+        out += struct.pack("<I", package) + b"\3" * 20 + struct.pack("<I", 7000 + package % 1000)
+        if magic == 0x06565528:
+            out += struct.pack("<Q", 0)
+        block = {"packageid": package, "billingtype": 10, "licensetype": 1,
+                 "appids": {str(i): a for i, a in enumerate(apps)}, "depotids": {"0": package + 1},
+                 "extended": {"allowcrossregiontradingandgifting": "false"}}
+        out += kv_inline({str(package): block})
+    return bytes(out + struct.pack("<I", 0xFFFFFFFF))
+
+
+def kv_inline(d):
+    out = bytearray()
+    for k, v in d.items():
+        key = k.encode() + b"\0"
+        if isinstance(v, dict):
+            out += b"\0" + key + kv_inline(v)
+        elif isinstance(v, int):
+            out += b"\2" + key + struct.pack("<i", v)
+        else:
+            out += b"\1" + key + v.encode() + b"\0"
+    return bytes(out) + b"\x08"
