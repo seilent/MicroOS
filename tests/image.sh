@@ -239,6 +239,8 @@ if sorted(deny) != sorted(want) or not 0 <= user < no < yes:
 PY
 grep -qx 'd /run/microos/hold 0755 root root -' /usr/lib/tmpfiles.d/microos.conf || fail "tmpfiles lacks /run/microos/hold"
 grep -qx 'f /run/microos/hold/.lock 0600 root root -' /usr/lib/tmpfiles.d/microos.conf || fail "tmpfiles lacks the root 0600 hold lock"
+grep -qx 'f /run/microos/hold/.lock-keys 0600 root root -' /usr/lib/tmpfiles.d/microos.conf \
+  || fail "tmpfiles lacks the root 0600 keys hold lock"
 inputro=/usr/lib/udev/rules.d/72-microos-input-ro.rules
 [[ $(stat -c '%a %U %G' "$inputro") == '644 root root' ]] || fail "$inputro missing, mode or owner"
 udevadm verify --resolve-names=never "$inputro" > /dev/null 2>&1 || fail "$inputro does not verify"

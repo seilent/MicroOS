@@ -22,6 +22,7 @@ sysfs=${MICROOS_SYSFS:-/sys}
 devroot=${MICROOS_DEV:-/dev}
 padstate=${MICROOS_PAD_STATE:-}
 pad="AYANEO Controller"
+keys="aya-keys"
 sessions=$root/usr/lib/microos/sessions.d
 namere='^[a-z0-9][a-z0-9-]*$'
 
@@ -49,6 +50,21 @@ pad_node() {
   done
 }
 
+key_node() {
+  local e d real found=()
+  for e in "$sysfs"/class/input/event*; do
+    d=$e/device
+    [[ -f $d/name && $(< "$d/name") == "$keys" ]] || continue
+    [[ $(cat "$d/id/bustype" 2> /dev/null) == 0019 && $(cat "$d/id/vendor" 2> /dev/null) == 0001 &&
+      $(cat "$d/id/product" 2> /dev/null) == 0001 ]] || continue
+    real=$(readlink -f "$e") || continue
+    [[ $real == "$sysfs"/devices/* && $real != "$sysfs"/devices/virtual/* ]] || continue
+    [[ $(readlink -f "$d/device/driver") == "$sysfs"/bus/platform/drivers/gpio-keys ]] || continue
+    found+=("$devroot/input/${e##*/}")
+  done
+  (( ${#found[@]} != 1 )) || echo "${found[0]}"
+}
+
 pad_poll() {
   local interval=$1 n line all
   shift
@@ -57,7 +73,7 @@ pad_poll() {
       all=""
       for n; do
         line=$(cat "$padstate/${n##*/}" 2> /dev/null) || line=""
-        line=" $(grep -oE 'BTN_(START|SELECT|SOUTH)' <<< "$line" | paste -sd' ') "
+        line=" $(grep -oE 'BTN_(START|SELECT|SOUTH)|KEY_PROG4' <<< "$line" | paste -sd' ') "
         if [[ $n == "$1" ]]; then
           all=$line
         else
@@ -83,7 +99,7 @@ for p in sys.argv[3:]:
     if os.fstat(fd).st_rdev != os.makedev(major, minor):
         sys.exit(p + " is not the device in " + sys.argv[2])
     fds.append(fd)
-keys = ((315, "BTN_START"), (314, "BTN_SELECT"), (304, "BTN_SOUTH"))
+keys = ((315, "BTN_START"), (314, "BTN_SELECT"), (304, "BTN_SOUTH"), (203, "KEY_PROG4"))
 while True:
     held = None
     for fd in fds:
