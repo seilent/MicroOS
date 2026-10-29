@@ -49,7 +49,53 @@ mkpad() {
   ln -sfn .. "$base/$e/device"
   ln -sfn "$base/$e" "$MICROOS_SYSFS/class/input/$e"
 }
+mkkeys() {
+  local e=$1 plat base drv=$MICROOS_SYSFS/bus/platform/drivers/${5:-gpio-keys}
+  if [[ $2 == virtual ]]; then
+    plat=$MICROOS_SYSFS/devices/virtual/keys-$e
+  else
+    plat=$MICROOS_SYSFS/devices/platform/keys-$e
+  fi
+  base=$plat/input/in-$e
+  mkdir -p "$base/$e" "$base/id" "$drv" "$MICROOS_SYSFS/class/input"
+  echo "${3:-aya-keys}" > "$base/name"
+  echo 0019 > "$base/id/bustype"
+  echo 0001 > "$base/id/vendor"
+  echo "${4:-0001}" > "$base/id/product"
+  echo 13:64 > "$base/$e/dev"
+  ln -sfn .. "$base/$e/device"
+  ln -sfn ../.. "$base/device"
+  ln -sfn "$drv" "$plat/driver"
+  ln -sfn "$base/$e" "$MICROOS_SYSFS/class/input/$e"
+}
 nopads() { rm -rf "$MICROOS_SYSFS"; mkdir -p "$MICROOS_SYSFS/class/input"; }
+feeder=""
+feed() {
+  local f=$FAKE/keys/$1
+  shift
+  mkfifo "$f.next"
+  mv -f "$f.next" "$f"
+  (
+    while (( $# > 1 )); do
+      exec 3> "$f"
+      echo "$1" >&3
+      shift
+      if (( $# > 1 )); then
+        mkfifo "$f.next"
+      else
+        echo "$1" > "$f.next"
+      fi
+      mv -f "$f.next" "$f"
+      exec 3>&-
+    done
+  ) &
+  feeder=$!
+}
+fed() {
+  kill "$feeder" 2> /dev/null || true
+  wait "$feeder" 2> /dev/null || true
+  rm -f "$FAKE/keys/$1" "$FAKE/keys/$1.next"
+}
 run=$MICROOS_RUNDIR
 state=$MICROOS_STATEDIR
 
@@ -101,6 +147,7 @@ reset() {
     "$FAKE/home/.steam"
   chmod 0755 "$run"
   install -m 0600 /dev/null "$run/hold/.lock"
+  install -m 0600 /dev/null "$run/hold/.lock-keys"
   for s in steam recovery microdap; do
     unit_of "$s" > "$FAKE/desktops/$(desk_of "$s")"
   done
@@ -739,11 +786,9 @@ mkpad event4 real
 echo BTN_START > "$FAKE/keys/event4"
 giveup rollback
 [[ $r == 1 ]] && ! hasre '^bootc' && grep -q "A not held for 1 s" "$tmp/out" || fail "rollback without A held"
-echo BTN_SOUTH > "$FAKE/keys/event4"
-( sleep 0.6; : > "$FAKE/keys/event4" ) &
-rel=$!
+feed event4 BTN_SOUTH BTN_SOUTH BTN_SOUTH BTN_SOUTH ""
 giveup rollback
-wait "$rel"
+fed event4
 [[ $r == 1 ]] && ! hasre '^bootc' || fail "rollback with A released in the window"
 mkpad event6 real
 echo "BTN_SOUTH BTN_START" > "$FAKE/keys/event4"
@@ -791,17 +836,13 @@ hold BTN_START+BTN_SELECT 1 0
 echo BTN_SOUTH > "$FAKE/keys/event4"
 hold BTN_SOUTH 1 3
 [[ $r == 1 ]] || fail "pad-hold with a wait counted a press held from the start: $r"
-: > "$FAKE/keys/event4"
-( sleep 0.4; echo BTN_SOUTH > "$FAKE/keys/event4" ) &
-rel=$!
+feed event4 "" BTN_SOUTH BTN_SOUTH BTN_SOUTH BTN_SOUTH BTN_SOUTH BTN_SOUTH
 hold BTN_SOUTH 1 3
-wait "$rel"
+fed event4
 [[ $r == 0 ]] || fail "pad-hold released first then held: $r $(cat "$tmp/out")"
-: > "$FAKE/keys/event4"
-( sleep 0.4; echo BTN_SOUTH > "$FAKE/keys/event4"; sleep 0.5; : > "$FAKE/keys/event4" ) &
-rel=$!
+feed event4 "" BTN_SOUTH BTN_SOUTH BTN_SOUTH BTN_SOUTH ""
 hold BTN_SOUTH 1 2
-wait "$rel"
+fed event4
 [[ $r == 1 ]] || fail "pad-hold took a short press: $r"
 : > "$FAKE/keys/event4"
 hold BTN_SOUTH 1 1
@@ -838,9 +879,177 @@ hold --yield recovery BTN_SOUTH 1 3
 [[ $r == 1 ]] && grep -q "the recovery session is active" "$tmp/out" || fail "pad-hold --yield in recovery: $r $(cat "$tmp/out")"
 hold --yield 'bad name' BTN_SOUTH 1 0
 [[ $r == 2 ]] || fail "pad-hold --yield with a bad name: $r"
+for a in "KEY_PROG4+BTN_SOUTH 1 0" "BTN_SOUTH+KEY_PROG4 1 0" "KEY_PROG3 1 0" "--held" "--yield" \
+  "--held --yield bad.name BTN_SOUTH 1 0" "--hold BTN_SOUTH 1 0" "--held BTN_SOUTH 1"; do
+  read -r -a argv <<< "$a"
+  hold "${argv[@]}"
+  [[ $r == 2 ]] || fail "pad-hold usage $a: $r"
+done
+nopads
+mkpad event4 real
+echo "BTN_SOUTH KEY_PROG4" > "$FAKE/keys/event4"
+hold KEY_PROG4 1 0
+[[ $r == 1 ]] && grep -q "no aya-keys" "$tmp/out" || fail "pad-hold took KEY_PROG4 from the pad: $r $(cat "$tmp/out")"
+for bad in virtual name ids driver two; do
+  nopads
+  case $bad in
+    virtual) mkkeys event0 virtual ;;
+    name) mkkeys event0 real gpio-keys ;;
+    ids) mkkeys event0 real aya-keys 0002 ;;
+    driver) mkkeys event0 real aya-keys 0001 gpio-keys-polled ;;
+    two) mkkeys event0 real && mkkeys event7 real && echo KEY_PROG4 > "$FAKE/keys/event7" ;;
+  esac
+  echo KEY_PROG4 > "$FAKE/keys/event0"
+  hold KEY_PROG4 1 0
+  [[ $r == 1 ]] && grep -q "no aya-keys" "$tmp/out" || fail "pad-hold took a $bad aya-keys: $r $(cat "$tmp/out")"
+done
+nopads
+mkkeys event0 real
+echo BTN_SOUTH > "$FAKE/keys/event0"
+hold BTN_SOUTH 1 0
+[[ $r == 1 ]] && grep -q "no AYANEO Controller" "$tmp/out" || fail "pad-hold took BTN_SOUTH from aya-keys: $r $(cat "$tmp/out")"
+mkpad event4 real
+mkkeys event1 real gpio-keys
+mkkeys event9 virtual
+echo KEY_PROG4 > "$FAKE/keys/event0"
+: > "$FAKE/keys/event1"
+: > "$FAKE/keys/event4"
+: > "$FAKE/keys/event9"
+hold KEY_PROG4 1 0
+[[ $r == 0 ]] || fail "pad-hold KEY_PROG4 on aya-keys: $r $(cat "$tmp/out")"
+feed event0 "" KEY_PROG4 KEY_PROG4 KEY_PROG4 KEY_PROG4 KEY_PROG4 ""
+hold KEY_PROG4 1 2
+fed event0
+[[ $r == 0 ]] || fail "pad-hold KEY_PROG4 held 5 polls: $r $(cat "$tmp/out")"
+feed event0 "" KEY_PROG4 KEY_PROG4 KEY_PROG4 KEY_PROG4 ""
+hold KEY_PROG4 1 2
+fed event0
+[[ $r == 1 ]] && grep -q "KEY_PROG4 not held for 1 s" "$tmp/out" || fail "pad-hold KEY_PROG4 took a press of 4 polls: $r $(cat "$tmp/out")"
+echo KEY_PROG4 > "$FAKE/keys/event0"
+hold KEY_PROG4 1 2
+[[ $r == 1 ]] || fail "pad-hold KEY_PROG4 counted a press held from the start without --held: $r"
+! grep -q "first sample at" "$tmp/out" || fail "pad-hold logged the first sample without --held: $(cat "$tmp/out")"
+m0=$(mono)
+hold --held KEY_PROG4 1 2
+m1=$(mono)
+[[ $r == 0 ]] || fail "pad-hold --held KEY_PROG4: $r $(cat "$tmp/out")"
+at=$(sed -n 's/^microos-pad-hold: first sample at \([0-9]*\) monotonic$/\1/p' "$tmp/out")
+[[ $(grep -c "first sample at" "$tmp/out") == 1 && -n $at ]] && (( m0 <= at && at <= m1 )) ||
+  fail "pad-hold --held first sample line, monotonic $m0 to $m1: $(cat "$tmp/out")"
+feed event0 KEY_PROG4 KEY_PROG4 KEY_PROG4 KEY_PROG4 KEY_PROG4 ""
+hold --held KEY_PROG4 1 2
+fed event0
+[[ $r == 0 ]] || fail "pad-hold --held KEY_PROG4 held 5 polls from the start: $r $(cat "$tmp/out")"
+feed event0 KEY_PROG4 KEY_PROG4 KEY_PROG4 KEY_PROG4 ""
+hold --held KEY_PROG4 1 2
+fed event0
+[[ $r == 1 ]] || fail "pad-hold --held took a press of 4 polls: $r"
+echo BTN_SOUTH > "$FAKE/keys/event4"
+hold --held BTN_SOUTH 1 2
+[[ $r == 0 ]] || fail "pad-hold --held BTN_SOUTH: $r $(cat "$tmp/out")"
+echo "steam gamescope-session-plus@steam.service 1 0" > "$run/session-current"
+for a in "--yield recovery --held" "--held --yield recovery"; do
+  read -r -a argv <<< "$a"
+  hold "${argv[@]}" BTN_SOUTH 1 2
+  [[ $r == 0 ]] || fail "pad-hold $a outside recovery: $r $(cat "$tmp/out")"
+done
+echo "recovery microos-recovery.service 2 0" > "$run/session-current"
+for a in "--yield recovery --held" "--held --yield recovery"; do
+  read -r -a argv <<< "$a"
+  hold "${argv[@]}" BTN_SOUTH 1 2
+  [[ $r == 1 ]] && grep -q "the recovery session is active" "$tmp/out" || fail "pad-hold $a in recovery: $r $(cat "$tmp/out")"
+done
+echo "steam gamescope-session-plus@steam.service 1 0" > "$run/session-current"
+: > "$FAKE/keys/event0"
+"$libexec/microos-pad-hold" KEY_PROG4 1 2 > /dev/null 2>&1 &
+first=$!
+for _ in $(seq 40); do flock -n "$run/hold/.lock-keys" true || break; sleep 0.05; done
+! flock -n "$run/hold/.lock-keys" true || fail "an RC hold did not take .lock-keys"
+flock -n "$run/hold/.lock" true || fail "an RC hold took .lock"
+hold KEY_PROG4 1 1
+[[ $r == 3 ]] && grep -q "another hold is waiting" "$tmp/out" || fail "an RC hold while another waits: $r $(cat "$tmp/out")"
+wait "$first" || true
+: > "$FAKE/keys/event4"
+"$libexec/microos-pad-hold" BTN_SOUTH 1 2 > /dev/null 2>&1 &
+first=$!
+for _ in $(seq 40); do flock -n "$run/hold/.lock" true || break; sleep 0.05; done
+! flock -n "$run/hold/.lock" true || fail "a pad hold did not take .lock"
+flock -n "$run/hold/.lock-keys" true || fail "a pad hold took .lock-keys"
+wait "$first" || true
+! setpriv --reuid 65534 --regid 65534 --clear-groups sh -c 'exec 7< "$1"' sh "$run/hold/.lock-keys" 2> /dev/null ||
+  fail "another uid opened the keys hold lock"
+for bad in mode link missing owner; do
+  rm -f "$run/hold/.lock-keys"
+  case $bad in
+    mode) install -m 0644 /dev/null "$run/hold/.lock-keys" ;;
+    link) install -m 0600 /dev/null "$tmp/lock-target" && ln -s "$tmp/lock-target" "$run/hold/.lock-keys" ;;
+    owner) install -m 0600 -o 65534 /dev/null "$run/hold/.lock-keys" ;;
+  esac
+  echo KEY_PROG4 > "$FAKE/keys/event0"
+  hold KEY_PROG4 1 0
+  [[ $r == 1 ]] && grep -q "missing or not root 0600" "$tmp/out" || fail "pad-hold with a $bad keys lock: $r $(cat "$tmp/out")"
+done
+rm -f "$run/hold/.lock-keys" "$tmp/lock-target"
+echo BTN_SOUTH > "$FAKE/keys/event4"
+hold BTN_SOUTH 1 0
+[[ $r == 0 ]] || fail "pad-hold BTN_SOUTH without .lock-keys: $r $(cat "$tmp/out")"
+install -m 0600 /dev/null "$run/hold/.lock-keys"
+rm -f "$run/hold/.lock"
+hold KEY_PROG4 1 0
+[[ $r == 0 ]] || fail "pad-hold KEY_PROG4 without .lock: $r $(cat "$tmp/out")"
+install -m 0600 /dev/null "$run/hold/.lock"
+for a in "BTN_SOUTH 1 0" "BTN_SOUTH 1 15" "--yield recovery BTN_SOUTH 1 15"; do
+  read -r -a argv <<< "$a"
+  : > "$FAKE/keys/event0"
+  : > "$FAKE/keys/event4"
+  "$libexec/microos-pad-hold" --held KEY_PROG4 1 10 > "$tmp/other" 2>&1 &
+  other=$!
+  for _ in $(seq 40); do flock -n "$run/hold/.lock-keys" true || break; sleep 0.05; done
+  if [[ ${argv[-1]} == 0 ]]; then
+    echo BTN_SOUTH > "$FAKE/keys/event4"
+  else
+    feed event4 "" BTN_SOUTH BTN_SOUTH BTN_SOUTH BTN_SOUTH BTN_SOUTH BTN_SOUTH
+  fi
+  hold "${argv[@]}"
+  [[ ${argv[-1]} == 0 ]] || fed event4
+  [[ $r == 0 ]] || fail "pad-hold $a while an RC hold waits: $r $(cat "$tmp/out")"
+  kill -0 "$other" 2> /dev/null || fail "the RC hold ended during pad-hold $a: $(cat "$tmp/other")"
+  kill "$other" 2> /dev/null || true
+  wait "$other" 2> /dev/null || true
+  echo KEY_PROG4 > "$FAKE/keys/event0"
+  if [[ ${argv[-1]} == 0 ]]; then
+    echo BTN_SOUTH > "$FAKE/keys/event4"
+  else
+    : > "$FAKE/keys/event4"
+  fi
+  "$libexec/microos-pad-hold" "${argv[@]}" > "$tmp/other" 2>&1 &
+  other=$!
+  for _ in $(seq 40); do flock -n "$run/hold/.lock" true || break; sleep 0.05; done
+  hold --held KEY_PROG4 1 5
+  [[ $r == 0 ]] || fail "an RC hold while pad-hold $a waits: $r $(cat "$tmp/out")"
+  if [[ ${argv[-1]} == 0 ]]; then
+    r=0
+    wait "$other" || r=$?
+    [[ $r == 0 ]] || fail "pad-hold $a beside an RC hold: $r $(cat "$tmp/other")"
+  else
+    kill -0 "$other" 2> /dev/null || fail "pad-hold $a ended during an RC hold: $(cat "$tmp/other")"
+    kill "$other" 2> /dev/null || true
+    wait "$other" 2> /dev/null || true
+  fi
+done
 rm -f "$run/session-current"
 nopads
 unset MICROOS_PAD_STATE
+mkkeys event0 real
+mkdir -p "$MICROOS_DEV/input"
+ln -sfn /dev/null "$MICROOS_DEV/input/event0"
+hold KEY_PROG4 1 0
+[[ $r == 1 ]] && grep -q "is not the device in" "$tmp/out" || fail "pad-hold took a node with another st_rdev: $r $(cat "$tmp/out")"
+printf '%d:%d\n' "0x$(stat -L -c %t /dev/null)" "0x$(stat -L -c %T /dev/null)" > "$MICROOS_SYSFS/class/input/event0/dev"
+hold KEY_PROG4 1 0
+[[ $r == 1 ]] && ! grep -q "is not the device in" "$tmp/out" || fail "pad-hold refused a node with the same st_rdev: $r $(cat "$tmp/out")"
+rm -f "$MICROOS_DEV/input/event0"
+nopads
 
 reset
 cur microdap
@@ -983,7 +1192,8 @@ printf 'root:x:0:0::/root:/bin/bash\nmicro:x:1000:1000::/var/home/micro:/bin/bas
 printf 'root:x:0:\nmicro:x:1000:\n' > "$tr/etc/group"
 cp "$tree/usr/lib/tmpfiles.d/microos.conf" "$tr/usr/lib/tmpfiles.d/"
 systemd-tmpfiles --create --root="$tr" microos.conf 2> "$tmp/out" || fail "systemd-tmpfiles: $(cat "$tmp/out")"
-for e in 'run/microos 755 0 0' 'run/microos/lock 700 0 0' 'run/microos/user 755 1000 1000' 'var/lib/microos/session 755 0 0'; do
+for e in 'run/microos 755 0 0' 'run/microos/lock 700 0 0' 'run/microos/hold/.lock-keys 600 0 0' 'run/microos/user 755 1000 1000' \
+  'var/lib/microos/session 755 0 0'; do
   read -r d m o g <<< "$e"
   [[ $(stat -c '%a %u %g' "$tr/$d" 2> /dev/null) == "$m $o $g" ]] || fail "tmpfiles /$d: $(stat -c '%a %u %g' "$tr/$d" 2>&1)"
 done
