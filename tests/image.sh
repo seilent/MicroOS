@@ -685,7 +685,7 @@ systemctl --global cat gamescope-session-plus@steam.service | grep -qxF Wants=mi
   || fail "gamescope-session-plus@steam.service does not want microos-steam-compat-refresh.path"
 [[ -f /usr/lib/systemd/user/microos-steam-seed.service ]] || fail "microos-steam-seed.service missing"
 steampy=/usr/share/microos/python/microos_steam
-for f in __init__ vdf appinfo compat config libraries; do
+for f in __init__ vdf appinfo compat config libraries licensecache packageinfo; do
   [[ -f $steampy/$f.py && ! -L $steampy/$f.py && $(stat -c '%a %U %G' "$steampy/$f.py") == '644 root root' ]] \
     || fail "$steampy/$f.py missing, mode or owner"
 done

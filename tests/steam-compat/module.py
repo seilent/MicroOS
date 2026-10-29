@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import ast
+import itertools
 import json
 import os
 import shutil
@@ -16,7 +17,7 @@ import fixture as fx
 
 tree = os.environ.get("MICROOS_TREE", os.path.join(here, "..", "..", "system_files"))
 pkg = os.path.join(tree, "usr/share/microos/python/microos_steam")
-FILES = ("appinfo", "compat", "config", "libraries")
+FILES = ("appinfo", "compat", "config", "libraries", "licensecache", "packageinfo")
 failures = []
 
 
@@ -469,8 +470,109 @@ def case_libraries(ms, tmp):
     return out
 
 
+KEYSTREAM = {1: "3f6574285e435f722d77613c304361646d263575205b262e",
+             12345678: "79325e2c4f6c6a42543a5e3d665e434424635c465061372b",
+             2000000000: "205453234a78264f2836354a56716c705a69596f5c643d34"}
+
+
+def outcome(call, v):
+    try:
+        return call()
+    except FileNotFoundError:
+        return "missing"
+    except v.Error as e:
+        return f"error: {e}"
+    except TimeoutError:
+        return "timeout"
+
+
+def case_licensecache(ms, tmp):
+    lc = ms.licensecache
+    out = {}
+    for seed, want in KEYSTREAM.items():
+        got = bytes(itertools.islice(lc.keystream(seed), 24)).hex()
+        r = fx.Ran1(seed)
+        enc = bytes(r.byte() for _ in range(24)).hex()
+        check(got == want and enc == want, f"keystream {seed}: module {got}, fixture {enc}, want {want}")
+        out[str(seed)] = got
+    lics = [{"package_id": 70001, "flags": 512, "license_type": 1, "owner_id": 4242},
+            {"package_id": 70002, "flags": 0x4000, "owner_id": 4343, "minute_limit": 600, "minutes_used": 600},
+            {"package_id": 70003, "minute_limit": -1, "minutes_used": 0x1FFFFFFFF}]
+    body = fx.license_list(lics)
+    path = os.path.join(tmp, "licensecache")
+    fx.write(path, fx.licensecache(4242, body))
+    out["read"] = lc.read(path, 4242)
+    want = (1, [lics[0], lics[1], {"package_id": 70003, "minute_limit": -1, "minutes_used": -1}])
+    check(out["read"] == want, f"licensecache read {out['read']}")
+    cases = {
+        "account": (fx.licensecache(4242, body), 4243),
+        "crc": (fx.licensecache(4242, body, crc=1), 4242),
+        "short": (b"\1\2\3", 4242),
+        "truncated": (fx.licensecache(4242, body[:-3]), 4242),
+        "length": (fx.licensecache(4242, fx.varint(2 << 3 | 2) + fx.varint(200) + b"x"), 4242),
+        "wire": (fx.licensecache(4242, fx.varint(2 << 3 | 3)), 4242),
+        "varint": (fx.licensecache(4242, fx.varint(1 << 3) + b"\xff" * 11), 4242),
+        "field0": (fx.licensecache(4242, fx.varint(0) + fx.varint(1)), 4242),
+        "eresult wire": (fx.licensecache(4242, fx.varint(1 << 3 | 2) + fx.varint(1) + b"\1"), 4242),
+        "license wire": (fx.licensecache(4242, fx.varint(1 << 3) + fx.varint(1) + fx.varint(2 << 3) + fx.varint(5)), 4242),
+    }
+    for number, sub in ((1, fx.varint(1 << 3 | 2) + fx.varint(1) + b"\1"), (7, fx.varint(7 << 3 | 5) + b"\x08\0\0\0"),
+                        (12, fx.varint(12 << 3 | 1) + bytes(8))):
+        body = fx.varint(1 << 3) + fx.varint(1) + fx.varint(2 << 3 | 2) + fx.varint(len(sub)) + sub
+        cases[f"license field {number} wire"] = (fx.licensecache(4242, body), 4242)
+    for name, (data, account) in cases.items():
+        fx.write(path, data)
+        out[name] = outcome(lambda: lc.read(path, account), ms.vdf)
+        check(str(out[name]).startswith("error"), f"licensecache {name}: {out[name]}")
+    fx.write(path, fx.licensecache(4242, fx.license_list(lics, eresult=None)))
+    out["no eresult"] = lc.read(path, 4242)[0]
+    fx.write(path, fx.licensecache(4242, fx.license_list([], eresult=29)))
+    out["eresult"] = lc.read(path, 4242)
+    check(out["no eresult"] == lc.FAIL and out["eresult"] == (29, []), f"licensecache eresult {out}")
+    fx.write(path, fx.licensecache(4242, body))
+    out["deadline"] = outcome(lambda: lc.read(path, 4242, time.monotonic() - 1), ms.vdf)
+    with open(path, "r+b") as f:
+        f.truncate(lc.LIMIT + 1)
+    out["big"] = str(outcome(lambda: lc.read(path, 4242), ms.vdf)).replace(tmp, "T")
+    out["missing"] = outcome(lambda: lc.read(path + "x", 4242), ms.vdf)
+    check(out["deadline"] == "timeout" and str(out["big"]).startswith("error") and out["missing"] == "missing",
+          f"licensecache limits {out}")
+    return out
+
+
+def case_packageinfo(ms, tmp):
+    pi = ms.packageinfo
+    path = os.path.join(tmp, "packageinfo.vdf")
+    packages = {70001: [993090, 5], 70002: [6], 70003: [993090]}
+    out = {}
+    for magic in (0x06565527, 0x06565528):
+        fx.write(path, fx.packageinfo(packages, magic))
+        out[f"{magic:x}"] = sorted(pi.holders(path, 993090))
+        check(out[f"{magic:x}"] == [70001, 70003], f"packageinfo {magic:#x}: {out[f'{magic:x}']}")
+    out["none"] = sorted(pi.holders(path, 7))
+    check(out["none"] == [], f"packageinfo none {out['none']}")
+    good = fx.packageinfo(packages)
+    cases = {"magic": fx.packageinfo(packages, 0x06565529), "short": good[:6], "end": good[:-4],
+             "cut": good[:70], "key": fx.packageinfo({70001: [993090]}).replace(b"70001\0", b"70009\0", 1)}
+    for name, data in cases.items():
+        fx.write(path, data)
+        out[name] = outcome(lambda: pi.holders(path, 993090), ms.vdf)
+        check(str(out[name]).startswith("error"), f"packageinfo {name}: {out[name]}")
+    text = good.replace(b"\x02" + b"0\0" + (993090).to_bytes(4, "little"), b"\x01" + b"0\0" + b"993090\0", 1)
+    fx.write(path, text)
+    out["string"] = sorted(pi.holders(path, 993090))
+    check(out["string"] == [70003], f"packageinfo string appid {out['string']}")
+    fx.write(path, good)
+    out["deadline"] = outcome(lambda: pi.holders(path, 993090, time.monotonic() - 1), ms.vdf)
+    with open(path, "r+b") as f:
+        f.truncate(pi.LIMIT + 1)
+    out["big"] = str(outcome(lambda: pi.holders(path, 993090), ms.vdf)).replace(tmp, "T")
+    check(out["deadline"] == "timeout" and str(out["big"]).startswith("error"), f"packageinfo limits {out}")
+    return out
+
+
 CASES = [case_text, case_binary, case_read, case_tiers, case_branch, case_states, case_keep, case_config, case_mappings,
-         case_libraries]
+         case_libraries, case_licensecache, case_packageinfo]
 
 
 def main():
