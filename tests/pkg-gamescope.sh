@@ -26,7 +26,8 @@ for f in \
   /usr/share/licenses/gamescope/LICENSE \
   /usr/bin/gamescope \
   /usr/bin/gamescopectl \
-  /usr/bin/gamescopereaper; do
+  /usr/bin/gamescopereaper \
+  /usr/bin/gamescopevirtual; do
   if ! grep -qx "$f" <<<"$files"; then fail "missing $f"; fi
 done
 if ! grep -q '^/usr/share/vulkan/implicit_layer.d/VkLayer_FROG_gamescope_wsi\..*\.json$' <<<"$files"; then fail "missing WSI layer manifest"; fi

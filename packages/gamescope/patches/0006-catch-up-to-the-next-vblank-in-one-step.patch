@@ -1,0 +1,34 @@
+From e8187394c019ec03003888e2786426e0d51109e2 Mon Sep 17 00:00:00 2001
+From: Matthew Schwartz <matthew.schwartz@linux.dev>
+Date: Fri, 18 Sep 2026 13:44:48 -0700
+Subject: [PATCH] Catch up to the next vblank in one step
+
+Backport of the one step catch up from OGC 72ad630c (first in 3b3cced7).
+---
+ src/Utils/VBlankSchedule.h | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/src/Utils/VBlankSchedule.h b/src/Utils/VBlankSchedule.h
+index 65c55964..0a866335 100644
+--- a/src/Utils/VBlankSchedule.h
++++ b/src/Utils/VBlankSchedule.h
+@@ -30,8 +30,14 @@ namespace gamescope
+                                   uint64_t ulNow, uint64_t ulTargetFloor )
+     {
+         uint64_t ulTargetPoint = ulLastVBlank + ulInterval - ulOffset;
+-        while ( ulTargetPoint < ulNow || ulTargetPoint + ulOffset <= ulTargetFloor )
+-            ulTargetPoint += ulInterval;
++        uint64_t ulEarliest = ulNow;
++        if ( ulTargetFloor >= ulOffset )
++            ulEarliest = std::max( ulEarliest, ulTargetFloor - ulOffset + 1 );
++        if ( ulTargetPoint < ulEarliest )
++        {
++            const uint64_t ulDelta = ulEarliest - ulTargetPoint;
++            ulTargetPoint += ( ulDelta / ulInterval + ( ulDelta % ulInterval != 0 ) ) * ulInterval;
++        }
+         return ulTargetPoint;
+     }
+ }
+-- 
+2.43.0
+
