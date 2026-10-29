@@ -1,0 +1,72 @@
+--- a/src/steamcompmgr.cpp	2026-10-15 00:39:51.086372595 +0900
++++ b/src/steamcompmgr.cpp	2026-10-15 00:39:51.090045950 +0900
+@@ -8009,6 +8009,24 @@
+ 	return false;
+ }
+ 
++static FILE *s_pFifoDebugLog = nullptr;
++static uint64_t s_ulFifoDebugCheck = 0;
++static FILE *fifo_debug_log()
++{
++	if ( ( s_ulFifoDebugCheck++ & 255 ) == 0 )
++	{
++		bool bOn = access( "/tmp/gs-fifo-debug", F_OK ) == 0;
++		if ( bOn && !s_pFifoDebugLog )
++			s_pFifoDebugLog = fopen( "/tmp/gs-fifo-debug.log", "a" );
++		else if ( !bOn && s_pFifoDebugLog )
++		{
++			fclose( s_pFifoDebugLog );
++			s_pFifoDebugLog = nullptr;
++		}
++	}
++	return s_pFifoDebugLog;
++}
++
+ // TODO: Merge these two functions.
+ void handle_done_commits_xwayland( xwayland_ctx_t *ctx, bool vblank )
+ {
+@@ -8027,6 +8045,9 @@
+ 	fifo_win_seqs.reserve( 32 );
+ 
+ 	uint64_t now = get_time_in_nanos();
++	FILE *pFifoLog = fifo_debug_log();
++	if ( pFifoLog && vblank )
++		fprintf( pFifoLog, "tick %lu %lu %zu\n", now / 1000, next_refresh_time / 1000, ctx->doneCommits.listCommitsDone.size() );
+ 
+ 	// very fast loop yes
+ 	for ( auto& entry : ctx->doneCommits.listCommitsDone )
+@@ -8043,9 +8064,12 @@
+ 
+ 		// Only pace windows the FPS limiter covers.
+ 		const bool entry_vblank = vblank && steamcompmgr_should_vblank_window( entry_win, now );
++		const uint32_t uFifoLogApp = entry_win ? entry_win->appID : 0;
+ 
+ 		if (entry.fifo && (!entry_vblank || fifo_win_seqs.count(entry.winSeq) > 0))
+ 		{
++			if ( pFifoLog )
++				fprintf( pFifoLog, "F %lu %d %d %lu %u %lu %d\n", now / 1000, vblank, entry_vblank, entry.winSeq, uFifoLogApp, entry.commitID, entry.fifo );
+ 			commits_before_their_time.push_back( entry );
+ 			continue;
+ 		}
+@@ -8058,15 +8082,21 @@
+ 
+ 		if ( entry.desiredPresentTime > next_refresh_time )
+ 		{
++			if ( pFifoLog )
++				fprintf( pFifoLog, "T %lu %d %d %lu %u %lu %d\n", now / 1000, vblank, entry_vblank, entry.winSeq, uFifoLogApp, entry.commitID, entry.fifo );
+ 			commits_before_their_time.push_back( entry );
+ 			continue;
+ 		}
+ 
+ 		if ( entry_win && handle_done_commit(entry_win, ctx, entry.commitID, entry.earliestPresentTime, entry.earliestLatchTime) )
+ 		{
++			if ( pFifoLog )
++				fprintf( pFifoLog, "L %lu %d %d %lu %u %lu %d\n", now / 1000, vblank, entry_vblank, entry.winSeq, uFifoLogApp, entry.commitID, entry.fifo );
+ 			if (entry.fifo)
+ 				fifo_win_seqs.insert(entry.winSeq);
+ 		}
++		else if ( pFifoLog )
++			fprintf( pFifoLog, "N %lu %d %d %lu %u %lu %d\n", now / 1000, vblank, entry_vblank, entry.winSeq, uFifoLogApp, entry.commitID, entry.fifo );
+ 	}
+ 
+ 	ctx->doneCommits.listCommitsDone.swap( commits_before_their_time );

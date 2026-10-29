@@ -6,7 +6,7 @@
 
 Name:           gamescope
 Version:        3.16.31
-Release:        1%{?dist}.microos
+Release:        1%{?dist}.gsdebug.microos
 Summary:        Micro-compositor for video games on Wayland
 License:        LicenseRef-Callaway-BSD
 URL:            https://github.com/OpenGamingCollective/gamescope
@@ -22,6 +22,7 @@ Patch:          Use-system-stb-glm.patch
 Patch:          0003-pace-the-non-vrr-fps-limit-on-time.patch
 Patch:          0004-latch-done-commits-in-commit-order.patch
 Patch:          0005-release-the-kms-device-under-the-wlserver-lock.patch
+Patch:          9999-fifo-debug-log.patch
 
 Vendor:         MicroOS
 BuildRequires:  cmake
