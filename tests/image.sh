@@ -791,7 +791,6 @@ HOME=$tmp/lsfg-home "$lsfg" detect > "$tmp/lsfg-out" 2> "$tmp/lsfg-err" || fail 
 [[ ! -s $tmp/lsfg-out ]] || fail "$lsfg detect prints on stdout"
 python3 -c 'import json, sys; s = json.load(open(sys.argv[1])); assert s["owned"] == "unknown" and s["install"] == "none"' \
   "$tmp/lsfg-home/.local/state/microos-lsfg/state.json" || fail "$lsfg detect on an empty home: $(cat "$tmp/lsfg-err")"
->>>>>>> 974643b (lsfg: detect lossless scaling and start its install)
 protonhook=/usr/share/microos/proton
 for f in hook.py user_settings_stub.py; do
   [[ -f $protonhook/$f && ! -L $protonhook/$f && $(stat -c '%a %U %G' "$protonhook/$f") == '644 root root' ]] \

@@ -23,6 +23,10 @@ START = 8 << 20
 CAP = 64 << 20
 REFRESH = "microos-steam-compat-refresh.service"
 ASKED = f"systemctl --user start --no-block {REFRESH} started, its exit is not checked"
+SID = "76561197960265729"
+OTHER_SID = "76561197960265730"
+PM2_USER = {"AccountName": "a", "PersonaName": "p", "RememberPassword": "1", "WantsOfflineMode": "0",
+            "SkipOfflineModeWarning": "0", "AutoLogin": "1", "timestamp": "1790000000"}
 failures = []
 
 
@@ -622,7 +626,7 @@ def case_first():
 
     def ready():
         h.appinfo(exp_games(200, 201))
-        fx.write(f"{h.root}/config/loginusers.vdf", fx.loginusers([("76561190000000001", "1")]))
+        fx.write(f"{h.root}/config/loginusers.vdf", fx.loginusers([(SID, "1")]))
         os.makedirs(f"{h.root}/steamapps/downloading", exist_ok=True)
         if not os.path.exists(pipe):
             os.makedirs(os.path.dirname(pipe), exist_ok=True)
@@ -639,8 +643,10 @@ def case_first():
             ("download", lambda: os.mkdir(f"{h.root}/steamapps/downloading/200"),
              lambda: os.rmdir(f"{h.root}/steamapps/downloading/200"), "a download is in"),
             ("no login", lambda: os.remove(f"{h.root}/config/loginusers.vdf"), ready, "no config/loginusers.vdf"),
-            ("not recent", lambda: fx.write(f"{h.root}/config/loginusers.vdf", fx.loginusers([("76561190000000001", "0")])),
-             ready, "no logged in user"),
+            ("not recent", lambda: fx.write(f"{h.root}/config/loginusers.vdf",
+                                            fx.loginusers([(SID, "0"), (OTHER_SID, "0")])), ready, "no logged in user"),
+            ("no account", lambda: fx.write(f"{h.root}/config/loginusers.vdf", fx.kv_text({"users": {}})), ready,
+             "no logged in user"),
             ("no reader", lambda: os.close(reader), None, "has no reader"),
     ):
         calls()
@@ -740,7 +746,8 @@ def case_first():
               and h.has(f"first session: client {mapped.pid} has STEAM_COMPAT_TOOL_MAPPINGS, no restart")
               and not h.has("restarting"), f"first with a mapped client, {how}: {c} {h.lines()}")
         close(mapped)
-        os.remove(stamp)
+        if os.path.exists(stamp):
+            os.remove(stamp)
     for name, how, listed in (("write only holder", "os.O_WRONLY | os.O_NONBLOCK", True), ("no pipe", None, True),
                               ("reader not in steam.pid", "os.O_RDONLY | os.O_NONBLOCK", False)):
         other = holder(value(200), how, listed)
@@ -750,7 +757,23 @@ def case_first():
         c = calls()
         check(h.rc == 0 and c[-1:] == [shutdown] and os.path.exists(stamp) and not h.has("STEAM_COMPAT_TOOL_MAPPINGS")
               and h.has("first session: restarting Steam once"), f"first with a {name} carrying a value: {c} {h.lines()}")
-        os.remove(stamp)
+        if os.path.exists(stamp):
+            os.remove(stamp)
+    login = f"{h.root}/config/loginusers.vdf"
+    for name, users in (("the PM2's keys", {SID: PM2_USER}),
+                        ("the newest Timestamp", {SID: {"Timestamp": "1790000001"},
+                                                  OTHER_SID: {"Timestamp": "1790000000"}})):
+        fx.write(login, fx.kv_text({"users": users}))
+        other = holder("")
+        calls()
+        h.run("refresh", env)
+        close(other)
+        c = calls()
+        check(h.rc == 0 and c[-1:] == [shutdown] and os.path.exists(stamp) and h.has("first session: restarting Steam once"),
+              f"first restart with {name}, no MostRecent: {c} {h.lines()}")
+        if os.path.exists(stamp):
+            os.remove(stamp)
+    fx.write(login, fx.loginusers([(SID, "1")]))
     empty = holder("")
     calls()
     locked()

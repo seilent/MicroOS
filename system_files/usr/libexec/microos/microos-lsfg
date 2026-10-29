@@ -18,7 +18,6 @@ import microos_steam as ms
 ME = "microos-lsfg"
 APP = 993090
 URL = f"steam://install/{APP}"
-STEAMID = 76561197960265728
 BRANCHES = os.path.join(SHARE, "lsfg", "branches.json")
 DLL = "steamapps/common/Lossless Scaling/Lossless.dll"
 BUDGET = 2.0
@@ -174,22 +173,18 @@ def take_lock(sdir):
 
 def accounts(root, deadline):
     try:
-        data, _ = ms.vdf.read(f"{root}/config/loginusers.vdf", 1 << 20, deadline)
-        users = ms.vdf.get(ms.vdf.loads(data.decode("utf-8", "replace"), deadline), "users")
+        ids, account = ms.config.accounts(f"{root}/config/loginusers.vdf", deadline)
     except FileNotFoundError:
         return [], None, "no config/loginusers.vdf"
     except TimeoutError:
         raise
     except (OSError, ValueError) as e:
         return [], None, f"config/loginusers.vdf: {e}"
-    ids, recent = [], None
-    for sid, user in users.items() if isinstance(users, dict) else ():
-        if not re.fullmatch(r"[0-9]{17}", sid) or not 0 < int(sid) - STEAMID < 1 << 32:
-            continue
-        ids.append(int(sid) - STEAMID)
-        if recent is None and ms.vdf.get(user, "MostRecent") == "1":
-            recent = ids[-1]
-    return ids, recent, None if recent is not None else "no MostRecent account in config/loginusers.vdf"
+    if account is not None:
+        return ids, account, None
+    if not ids:
+        return ids, None, "no account in config/loginusers.vdf"
+    return ids, None, "no MostRecent account and no single newest Timestamp in config/loginusers.vdf"
 
 
 def usable(lic):

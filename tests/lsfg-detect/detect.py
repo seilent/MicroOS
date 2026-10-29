@@ -94,6 +94,9 @@ class Home:
     def login(self, accounts=((ACCOUNT, "1"),)):
         fx.write(f"{self.root}/config/loginusers.vdf", fx.loginusers([(sid(a), most) for a, most in accounts]))
 
+    def users(self, users):
+        fx.write(f"{self.root}/config/loginusers.vdf", fx.kv_text({"users": {sid(a): u for a, u in users.items()}}))
+
     def licenses(self, lics, eresult=1, account=ACCOUNT, data=None):
         body = fx.license_list(lics, eresult)
         fx.write(f"{self.root}/userdata/{account}/config/licensecache",
@@ -299,7 +302,10 @@ def case_login_later():
     check(starts and all(f"microos-lsfg-account@{a}.path" in starts[-1].split() for a in (OTHER, ACCOUNT)),
           f"account path units: {starts}")
     h.login([(ACCOUNT, "0")])
-    check(owned_of(h) == "unknown" and h.has("no MostRecent account"), f"no MostRecent: {h.err}")
+    check(owned_of(h) == "yes", f"the only account, MostRecent 0: {h.st()} {h.err}")
+    h.login([(OTHER, "0"), (ACCOUNT, "0")])
+    check(owned_of(h) == "unknown" and h.has("no MostRecent account and no single newest Timestamp"),
+          f"no MostRecent, same Timestamp: {h.err}")
     h.clean()
     h = Home()
     h.login()
@@ -309,6 +315,37 @@ def case_login_later():
           "account path unit before the licensecache exists")
     h.licenses([lic()])
     check(owned_of(h) == "yes", "licensecache appearing later")
+    h.clean()
+
+
+def case_account():
+    h = Home()
+    h.packages()
+    h.licenses([lic()])
+    h.licenses([lic(package=70002, owner=OTHER)], account=OTHER)
+    pm2 = {"AccountName": "a", "PersonaName": "p", "RememberPassword": "1", "WantsOfflineMode": "0",
+           "SkipOfflineModeWarning": "0", "AutoLogin": "1", "timestamp": "1790000000"}
+    for name, users, want in (
+            ("one account without MostRecent", {ACCOUNT: pm2}, "yes"),
+            ("one account without Timestamp", {ACCOUNT: {"AccountName": "a"}}, "yes"),
+            ("this one newest", {OTHER: {"Timestamp": "1790000000"}, ACCOUNT: {"Timestamp": "1790000001"}}, "yes"),
+            ("the other newest", {OTHER: {"Timestamp": "1790000002"}, ACCOUNT: {"Timestamp": "1790000001"}}, "no"),
+            ("two accounts, one with a Timestamp", {OTHER: {"AccountName": "b"}, ACCOUNT: {"Timestamp": "1"}}, "yes"),
+            ("MostRecent over Timestamp", {OTHER: {"MostRecent": "0", "Timestamp": "1790000009"},
+                                           ACCOUNT: {"MostRecent": "1", "Timestamp": "1790000001"}}, "yes"),
+            ("keys in other case", {OTHER: {"TIMESTAMP": "1790000009"}, ACCOUNT: {"mostrecent": "1", "timestamp": "1"}},
+             "yes"),
+            ("Timestamp in other case", {OTHER: {"TimeStamp": "5"}, ACCOUNT: {"TIMESTAMP": "6"}}, "yes")):
+        h.users(users)
+        check(owned_of(h) == want, f"{name}: {h.st()['owned']} {h.err}")
+    for name, users, line in (
+            ("no accounts", {}, "no account in config/loginusers.vdf"),
+            ("same Timestamp", {OTHER: {"Timestamp": "7"}, ACCOUNT: {"Timestamp": "7"}}, "no single newest Timestamp"),
+            ("no Timestamp", {OTHER: {"Timestamp": "x"}, ACCOUNT: {}}, "no single newest Timestamp")):
+        h.users({ACCOUNT: pm2})
+        check(owned_of(h) == "yes", f"before {name}: {h.st()['owned']} {h.err}")
+        h.users(users)
+        check(owned_of(h) == "unknown" and h.has(line), f"{name}: {h.st()['owned']} {h.err}")
     h.clean()
 
 
@@ -812,9 +849,9 @@ def case_boot_id():
     h.clean()
 
 
-CASES = [case_owned, case_unknown, case_login_later, case_install, case_send, case_handled, case_install_latch,
-         case_steam_fails, case_branches, case_lock, case_bad_state, case_save_fails, case_send_record,
-         case_manual_record, case_budget, case_boot_id]
+CASES = [case_owned, case_unknown, case_login_later, case_account, case_install, case_send, case_handled,
+         case_install_latch, case_steam_fails, case_branches, case_lock, case_bad_state, case_save_fails,
+         case_send_record, case_manual_record, case_budget, case_boot_id]
 
 
 def main():
