@@ -60,6 +60,11 @@ EOF
 cat > "$tmp/bin/steam" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$STUB_DIR/steam.argv"
+d=$XDG_RUNTIME_DIR/gamescope-session-plus
+stat -c '%a %u %n' "$d" "$d/steam.env" > "$STUB_DIR/steam.display" 2>&1
+cat "$d/steam.env" >> "$STUB_DIR/steam.display" 2>&1
+ls -A "$d" >> "$STUB_DIR/steam.display" 2>&1
+echo "${GAMESCOPE_WAYLAND_DISPLAY-unset}" > "$STUB_DIR/steam.wayland"
 echo "${STEAM_DISPLAY_REFRESH_LIMITS:-}" > "$STUB_DIR/steam.limits"
 EOF
 for t in tar steamosctl; do
@@ -73,6 +78,14 @@ session() {
   rm -rf "$tmp/out" "$tmp/home" "$tmp/run"
   mkdir -p "$tmp/out" "$tmp/home" "$tmp/run"
   chmod 700 "$tmp/run"
+  if [[ -n ${stale:-} ]]; then
+    mkdir "$tmp/run/gamescope-session-plus"
+    echo "GAMESCOPE_WAYLAND_DISPLAY=$stale" > "$tmp/run/gamescope-session-plus/steam.env"
+  fi
+  case ${blocked:-} in
+    file) : > "$tmp/run/gamescope-session-plus" ;;
+    directory) mkdir -p "$tmp/run/gamescope-session-plus/steam.env" ;;
+  esac
   printf '%s\0' "$model" > "$tmp/model"
   r=0
   env -i PATH="$tmp/bin:/usr/bin:/bin" HOME="$tmp/home" XDG_RUNTIME_DIR="$tmp/run" GAMESCOPE_BIN="$tmp/bin/gamescope" \
@@ -92,6 +105,24 @@ done
   fail "steam argv: $(cat "$tmp/out/steam.argv" 2> /dev/null)"
 [[ -e $tmp/out/steam.limits && -z $(cat "$tmp/out/steam.limits") ]] || fail "STEAM_DISPLAY_REFRESH_LIMITS set for steam"
 [[ ! -e $tmp/out/tar.log ]] || fail "tar ran: $(cat "$tmp/out/tar.log")"
+want="755 $(id -u) $tmp/run/gamescope-session-plus
+644 $(id -u) $tmp/run/gamescope-session-plus/steam.env
+GAMESCOPE_WAYLAND_DISPLAY=gamescope-9
+steam.env"
+[[ $(cat "$tmp/out/steam.display" 2> /dev/null) == "$want" ]] ||
+  fail "published display while the client runs: $(cat "$tmp/out/steam.display" 2> /dev/null)"
+[[ -d $tmp/run/gamescope-session-plus && -z $(ls -A "$tmp/run/gamescope-session-plus") ]] ||
+  fail "published display left after the client exit: $(ls -A "$tmp/run/gamescope-session-plus" 2>&1)"
+for blocked in file directory; do
+  session "$tmp/gsp" "AYANEO Pocket MICRO 2"
+  [[ $r == 0 && -e $tmp/out/steam.argv && $(cat "$tmp/out/steam.wayland" 2> /dev/null) == gamescope-9 ]] ||
+    fail "publish blocked by a $blocked: exit $r, the client saw '$(cat "$tmp/out/steam.wayland" 2> /dev/null)': $(tail -n 3 "$tmp/log")"
+done
+[[ -d $tmp/run/gamescope-session-plus/steam.env && $(ls -A "$tmp/run/gamescope-session-plus") == steam.env &&
+  -z $(ls -A "$tmp/run/gamescope-session-plus/steam.env") ]] ||
+  fail "publish blocked by a directory: temp file left: $(ls -AR "$tmp/run/gamescope-session-plus")"
+unset blocked
+rm -f "$tmp/t/chimeraos-short-session-tracker"
 
 session "$tmp/gsp" "Some Other Board"
 a=$(args)
@@ -100,8 +131,10 @@ a=$(args)
 
 delay=7 session "$tmp/gsp" "AYANEO Pocket MICRO 2"
 [[ -e $tmp/out/steam.argv ]] || fail "PM2 session gave up on a gamescope that is ready after 7 s: $(tail -n 3 "$tmp/log")"
-delay=7 session "$tmp/gsp" "Some Other Board"
+stale=gamescope-5 delay=7 session "$tmp/gsp" "Some Other Board"
 [[ ! -e $tmp/out/steam.argv ]] || fail "the 5 s default did not apply on another model, the case proves nothing"
+[[ ! -e $tmp/run/gamescope-session-plus/steam.env ]] ||
+  fail "a display from an earlier start left while gamescope never answered: $(cat "$tmp/run/gamescope-session-plus/steam.env")"
 
 printf 'steam failed\n%.0s' 1 2 3 4 5 > "$tmp/t/chimeraos-short-session-tracker"
 session "$tmp/gsp" "AYANEO Pocket MICRO 2"
