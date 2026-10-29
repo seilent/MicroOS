@@ -13,6 +13,7 @@ Source2:        50-microos-inputplumber.rules
 Patch0:         0001-feat-source-add-qualcomm-ssc-imu-source.patch
 Patch1:         0002-fix-dbus-check-polkit-on-the-filteredevents-setter.patch
 Patch2:         0003-fix-manager-adopt-virtual-event-devices-only-from-bluetooth-uhid.patch
+Patch3:         0004-fix-translator-radial-joystick-dead-zone-from-the-source-flat.patch
 Vendor:         MicroOS
 BuildRequires:  cargo
 BuildRequires:  rust
@@ -39,7 +40,11 @@ cargo build --release --offline --frozen
 %ifarch aarch64
 export RUSTFLAGS="${RUSTFLAGS:-} -Ctarget-feature=+fp16,+dotprod,+rcpc"
 %endif
-cargo test --release --offline --frozen --lib -- ssc dbus::polkit_test input::manager::tests
+for f in ssc:23 dbus::polkit_test:2 input::manager::tests:7 input::event::evdev::translator::tests:33; do
+  n=$(cargo test --release --offline --frozen --lib -- --list --format terse "${f%%:*}" | grep -c ': test$' || true)
+  [ "$n" -ge "${f##*:}" ] || { echo "%%check: ${f%%:*} lists $n tests, want ${f##*:}"; exit 1; }
+done
+cargo test --release --offline --frozen --lib -- ssc dbus::polkit_test input::manager::tests input::event::evdev::translator
 
 %install
 install -D -m 755 target/release/inputplumber %{buildroot}%{_bindir}/inputplumber
