@@ -14,6 +14,13 @@ fail() { echo "FAIL: $*" >&2; rc=1; }
   { echo "FAIL: no gamescope-session-plus under $root" >&2; exit 1; }
 [[ -f $tree/etc/gamescope-session-plus/sessions.d/steam ]] || fail "no MicroOS sessions.d/steam under $tree/etc"
 [[ ! -e $tree/etc/first-boot/bootstraplinux_ubuntu12_32.tar.xz ]] || fail "the x86 bootstrap archive is present"
+pv=$(cat "$tree"/usr/lib/systemd/user/gamescope-session-plus@steam.service.d/*.conf \
+  "$tree"/usr/lib/systemd/user/gamescope-session-plus@.service.d/*.conf | grep 'PRESSURE_VESSEL_FILESYSTEMS_RO' || true)
+[[ $pv == 'Environment=PRESSURE_VESSEL_FILESYSTEMS_RO=/run/microset/proton' ]] \
+  || fail "Steam session PRESSURE_VESSEL_FILESYSTEMS_RO lines: $pv"
+[[ $(sed -n '/^\[Service\]/,$p' "$tree/usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf") == \
+  *$'\nEnvironment=PRESSURE_VESSEL_FILESYSTEMS_RO=/run/microset/proton'* ]] \
+  || fail "PRESSURE_VESSEL_FILESYSTEMS_RO is not in the [Service] section of 10-microos.conf"
 
 mkdir -p "$tmp/bin" "$tmp/t" "$tmp/noetc"
 sed -e "s|^DMI_PATH=.*|DMI_PATH=$tmp/none|" -e "s|^DT_PATH=.*|DT_PATH=$tmp/model|" \
