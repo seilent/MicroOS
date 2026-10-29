@@ -132,6 +132,9 @@ if ! dnf -y install \
   google-noto-sans-mono-vf-fonts \
   python3-gobject \
   python3-evdev \
+  gstreamer1 \
+  gstreamer1-plugins-base \
+  gstreamer1-plugins-good \
   upower \
   rsync \
   retroarch \
