@@ -1,0 +1,9 @@
+[Unit]
+Description=USB display link socket for the %i session
+DefaultDependencies=no
+BindsTo=gamescope-session-plus@%i.service
+After=gamescope-session-plus@%i.service
+ConditionPathExists=/usr/bin/gamescopevirtual
+
+[Path]
+PathExists=/run/microos/usb-display/session.sock

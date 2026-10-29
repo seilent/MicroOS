@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+. "${MICROOS_SESSION_BIN:-/usr/bin/microos-session}"
+me=microos-usb-display-arm
+hold=${MICROOS_PAD_HOLD:-/usr/libexec/microos/microos-pad-hold}
+port=$sysfs/class/typec/port0
+partner=$sysfs/class/typec/port0-partner
+udc=$sysfs/class/udc/a600000.usb
+dir=$rundir/usb-display
+lock=$rundir/hold/.lock-keys
+window_us=10000000
+find_us=2000000
+debounce_us=500000
+tick=0.25
+
+p=""
+s=""
+t=""
+trap 'kill $p $s 2> /dev/null; [[ -z $t ]] || rm -f "$t"; exit 0' TERM
+
+not_armed() {
+  [[ -z $p ]] || kill "$p" 2> /dev/null
+  log "not armed: $*"
+  exit 0
+}
+
+device() { [[ $(cat "$port/data_role" 2> /dev/null) == *"[device]"* && -e $udc ]]; }
+
+if [[ ! -f $lock || -L $lock || $(stat -c %u:%a "$lock" 2> /dev/null) != 0:600 ]]; then
+  log "refused: lock file $lock missing or not root 0600"
+  exit 1
+fi
+[[ -d $partner ]] || not_armed "the partner is gone"
+added=$(udevadm info --query=property --property=USEC_INITIALIZED --value "$partner" 2> /dev/null)
+if [[ ! $added =~ ^[0-9]+$ ]]; then
+  [[ -d $partner ]] || not_armed "the partner is gone"
+  log "no USEC_INITIALIZED for $partner"
+  exit 1
+fi
+
+end=$(( $(mono) + find_us ))
+node=$(key_node)
+while [[ -z $node ]] && (( $(mono) <= end )); do
+  sleep 0.1
+  node=$(key_node)
+done
+[[ -n $node ]] || not_armed "no $keys within 2 s"
+
+until device; do
+  (( window_us - ($(mono) - added) >= 2000000 )) || not_armed "no device role with the UDC in the window"
+  sleep "$tick"
+done
+since=$(( $(mono) - added ))
+w=$(( (window_us - since) / 1000000 ))
+(( w >= 2 )) || not_armed "under 2 s left in the window"
+"$hold" --held KEY_PROG4 1 "$w" &
+p=$!
+log "pad-hold started $(( since / 1000 )) ms after the partner add, hold window $w s"
+
+checked=0
+rc=""
+while [[ -z $rc ]]; do
+  sleep "$tick" &
+  s=$!
+  ended=""
+  wait -n -p ended "$p" "$s"
+  r=$?
+  if [[ $ended == "$p" ]]; then
+    rc=$r
+    kill "$s" 2> /dev/null
+  fi
+  s=""
+  device || not_armed "the role or the UDC changed during the hold"
+  if (( ! checked )) && (( $(mono) - added >= debounce_us )); then
+    [[ -d $partner ]] || not_armed "the partner left within 0.5 s"
+    checked=1
+  fi
+done
+p=""
+(( rc == 0 )) || not_armed "no RC hold (microos-pad-hold exit $rc)"
+device || not_armed "the role or the UDC changed during the hold"
+[[ -d $partner ]] || not_armed "the partner left during the hold"
+
+t=$(mktemp "$dir/.armed.XXXXXX") || { log "cannot create a file in $dir"; exit 1; }
+if ! mv -fT "$t" "$dir/armed"; then
+  rm -f "$t"
+  log "cannot write $dir/armed"
+  exit 1
+fi
+if ! systemctl start --no-block --job-mode=fail microos-usb-display-gadget.service; then
+  log "start of microos-usb-display-gadget.service failed"
+  exit 1
+fi
+log "armed"
+exit 0

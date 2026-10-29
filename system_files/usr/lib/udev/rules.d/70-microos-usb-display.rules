@@ -1,0 +1,2 @@
+SUBSYSTEM=="typec", KERNEL=="port0-partner", ACTION!="remove", TAG+="systemd", ENV{SYSTEMD_ALIAS}="/sys/subsystem/typec/devices/port0-partner", ENV{SYSTEMD_WANTS}+="microos-usb-display-arm.service"
+SUBSYSTEM=="udc", KERNEL=="a600000.usb", ACTION!="remove", TAG+="systemd", ENV{SYSTEMD_ALIAS}="/sys/subsystem/udc/devices/a600000.usb"

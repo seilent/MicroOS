@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+printf 'nsenter %s\n' "${*//$MICROOS_USB_DISPLAY_ROOT/}" >> "$STUB_LOG"
+path=${1#--net=}
+[[ -e $path ]] || { echo "nsenter: cannot open $path: No such file or directory" >&2; exit 1; }
+if [[ $2 == ip ]]; then
+  STUB_NS=${path##*/} STUB_QUIET=1 exec ip "${@:3}"
+fi
+exit "${STUB_NSENTER_RC:-0}"

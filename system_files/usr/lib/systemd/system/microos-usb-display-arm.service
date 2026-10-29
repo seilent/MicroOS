@@ -1,0 +1,26 @@
+[Unit]
+Description=USB display arm on a Type-C attach with RC held
+DefaultDependencies=no
+After=sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+BindsTo=sys-subsystem-typec-devices-port0\x2dpartner.device
+After=sys-subsystem-typec-devices-port0\x2dpartner.device
+ConditionPathExists=/var/lib/microos/usb-display/key
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microos/microos-usb-display-arm
+ExecStopPost=/usr/bin/rm -f /run/microos/usb-display/armed
+TimeoutStartSec=20
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+DevicePolicy=closed
+DeviceAllow=char-input r
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ReadWritePaths=/run/microos/usb-display /run/microos/hold
+ProtectHome=yes
+PrivateTmp=yes
+SystemCallArchitectures=native

@@ -1,0 +1,652 @@
+#!/usr/bin/env python3
+import collections
+import math
+import os
+import re
+import select
+import selectors
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+import evdev
+import gi
+
+gi.require_version("Gst", "1.0")
+gi.require_version("GstVideo", "1.0")
+from gi.repository import Gst, GstVideo
+
+FMT_NV12, FMT_JPEG = 1, 2
+TOUCH_DOWN, TOUCH_MOVE, TOUCH_UP, TOUCH_FRAME, TOUCH_CANCEL = range(1, 6)
+DETAILS = {
+    "busy": 1,
+    "invalid_mode": 2,
+    "output_disable_failed": 3,
+    "stream_failed": 4,
+    "revoked": 5,
+    "forced_internal": 6,
+    "wayland_gone": 7,
+    "no_global": 8,
+}
+VERSION = 1
+HEADER = struct.Struct("<2sBBI")
+TOUCH_BODY = struct.Struct("<BBBff")
+START_BODY = struct.Struct("<BHHIHH")
+FRAME_DATA_MAX = 2 << 20
+SL_MAGIC = b"SL"
+START, STOP, READY, SL_FRAME, STOPPED, FAILED, SL_TOUCH = range(1, 8)
+SL_LENGTHS = {START: (13, 13), STOP: (0, 0), READY: (0, 0), SL_FRAME: (1, 1 + FRAME_DATA_MAX), STOPPED: (0, 0),
+              FAILED: (1, 1), SL_TOUCH: (11, 11)}
+TO_SESSION = (START, STOP, SL_TOUCH)
+
+
+class WireError(Exception):
+    pass
+
+
+def sl_pack(kind, payload=b""):
+    low, high = SL_LENGTHS[kind]
+    if not low <= len(payload) <= high:
+        raise WireError(f"bad length {len(payload)} for session type {kind}")
+    return HEADER.pack(SL_MAGIC, VERSION, kind, len(payload)) + payload
+
+
+def sl_unpack_header(data, allowed):
+    magic, version, kind, length = HEADER.unpack(data)
+    if magic != SL_MAGIC or version != VERSION:
+        raise WireError("bad session magic or version")
+    if kind not in allowed:
+        raise WireError(f"unexpected session type {kind}")
+    low, high = SL_LENGTHS[kind]
+    if not low <= length <= high:
+        raise WireError(f"bad length {length} for session type {kind}")
+    return kind, length
+
+
+ME = "microos-usb-display"
+SOCK = "/run/microos/usb-display/session.sock"
+CLIENT = "/usr/bin/gamescopevirtual"
+DISPLAY_VAR = "GAMESCOPE_WAYLAND_DISPLAY"
+WAYLAND = re.compile(r"gamescope-[0-9]+")
+NODE = "gamescope-virtual-output"
+WIDTH, HEIGHT, REFRESH_MHZ, MM_W, MM_H = 1280, 800, 60000, 172, 108
+MODE = f"{WIDTH}x{HEIGHT}@{REFRESH_MHZ // 1000}:{MM_W}x{MM_H}"
+NV12_SIZE = WIDTH * HEIGHT * 3 // 2
+SLOTS = 10
+TRACKING_IDS = 65536
+RETRY_S = 1.0
+WATCHDOG_S = 2.0
+REASON_S = 0.5
+EXIT_S = 2.0
+DRAIN_S = 0.5
+LOG_S = 10.0
+PIPE_CAP = 4096
+NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
+E = evdev.ecodes
+
+
+def log(msg):
+    print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+
+
+def notify(state):
+    addr = os.environ.get("NOTIFY_SOCKET", "")
+    if not addr:
+        return
+    if addr[0] == "@":
+        addr = "\0" + addr[1:]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM | socket.SOCK_CLOEXEC) as s:
+        try:
+            s.sendto(state, addr)
+        except OSError:
+            pass
+
+
+def session_display(name):
+    run_dir = os.environ.get("XDG_RUNTIME_DIR", "")
+    path = os.path.join(run_dir, "gamescope-session-plus", f"{name}.env")
+    display = None
+    try:
+        if not run_dir:
+            raise ValueError("XDG_RUNTIME_DIR is not set")
+        with open(path) as f:
+            for line in f:
+                key, _, value = line.rstrip("\n").partition("=")
+                if key == DISPLAY_VAR:
+                    display = value
+        if display is None or not WAYLAND.fullmatch(display):
+            raise ValueError(f"no {DISPLAY_VAR}=gamescope-<n>")
+        if not stat.S_ISSOCK(os.stat(os.path.join(run_dir, display)).st_mode):
+            raise ValueError(f"{display} is not a socket")
+    except OSError as err:
+        raise Failed(f"no Wayland display in {path}: {err.strerror}", DETAILS["wayland_gone"])
+    except ValueError as err:
+        raise Failed(f"no Wayland display in {path}: {err}", DETAILS["wayland_gone"])
+    return display
+
+
+def exit_detail(code, err):
+    if code == 3:
+        reasons = [line[len("failed:"):].strip() for line in err.splitlines() if line.startswith("failed:")]
+        return DETAILS.get(reasons[-1], 0) if reasons else 0
+    return {1: DETAILS["wayland_gone"], 2: DETAILS["no_global"]}.get(code, 0)
+
+
+def parse_node(line):
+    words = line.split()
+    if len(words) == 3 and words[0] == b"node" and words[1].isdigit() and words[2] == NODE.encode():
+        return int(words[1])
+    return None
+
+
+def touch_point(x, y):
+    if not (math.isfinite(x) and math.isfinite(y)):
+        return None
+    return min(WIDTH - 1, max(0, round(x * (WIDTH - 1)))), min(HEIGHT - 1, max(0, round(y * (HEIGHT - 1))))
+
+
+def nv12_frame(sample):
+    buf = sample.get_buffer()
+    data = buf.extract_dup(0, buf.get_size())
+    layout = GstVideo.buffer_get_video_meta(buf) or GstVideo.VideoInfo.new_from_caps(sample.get_caps())
+    planes = []
+    for stride, offset, rows in zip(layout.stride[:2], layout.offset[:2], (HEIGHT, HEIGHT // 2)):
+        if stride < WIDTH:
+            return None
+        plane = data[offset:offset + stride * rows]
+        if stride != WIDTH:
+            plane = b"".join(plane[r * stride:r * stride + WIDTH] for r in range(rows))
+        planes.append(plane[:WIDTH * rows])
+    out = b"".join(planes)
+    return out if len(out) == NV12_SIZE else None
+
+
+def jpeg_frame(sample):
+    buf = sample.get_buffer()
+    return buf.extract_dup(0, buf.get_size())
+
+
+def source():
+    src = Gst.ElementFactory.make("pipewiresrc")
+    if src is not None:
+        src.set_property("target-object", NODE)
+        src.set_property("stream-properties", Gst.Structure.new_from_string("props,node.dont-fallback=(string)true"))
+    return src
+
+
+def pipeline(fmt):
+    caps = Gst.ElementFactory.make("capsfilter")
+    sink = Gst.ElementFactory.make("appsink")
+    encode = [Gst.ElementFactory.make("queue"), Gst.ElementFactory.make("jpegenc")] if fmt == FMT_JPEG else []
+    chain = [source(), caps, *encode, sink]
+    if None in chain:
+        return None, None
+    caps.set_property("caps", Gst.Caps.from_string(f"video/x-raw,format=NV12,width={WIDTH},height={HEIGHT}"))
+    if encode:
+        Gst.util_set_object_arg(encode[0], "leaky", "downstream")
+        encode[0].set_property("max-size-buffers", 1)
+    for name, value in (("drop", True), ("max-buffers", 1), ("sync", False), ("emit-signals", True)):
+        sink.set_property(name, value)
+    pipe = Gst.Pipeline.new(ME)
+    for element in chain:
+        pipe.add(element)
+    for a, b in zip(chain, chain[1:]):
+        if not a.link(b):
+            return None, None
+    return pipe, sink
+
+
+class Touch:
+    def __init__(self, name):
+        def axis(top, res=0):
+            return evdev.AbsInfo(0, 0, top, 0, 0, res)
+
+        rx, ry = round(WIDTH / MM_W), round(HEIGHT / MM_H)
+        caps = {
+            E.EV_KEY: [E.BTN_TOUCH],
+            E.EV_ABS: [
+                (E.ABS_X, axis(WIDTH - 1, rx)),
+                (E.ABS_Y, axis(HEIGHT - 1, ry)),
+                (E.ABS_MT_SLOT, axis(SLOTS - 1)),
+                (E.ABS_MT_TRACKING_ID, axis(TRACKING_IDS - 1)),
+                (E.ABS_MT_POSITION_X, axis(WIDTH - 1, rx)),
+                (E.ABS_MT_POSITION_Y, axis(HEIGHT - 1, ry)),
+            ],
+        }
+        self.ui = evdev.UInput(caps, name=name, input_props=[E.INPUT_PROP_DIRECT])
+        self.active = {}
+        self.next_id = 0
+        self.touching = False
+
+    def abs(self, code, value):
+        self.ui.write(E.EV_ABS, code, value)
+
+    def handle(self, slot, kind, x, y):
+        if kind == TOUCH_FRAME:
+            self.frame()
+            return
+        if kind == TOUCH_CANCEL:
+            self.cancel()
+            return
+        if not 0 <= slot < SLOTS or (kind != TOUCH_DOWN and slot not in self.active):
+            return
+        if kind == TOUCH_UP:
+            self.abs(E.ABS_MT_SLOT, slot)
+            self.abs(E.ABS_MT_TRACKING_ID, -1)
+            del self.active[slot]
+            return
+        point = touch_point(x, y)
+        if point is None or kind not in (TOUCH_DOWN, TOUCH_MOVE):
+            return
+        self.abs(E.ABS_MT_SLOT, slot)
+        if kind == TOUCH_DOWN:
+            self.active.pop(slot, None)
+            self.abs(E.ABS_MT_TRACKING_ID, self.next_id)
+            self.next_id = (self.next_id + 1) % TRACKING_IDS
+        self.active[slot] = point
+        self.abs(E.ABS_MT_POSITION_X, point[0])
+        self.abs(E.ABS_MT_POSITION_Y, point[1])
+
+    def frame(self):
+        if self.active:
+            x, y = next(iter(self.active.values()))
+            self.abs(E.ABS_X, x)
+            self.abs(E.ABS_Y, y)
+        if self.touching != bool(self.active):
+            self.touching = bool(self.active)
+            self.ui.write(E.EV_KEY, E.BTN_TOUCH, int(self.touching))
+        self.ui.syn()
+
+    def cancel(self):
+        for slot in list(self.active):
+            self.abs(E.ABS_MT_SLOT, slot)
+            self.abs(E.ABS_MT_TRACKING_ID, -1)
+        self.active.clear()
+        self.frame()
+
+    def close(self):
+        try:
+            self.cancel()
+        finally:
+            self.ui.close()
+
+
+def touch_devices():
+    made = []
+    try:
+        for name in ("touch", "pen"):
+            made.append(Touch(f"{ME} {name}"))
+    except (OSError, evdev.UInputError) as err:
+        for t in made:
+            t.ui.close()
+        log(f"no touch input, uinput failed: {err}")
+        return []
+    return made
+
+
+class Failed(Exception):
+    def __init__(self, msg, detail):
+        super().__init__(msg)
+        self.detail = detail
+
+
+class Run:
+    def __init__(self, fmt):
+        self.fmt = fmt
+        self.proc = None
+        self.pipe = None
+        self.bus = None
+        self.touch = []
+        self.stdout = bytearray()
+        self.stderr = bytearray()
+        self.open = {}
+        self.node = None
+        self.ready = False
+
+
+class Part:
+    def __init__(self, name):
+        self.name = name
+        self.sel = selectors.DefaultSelector()
+        self.conn = None
+        self.inbuf = bytearray()
+        self.out = collections.deque()
+        self.retry = 0.0
+        self.run = None
+        self.lock = threading.Lock()
+        self.latest = None
+        self.big_logged = None
+        self.stopping = False
+        self.ping = 0.0
+        self.wake_r, self.wake_w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        self.sel.register(self.wake_r, selectors.EVENT_READ, "wake")
+
+    def wake(self):
+        try:
+            os.write(self.wake_w, b"\0")
+        except BlockingIOError:
+            pass
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM | socket.SOCK_CLOEXEC)
+        try:
+            sock.connect(SOCK)
+        except OSError as err:
+            sock.close()
+            log(f"cannot connect to {SOCK}: {err.strerror}")
+            return False
+        sock.setblocking(False)
+        self.conn = sock
+        self.sel.register(sock, selectors.EVENT_READ, "conn")
+        log(f"connected for the {self.name} session")
+        return True
+
+    def lost(self, why):
+        log(f"link connection lost: {why}")
+        self.teardown()
+        self.sel.unregister(self.conn)
+        self.conn.close()
+        self.conn = None
+        self.inbuf.clear()
+        self.out.clear()
+        self.retry = time.monotonic() + RETRY_S
+
+    def send(self, kind, payload=b""):
+        if self.conn is not None:
+            self.out.append(memoryview(sl_pack(kind, payload)))
+            self.flush()
+
+    def flush(self):
+        while self.out:
+            try:
+                n = self.conn.send(self.out[0])
+            except BlockingIOError:
+                break
+            except OSError as err:
+                self.lost(f"send failed: {err.strerror}")
+                return
+            self.out[0] = self.out[0][n:]
+            if not self.out[0]:
+                self.out.popleft()
+        if not self.out:
+            self.send_frame()
+        if self.conn is not None:
+            self.sel.modify(self.conn, selectors.EVENT_READ | (selectors.EVENT_WRITE if self.out else 0), "conn")
+
+    def send_frame(self):
+        run = self.run
+        if run is None or not run.ready or self.out or self.conn is None:
+            return
+        with self.lock:
+            data, self.latest = self.latest, None
+        if data is not None:
+            self.out.append(memoryview(sl_pack(SL_FRAME, bytes([run.fmt]) + data)))
+            self.flush()
+
+    def receive(self):
+        try:
+            data = self.conn.recv(1 << 16)
+        except BlockingIOError:
+            return
+        except OSError as err:
+            self.lost(f"receive failed: {err.strerror}")
+            return
+        if not data:
+            self.lost("closed by the link")
+            return
+        self.inbuf += data
+        while self.conn is not None and len(self.inbuf) >= HEADER.size:
+            try:
+                kind, length = sl_unpack_header(bytes(self.inbuf[:HEADER.size]), TO_SESSION)
+            except WireError as err:
+                self.lost(str(err))
+                return
+            end = HEADER.size + length
+            if len(self.inbuf) < end:
+                return
+            payload = bytes(self.inbuf[HEADER.size:end])
+            del self.inbuf[:end]
+            try:
+                self.message(kind, payload)
+            except Failed as err:
+                self.fail(err.detail, str(err))
+
+    def message(self, kind, payload):
+        if kind == START:
+            self.start(payload)
+        elif kind == STOP:
+            self.teardown()
+            self.send(STOPPED)
+        elif self.run is not None and self.run.ready:
+            device, slot, k, x, y = TOUCH_BODY.unpack(payload)
+            if device < len(self.run.touch):
+                self.run.touch[device].handle(slot, k, x, y)
+
+    def start(self, payload):
+        fmt, *mode = START_BODY.unpack(payload)
+        if self.run is not None:
+            log("START while a run is active, ignored")
+            return
+        if tuple(mode) != (WIDTH, HEIGHT, REFRESH_MHZ, MM_W, MM_H) or fmt not in (FMT_NV12, FMT_JPEG):
+            log(f"START with format {fmt} and mode {mode} is not the v1 mode")
+            self.send(FAILED, bytes([DETAILS["invalid_mode"]]))
+            self.send(STOPPED)
+            return
+        display = session_display(self.name)
+        run = self.run = Run(fmt)
+        run.pipe, sink = pipeline(fmt)
+        if run.pipe is None:
+            raise Failed("cannot build the pipeline", DETAILS["stream_failed"])
+        convert = nv12_frame if fmt == FMT_NV12 else jpeg_frame
+
+        def sample(appsink):
+            data = convert(appsink.emit("pull-sample"))
+            if data is not None and len(data) > FRAME_DATA_MAX:
+                now = time.monotonic()
+                if self.big_logged is None or now - self.big_logged >= LOG_S:
+                    self.big_logged = now
+                    log(f"dropped a {len(data)} byte frame, over {FRAME_DATA_MAX}")
+                data = None
+            if data is not None:
+                with self.lock:
+                    self.latest = data
+                self.wake()
+            return Gst.FlowReturn.OK
+
+        def bus_message(_bus, msg):
+            if msg.type in (Gst.MessageType.ERROR, Gst.MessageType.EOS):
+                self.wake()
+            return Gst.BusSyncReply.PASS
+
+        sink.connect("new-sample", sample)
+        run.bus = run.pipe.get_bus()
+        run.bus.set_sync_handler(bus_message)
+        try:
+            run.proc = subprocess.Popen([CLIENT, MODE], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, bufsize=0, env={**os.environ, DISPLAY_VAR: display})
+        except OSError as err:
+            raise Failed(f"cannot run {CLIENT}: {err.strerror}", 0)
+        for pipe, buf in ((run.proc.stdout, run.stdout), (run.proc.stderr, run.stderr)):
+            os.set_blocking(pipe.fileno(), False)
+            run.open[pipe.fileno()] = buf
+            self.sel.register(pipe.fileno(), selectors.EVENT_READ, "client")
+        log(f"started {CLIENT} {MODE} on {display}")
+
+    def exited(self, run):
+        try:
+            code = run.proc.wait(REASON_S)
+        except subprocess.TimeoutExpired:
+            return None
+        fd = run.proc.stderr.fileno()
+        if fd in run.open:
+            try:
+                run.stderr += os.read(fd, PIPE_CAP)[:max(0, PIPE_CAP - len(run.stderr))]
+            except BlockingIOError:
+                pass
+        err = run.stderr.decode(errors="replace").strip()
+        return Failed(f"{CLIENT} exited {code}: {err or 'no reason'}", exit_detail(code, err))
+
+    def client(self, fd):
+        run = self.run
+        if run is None or fd not in run.open:
+            return
+        try:
+            chunk = os.read(fd, 65536)
+        except BlockingIOError:
+            return
+        buf = run.open[fd]
+        if not chunk:
+            self.sel.unregister(fd)
+            del run.open[fd]
+            if not run.open:
+                raise self.exited(run) or Failed(f"{CLIENT} closed its pipes", 0)
+            return
+        buf += chunk[:max(0, PIPE_CAP - len(buf))]
+        if fd == run.proc.stdout.fileno() and run.node is None and b"\n" in run.stdout:
+            run.node = parse_node(run.stdout.split(b"\n", 1)[0])
+            if run.node is None:
+                raise Failed(f"unexpected output from {CLIENT}: {bytes(run.stdout[:80])!r}", 0)
+            if run.pipe.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+                raise Failed("the pipeline does not start", DETAILS["stream_failed"])
+            run.touch = touch_devices()
+            run.ready = True
+            self.send(READY)
+            log(f"streaming node {run.node}")
+
+    def woken(self):
+        try:
+            while os.read(self.wake_r, 4096):
+                pass
+        except BlockingIOError:
+            pass
+        run = self.run
+        if run is None:
+            return
+        msg = run.bus.pop_filtered(Gst.MessageType.ERROR | Gst.MessageType.EOS)
+        if msg is not None:
+            what = msg.parse_error()[0].message if msg.type == Gst.MessageType.ERROR else "end of stream"
+            raise self.exited(run) or Failed(f"pipeline: {what}", DETAILS["stream_failed"])
+        self.send_frame()
+
+    def teardown(self):
+        run, self.run = self.run, None
+        if run is None:
+            return
+        if run.proc is not None:
+            try:
+                run.proc.stdin.close()
+            except OSError as err:
+                log(f"closing the stdin of {CLIENT} failed: {err.strerror}")
+        if run.pipe is not None:
+            run.pipe.set_state(Gst.State.NULL)
+        for t in run.touch:
+            try:
+                t.close()
+            except OSError as err:
+                log(f"closing a touch device failed: {err}")
+        with self.lock:
+            self.latest = None
+        if run.proc is not None:
+            for fd in run.open:
+                self.sel.unregister(fd)
+            deadline = time.monotonic() + EXIT_S
+            while run.open and time.monotonic() < deadline:
+                for fd in select.select(list(run.open), [], [], max(0.0, deadline - time.monotonic()))[0]:
+                    try:
+                        chunk = os.read(fd, 65536)
+                    except BlockingIOError:
+                        continue
+                    if chunk:
+                        run.open[fd] += chunk[:max(0, PIPE_CAP - len(run.open[fd]))]
+                    else:
+                        del run.open[fd]
+            try:
+                run.proc.wait(max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                log(f"{CLIENT} did not exit, killing it")
+                run.proc.kill()
+                run.proc.wait()
+            run.proc.stdout.close()
+            run.proc.stderr.close()
+        log("stopped")
+
+    def fail(self, detail, why):
+        log(f"run failed: {why}")
+        self.send(FAILED, bytes([detail]))
+        self.teardown()
+        self.send(STOPPED)
+
+    def dispatch(self, data, fd):
+        if data == "conn":
+            if self.conn is None:
+                return
+            self.flush()
+            if self.conn is not None:
+                self.receive()
+        elif data == "client":
+            self.client(fd)
+        elif data == "wake":
+            self.woken()
+        else:
+            os.read(fd, 64)
+
+    def loop(self):
+        while not self.stopping:
+            now = time.monotonic()
+            if now - self.ping >= WATCHDOG_S:
+                notify(b"WATCHDOG=1")
+                self.ping = now
+            if self.conn is None:
+                if not os.path.exists(SOCK):
+                    log(f"{SOCK} is gone")
+                    return 0
+                if now >= self.retry and not self.connect():
+                    self.retry = now + RETRY_S
+            due = self.ping + WATCHDOG_S
+            if self.conn is None:
+                due = min(due, self.retry)
+            for key, _ in self.sel.select(max(0.0, due - time.monotonic())):
+                try:
+                    self.dispatch(key.data, key.fd)
+                except Failed as err:
+                    self.fail(err.detail, str(err))
+                except Exception as err:
+                    self.fail(DETAILS["stream_failed"], f"{type(err).__name__}: {err}")
+        log("stopping")
+        self.teardown()
+        if self.conn is not None:
+            self.send(STOPPED)
+            self.conn.settimeout(DRAIN_S)
+            try:
+                for chunk in self.out:
+                    self.conn.sendall(chunk)
+            except OSError:
+                pass
+        return 0
+
+
+def main():
+    if len(sys.argv) != 2 or not NAME.fullmatch(sys.argv[1]):
+        print(f"usage: {ME} <session>", file=sys.stderr)
+        return 2
+    Gst.init(None)
+    part = Part(sys.argv[1])
+    sig_r, sig_w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+    signal.set_wakeup_fd(sig_w)
+    part.sel.register(sig_r, selectors.EVENT_READ, "signal")
+
+    def stop(_sig, _frame):
+        part.stopping = True
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    return part.loop()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

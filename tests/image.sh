@@ -357,6 +357,44 @@ for l in CapabilityBoundingSet=CAP_DAC_OVERRIDE DevicePolicy=closed "DeviceAllow
   grep -qxF "$l" "$pu" || fail "microos-powerd.service lacks $l"
 done
 ! grep -q '^PrivateDevices=' "$pu" || fail "microos-powerd.service sets PrivateDevices"
+ut=/usr/lib/tmpfiles.d/microos-usb-display.conf
+grep -qx 'd /run/microos/usb-display 0755 root root -' "$ut" || fail "$ut lacks /run/microos/usb-display"
+grep -qx 'd /var/lib/microos/usb-display 0700 root root -' "$ut" || fail "$ut lacks /var/lib/microos/usb-display"
+au=/usr/lib/systemd/system/microos-usb-display-arm.service
+for l in NoNewPrivileges=yes CapabilityBoundingSet=CAP_DAC_READ_SEARCH DevicePolicy=closed "DeviceAllow=char-input r" \
+  RestrictAddressFamilies=AF_UNIX ProtectSystem=strict "ReadWritePaths=/run/microos/usb-display /run/microos/hold" \
+  ProtectHome=yes PrivateTmp=yes SystemCallArchitectures=native; do
+  grep -qxF "$l" "$au" || fail "microos-usb-display-arm.service lacks $l"
+done
+gu=/usr/lib/systemd/system/microos-usb-display-gadget.service
+for l in NoNewPrivileges=yes "CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SYS_MODULE" \
+  "RestrictAddressFamilies=AF_UNIX AF_NETLINK" SystemCallArchitectures=native; do
+  grep -qxF "$l" "$gu" || fail "microos-usb-display-gadget.service lacks $l"
+done
+gcat=$(systemctl cat microos-usb-display-gadget.service) || fail "systemctl cat microos-usb-display-gadget.service"
+! grep -qE '^(PrivateMounts|PrivateTmp|PrivateDevices|PrivateNetwork|NetworkNamespacePath|PrivateUsers|PrivateIPC|IPCNamespacePath|PrivatePIDs|PrivateBPF|ProtectKernelTunables|ProtectKernelModules|ProtectKernelLogs|ProtectControlGroups|ProtectProc|ProcSubset|ProtectSystem|ProtectHome|ReadWritePaths|ReadOnlyPaths|InaccessiblePaths|ExecPaths|NoExecPaths|TemporaryFileSystem|BindPaths|BindReadOnlyPaths|MountFlags|MountAPIVFS|BindLogSockets|RootDirectory|RootImage|RootEphemeral|MountImages|ExtensionImages|ExtensionDirectories|LogNamespace|DynamicUser)=' <<< "$gcat" \
+  || fail "microos-usb-display-gadget.service or a drop-in sets a file system or network namespace option"
+while read -r rn; do
+  case $rn in
+    no | false | off | 0) ;;
+    "~"*) [[ " ${rn#"~"} " != *" net "* && " ${rn#"~"} " != *" mnt "* ]] || fail "gadget RestrictNamespaces=$rn denies net or mnt" ;;
+    *) [[ " $rn " == *" net "* && " $rn " == *" mnt "* ]] || fail "gadget RestrictNamespaces=$rn lacks net or mnt" ;;
+  esac
+done < <(sed -n 's/^RestrictNamespaces=//p' <<< "$gcat")
+lu=/usr/lib/systemd/system/microos-usb-display-link.service
+for l in DynamicUser=yes LoadCredential=key:/var/lib/microos/usb-display/key NoNewPrivileges=yes CapabilityBoundingSet= \
+  RestrictAddressFamilies=AF_UNIX InaccessiblePaths=/run/dbus ProtectSystem=strict ProtectHome=yes PrivateTmp=yes \
+  PrivateDevices=yes SystemCallArchitectures=native SystemCallFilter=@system-service MemoryMax=256M; do
+  grep -qxF "$l" "$lu" || fail "microos-usb-display-link.service lacks $l"
+done
+! grep -q '^ProtectProc=' "$lu" || fail "microos-usb-display-link.service hides /proc"
+for f in /usr/libexec/microos/microos-usb-display /usr/libexec/microos/microos-usb-display-arm \
+  /usr/libexec/microos/microos-usb-display-gadget /usr/libexec/microos/microos-usb-display-link; do
+  [[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f is not a root 0755 regular file"
+done
+[[ ! -e /usr/lib/systemd/user/microos-usb-display.service ]] || fail "the Steam only usb display unit is still shipped"
+! grep -rqsE --include='*.conf' '^[[:space:]]*rc[[:space:]]+hold([[:space:]]|$)' /usr/lib/microos/hotkeys.d \
+  || fail "a hotkeys.d table or drop-in has an rc hold row"
 uvconf=/usr/lib/microos/gpu-undervolt.conf
 [[ $(stat -c '%a %U %G' "$uvconf") == '644 root root' ]] || fail "$uvconf missing, mode or owner"
 python3 - "$uvconf" /usr/lib/modules/*/dtb/qcom/sm8250-ayaneo-pocket-micro2.dtb <<'PY' || fail "$uvconf rows break the level rules"

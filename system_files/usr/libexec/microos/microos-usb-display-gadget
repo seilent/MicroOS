@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-usb-display-gadget
+root=${MICROOS_USB_DISPLAY_ROOT:-}
+cfg=$root/sys/kernel/config
+gadget=$cfg/usb_gadget/microos-usb-display
+func=$gadget/functions/ncm.usb0
+config=$gadget/configs/c.1
+udc=a600000.usb
+key=$root/var/lib/microos/usb-display/key
+ns=usbdisp
+nspath=$root/run/netns/$ns
+mac=02:53:52:54:00:01
+addr=10.77.0.1/30
+namere='^[A-Za-z0-9_.-]{1,15}$'
+
+log() { printf '%s: %s\n' "$me" "$*" >&2; }
+
+put() { printf '%s\n' "$2" > "$1"; }
+
+udc_present() { [[ -e $root/sys/class/udc/$udc ]]; }
+
+nsip() { nsenter --net="$nspath" ip "$@"; }
+
+by_mac() {
+  "$1" -o link show | awk -v mac="$mac" '$0 ~ "link/ether " mac " " { n = $2; sub(/@.*/, "", n); sub(/:$/, "", n); print $1 + 0, n }'
+}
+
+unbind() {
+  local d links n stray left=0
+  if [[ -n $(cat "$gadget/UDC" 2> /dev/null) ]]; then
+    put "$gadget/UDC" "" 2> /dev/null || log "clearing UDC failed"
+  fi
+  if [[ -L $config/ncm.usb0 ]]; then
+    rm -f -- "$config/ncm.usb0" || log "removing $config/ncm.usb0 failed"
+  fi
+  for d in "$func" "$config/strings/0x409" "$config" "$gadget/strings/0x409" "$gadget"; do
+    if [[ -d $d ]]; then
+      rmdir "$d" || log "removing $d failed"
+    fi
+  done
+  if [[ -d $func ]]; then
+    log "the function ${func##*/} is left, keeping $ns"
+    left=1
+  fi
+  if [[ -e $nspath ]]; then
+    if ! links=$(by_mac nsip); then
+      log "cannot list the netdevs in $ns, keeping it"
+      left=1
+    elif [[ -n $links ]]; then
+      while read -r _ n; do
+        log "netdev $n with $mac is left in $ns, keeping it"
+        nsip link set dev "$n" down || log "setting $n down in $ns failed"
+      done <<< "$links"
+      left=1
+    fi
+  fi
+  if ! stray=$(by_mac ip); then
+    log "cannot list the netdevs in the main netns"
+    left=1
+  elif [[ -n $stray ]]; then
+    while read -r _ n; do
+      log "netdev $n with $mac is in the main netns"
+      ip link set dev "$n" down || log "setting $n down failed"
+    done <<< "$stray"
+    left=1
+  fi
+  (( ! left )) || return 4
+  if [[ -e $nspath ]] && ! ip netns del "$ns"; then
+    log "deleting $ns failed"
+    return 4
+  fi
+  return 0
+}
+
+bind() {
+  local line index name stray i
+  unbind || return
+  if [[ $(stat -c '%F %s %u %a' "$key" 2> /dev/null) != "regular file 32 0 600" ]]; then
+    log "refused: $key is not a regular 32 byte file of root with mode 600"
+    return 5
+  fi
+  modprobe libcomposite || return 1
+  [[ -d $cfg/usb_gadget ]] || { log "no $cfg/usb_gadget"; return 1; }
+  ip netns add "$ns" || return 1
+  nsenter --net="$nspath" sysctl -q -w net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 \
+    net.ipv4.ip_forward=0 net.ipv4.conf.all.forwarding=0 net.ipv4.conf.default.forwarding=0 || return 1
+  mkdir -p "$gadget/strings/0x409" "$config/strings/0x409" "$func" || return 1
+  put "$gadget/idVendor" 0x1d6b && put "$gadget/idProduct" 0x0104 &&
+    put "$gadget/strings/0x409/manufacturer" MicroOS && put "$gadget/strings/0x409/product" "Pocket MICRO 2" &&
+    put "$config/strings/0x409/configuration" NCM &&
+    put "$func/dev_addr" "$mac" && put "$func/host_addr" 02:53:52:54:00:02 || return 1
+  put "$func/ifname" "usbdisp%d" 2> /dev/null || log "ifname is not writable, the kernel names the netdev"
+  ln -s "$func" "$config/ncm.usb0" || return 1
+  udc_present || { log "the UDC $udc is gone"; return 3; }
+  if ! put "$gadget/UDC" "$udc"; then
+    udc_present || { log "the UDC $udc is gone"; return 3; }
+    return 1
+  fi
+  line=""
+  for (( i = 0; i < 20; i++ )); do
+    udc_present || { log "the UDC $udc is gone"; return 3; }
+    line=$(by_mac ip) || return 1
+    [[ -z $line ]] || break
+    sleep 0.1
+  done
+  [[ -n $line ]] || { log "no netdev with $mac after the bind"; return 1; }
+  read -r index name <<< "$line"
+  [[ $name =~ $namere ]] || { log "netdev $index has the name '$name'"; return 1; }
+  sysctl -q -w "net/ipv6/conf/$name/disable_ipv6=1" || return 1
+  ip link set dev "$name" netns "$ns" || return 1
+  line=$(by_mac nsip) || return 1
+  stray=$(by_mac ip) || return 1
+  [[ -n $line && -z $stray ]] || { log "netdev $index with $mac did not move into $ns"; return 1; }
+  read -r index name <<< "$line"
+  [[ $name =~ $namere ]] || { log "netdev $index in $ns has the name '$name'"; return 1; }
+  nsenter --net="$nspath" sysctl -q -w "net/ipv6/conf/$name/disable_ipv6=1" || return 1
+  nsip link set dev lo up && nsip addr add "$addr" dev "$name" && nsip link set dev "$name" up || return 1
+  log "bound to $udc, $name $addr in $ns"
+}
+
+case "${1:-}" in
+  bind)
+    trap 'unbind; exit $?' TERM
+    bind
+    r=$?
+    if (( r != 0 && r != 4 && r != 5 )); then
+      log "bind failed, tearing down"
+      unbind || r=4
+    fi
+    exit "$r"
+    ;;
+  unbind)
+    unbind
+    exit
+    ;;
+  *)
+    echo "usage: $me bind|unbind" >&2
+    exit 2
+    ;;
+esac

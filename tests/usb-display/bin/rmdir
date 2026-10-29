@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+d=${1:?}
+cfg=$MICROOS_USB_DISPLAY_ROOT/sys/kernel/config
+[[ $d == "$cfg"/* && -d $d && ! -L $d ]] || exit 1
+printf 'rmdir %s\n' "${d#"$MICROOS_USB_DISPLAY_ROOT"}" >> "$STUB_LOG"
+if [[ -n $(find "$d" -type l) || -n $(find "$cfg" -type l -lname "$d") ]]; then
+  echo "rmdir: $d: linked" >&2
+  exit 1
+fi
+if [[ -n $(find "$d" -mindepth 1 -type d ! -name configs ! -name functions ! -name strings ! -name os_desc ! -name webusb) ]]; then
+  echo "rmdir: $d: not empty" >&2
+  exit 1
+fi
+if [[ -f $d/UDC && -n $(cat "$d/UDC") ]]; then
+  echo "rmdir: $d: bound" >&2
+  exit 1
+fi
+if [[ $d == */functions/ncm.usb0 && -n ${STUB_BUSY:-} ]]; then
+  echo "rmdir: $d: Device or resource busy" >&2
+  exit 1
+fi
+if [[ $d == */functions/ncm.usb0 && -z ${STUB_KEEP:-} ]]; then
+  for f in "$STUB_NET"/main "$STUB_NET"/usbdisp; do
+    [[ ! -f $f ]] || sed -i "/ $(cat "$d/dev_addr")$/d" "$f"
+  done
+  rm -f "$STUB_NET/registered"
+fi
+rm -rf -- "${d:?}"

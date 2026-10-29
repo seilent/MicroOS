@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+root=$MICROOS_USB_DISPLAY_ROOT
+net=$STUB_NET
+gadget=$root/sys/kernel/config/usb_gadget/microos-usb-display
+[[ -n ${STUB_QUIET:-} ]] || printf 'ip %s\n' "$*" >> "$STUB_LOG"
+ns=${STUB_NS:-main}
+[[ $1 != -o ]] || shift
+has() { grep -q "^[0-9]* $1 " "$net/$ns"; }
+case "$1 $2" in
+  "link show")
+    if [[ $ns == usbdisp && -n ${STUB_LIST_FAIL:-} ]]; then
+      echo "RTNETLINK answers: Invalid argument" >&2
+      exit 1
+    fi
+    if [[ $ns == main && $(cat "$gadget/UDC" 2> /dev/null) == a600000.usb && ! -e $net/registered ]]; then
+      if [[ -n ${STUB_UDC_GONE:-} ]]; then
+        rm -rf "${root:?}/sys/class/udc/a600000.usb"
+      else
+        name=$(cat "$gadget/functions/ncm.usb0/ifname" 2> /dev/null)
+        [[ ${#name} -le 15 && $name =~ ^[^%/:[:space:]]*%d[^%/:[:space:]]*$ ]] || name="usb%d"
+        name=${STUB_NAME:-${name/\%d/0}}
+        echo "5 $name $(cat "$gadget/functions/ncm.usb0/dev_addr")" >> "$net/main"
+        : > "$net/registered"
+      fi
+    fi
+    while read -r i n m t; do
+      if [[ $n == lo ]]; then
+        printf '%s: lo: <LOOPBACK> mtu 65536 qdisc noop state DOWN\\    link/loopback %s brd 00:00:00:00:00:00\n' "$i" "$m"
+      else
+        printf '%s: %s: <BROADCAST,MULTICAST> mtu 1500 qdisc noop state DOWN\\    link/%s %s brd ff:ff:ff:ff:ff:ff\n' "$i" "$n" "${t:-ether}" "$m"
+      fi
+    done < "$net/$ns"
+    ;;
+  "link set")
+    dev=$4
+    has "$dev" || { echo "Cannot find device \"$dev\"" >&2; exit 1; }
+    if [[ $5 == netns ]]; then
+      if [[ -n ${STUB_RENAME:-} ]]; then
+        sed -i "s/^\([0-9]*\) $dev /\1 eth9 /" "$net/$ns"
+        echo "Cannot find device \"$dev\"" >&2
+        exit 1
+      fi
+      [[ -f $net/$6 ]] || { echo "Invalid \"netns\" value \"$6\"" >&2; exit 1; }
+      grep "^[0-9]* $dev " "$net/$ns" >> "$net/$6"
+      sed -i "/^[0-9]* $dev /d" "$net/$ns"
+    fi
+    ;;
+  "addr add")
+    has "$5" || { echo "Cannot find device \"$5\"" >&2; exit 1; }
+    ;;
+  "netns add")
+    [[ ! -e $root/run/netns/$3 ]] || { echo "Cannot create namespace file \"/run/netns/$3\": File exists" >&2; exit 1; }
+    mkdir -p "$root/run/netns"
+    : > "$root/run/netns/$3"
+    echo "1 lo 00:00:00:00:00:00" > "$net/$3"
+    [[ -z ${STUB_FALLBACK:-} ]] || printf '%s\n' "2 sit0@NONE 0.0.0.0 sit" "3 gretap0@NONE 00:00:00:00:00:00" >> "$net/$3"
+    ;;
+  "netns del")
+    rm -f "$root/run/netns/$3" "$net/$3"
+    ;;
+  *)
+    echo "ip stub: $*" >&2
+    exit 1
+    ;;
+esac

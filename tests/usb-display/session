@@ -1,0 +1,685 @@
+#!/usr/bin/env python3
+import importlib.machinery
+import importlib.util
+import os
+import selectors
+import signal
+import socket
+import subprocess
+import sys
+import time
+import types
+
+
+def load(path, name):
+    loader = importlib.machinery.SourceFileLoader(name, path)
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader(name, loader))
+    loader.exec_module(mod)
+    return mod
+
+
+def serve(path, sock, client, events, cap=None):
+    d = load(path, "usbdisplay")
+    if cap is not None:
+        d.FRAME_DATA_MAX = int(cap)
+
+    def out(line):
+        with open(events, "a") as f:
+            f.write(line + "\n")
+
+    class UInput:
+        def __init__(self, caps=None, name="", input_props=None):
+            self.name = name
+            out(f"{name}: create")
+
+        def write(self, etype, code, value):
+            out(f"{self.name}: {etype} {code} {value}")
+
+        def syn(self):
+            out(f"{self.name}: syn")
+
+        def close(self):
+            out(f"{self.name}: close")
+
+    class Stdin:
+        def __init__(self, pipe):
+            self.pipe = pipe
+
+        def close(self):
+            out("stdin closed")
+            self.pipe.close()
+
+    class Popen(subprocess.Popen):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.stdin = Stdin(self.stdin)
+
+    def source():
+        src = d.Gst.ElementFactory.make("videotestsrc")
+        src.set_property("is-live", True)
+        return src
+
+    d.evdev.UInput = UInput
+    d.subprocess.Popen = Popen
+    d.source = source
+    d.SOCK, d.CLIENT = sock, client
+    sys.argv = [path, "steam"]
+    return d.main()
+
+
+if sys.argv[1] == "serve":
+    sys.exit(serve(*sys.argv[2:7]))
+
+part_path, link_path, here, tmp = sys.argv[1:5]
+d = load(part_path, "usbdisplay")
+k = load(link_path, "usbdisplaylink")
+d.Gst.init(None)
+E = d.evdev.ecodes
+A, K = E.EV_ABS, E.EV_KEY
+rc = 0
+for element in ("videotestsrc", "jpegenc", "appsink", "capsfilter", "queue"):
+    if d.Gst.ElementFactory.find(element) is None:
+        print(f"FAIL: GStreamer element {element} missing", file=sys.stderr)
+        sys.exit(1)
+
+
+def fail(msg):
+    global rc
+    print(f"FAIL: {msg}", file=sys.stderr)
+    rc = 1
+
+
+def check(what, ok, more=""):
+    if not ok:
+        fail(f"{what}{': ' if more != '' else ''}{more}")
+
+
+def exit_code(proc, timeout):
+    try:
+        return proc.wait(timeout)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+check("session codec matches the link's", (d.SL_MAGIC, d.SL_LENGTHS, d.TO_SESSION, d.HEADER.format, d.START_BODY.format,
+                                           d.TOUCH_BODY.format, d.FRAME_DATA_MAX, d.DETAILS) ==
+      (k.SL_MAGIC, k.SL_LENGTHS, (k.START, k.STOP, k.SL_TOUCH), k.HEADER.format, k.START_BODY.format, k.TOUCH_BODY.format,
+       k.FRAME_DATA_MAX, k.DETAILS))
+for kind in (k.START, k.STOP, k.READY, k.STOPPED):
+    body = k.START_BODY.pack(2, 1280, 800, 60000, 172, 108) if kind == k.START else b""
+    check(f"session type {kind} packs the same", d.sl_pack(kind, body) == k.sl_pack(kind, body))
+check("SLOTS is the protocol's TOUCH_SLOTS", d.SLOTS == k.TOUCH_SLOTS == 10)
+check("gamescopevirtual mode argument", d.MODE == "1280x800@60:172x108", d.MODE)
+for code, err, want in ((3, "failed: busy\n", 1), (3, "failed: invalid_mode", 2), (3, "failed: output_disable_failed\n", 3),
+                        (3, "connecting\nfailed: stream_failed\n", 4), (3, "failed: revoked", 5),
+                        (3, "failed: forced_internal", 6), (3, "failed:  busy  ", 1), (3, "", 0), (3, "busy", 0),
+                        (3, " failed: busy", 0), (3, "failed: something", 0), (1, "", 7), (1, "failed: busy", 7),
+                        (2, "", 8), (0, "", 0), (4, "failed: busy", 0), (-9, "", 0)):
+    check(f"exit_detail({code}, {err!r})", d.exit_detail(code, err) == want, d.exit_detail(code, err))
+for line, want in ((b"node 42 gamescope-virtual-output", 42), (b"node 7 gamescope-virtual-output\n", 7),
+                   (b"node x gamescope-virtual-output", None), (b"node 42 gamescope", None), (b"42", None), (b"", None)):
+    check(f"parse_node({line!r})", d.parse_node(line) == want)
+for x, y, want in ((0.0, 0.0, (0, 0)), (1.0, 1.0, (1279, 799)), (0.25, 0.75, (320, 599)), (0.5, 0.5, (640, 400)),
+                   (-0.5, 2.0, (0, 799)), (float("nan"), 0.5, None), (0.5, float("inf"), None)):
+    check(f"touch_point({x}, {y})", d.touch_point(x, y) == want, d.touch_point(x, y))
+
+
+class FakeUInput:
+    made = []
+
+    def __init__(self, events=None, name="", input_props=None):
+        self.events, self.name, self.props, self.log = events, name, input_props, []
+        FakeUInput.made.append(self)
+
+    def write(self, etype, code, value):
+        self.log.append((etype, code, value))
+
+    def syn(self):
+        self.log.append("syn")
+
+    def close(self):
+        self.log.append("close")
+
+
+d.evdev.UInput = FakeUInput
+t = d.Touch("microos-usb-display touch")
+ui = FakeUInput.made[0]
+axes = dict(ui.events[E.EV_ABS])
+for code, top in ((E.ABS_X, 1279), (E.ABS_Y, 799), (E.ABS_MT_POSITION_X, 1279), (E.ABS_MT_POSITION_Y, 799),
+                  (E.ABS_MT_SLOT, 9), (E.ABS_MT_TRACKING_ID, 65535)):
+    check(f"axis {E.ABS[code]}", (axes[code].min, axes[code].max) == (0, top), axes[code])
+check("touch device", (ui.events[E.EV_KEY], ui.props, ui.name) ==
+      ([E.BTN_TOUCH], [E.INPUT_PROP_DIRECT], "microos-usb-display touch"))
+
+
+def steps(what, calls, want):
+    ui.log.clear()
+    for c in calls:
+        t.handle(*c)
+    check(what, ui.log == want, ui.log)
+
+
+steps("down and frame", [(0, d.TOUCH_DOWN, 0.25, 0.75), (0, d.TOUCH_FRAME, 0, 0)],
+      [(A, E.ABS_MT_SLOT, 0), (A, E.ABS_MT_TRACKING_ID, 0), (A, E.ABS_MT_POSITION_X, 320),
+       (A, E.ABS_MT_POSITION_Y, 599), (A, E.ABS_X, 320), (A, E.ABS_Y, 599), (K, E.BTN_TOUCH, 1), "syn"])
+steps("second finger and a move", [(1, d.TOUCH_DOWN, 1.0, 0.0), (0, d.TOUCH_MOVE, 0.5, 0.5), (0, d.TOUCH_FRAME, 0, 0)],
+      [(A, E.ABS_MT_SLOT, 1), (A, E.ABS_MT_TRACKING_ID, 1), (A, E.ABS_MT_POSITION_X, 1279), (A, E.ABS_MT_POSITION_Y, 0),
+       (A, E.ABS_MT_SLOT, 0), (A, E.ABS_MT_POSITION_X, 640), (A, E.ABS_MT_POSITION_Y, 400), (A, E.ABS_X, 640),
+       (A, E.ABS_Y, 400), "syn"])
+steps("first finger up", [(0, d.TOUCH_UP, 0, 0), (0, d.TOUCH_FRAME, 0, 0)],
+      [(A, E.ABS_MT_SLOT, 0), (A, E.ABS_MT_TRACKING_ID, -1), (A, E.ABS_X, 1279), (A, E.ABS_Y, 0), "syn"])
+steps("ignored events", [(10, d.TOUCH_DOWN, 0.5, 0.5), (5, d.TOUCH_MOVE, 0.5, 0.5), (5, d.TOUCH_UP, 0, 0),
+                         (2, d.TOUCH_DOWN, float("nan"), 0.5), (1, 9, 0.5, 0.5)], [])
+steps("cancel", [(0, d.TOUCH_CANCEL, 0, 0)], [(A, E.ABS_MT_SLOT, 1), (A, E.ABS_MT_TRACKING_ID, -1), (K, E.BTN_TOUCH, 0), "syn"])
+t.handle(4, d.TOUCH_DOWN, 0.0, 1.0)
+t.handle(4, d.TOUCH_FRAME, 0, 0)
+ui.log.clear()
+t.close()
+check("close lifts the slots first", ui.log == [(A, E.ABS_MT_SLOT, 4), (A, E.ABS_MT_TRACKING_ID, -1), (K, E.BTN_TOUCH, 0),
+                                               "syn", "close"], ui.log)
+
+logged = []
+d.log = logged.append
+for fail_at, err in ((1, d.evdev.UInputError("uinput broke")), (0, PermissionError(13, "Permission denied"))):
+    FakeUInput.made.clear()
+    logged.clear()
+
+    def broken(events=None, name="", input_props=None, fail_at=fail_at, err=err):
+        if len(FakeUInput.made) == fail_at:
+            raise err
+        return FakeUInput(events, name, input_props)
+
+    d.evdev.UInput = broken
+    check(f"touch_devices with {type(err).__name__} degrades", d.touch_devices() == [])
+    check(f"touch_devices with {type(err).__name__} closes what it made",
+          [u.log for u in FakeUInput.made] == [["close"]] * fail_at)
+    check(f"touch_devices with {type(err).__name__} logs once", logged == [f"no touch input, uinput failed: {err}"], logged)
+d.evdev.UInput = FakeUInput
+FakeUInput.made.clear()
+check("touch devices", [x.ui.name for x in d.touch_devices()] == ["microos-usb-display touch", "microos-usb-display pen"])
+
+Gst, GstVideo = d.Gst, d.GstVideo
+caps = Gst.Caps.from_string("video/x-raw,format=NV12,width=1280,height=800")
+
+
+def padded(y_stride, uv_stride, gap, cut=0):
+    y, uv = os.urandom(y_stride * 800), os.urandom(uv_stride * 400)
+    data = y + bytes(gap) + uv
+    buf = Gst.Buffer.new_wrapped(data[:len(data) - cut])
+    GstVideo.buffer_add_video_meta_full(buf, GstVideo.VideoFrameFlags.NONE, GstVideo.VideoFormat.NV12, 1280, 800, 2,
+                                        [0, len(y) + gap, 0, 0], [y_stride, uv_stride, 0, 0])
+    tight = b"".join(y[r * y_stride:r * y_stride + 1280] for r in range(800)) + \
+        b"".join(uv[r * uv_stride:r * uv_stride + 1280] for r in range(400))
+    return Gst.Sample.new(buf, caps, None, None), tight
+
+
+sample, tight = padded(1536, 1536, 4096)
+check("NV12 with a padded video meta repacked to stride 1280", d.nv12_frame(sample) == tight)
+sample, tight = padded(1280, 1280, 0)
+check("NV12 with a tight video meta", d.nv12_frame(sample) == tight)
+plain = os.urandom(1536000)
+check("NV12 without a video meta", d.nv12_frame(Gst.Sample.new(Gst.Buffer.new_wrapped(plain), caps, None, None)) == plain)
+check("short NV12 buffer dropped", d.nv12_frame(Gst.Sample.new(Gst.Buffer.new_wrapped(plain[:-1]), caps, None, None)) is None)
+check("short padded NV12 buffer dropped", d.nv12_frame(padded(1536, 1536, 0, cut=300)[0]) is None)
+check("NV12 stride under the width dropped", d.nv12_frame(padded(1024, 1024, 0)[0]) is None)
+jpeg = b"\xff\xd8" + os.urandom(100) + b"\xff\xd9"
+check("JPEG frame", d.jpeg_frame(Gst.Sample.new(Gst.Buffer.new_wrapped(jpeg), None, None, None)) == jpeg)
+
+
+def upstream(sink):
+    names = []
+    element = sink
+    while element is not None:
+        names.append(element.get_factory().get_name())
+        pad = element.get_static_pad("sink")
+        peer = pad.get_peer() if pad is not None else None
+        element = peer.get_parent_element() if peer is not None else None
+    return names[::-1]
+
+
+real_source = d.source
+d.source = lambda: Gst.ElementFactory.make("videotestsrc")
+pipe, sink = d.pipeline(d.FMT_JPEG)
+check("jpeg pipeline", upstream(sink) == ["videotestsrc", "capsfilter", "queue", "jpegenc", "appsink"], upstream(sink))
+queue = sink.get_static_pad("sink").get_peer().get_parent_element().get_static_pad("sink").get_peer().get_parent_element()
+check("leaky queue before jpegenc", (int(queue.get_property("leaky")), queue.get_property("max-size-buffers")) == (2, 1))
+pipe, sink = d.pipeline(d.FMT_NV12)
+check("nv12 pipeline", upstream(sink) == ["videotestsrc", "capsfilter", "appsink"], upstream(sink))
+check("appsink properties", [sink.get_property(p) for p in ("drop", "max-buffers", "sync", "emit-signals")] ==
+      [True, 1, False, True])
+d.source = real_source
+
+part = d.Part("steam")
+run = d.Run(d.FMT_JPEG)
+run.proc = subprocess.Popen(["sh", "-c", "cat > /dev/null"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+for pipe, buf in ((run.proc.stdout, run.stdout), (run.proc.stderr, run.stderr)):
+    os.set_blocking(pipe.fileno(), False)
+    run.open[pipe.fileno()] = buf
+    part.sel.register(pipe.fileno(), selectors.EVENT_READ, "client")
+part.run = run
+ticks = iter([0.0, 1.9, 2.5])
+d.time = types.SimpleNamespace(monotonic=lambda: next(ticks, 2.5))
+try:
+    part.teardown()
+    passed = None
+except ValueError as err:
+    passed = err
+finally:
+    d.time = time
+check("teardown: the deadline passes between the drain check and the select", passed is None and
+      run.proc.returncode is not None, passed)
+
+run_dir = os.path.join(tmp, "run")
+os.makedirs(os.path.join(run_dir, "gamescope-session-plus"))
+display_file = os.path.join(run_dir, "gamescope-session-plus", "steam.env")
+display_socks = [socket.socket(socket.AF_UNIX) for _ in range(2)]
+display_socks[0].bind(os.path.join(run_dir, "gamescope-7"))
+display_socks[1].bind(os.path.join(run_dir, "wayland-0"))
+with open(os.path.join(run_dir, "gamescope-8"), "w"):
+    pass
+saved = dict(os.environ)
+for what, run_env, text, want in (
+        ("the session's display", run_dir, "DISPLAY=:9\nGAMESCOPE_WAYLAND_DISPLAY=gamescope-7\n", "gamescope-7"),
+        ("no file", run_dir, None, "No such file or directory"),
+        ("no display line", run_dir, "DISPLAY=:9\n", "no GAMESCOPE_WAYLAND_DISPLAY=gamescope-<n>"),
+        ("another name form", run_dir, "GAMESCOPE_WAYLAND_DISPLAY=wayland-0\n",
+         "no GAMESCOPE_WAYLAND_DISPLAY=gamescope-<n>"),
+        ("a path", run_dir, "GAMESCOPE_WAYLAND_DISPLAY=../run/gamescope-7\n",
+         "no GAMESCOPE_WAYLAND_DISPLAY=gamescope-<n>"),
+        ("not a socket", run_dir, "GAMESCOPE_WAYLAND_DISPLAY=gamescope-8\n", "gamescope-8 is not a socket"),
+        ("no socket", run_dir, "GAMESCOPE_WAYLAND_DISPLAY=gamescope-9\n", "No such file or directory"),
+        ("no XDG_RUNTIME_DIR", None, "GAMESCOPE_WAYLAND_DISPLAY=gamescope-7\n", "XDG_RUNTIME_DIR is not set")):
+    if text is None:
+        if os.path.exists(display_file):
+            os.remove(display_file)
+    else:
+        with open(display_file, "w") as f:
+            f.write(text)
+    os.environ.clear()
+    os.environ.update(saved)
+    if run_env is None:
+        os.environ.pop("XDG_RUNTIME_DIR", None)
+    else:
+        os.environ["XDG_RUNTIME_DIR"] = run_env
+    try:
+        got = d.session_display("steam")
+    except d.Failed as err:
+        got = (err.detail, str(err))
+    if what == "the session's display":
+        check(f"session display, {what}", got == want, got)
+    else:
+        check(f"session display, {what}: FAILED(wayland_gone) with the reason",
+              got[0] == d.DETAILS["wayland_gone"] and str(got[1]).startswith("no Wayland display in ") and
+              str(got[1]).endswith(want), got)
+os.environ.clear()
+os.environ.update(saved)
+with open(display_file, "w") as f:
+    f.write("GAMESCOPE_WAYLAND_DISPLAY=gamescope-7\n")
+
+stub = os.path.join(tmp, "gv")
+os.makedirs(stub)
+events = os.path.join(tmp, "events")
+sock_path = os.path.join(tmp, "session.sock")
+notify_path = os.path.join(tmp, "notify")
+notify = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+notify.bind(notify_path)
+os.mkfifo(os.path.join(stub, "go"))
+go = os.open(os.path.join(stub, "go"), os.O_RDWR)
+
+
+def put(path, text):
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def read(path):
+    try:
+        with open(path) as f:
+            return f.read()
+    except FileNotFoundError:
+        return ""
+
+
+def stub_mode(text):
+    put(os.path.join(stub, "mode"), text + "\n")
+    put(os.path.join(stub, "log"), "")
+
+
+def stub_log():
+    return read(os.path.join(stub, "log")).splitlines()
+
+
+def lines():
+    return read(events).splitlines()
+
+
+class Conn:
+    def __init__(self, s):
+        self.s = s
+        self.buf = b""
+
+    def send(self, kind, payload=b""):
+        self.s.sendall(k.sl_pack(kind, payload))
+
+    def read(self, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            if len(self.buf) >= k.HEADER.size:
+                kind, length = k.sl_unpack_header(self.buf[:k.HEADER.size], k.FROM_SESSION)
+                if len(self.buf) >= k.HEADER.size + length:
+                    msg = kind, self.buf[k.HEADER.size:k.HEADER.size + length]
+                    self.buf = self.buf[k.HEADER.size + length:]
+                    return msg
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError
+            self.s.settimeout(left)
+            data = self.s.recv(1 << 20)
+            if not data:
+                return None
+            self.buf += data
+
+    def until(self, kinds, timeout=10):
+        deadline = time.monotonic() + timeout
+        while True:
+            msg = self.read(max(0.0, deadline - time.monotonic()))
+            if msg is None or msg[0] in kinds:
+                return msg
+
+    def closed(self, timeout):
+        try:
+            return self.until(set(), timeout) is None
+        except TimeoutError:
+            return False
+
+
+class FakeLink:
+    def __init__(self):
+        self.srv = socket.socket(socket.AF_UNIX)
+        self.srv.bind(sock_path)
+        self.srv.listen(4)
+
+    def accept(self, timeout):
+        self.srv.settimeout(timeout)
+        try:
+            return Conn(self.srv.accept()[0])
+        except TimeoutError:
+            return None
+
+    def gone(self):
+        self.srv.close()
+        os.unlink(sock_path)
+
+
+class Part:
+    def __init__(self, *cap):
+        self.err = os.path.join(tmp, "part.err")
+        env = dict(os.environ, STUB_DIR=stub, NOTIFY_SOCKET=notify_path, XDG_RUNTIME_DIR=run_dir,
+                   GAMESCOPE_WAYLAND_DISPLAY="gamescope-3")
+        with open(self.err, "a") as err:
+            self.proc = subprocess.Popen([sys.executable, __file__, "serve", part_path, sock_path,
+                                          os.path.join(here, "gamescopevirtual"), events, *cap], env=env,
+                                         stdin=subprocess.DEVNULL, stdout=err, stderr=err)
+
+    def log(self):
+        return read(self.err)
+
+    def stop(self):
+        if self.proc.poll() is None:
+            self.proc.send_signal(signal.SIGTERM)
+        try:
+            return self.proc.wait(10)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            return self.proc.wait()
+
+
+START_JPEG = k.START_BODY.pack(k.FMT_JPEG, 1280, 800, 60000, 172, 108)
+START_NV12 = k.START_BODY.pack(k.FMT_NV12, 1280, 800, 60000, 172, 108)
+
+
+def scenario(what, fn):
+    try:
+        fn()
+    except (OSError, RuntimeError, TimeoutError, k.WireError) as err:
+        fail(f"{what}: {type(err).__name__} {err}")
+
+
+def teardown_order(what, stopped_at):
+    got = lines()
+    try:
+        stdin = got.index("stdin closed", stopped_at)
+        close = got.index("microos-usb-display touch: close", stopped_at)
+        stopped = got.index("STOPPED", stopped_at)
+    except ValueError:
+        fail(f"{what}: teardown lines missing: {got[stopped_at:]}")
+        return
+    lift = [i for i in range(stdin, close) if got[i].endswith(f"{A} {E.ABS_MT_TRACKING_ID} -1")]
+    check(f"{what}: stdin closed first, slots lifted, uinput closed, STOPPED last", stdin < close < stopped and lift,
+          got[stopped_at:])
+    check(f"{what}: gamescopevirtual got EOF before STOPPED", "eof" in stub_log(), stub_log())
+
+
+def mark_stopped(conn):
+    msg = conn.until({k.STOPPED})
+    with open(events, "a") as f:
+        f.write("STOPPED\n")
+    return msg
+
+
+link = FakeLink()
+part = Part()
+conn = link.accept(15)
+if conn is None:
+    print(f"FAIL: the session part did not connect: {part.log()}", file=sys.stderr)
+    part.stop()
+    sys.exit(1)
+notify.settimeout(5)
+try:
+    check("watchdog", notify.recv(64) == b"WATCHDOG=1")
+except TimeoutError:
+    fail("no WATCHDOG=1 within 5 s")
+
+
+def bad_start():
+    stub_mode("node")
+    for what, body in (("60006 mHz", k.START_BODY.pack(2, 1280, 800, 60006, 172, 108)),
+                       ("1920x1080", k.START_BODY.pack(2, 1920, 1080, 60000, 172, 108)),
+                       ("format 3", k.START_BODY.pack(3, 1280, 800, 60000, 172, 108))):
+        conn.send(k.START, body)
+        msg = conn.until({k.FAILED, k.READY})
+        check(f"START {what}: FAILED(invalid_mode)", msg == (k.FAILED, bytes([2])), msg)
+        check(f"START {what}: STOPPED", conn.until({k.STOPPED, k.READY}) == (k.STOPPED, b""))
+    check("bad START: gamescopevirtual not started", stub_log() == [], stub_log())
+
+
+def jpeg():
+    stub_mode("node")
+    put(events, "")
+    conn.send(k.START, START_JPEG)
+    check("jpeg: READY", conn.until({k.READY, k.FAILED}) == (k.READY, b""))
+    msg = conn.until({k.SL_FRAME})
+    check("jpeg: FRAME", msg is not None and msg[1][:3] == b"\x02\xff\xd8" and msg[1][-2:] == b"\xff\xd9",
+          msg and msg[1][:8])
+    check("jpeg: another FRAME", conn.until({k.SL_FRAME}) is not None)
+    check("gamescopevirtual argv and the session's display", stub_log()[:2] == ["start 1280x800@60:172x108",
+                                                                                 "display gamescope-7"], stub_log())
+    for body in (k.TOUCH_BODY.pack(0, 0, d.TOUCH_DOWN, 0.25, 0.75), k.TOUCH_BODY.pack(0, 0, d.TOUCH_FRAME, 0, 0),
+                 k.TOUCH_BODY.pack(1, 2, d.TOUCH_DOWN, 1.0, 1.0), k.TOUCH_BODY.pack(1, 2, d.TOUCH_FRAME, 0, 0)):
+        conn.send(k.SL_TOUCH, body)
+    mark = len(lines())
+    conn.send(k.STOP)
+    mark_stopped(conn)
+    got = lines()
+    finger = ["create", f"{A} {E.ABS_MT_SLOT} 0", f"{A} {E.ABS_MT_TRACKING_ID} 0", f"{A} {E.ABS_MT_POSITION_X} 320",
+              f"{A} {E.ABS_MT_POSITION_Y} 599", f"{A} {E.ABS_X} 320", f"{A} {E.ABS_Y} 599", f"{K} {E.BTN_TOUCH} 1",
+              "syn", f"{A} {E.ABS_MT_SLOT} 0", f"{A} {E.ABS_MT_TRACKING_ID} -1", f"{K} {E.BTN_TOUCH} 0", "syn",
+              "close"]
+    pen = ["create", f"{A} {E.ABS_MT_SLOT} 2", f"{A} {E.ABS_MT_TRACKING_ID} 0", f"{A} {E.ABS_MT_POSITION_X} 1279",
+           f"{A} {E.ABS_MT_POSITION_Y} 799", f"{A} {E.ABS_X} 1279", f"{A} {E.ABS_Y} 799", f"{K} {E.BTN_TOUCH} 1",
+           "syn", f"{A} {E.ABS_MT_SLOT} 2", f"{A} {E.ABS_MT_TRACKING_ID} -1", f"{K} {E.BTN_TOUCH} 0", "syn", "close"]
+    for name, want in (("touch", finger), ("pen", pen)):
+        mine = [x.split(": ", 1)[1] for x in got if x.startswith(f"microos-usb-display {name}: ")]
+        check(f"{name} device events", mine == want, mine)
+    teardown_order("STOP", mark)
+
+
+def nv12():
+    stub_mode("node")
+    conn.send(k.START, START_NV12)
+    check("nv12: READY", conn.until({k.READY, k.FAILED}) == (k.READY, b""))
+    msg = conn.until({k.SL_FRAME})
+    check("nv12: FRAME of 1536000 bytes", msg is not None and msg[1][0] == 1 and len(msg[1]) == 1 + 1536000,
+          msg and len(msg[1]))
+    conn.send(k.STOP)
+    check("nv12: STOPPED", conn.until({k.STOPPED}) == (k.STOPPED, b""))
+
+
+def fails(mode, want, ready=True):
+    def run():
+        stub_mode(mode)
+        conn.send(k.START, START_JPEG)
+        if ready:
+            check(f"{mode}: READY", conn.until({k.READY, k.FAILED}) == (k.READY, b""))
+            os.write(go, b"go\n")
+        msg = conn.until({k.FAILED})
+        check(f"{mode}: FAILED({want})", msg == (k.FAILED, bytes([want])), msg)
+        check(f"{mode}: STOPPED", conn.until({k.STOPPED}) == (k.STOPPED, b""))
+    scenario(mode, run)
+
+
+def no_display():
+    stub_mode("node")
+    for what, text in (("missing", None), ("invalid name", "GAMESCOPE_WAYLAND_DISPLAY=wayland-0\n"),
+                       ("not a socket", "GAMESCOPE_WAYLAND_DISPLAY=gamescope-8\n")):
+        if text is None:
+            os.remove(display_file)
+        else:
+            with open(display_file, "w") as f:
+                f.write(text)
+        mark = len(part.log())
+        conn.send(k.START, START_JPEG)
+        msg = conn.until({k.FAILED, k.READY})
+        check(f"display file {what}: FAILED(wayland_gone)", msg == (k.FAILED, bytes([d.DETAILS["wayland_gone"]])), msg)
+        check(f"display file {what}: STOPPED", conn.until({k.STOPPED, k.READY}) == (k.STOPPED, b""))
+        check(f"display file {what}: gamescopevirtual not started", stub_log() == [], stub_log())
+        check(f"display file {what}: logged", "run failed: no Wayland display in " in part.log()[mark:],
+              part.log()[mark:])
+    with open(display_file, "w") as f:
+        f.write("GAMESCOPE_WAYLAND_DISPLAY=gamescope-7\n")
+
+
+def chatty():
+    stub_mode("chatty")
+    conn.send(k.START, START_JPEG)
+    check("chatty: READY", conn.until({k.READY, k.FAILED}) == (k.READY, b""))
+    deadline = time.monotonic() + 15
+    frames = 0
+    while "chatty" not in stub_log() and time.monotonic() < deadline:
+        if conn.until({k.SL_FRAME}, deadline - time.monotonic()) is not None:
+            frames += 1
+    check("chatty: both pipes drained", "chatty" in stub_log(), stub_log())
+    check("chatty: frames flow while it writes", frames > 0 and conn.until({k.SL_FRAME}) is not None)
+    conn.send(k.STOP)
+    check("chatty: STOPPED", conn.until({k.STOPPED}) == (k.STOPPED, b""))
+
+
+def loud():
+    stub_mode("loud")
+    conn.send(k.START, START_JPEG)
+    check("loud exit: READY", conn.until({k.READY, k.FAILED}) == (k.READY, b""))
+    check("loud exit: FRAME", conn.until({k.SL_FRAME}) is not None)
+    mark = len(part.log())
+    conn.send(k.STOP)
+    check("loud exit: STOPPED", conn.until({k.STOPPED}) == (k.STOPPED, b""))
+    check("loud exit: both pipes drained while it exits", "eof" in stub_log() and "killing it" not in part.log()[mark:],
+          part.log()[mark:])
+
+
+for what, fn in (("bad START", bad_start), ("jpeg", jpeg), ("no display", no_display), ("nv12", nv12),
+                 ("chatty", chatty), ("loud exit", loud)):
+    scenario(what, fn)
+fails("fail 3 revoked", d.DETAILS["revoked"])
+fails("fail 3 stream_failed", d.DETAILS["stream_failed"])
+fails("fail 1", d.DETAILS["wayland_gone"])
+fails("fail 2", d.DETAILS["no_global"])
+fails("fail 3", 0)
+fails("garbage", 0, ready=False)
+
+
+def sigterm():
+    stub_mode("node")
+    conn.send(k.START, START_JPEG)
+    check("SIGTERM: READY", conn.until({k.READY, k.FAILED}) == (k.READY, b""))
+    check("SIGTERM: FRAME", conn.until({k.SL_FRAME}) is not None)
+    conn.send(k.SL_TOUCH, k.TOUCH_BODY.pack(0, 5, d.TOUCH_DOWN, 0.5, 0.5))
+    conn.send(k.SL_TOUCH, k.TOUCH_BODY.pack(0, 5, d.TOUCH_FRAME, 0, 0))
+    check("SIGTERM: another FRAME", conn.until({k.SL_FRAME}) is not None)
+    mark = len(lines())
+    part.proc.send_signal(signal.SIGTERM)
+    mark_stopped(conn)
+    check("SIGTERM: exit 0", exit_code(part.proc, 10) == 0, part.log()[-500:])
+    teardown_order("SIGTERM", mark)
+
+
+scenario("SIGTERM", sigterm)
+conn.s.close()
+part = Part()
+conn = link.accept(15)
+
+
+def reconnect():
+    global conn
+    stub_mode("node")
+    conn.send(k.START, START_JPEG)
+    check("lost link: READY", conn.until({k.READY, k.FAILED}) == (k.READY, b""))
+    mark = len(lines())
+    conn.s.close()
+    lost = time.monotonic()
+    conn = link.accept(5)
+    took = time.monotonic() - lost
+    check("lost link: reconnects after 1 s while the socket exists", conn is not None and 0.9 <= took <= 3, took)
+    check("lost link: the run is torn down", "eof" in stub_log() and "microos-usb-display touch: close" in lines()[mark:],
+          stub_log())
+    conn.send(k.STOP)
+    check("kept idle: STOPPED", conn.until({k.STOPPED}) == (k.STOPPED, b""))
+    check("kept idle: no reconnect", link.accept(2.5) is None)
+    check("kept idle: the connection stays open", not conn.closed(0.1))
+    conn.s.close()
+    link.gone()
+    check("socket gone: exit 0", exit_code(part.proc, 5) == 0, part.log()[-500:])
+
+
+if conn is None:
+    fail(f"the restarted session part did not connect: {part.log()[-500:]}")
+else:
+    scenario("reconnect", reconnect)
+part.stop()
+
+
+def oversize():
+    stub_mode("node")
+    mark = len(part.log())
+    conn.send(k.START, START_JPEG)
+    check("oversize: READY", conn.until({k.READY, k.FAILED}) == (k.READY, b""))
+    try:
+        msg = conn.until({k.SL_FRAME}, 2)
+    except TimeoutError:
+        msg = None
+    check("oversize: frames over FRAME_DATA_MAX dropped", msg is None, msg and len(msg[1]))
+    conn.send(k.STOP)
+    check("oversize: STOPPED", conn.until({k.STOPPED}) == (k.STOPPED, b""))
+    check("oversize: one rate limited log line", part.log()[mark:].count("byte frame, over 1000") == 1,
+          part.log()[mark:])
+
+
+link = FakeLink()
+part = Part("1000")
+conn = link.accept(15)
+if conn is None:
+    fail(f"the capped session part did not connect: {part.log()[-500:]}")
+else:
+    scenario("oversize", oversize)
+part.stop()
+sys.exit(rc)

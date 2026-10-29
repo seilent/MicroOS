@@ -1,0 +1,531 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+repo=/repo
+tree=$repo/system_files
+t=/run/usbdisp-test
+root=$t/root
+sys=$root/sys
+lib=/usr/libexec/microos
+stubs=/usr/local/libexec/usbdisp-test
+key=/var/lib/microos/usb-display/key
+arm=microos-usb-display-arm.service
+gadget=microos-usb-display-gadget.service
+sock=microos-usb-display-link.socket
+link=microos-usb-display-link.service
+rc=0
+fail() { echo "FAIL: $*" >&2; rc=1; }
+
+state() { systemctl show -p ActiveState --value "$1"; }
+is() { [[ $(state "$1") == "$2" ]]; }
+loaded() { [[ -n $(systemctl list-units --all --plain --no-legend "$1") ]]; }
+settled() { [[ -z $(systemctl list-jobs --no-legend) ]]; }
+wait_for() {
+  local end=$(( SECONDS + $1 ))
+  shift
+  until "$@"; do
+    (( SECONDS < end )) || return 1
+    sleep 0.1
+  done
+}
+cursor() { journalctl -n 0 --show-cursor -q | sed -n 's/^-- cursor: //p'; }
+since() { journalctl --after-cursor="$1" -o cat -q; }
+nonce() {
+  nsenter --net=/run/netns/tablet python3 - "${1:-5}" <<'EOF'
+import socket
+import sys
+import time
+
+t0 = time.monotonic()
+s = socket.create_connection(("10.77.0.1", 47800), timeout=float(sys.argv[1]))
+data = b""
+while len(data) < 8:
+    chunk = s.recv(64)
+    if not chunk:
+        break
+    data += chunk
+print(data[:4].hex(), round(time.monotonic() - t0, 2))
+EOF
+}
+hold_mode() { echo "$1" > "$t/hold.mode"; }
+plug() {
+  systemctl start udc-dummy.service
+  systemctl start partner-dummy.service
+}
+unplug() {
+  systemctl stop partner-dummy.service
+  wait_for 10 settled
+}
+down() {
+  is $arm inactive && is $gadget inactive && is $sock inactive && is $link inactive && [[ ! -e /run/microos/usb-display/armed &&
+    ! -e /run/netns/usbdisp && -z $(ip -o link show | grep -F 02:53:52:54:00:0) ]]
+}
+up() { is $gadget active && is $sock active && nsenter --net=/run/netns/usbdisp ss -tln | grep -qF 10.77.0.1:47800; }
+
+mkdir -p "$lib" "$stubs" /run/microos/hold /run/dbus "$t" "$sys/kernel/config/usb_gadget" "$sys/class/typec/port0" \
+  "$sys/class/udc" "$root/run" "$root/var"
+install -m 0755 "$tree/usr/libexec/microos/microos-usb-display-arm" "$tree/usr/libexec/microos/microos-usb-display-gadget" \
+  "$tree/usr/libexec/microos/microos-usb-display-link" "$lib/"
+install -m 0755 "$tree/usr/bin/microos-session" /usr/bin/microos-session
+install -m 0644 "$tree/usr/lib/tmpfiles.d/microos-usb-display.conf" /usr/lib/tmpfiles.d/
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/microos-usb-display.conf
+install -m 0600 /dev/null /run/microos/hold/.lock-keys
+useradd -m -u 1000 micro
+ln -s /run/netns "$root/run/netns"
+ln -s /var/lib "$root/var/lib"
+echo "host [device]" > "$sys/class/typec/port0/data_role"
+input=$sys/devices/platform/aya-keys/input/input0
+mkdir -p "$input/event0" "$input/id" "$sys/bus/platform/drivers/gpio-keys" "$sys/class/input"
+echo aya-keys > "$input/name"
+printf '%s\n' 0019 > "$input/id/bustype"
+printf '%s\n' 0001 > "$input/id/vendor"
+printf '%s\n' 0001 > "$input/id/product"
+ln -s .. "$input/event0/device"
+ln -s ../.. "$input/device"
+ln -s ../../../bus/platform/drivers/gpio-keys "$sys/devices/platform/aya-keys/driver"
+ln -s ../../devices/platform/aya-keys/input/input0/event0 "$sys/class/input/event0"
+mkfifo /run/microos/hold/stub.rc "$t/ln.go"
+ip netns add tablet
+nsenter --net=/run/netns/tablet ip link set lo up
+
+cat > "$lib/microos-pad-hold" <<'EOF'
+#!/usr/bin/env bash
+echo "pad-hold stub: start $*" >&2
+trap 'echo "pad-hold stub: killed" >&2; exit 143' TERM
+case $(cat /run/usbdisp-test/hold.mode) in
+  pass) exit 0 ;;
+  miss) exit 1 ;;
+  wait)
+    read -r r <> /run/microos/hold/stub.rc
+    exit "$r"
+    ;;
+esac
+EOF
+cat > "$stubs/udevadm" <<'EOF'
+#!/usr/bin/env bash
+if [[ $1 == info && $* == *USEC_INITIALIZED* ]]; then
+  exec cat /run/usbdisp-test/partner.usec
+fi
+exec /usr/bin/udevadm "$@"
+EOF
+cat > "$stubs/modprobe" <<'EOF'
+#!/usr/bin/env bash
+t=/run/usbdisp-test
+case $(cat "$t/modprobe.mode" 2> /dev/null) in
+  fail2)
+    n=$(cat "$t/modprobe.count" 2> /dev/null || echo 0)
+    echo $(( n + 1 )) > "$t/modprobe.count"
+    if (( n < 2 )); then
+      echo "modprobe stub: fail $n" >&2
+      exit 1
+    fi
+    ;;
+esac
+exit 0
+EOF
+cat > "$stubs/ln" <<'EOF'
+#!/usr/bin/env bash
+cfg=$MICROOS_USB_DISPLAY_ROOT/sys/kernel/config/usb_gadget
+if [[ $# == 3 && $1 == -s && $3 == "$cfg"/*/configs/*/ncm.usb0 ]]; then
+  /usr/bin/ln "$@" || exit
+  name=$(cat "$2/ifname" 2> /dev/null)
+  [[ ${#name} -le 15 && $name =~ ^[^%/:[:space:]]*%d[^%/:[:space:]]*$ ]] || name="usb%d"
+  name=${name/\%d/0}
+  ip link add "$name" address "$(cat "$2/dev_addr")" type veth peer name sert0 address "$(cat "$2/host_addr")" \
+    netns tablet || exit
+  nsenter --net=/run/netns/tablet ip addr add 10.77.0.2/30 dev sert0 && nsenter --net=/run/netns/tablet ip link set dev sert0 up || exit
+  if [[ -e /run/usbdisp-test/ln.block ]]; then
+    echo "ln stub: blocked" >&2
+    read -r _ <> /run/usbdisp-test/ln.go
+  fi
+  exit
+fi
+exec /usr/bin/ln "$@"
+EOF
+cat > "$stubs/rmdir" <<'EOF'
+#!/usr/bin/env bash
+cfg=$MICROOS_USB_DISPLAY_ROOT/sys/kernel/config
+if [[ $# == 1 && $1 == "$cfg"/* ]]; then
+  if [[ $1 == */functions/ncm.usb0 ]]; then
+    mac=$(cat "$1/dev_addr")
+    for ns in "" usbdisp; do
+      n=$(${ns:+nsenter --net=/run/netns/$ns} ip -o link show 2> /dev/null | awk -v mac="$mac" '$0 ~ "link/ether " mac " " { n = $2; sub(/@.*/, "", n); sub(/:$/, "", n); print n }')
+      [[ -z $n ]] || ${ns:+nsenter --net=/run/netns/$ns} ip link del dev "$n"
+    done
+  fi
+  rm -rf -- "${1:?}"
+  exit
+fi
+exec /usr/bin/rmdir "$@"
+EOF
+cat > "$stubs/partner" <<'EOF'
+#!/usr/bin/env bash
+p=/run/usbdisp-test/root/sys/class/typec/port0-partner
+if [[ $1 == add ]]; then
+  python3 -c 'import time; print(time.monotonic_ns() // 1000)' > /run/usbdisp-test/partner.usec
+  mkdir -p "$p"
+else
+  rm -rf "${p:?}"
+fi
+EOF
+chmod 0755 "$lib/microos-pad-hold" "$stubs"/*
+cat > /etc/systemd/system/partner-dummy.service <<EOF
+[Unit]
+Description=Type-C partner stand in
+Wants=$arm
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$stubs/partner add
+ExecStopPost=$stubs/partner remove
+EOF
+cat > /etc/systemd/system/udc-dummy.service <<EOF
+[Unit]
+Description=UDC stand in
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/mkdir -p $sys/class/udc/a600000.usb
+ExecStopPost=/usr/bin/rmdir $sys/class/udc/a600000.usb
+EOF
+partner_dev=$(systemd-escape --path --suffix=device /sys/subsystem/typec/devices/port0-partner)
+udc_dev=$(systemd-escape --path --suffix=device /sys/subsystem/udc/devices/a600000.usb)
+sed -e "s#^\(BindsTo\|After\)=${partner_dev//\\/.}\$#\1=partner-dummy.service#" "$tree/usr/lib/systemd/system/$arm" \
+  > /etc/systemd/system/$arm
+sed -e "s#^\(BindsTo\|After\)=$udc_dev\$#\1=udc-dummy.service#" "$tree/usr/lib/systemd/system/$gadget" > /etc/systemd/system/$gadget
+for u in $arm $gadget; do
+  [[ $(sed -n '/^\[Service\]/,$p' /etc/systemd/system/$u) == "$(sed -n '/^\[Service\]/,$p' "$tree/usr/lib/systemd/system/$u")" ]] ||
+    fail "$u test copy changed a [Service] line"
+  [[ $(diff "$tree/usr/lib/systemd/system/$u" /etc/systemd/system/$u | grep -c '^>') == 2 ]] || fail "$u test copy: $(diff "$tree/usr/lib/systemd/system/$u" /etc/systemd/system/$u)"
+done
+install -m 0644 "$tree/usr/lib/systemd/system/$sock" "$tree/usr/lib/systemd/system/$link" /etc/systemd/system/
+systemctl daemon-reload
+systemctl set-environment PATH="$stubs:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin" MICROOS_SYSFS="$sys" \
+  MICROOS_USB_DISPLAY_ROOT="$root"
+
+out=$(SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "$tree/usr/lib/systemd/system/$arm" \
+  "$tree/usr/lib/systemd/system/$gadget" "$tree/usr/lib/systemd/system/$sock" "$tree/usr/lib/systemd/system/$link" 2>&1) ||
+  fail "systemd-analyze verify: $out"
+[[ -z $out ]] || fail "systemd-analyze verify: $out"
+
+ip netns add bare
+nsenter --net=/run/netns/bare ip link set lo up
+nsenter --net=/run/netns/bare ip addr add 10.77.0.1/30 dev lo
+printf '[Socket]\nListenStream=10.77.0.1:47801\nNetworkNamespacePath=/run/netns/bare\n' > /run/systemd/system/bare.socket
+printf '[Service]\nExecStart=/usr/bin/true\n' > /run/systemd/system/bare.service
+systemctl daemon-reload
+systemctl start bare.socket
+nsenter --net=/run/netns/bare ss -tln | grep -qF 10.77.0.1:47801 || fail "bare socket not listening in its netns"
+! ss -tln | grep -qF :47801 || fail "bare socket listening in the main netns"
+systemctl stop bare.socket
+rm /run/systemd/system/bare.socket /run/systemd/system/bare.service
+ip netns del bare
+systemctl daemon-reload
+
+c=$(cursor)
+hold_mode pass
+plug
+wait_for 10 settled
+is $arm inactive || fail "unpaired plug: arm unit $(state $arm)"
+[[ $(systemctl show -p ConditionResult --value $arm) == no ]] || fail "unpaired plug: not a condition skip"
+is $gadget inactive || fail "unpaired plug: gadget $(state $gadget)"
+! since "$c" | grep -q "Dependency failed" || fail "unpaired plug: Dependency failed"
+unplug
+
+install -d -m 0700 /var/lib/microos/usb-display
+head -c 32 /dev/urandom > "$key"
+chmod 600 "$key"
+
+c=$(cursor)
+hold_mode miss
+plug
+wait_for 10 settled
+is $arm active && [[ ! -e /run/microos/usb-display/armed ]] && is $gadget inactive || fail "missed hold: armed or bound"
+since "$c" | grep -q "not armed: no RC hold" || fail "missed hold: not logged: $(since "$c" | tail -5)"
+! since "$c" | grep -q "Dependency failed" || fail "missed hold: Dependency failed"
+unplug
+wait_for 5 bash -c "! systemctl list-units --all --plain --no-legend $arm | grep -q ." || fail "missed hold: arm unit loaded after the detach"
+
+for n in 1 2; do
+  c=$(cursor)
+  hold_mode pass
+  plug
+  wait_for 15 up || fail "armed plug $n: gadget $(state $gadget), socket $(state $sock): $(since "$c" | tail -20)"
+  [[ -f /run/microos/usb-display/armed ]] || fail "armed plug $n: no flag"
+  ! ss -tln | grep -qF :47800 || fail "armed plug $n: 47800 in the main netns"
+  [[ -z $(ip -o link show | grep -F 02:53:52:54:00:01) ]] || fail "armed plug $n: gadget netdev in the main netns"
+  [[ $(nsenter --net=/run/netns/usbdisp ip -o -4 addr show dev usbdisp0 | awk '{ print $4 }') == 10.77.0.1/30 ]] ||
+    fail "armed plug $n: address $(nsenter --net=/run/netns/usbdisp ip -o addr)"
+  findmnt /run/netns/usbdisp > /dev/null || fail "armed plug $n: /run/netns/usbdisp is not a mount in pid1's namespace"
+  [[ $(nsenter --net=/run/netns/usbdisp sysctl -n net.ipv4.ip_forward net.ipv4.conf.all.forwarding net.ipv6.conf.all.disable_ipv6 \
+    net.ipv6.conf.usbdisp0.disable_ipv6 | paste -sd' ') == "0 0 1 1" ]] || fail "armed plug $n: netns sysctls"
+  got=$(nonce)
+  [[ $got == 53440101* ]] || fail "armed plug $n: no NONCE from the link: $got"
+  is $link active || fail "armed plug $n: link $(state $link)"
+  if (( n == 2 )); then
+    nsenter --net=/run/netns/usbdisp ip link add fb0 type veth peer name fb1 || fail "armed plug 2: no extra netdevs"
+  fi
+  unplug
+  wait_for 10 down || fail "detach $n: arm $(state $arm) gadget $(state $gadget) socket $(state $sock) link $(state $link), netns $(ls /run/netns)"
+  wait_for 5 bash -c "! systemctl list-units --all --plain --no-legend $arm | grep -q ." || fail "detach $n: arm unit loaded after"
+done
+
+c=$(cursor)
+mv "$lib/microos-pad-hold" "$t/pad-hold.stub"
+install -m 0755 "$tree/usr/libexec/microos/microos-pad-hold" "$lib/"
+mkdir -p "$t/keys"
+echo KEY_PROG4 > "$t/keys/event0"
+systemctl set-environment MICROOS_PAD_STATE="$t/keys"
+plug
+wait_for 15 up || fail "real pad-hold: not up: $(since "$c" | tail -20)"
+wait_for 5 bash -c "journalctl --after-cursor='$c' -o cat -q | grep -qE '^microos-pad-hold: first sample at [0-9]+ monotonic$'" ||
+  fail "real pad-hold: no first sample: $(since "$c" | tail -20)"
+wait_for 5 bash -c "journalctl --after-cursor='$c' -o cat -q | grep -qx 'microos-usb-display-arm: armed'" ||
+  fail "real pad-hold: not armed: $(since "$c" | tail -20)"
+unplug
+wait_for 10 down || fail "real pad-hold: not down after the detach"
+systemctl unset-environment MICROOS_PAD_STATE
+mv -f "$t/pad-hold.stub" "$lib/microos-pad-hold"
+
+hold_mode pass
+plug
+wait_for 15 up || fail "re-pair: not up"
+nonce > /dev/null
+before=$(systemctl show -p ActiveEnterTimestampMonotonic --value $sock)
+id=$(systemctl show -p InvocationID --value $link)
+systemctl try-restart $link
+[[ $(systemctl show -p InvocationID --value $link) != "$id" ]] || fail "re-pair: link not restarted"
+[[ $(nonce) == 53440101* ]] || fail "re-pair: no NONCE after the restart"
+[[ $(systemctl show -p ActiveEnterTimestampMonotonic --value $sock) == "$before" ]] || fail "re-pair: socket restarted"
+
+c=$(cursor)
+systemctl stop udc-dummy.service
+wait_for 10 settled
+is $gadget inactive && is $sock inactive && is $link inactive || fail "dock: gadget $(state $gadget)"
+is $arm active || fail "dock: arm unit $(state $arm)"
+[[ ! -e /run/netns/usbdisp && -z $(ip -o link show | grep -F 02:53:52:54:00:01) ]] || fail "dock: netns or netdev left"
+systemctl start udc-dummy.service
+if wait_for 2 is $gadget active; then fail "undock: the gadget bound again"; fi
+unplug
+
+c=$(cursor)
+: > "$t/ln.block"
+hold_mode pass
+plug
+wait_for 10 bash -c "journalctl --after-cursor='$c' -o cat -q | grep -q 'ln stub: blocked'" || fail "detach during bind: bind not reached"
+[[ -e /run/netns/usbdisp && -n $(ip -o link show | grep -F 02:53:52:54:00:01) ]] || fail "detach during bind: no partial bind"
+unplug
+wait_for 10 down || fail "detach during bind: not torn down"
+[[ $(systemctl show -p Result --value $gadget) == success ]] || fail "detach during bind: gadget result $(systemctl show -p Result --value $gadget)"
+rm "$t/ln.block"
+
+c=$(cursor)
+hold_mode wait
+plug
+wait_for 10 bash -c "journalctl --after-cursor='$c' -o cat -q | grep -q 'pad-hold stub: start --held KEY_PROG4 1'" || fail "remove in the window: no hold"
+unplug
+wait_for 10 down || fail "remove in the window: not down"
+since "$c" | grep -q "pad-hold stub: killed" || fail "remove in the window: pad-hold not killed"
+
+c=$(cursor)
+hold_mode miss
+plug
+wait_for 10 settled
+systemctl stop --no-block partner-dummy.service
+sleep 0.05
+systemctl start --no-block partner-dummy.service
+wait_for 15 settled
+starts=$(since "$c" | grep -c "pad-hold stub: start")
+echo "re-add 50 ms after a remove: arm $(state $arm), $starts hold starts"
+[[ ! -e /run/microos/usb-display/armed ]] && is $gadget inactive || fail "re-add: something bound"
+unplug
+
+hold_mode pass
+plug
+wait_for 15 up || fail "link fault: not up"
+nonce > /dev/null
+before=$(systemctl show -p ActiveEnterTimestampMonotonic --value $sock)
+mv "$lib/microos-usb-display-link" "$lib/microos-usb-display-link.real"
+printf '#!/bin/sh\nif [ -e /run/usbdisp-test/fault ]; then echo "link stub: fault" >&2; exit 1; fi\nexec %s.real "$@"\n' \
+  "$lib/microos-usb-display-link" > "$lib/microos-usb-display-link"
+chmod 0755 "$lib/microos-usb-display-link"
+: > "$t/fault"
+systemctl stop $link
+c=$(cursor)
+nonce 120 > "$t/client" &
+client=$!
+wait_for 120 bash -c "(( \$(journalctl --after-cursor='$c' -o cat -q | grep -c 'link stub: fault') >= 10 ))" || fail "link fault: 10 failures not reached"
+cleared=$SECONDS
+rm "$t/fault"
+wait "$client"
+took=$(( SECONDS - cleared ))
+[[ $(cut -d' ' -f1 "$t/client") == 53440101 ]] || fail "link fault: no NONCE after the fault cleared: $(cat "$t/client")"
+(( took <= 12 )) || fail "link fault: served $took s after the fault cleared"
+python3 - <(journalctl --after-cursor="$c" -o json -q _PID=1 UNIT=$link) <<'EOF' || fail "link fault: restart delays"
+import json
+import sys
+
+failed = None
+gaps = []
+for line in open(sys.argv[1]):
+    entry = json.loads(line)
+    at, msg = int(entry["__MONOTONIC_TIMESTAMP"]), entry["MESSAGE"]
+    if msg.endswith("Failed with result 'exit-code'."):
+        failed = at
+    elif "Scheduled restart job, restart counter is at " in msg and failed is not None:
+        n = int(msg.rsplit(" ", 1)[1].rstrip("."))
+        gaps.append((n, (at - failed) / 1e6))
+        failed = None
+want = {n: 2.0 if n <= 1 else 10.0 if n > 3 else 2 * 5 ** ((n - 1) / 3) for n, _ in gaps}
+print("restart delays", [(n, round(g, 3), round(want[n], 3)) for n, g in gaps])
+sys.exit(0 if len(gaps) >= 9 and all(want[n] - 0.05 <= g <= want[n] + 0.75 for n, g in gaps) else 1)
+EOF
+[[ $(systemctl show -p ActiveEnterTimestampMonotonic --value $sock) == "$before" ]] && is $sock active ||
+  fail "link fault: the socket restarted or left listening"
+[[ -z $(systemctl list-units --failed --plain --no-legend 'microos-usb-display*') ]] ||
+  fail "link fault: failed units $(systemctl list-units --failed --plain --no-legend 'microos-usb-display*')"
+mv "$lib/microos-usb-display-link.real" "$lib/microos-usb-display-link"
+unplug
+
+c=$(cursor)
+echo fail2 > "$t/modprobe.mode"
+rm -f "$t/modprobe.count"
+hold_mode pass
+plug
+wait_for 20 up || fail "bind fails twice: not up: $(since "$c" | tail -20)"
+[[ $(since "$c" | grep -c "modprobe stub: fail") == 2 ]] || fail "bind fails twice: $(since "$c" | grep -c 'modprobe stub: fail') failures"
+unplug
+wait_for 10 down || fail "bind fails twice: not down after the detach"
+rm "$t/modprobe.mode"
+
+hold_mode pass
+plug
+wait_for 15 up || fail "unpair: not up"
+rm -f "$key" "$key.new"
+systemctl stop $arm
+wait_for 10 settled
+is $gadget inactive && is $sock inactive && [[ ! -e /run/microos/usb-display/armed ]] || fail "unpair: still bound"
+unplug
+c=$(cursor)
+plug
+wait_for 10 settled
+[[ $(systemctl show -p ConditionResult --value $arm) == no ]] && is $gadget inactive || fail "after unpair: plug bound"
+unplug
+
+user=/usr/lib/systemd/user
+install -d "$user/gamescope-session-plus@.service.d"
+install -m 0644 "$tree/usr/lib/systemd/user/microos-usb-display@.path" "$tree/usr/lib/systemd/user/microos-usb-display@.service" "$user/"
+install -m 0644 "$tree/usr/lib/systemd/user/gamescope-session-plus@.service.d/40-microos-usb-display.conf" \
+  "$user/gamescope-session-plus@.service.d/"
+printf '[Unit]\nDescription=gamescope session %%i stand in\n\n[Service]\nExecStart=/usr/bin/sleep infinity\n' \
+  > "$user/gamescope-session-plus@.service"
+install -m 0755 /dev/null /usr/bin/gamescopevirtual
+cat > "$lib/microos-usb-display" <<'EOF'
+#!/usr/bin/python3
+import os
+import socket
+import time
+
+addr = os.environ["NOTIFY_SOCKET"]
+while True:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+        s.sendto(b"WATCHDOG=1", "\0" + addr[1:] if addr[0] == "@" else addr)
+    time.sleep(1)
+EOF
+chmod 0755 "$lib/microos-usb-display"
+xdg=$(mktemp -d)
+out=$(XDG_RUNTIME_DIR=$xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no microos-usb-display@steam.path \
+  microos-usb-display@steam.service gamescope-session-plus@steam.service 2>&1) || fail "verify --user: $out"
+! grep -qi "ordering cycle" <<< "$out" || fail "verify --user: $out"
+systemctl start user@1000.service
+us() { runuser -u micro -- env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user "$@"; }
+ustate() { us show -p ActiveState --value "$1"; }
+: > /run/microos/usb-display/session.sock
+us start gamescope-session-plus@x.service
+wait_for 10 bash -c "[[ \$(runuser -u micro -- env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user show -p ActiveState --value microos-usb-display@x.service) == active ]]" ||
+  fail "session template: part $(ustate microos-usb-display@x.service), path $(ustate microos-usb-display@x.path)"
+[[ $(us show -p ControlGroup --value microos-usb-display@x.service) == /user.slice/user-1000.slice/user@1000.service/app.slice/microos-usb-display@x.service ]] ||
+  fail "session template: cgroup $(us show -p ControlGroup --value microos-usb-display@x.service)"
+kill "$(us show -p MainPID --value gamescope-session-plus@x.service)"
+wait_for 10 bash -c "[[ \$(runuser -u micro -- env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user show -p ActiveState --value microos-usb-display@x.path) == inactive ]]" ||
+  fail "session exit: path $(ustate microos-usb-display@x.path)"
+wait_for 10 bash -c "[[ \$(runuser -u micro -- env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user show -p ActiveState --value microos-usb-display@x.service) == inactive ]]" ||
+  fail "session exit: part $(ustate microos-usb-display@x.service)"
+if wait_for 3 bash -c "[[ \$(runuser -u micro -- env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user show -p ActiveState --value microos-usb-display@x.service) != inactive ]]"; then
+  fail "session exit: the part started again"
+fi
+[[ $(us show -p NRestarts --value microos-usb-display@x.service) == 0 ]] || fail "session exit: the part restarted"
+rm /run/microos/usb-display/session.sock
+
+props=()
+while IFS= read -r l; do
+  props+=(-p "$l")
+done < <(grep -E '^(NoNewPrivileges|SystemCallArchitectures|MemoryMax|RestrictAddressFamilies)=' "$user/microos-usb-display@.service")
+(( ${#props[@]} == 8 )) || fail "session part restrictions: ${props[*]}"
+out=$(systemd-run --wait --pipe --quiet --uid=micro "${props[@]}" python3 - "$tree/usr/libexec/microos/microos-usb-display" <<'EOF' 2>&1
+import importlib.machinery
+import importlib.util
+import socket
+import sys
+
+try:
+    socket.socket(socket.AF_INET)
+    print("inet allowed")
+except OSError:
+    print("inet refused")
+loader = importlib.machinery.SourceFileLoader("part", sys.argv[1])
+d = importlib.util.module_from_spec(importlib.util.spec_from_loader("part", loader))
+loader.exec_module(d)
+d.Gst.init(None)
+d.source = lambda: d.Gst.ElementFactory.make("videotestsrc")
+pipe, sink = d.pipeline(d.FMT_JPEG)
+pipe.set_state(d.Gst.State.PLAYING)
+sample = sink.emit("try-pull-sample", 5 * d.Gst.SECOND)
+pipe.set_state(d.Gst.State.NULL)
+print("jpeg", d.jpeg_frame(sample)[:2].hex() if sample else "none")
+EOF
+)
+[[ $out == $'inet refused\njpeg ffd8' ]] || fail "session part pipeline under the unit's address families: $out"
+
+head -c 32 /dev/urandom > "$key"
+chmod 600 "$key"
+hold_mode pass
+plug
+wait_for 15 up || fail "final armed plug: not up"
+nonce > /dev/null
+is $link active || fail "final armed plug: link $(state $link)"
+[[ $(stat -c '%a %U %G %F' /run/microos/usb-display/session.sock) == "660 root micro socket" ]] ||
+  fail "session.sock: $(stat -c '%a %U %G %F' /run/microos/usb-display/session.sock)"
+connect='
+import socket
+
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(5)
+try:
+    s.connect("/run/microos/usb-display/session.sock")
+except PermissionError:
+    print("refused")
+else:
+    print(s.recv(1))
+'
+out=$(setpriv --reuid=65534 --regid=65534 --clear-groups python3 -c "$connect" 2>&1)
+[[ $out == refused ]] || fail "session.sock as nobody: $out"
+c=$(cursor)
+out=$(runuser -u micro -- python3 -c "$connect" 2>&1)
+[[ $out == "b''" ]] || fail "session.sock as micro outside a session part: $out"
+wait_for 5 bash -c "journalctl --after-cursor='$c' -o cat -q | grep -qx 'microos-usb-display-link: closing a session connection that is not a microos-usb-display@ unit of micro'" ||
+  fail "session.sock as micro outside a session part: not refused by the link: $(since "$c" | tail -5)"
+install -m 0755 "$tree/usr/libexec/microos/microos-usb-display" "$lib/"
+c=$(cursor)
+us start gamescope-session-plus@x.service
+wait_for 15 bash -c "journalctl --after-cursor='$c' -o cat -q | grep -qx 'microos-usb-display-link: session x connected'" ||
+  fail "real session part: not connected: $(since "$c" | tail -20)"
+kill "$(us show -p MainPID --value gamescope-session-plus@x.service)"
+wait_for 10 bash -c "journalctl --after-cursor='$c' -o cat -q | grep -q '^microos-usb-display-link: session x ended: '" ||
+  fail "real session part: not ended: $(since "$c" | tail -20)"
+wait_for 10 bash -c "[[ \$(runuser -u micro -- env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user show -p ActiveState --value microos-usb-display@x.service) == inactive ]]" ||
+  fail "real session part: $(ustate microos-usb-display@x.service) after the session exit"
+(( rc == 0 )) && echo "usb-display units: ok"
+exit "$rc"

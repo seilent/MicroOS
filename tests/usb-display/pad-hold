@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+printf 'start %s\n' "$*" >> "$STUB_DIR/hold.log"
+finish() { echo done 1<> "$STUB_DIR/hold.done"; }
+trap 'echo killed >> "$STUB_DIR/hold.log"; finish; exit 143' TERM
+exec 3<> "$STUB_DIR/hold.rc" 4<> "$STUB_DIR/hold.started"
+echo started >&4
+rc=""
+read -r rc <&3
+echo "exit $rc" >> "$STUB_DIR/hold.log"
+finish
+exit "$rc"
