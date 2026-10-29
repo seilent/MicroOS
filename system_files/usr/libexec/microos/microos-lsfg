@@ -1,0 +1,588 @@
+#!/usr/bin/python3
+import copy
+import fcntl
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import time
+
+sys.dont_write_bytecode = True
+HERE = os.path.dirname(os.path.realpath(__file__))
+SHARE = os.path.normpath(os.path.join(HERE, "..", "..", "share", "microos"))
+sys.path.insert(0, os.path.join(SHARE, "python"))
+import microos_steam as ms
+
+ME = "microos-lsfg"
+APP = 993090
+URL = f"steam://install/{APP}"
+STEAMID = 76561197960265728
+BRANCHES = os.path.join(SHARE, "lsfg", "branches.json")
+DLL = "steamapps/common/Lossless Scaling/Lossless.dll"
+BUDGET = 2.0
+LOCK_WAIT = 30.0
+GAP = 20 * 60
+SENDS = 3
+SEND_TIMEOUT = 10
+LOG_LIMIT = 8 << 20
+SMALL = 64 << 10
+FULLY_INSTALLED = 4
+EXCLUDED = {"Pending": 0x04, "Expired": 0x08, "CancelledByUser": 0x10, "CancelledByAdmin": 0x20,
+            "CancelledByFriendlyFraudLock": 0x400, "NotActivated": 0x800, "PendingRefund": 0x2000,
+            "CancelledByPartner": 0x40000, "NonPermanent": 0x80000}
+MASK = sum(EXCLUDED.values())
+HANDLED = re.compile(re.escape(f'ExecuteSteamURL: "{URL}"'.encode()))
+TIMER = "microos-lsfg-retry.timer"
+OWNED = ("yes", "no", "unknown")
+INSTALL = ("none", "installing", "installed")
+RESULTS = ("sent", "no-client", "game-running", "not-owned", "ownership-unknown", "installed")
+BOOT = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+DEFAULT = {"version": 1, "owned": "unknown", "install": "none", "library": None, "branch": None, "branch_ok": None,
+           "default_internal": None, "user_layer": False,
+           "send": {"auto_sends": 0, "last_boot": None, "last_mono": None, "result": None, "auto_done": False,
+                    "log_mark": None}}
+
+
+def log(msg):
+    print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+
+
+def opened(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        return os.fstat(fd)
+    finally:
+        os.close(fd)
+
+
+def regular(path):
+    try:
+        return stat.S_ISREG(opened(path).st_mode)
+    except OSError:
+        return False
+
+
+def paths():
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    state = os.environ.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state")
+    data = os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
+    return home, data, os.path.join(home, ".local", "share", "Steam"), os.path.join(state, ME)
+
+
+def kind(value, types, allowed=None):
+    if type(value) not in types:
+        return False
+    return allowed is None or value in allowed
+
+
+def load(sdir):
+    st = copy.deepcopy(DEFAULT)
+    try:
+        data, _ = ms.vdf.read(f"{sdir}/state.json", SMALL)
+        value = json.loads(data)
+    except FileNotFoundError:
+        return st, False
+    except (OSError, ValueError, RecursionError) as e:
+        log(f"state.json unreadable, {e}, starting over")
+        return st, False
+    if not isinstance(value, dict):
+        log("state.json is not an object, starting over")
+        return st, False
+    checks = {"owned": ((str,), OWNED), "install": ((str,), INSTALL), "library": ((str, type(None)), None),
+              "branch": ((str, type(None)), None), "branch_ok": ((bool, type(None)), None),
+              "default_internal": ((bool, type(None)), None), "user_layer": ((bool,), None)}
+    for key, (types, allowed) in checks.items():
+        if key in value and kind(value[key], types, allowed):
+            st[key] = value[key]
+    send = value.get("send")
+    s = st["send"]
+    if not isinstance(send, dict):
+        if "send" in value:
+            log(f"state.json send is {type(send).__name__}, not an object, counted as {SENDS} sends")
+        else:
+            log(f"state.json has no send, counted as {SENDS} sends")
+        s["auto_sends"] = SENDS
+        send = {}
+    elif "auto_sends" not in send:
+        log(f"state.json send has no auto_sends, counted as {SENDS}")
+        s["auto_sends"] = SENDS
+    elif kind(send["auto_sends"], (int,)) and 0 <= send["auto_sends"] <= SENDS:
+        s["auto_sends"] = send["auto_sends"]
+    else:
+        log(f"state.json send.auto_sends {send['auto_sends']!r} out of range, counted as {SENDS}")
+        s["auto_sends"] = SENDS
+    if isinstance(send.get("last_boot"), str) and BOOT.fullmatch(send["last_boot"]):
+        s["last_boot"] = send["last_boot"]
+    if kind(send.get("last_mono"), (int, float)) and send["last_mono"] >= 0:
+        s["last_mono"] = send["last_mono"]
+    if kind(send.get("result"), (str,), RESULTS):
+        s["result"] = send["result"]
+    done = send.get("auto_done", False)
+    if done is not False:
+        if done is not True:
+            log(f"state.json send.auto_done {done!r} is not a bool, counted as true")
+        s["auto_done"] = True
+    mark = send.get("log_mark")
+    if isinstance(mark, list) and len(mark) == 2 and all(kind(x, (int,)) and x >= 0 for x in mark):
+        s["log_mark"] = mark
+    return st, value == st
+
+
+def save(sdir, st):
+    path = f"{sdir}/state.json"
+    tmp = f"{path}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as f:
+            fd = -1
+            json.dump(st, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.rename(tmp, path)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    dfd = os.open(sdir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+
+
+def take_lock(sdir):
+    path = f"{sdir}/lock"
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    end = time.monotonic() + LOCK_WAIT
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() > end:
+                os.close(fd)
+                return None
+            time.sleep(0.05)
+
+
+def accounts(root, deadline):
+    try:
+        data, _ = ms.vdf.read(f"{root}/config/loginusers.vdf", 1 << 20, deadline)
+        users = ms.vdf.get(ms.vdf.loads(data.decode("utf-8", "replace"), deadline), "users")
+    except FileNotFoundError:
+        return [], None, "no config/loginusers.vdf"
+    except TimeoutError:
+        raise
+    except (OSError, ValueError) as e:
+        return [], None, f"config/loginusers.vdf: {e}"
+    ids, recent = [], None
+    for sid, user in users.items() if isinstance(users, dict) else ():
+        if not re.fullmatch(r"[0-9]{17}", sid) or not 0 < int(sid) - STEAMID < 1 << 32:
+            continue
+        ids.append(int(sid) - STEAMID)
+        if recent is None and ms.vdf.get(user, "MostRecent") == "1":
+            recent = ids[-1]
+    return ids, recent, None if recent is not None else "no MostRecent account in config/loginusers.vdf"
+
+
+def usable(lic):
+    if lic.get("flags", 0) & MASK:
+        return False
+    limit = lic.get("minute_limit", 0)
+    return limit <= 0 or lic.get("minutes_used", 0) < limit
+
+
+def ownership(root, account, why, deadline):
+    if account is None:
+        return "unknown", why
+    cache = f"userdata/{account}/config/licensecache"
+    try:
+        eresult, lics = ms.licensecache.read(f"{root}/{cache}", account, deadline)
+        if eresult != ms.licensecache.OK:
+            return "unknown", f"{cache}: eresult {eresult}"
+        held = ms.packageinfo.holders(f"{root}/appcache/packageinfo.vdf", APP, deadline)
+    except TimeoutError:
+        raise
+    except FileNotFoundError as e:
+        return "unknown", f"{os.path.relpath(e.filename, root) if e.filename else e} missing"
+    except (OSError, ValueError) as e:
+        return "unknown", str(e).replace(f"{root}/", "")
+    found = [lic for lic in lics if lic.get("package_id") in held]
+    for lic in found:
+        if usable(lic):
+            whose = "own" if lic.get("owner_id") == account else "family"
+            return "yes", f"{whose} license, package {lic['package_id']}"
+    if found:
+        flags = sorted({n for lic in found for n, v in EXCLUDED.items() if lic.get("flags", 0) & v})
+        return "no", f"license flags {' '.join(flags)}" if flags else "minute limit used up"
+    return "no", f"no license for a package listing {APP}"
+
+
+def install_state(root, deadline):
+    try:
+        libs = ms.libraries.library_paths(root, deadline)
+    except TimeoutError:
+        raise
+    except (OSError, ValueError) as e:
+        log(f"steamapps/libraryfolders.vdf: {e}, only the internal library is read")
+        libs = [root]
+    path = ms.libraries.app_manifest(libs, APP)
+    if path is None:
+        return {"install": "none", "library": None, "branch": None}, libs
+    lib = path.removesuffix(f"/steamapps/appmanifest_{APP}.acf")
+    try:
+        data, _ = ms.vdf.read(path, ms.libraries.LIMIT, deadline)
+        app = ms.vdf.get(ms.vdf.loads(data.decode("utf-8", "replace"), deadline), "AppState")
+        flags = ms.vdf.get(app, "StateFlags")
+        branch = ms.libraries.installed_branch(path, deadline)
+    except TimeoutError:
+        raise
+    except (OSError, ValueError) as e:
+        log(f"{path}: {e}, counted as installing")
+        flags, branch = None, None
+    done = isinstance(flags, str) and flags.isdigit() and int(flags) & FULLY_INSTALLED
+    state = "installed" if done and regular(f"{lib}/{DLL}") else "installing"
+    return {"install": state, "library": lib, "branch": branch}, libs
+
+
+def working_branches():
+    try:
+        data, _ = ms.vdf.read(BRANCHES, SMALL)
+        value = json.loads(data)
+    except (OSError, ValueError) as e:
+        log(f"{BRANCHES}: {e}")
+        return None
+    working = value.get("working") if isinstance(value, dict) else None
+    if not isinstance(working, list) or not all(isinstance(b, str) for b in working):
+        log(f"{BRANCHES}: no working branch list")
+        return None
+    return set(working)
+
+
+def user_layer(data):
+    d = f"{data}/vulkan/implicit_layer.d"
+    try:
+        with os.scandir(d) as it:
+            return any("LSFGVK" in e.name and e.name.endswith(".json") for e in it)
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        log(f"{d}: {e.strerror}")
+        return False
+
+
+def detect(data, root, st, working):
+    deadline = time.monotonic() + BUDGET
+    fresh = True
+    libs = [root]
+    try:
+        found, libs = install_state(root, deadline)
+        st.update(found)
+    except TimeoutError:
+        log("time budget spent on the install state, kept the last one, no send this run")
+        fresh = False
+    ids, why = [], None
+    try:
+        ids, account, why = accounts(root, deadline)
+        st["owned"], why = ownership(root, account, why, deadline)
+    except TimeoutError:
+        log("time budget spent on the ownership, kept the last one, no send this run")
+        fresh, why = False, None
+    if st["branch"] is None or working is None:
+        st["branch_ok"] = None
+    else:
+        st["branch_ok"] = (st["branch"] or "public") in working
+    st["default_internal"] = None
+    st["user_layer"] = user_layer(data)
+    return fresh, ids, libs, why
+
+
+def boot_id():
+    try:
+        data, _ = ms.vdf.read("/proc/sys/kernel/random/boot_id", 64)
+    except OSError as e:
+        log(f"boot_id: {e}")
+        return None
+    value = data.decode("ascii", "replace").strip()
+    return value if BOOT.fullmatch(value) else None
+
+
+def log_mark(root):
+    try:
+        st = opened(f"{root}/logs/console_log.txt")
+    except OSError:
+        return None
+    return [st.st_ino, st.st_size] if stat.S_ISREG(st.st_mode) else None
+
+
+def handled(root, mark):
+    deadline = time.monotonic() + BUDGET
+    rotated = False
+    for name in ("console_log.txt", "console_log.previous.txt"):
+        path = f"{root}/logs/{name}"
+        try:
+            data, st = ms.vdf.read(path, LOG_LIMIT, deadline, tail=True)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as e:
+            log(f"logs/{name}: {e}")
+            continue
+        base = max(0, st.st_size - LOG_LIMIT)
+        if mark and st.st_ino == mark[0]:
+            start = max(0, mark[1] - base) if mark[1] <= st.st_size else 0
+        elif name == "console_log.txt":
+            start, rotated = 0, mark is not None
+        elif rotated:
+            start = 0
+        else:
+            continue
+        if HANDLED.search(data, start):
+            return True
+    return False
+
+
+def latch(root, st):
+    s = st["send"]
+    if s["auto_done"]:
+        return
+    if st["install"] in ("installing", "installed"):
+        s["auto_done"] = True
+    elif s["auto_sends"] >= SENDS:
+        s["auto_done"] = True
+    elif s["last_mono"] is not None and handled(root, s["log_mark"]):
+        log(f"logs/console_log.txt shows {URL} handled, no more automatic sends")
+        s["auto_done"] = True
+
+
+def retry_wanted(st, working):
+    s = st["send"]
+    return (st["owned"] == "yes" and st["install"] == "none" and not s["auto_done"] and s["auto_sends"] < SENDS
+            and working is not None and "public" in working)
+
+
+def game_running():
+    try:
+        p = subprocess.run(["systemctl", "--user", "list-units", "--type=scope", "--state=active", "--plain",
+                            "--no-legend", "app-steam-app*"], stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return f"systemctl: {e}, cannot tell whether a game runs"
+    if p.returncode != 0:
+        return f"systemctl exit {p.returncode}, cannot tell whether a game runs"
+    return "a game scope is active" if p.stdout.strip() else None
+
+
+def alive(pid):
+    try:
+        data, _ = ms.vdf.read(f"/proc/{pid}/stat", 4096)
+    except OSError:
+        return False
+    return data.rpartition(b")")[2].split()[:1] != [b"Z"]
+
+
+def client_down(home, root):
+    exe = os.path.realpath(f"{root}/steamrtarm64/steam")
+    uid = os.getuid()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            if os.stat(f"/proc/{pid}").st_uid == uid and os.readlink(f"/proc/{pid}/exe") == exe:
+                break
+        except OSError:
+            continue
+    else:
+        return "no steamrtarm64/steam process"
+    try:
+        data, _ = ms.vdf.read(f"{home}/.steam/steam.pid", 64)
+    except FileNotFoundError:
+        return "no ~/.steam/steam.pid"
+    except (OSError, ValueError) as e:
+        return f"~/.steam/steam.pid: {e}"
+    m = re.fullmatch(rb"\s*([0-9]{1,10})\s*", data)
+    if not m or not alive(int(m.group(1))):
+        return "~/.steam/steam.pid names no live process"
+    pipe = f"{home}/.steam/steam.pipe"
+    try:
+        fd = os.open(pipe, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError as e:
+        return f"~/.steam/steam.pipe has no reader ({e.strerror})"
+    try:
+        if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+            return "~/.steam/steam.pipe is not a FIFO"
+    finally:
+        os.close(fd)
+    return None
+
+
+def too_soon(s, boot):
+    if s["last_mono"] is None or (boot is not None and s["last_boot"] != boot):
+        return False
+    gap = time.clock_gettime(time.CLOCK_MONOTONIC) - s["last_mono"]
+    if gap >= GAP:
+        return False
+    log(f"no send: {gap:.0f} s since the last send, under {GAP} s")
+    return True
+
+
+def send(home, root, sdir, st, auto, boot):
+    s = st["send"]
+    why = client_down(home, root)
+    if why:
+        log(f"no send: {why}")
+        s["result"] = "no-client"
+        return False
+    why = game_running()
+    if why:
+        log(f"no send: {why}")
+        s["result"] = "game-running"
+        return False
+    keep = dict(s)
+    s.update(result="sent", last_mono=time.clock_gettime(time.CLOCK_MONOTONIC), last_boot=boot, log_mark=log_mark(root))
+    if auto:
+        s["auto_sends"] += 1
+        s["auto_done"] = s["auto_done"] or s["auto_sends"] >= SENDS
+    try:
+        save(sdir, st)
+    except OSError as e:
+        log(f"no send: state.json not saved, {e}")
+        s.update(keep)
+        return False
+    try:
+        p = subprocess.run(["steam", "-ifrunning", URL], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                           timeout=SEND_TIMEOUT)
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        log(f"steam -ifrunning {URL} still running after {SEND_TIMEOUT} s, counted as sent")
+        rc = 0
+    except OSError as e:
+        log(f"steam: {e}")
+        rc = None
+    if rc != 0:
+        if rc is not None:
+            log(f"steam -ifrunning {URL} exit {rc}")
+        s.update(keep, result="no-client")
+        return True
+    log(f"steam -ifrunning {URL} sent" + (f", automatic send {s['auto_sends']} of {SENDS}" if auto else ""))
+    return True
+
+
+def escape_path(path):
+    parts = [p for p in path.split("/") if p not in ("", ".")]
+    while parts[:1] == [".."]:
+        parts.pop(0)
+    if ".." in parts:
+        return None
+    if not parts:
+        return "-"
+    out = []
+    for i, ch in enumerate("/".join(parts)):
+        if ch == "/":
+            out.append("-")
+        elif ch.isascii() and (ch.isalnum() or ch in ":_.") and not (i == 0 and ch == "."):
+            out.append(ch)
+        else:
+            out.extend(f"\\x{b:02x}" for b in ch.encode())
+    return "".join(out)
+
+
+def systemctl(*args):
+    try:
+        p = subprocess.run(["systemctl", "--user", *args], stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                           timeout=10)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log(f"systemctl {' '.join(args)}: {e}")
+        return
+    if p.returncode != 0:
+        log(f"systemctl {' '.join(args)}: exit {p.returncode} {p.stderr.strip()}")
+
+
+def watch(ids, libs):
+    units = [f"microos-lsfg-account@{a}.path" for a in ids]
+    for lib in libs:
+        name = escape_path(lib)
+        if name is None:
+            log(f"{lib}: a .. component, not watched")
+        else:
+            units.append(f"microos-lsfg-library@{name}.path")
+    units = [u for u in units if len(u) <= 255]
+    if units:
+        systemctl("start", "--no-block", "--job-mode=fail", *units)
+
+
+def describe(old, new, why):
+    out = []
+    for key in DEFAULT:
+        if key == "send":
+            for k in DEFAULT["send"]:
+                if old["send"][k] != new["send"][k]:
+                    out.append(f"send.{k} {old['send'][k]} -> {new['send'][k]}")
+        elif old[key] != new[key]:
+            out.append(f"{key} {old[key]} -> {new[key]}" + (f" ({why})" if key == "owned" and why else ""))
+    return ", ".join(out)
+
+
+def main():
+    mode = sys.argv[1:]
+    if mode not in (["detect"], ["send", "auto"], ["send", "manual"]):
+        log(f"usage: {ME} detect | send auto|manual")
+        return 2
+    home, data, root, sdir = paths()
+    os.makedirs(sdir, mode=0o700, exist_ok=True)
+    fd = take_lock(sdir)
+    if fd is None:
+        log(f"{sdir}/lock held for {LOCK_WAIT:.0f} s, nothing done")
+        return 1
+    try:
+        old, clean = load(sdir)
+        st = copy.deepcopy(old)
+        working = working_branches()
+        fresh, ids, libs, why = detect(data, root, st, working)
+        latch(root, st)
+        s = st["send"]
+        boot = boot_id()
+        wrote = False
+        if mode == ["detect"]:
+            watch(ids, libs)
+            if fresh and retry_wanted(st, working) and s["auto_sends"] == 0 and not too_soon(s, boot):
+                wrote = send(home, root, sdir, st, True, boot)
+        elif mode[1] == "auto":
+            if fresh and retry_wanted(st, working) and not too_soon(s, boot):
+                wrote = send(home, root, sdir, st, True, boot)
+        elif not fresh:
+            log("no send: Steam files not read this run")
+        elif st["owned"] == "no":
+            s["result"] = "not-owned"
+        elif st["owned"] != "yes":
+            s["result"] = "ownership-unknown"
+        elif st["install"] != "none":
+            s["result"] = "installed"
+        else:
+            wrote = send(home, root, sdir, st, False, boot)
+        if wrote or st != old or not clean:
+            save(sdir, st)
+            change = describe(old, st, why)
+            if change:
+                log(change)
+        if fresh and retry_wanted(st, working):
+            systemctl("start", "--no-block", "--job-mode=fail", TIMER)
+        elif fresh:
+            systemctl("stop", "--no-block", TIMER)
+    finally:
+        os.close(fd)
+    return 0
+
+
+try:
+    rc = main()
+except Exception as e:
+    log(f"error: {type(e).__name__}: {e}")
+    rc = 1
+sys.exit(rc)

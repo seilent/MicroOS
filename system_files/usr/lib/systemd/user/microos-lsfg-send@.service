@@ -1,0 +1,13 @@
+[Unit]
+Description=Lossless Scaling install request (%i)
+Requisite=gamescope-session-plus@steam.service
+After=gamescope-session-plus@steam.service
+StopPropagatedFrom=gamescope-session-plus@steam.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+StateDirectory=microos-lsfg
+StateDirectoryMode=0700
+TimeoutStartSec=90
+ExecStart=/usr/libexec/microos/microos-lsfg send %i

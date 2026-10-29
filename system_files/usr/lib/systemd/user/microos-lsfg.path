@@ -1,0 +1,11 @@
+[Unit]
+Description=Steam login and package files for Lossless Scaling detection
+DefaultDependencies=no
+BindsTo=gamescope-session-plus@steam.service
+After=gamescope-session-plus@steam.service
+
+[Path]
+PathChanged=%h/.local/share/Steam/config/loginusers.vdf
+PathChanged=%h/.local/share/Steam/userdata
+PathChanged=%h/.local/share/Steam/appcache/packageinfo.vdf
+Unit=microos-lsfg.service
