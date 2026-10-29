@@ -186,7 +186,8 @@ grep -qE '^ *provides *= *monitor\.microos\.dp-sink$' /usr/share/wireplumber/wir
 grep -qE '^ *monitor\.microos\.dp-sink *= *optional$' /usr/share/wireplumber/wireplumber.conf.d/53-microos-dp.conf \
   || fail "53-microos-dp.conf does not add monitor.microos.dp-sink to the main profile as optional"
 
-rpm -q python3-gobject python3-evdev upower >/dev/null || fail "steam service rpms missing"
+rpm -q python3-gobject python3-evdev upower gstreamer1 gstreamer1-plugins-base gstreamer1-plugins-good pipewire-gstreamer \
+  >/dev/null || fail "steam service or USB display rpms missing"
 [[ $(rpm -q --qf '%{VENDOR}' steamos-manager) == MicroOS ]] || fail "steamos-manager is not the MicroOS build"
 ! rpm -q iwd >/dev/null 2>&1 || fail "iwd is installed"
 for u in steamos-manager.service upower.service microos-powerd.service microos-vpower.service microsetd.service; do
