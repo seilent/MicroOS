@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import re
@@ -24,14 +25,15 @@ PROFILE = "MICROOS_PROTON_PROFILE"
 YIELDED = "MICROOS_PROTON_YIELDED"
 DXVK = "DXVK_CONFIG"
 NTSYNC = "PROTON_NO_NTSYNC"
+NOLSFG = "DISABLE_LSFGVK"
+LSFG_CAP = "VKD3D_FRAME_RATE"
+LSFG_FRAGMENTS = ("dxgi.maxFrameRate", "d3d9.maxFrameRate")
+LSFG_DLL = "steamapps/common/Lossless Scaling/Lossless.dll"
+ABSENT = (errno.ENOENT, errno.ENOTDIR, errno.EACCES, errno.ELOOP, errno.ENAMETOOLONG)
 HINTS = {"FEX_TSOENABLED": "STEAM_FEX_TSOENABLED", "FEX_MULTIBLOCK": "STEAM_FEX_MULTIBLOCK"}
 STEAM_FIELD = ("FEX_TSOENABLED", "FEX_MULTIBLOCK")
 FEX = ("TSOENABLED", "HALFBARRIERTSOENABLED", "VECTORTSOENABLED", "MEMCPYSETTSOENABLED", "MULTIBLOCK", "MAXINST",
        "X87REDUCEDPRECISION", "SMCCHECKS", "VOLATILEMETADATA", "MONOHACKS")
-FEATURES = {
-    "fex": {"names": {f"FEX_{n}": r"[0-9a-z]{1,16}" for n in FEX}},
-    "wine": {"names": {NTSYNC: r"[01]"}},
-}
 
 
 class Bad(Exception):
@@ -130,6 +132,50 @@ class Probe:
             self.modules[name] = code(os.path.join(MODULES, f"{name}.py"), {"vdf": self.modules["vdf"]})
         self.check()
         return self.modules[name]
+
+
+def lsfg_ready(probe):
+    if NOLSFG in probe.environ or NOLSFG in probe.local:
+        return False, {}, "disabled-by-env"
+    home = probe.environ.get("HOME", "")
+    if not home.startswith("/"):
+        raise Bad(f"HOME {home!r} is not an absolute path")
+    probe.count()
+    for lib in probe.steam("libraries").library_paths(f"{home.rstrip('/')}/.local/share/Steam", probe.deadline):
+        dll = f"{lib}/{LSFG_DLL}"
+        try:
+            if stat.S_ISREG(probe.stat(dll).st_mode):
+                capped = any(n in probe.environ or n in probe.local for n in (DXVK, LSFG_CAP))
+                return True, {"LSFGVK_DLL_PATH": dll}, "cap-overridden" if capped else "on"
+        except OSError as e:
+            if e.errno not in ABSENT:
+                raise
+    return False, {}, "no-dll"
+
+
+def lsfg_loads(env):
+    return env.get("LSFGVK_ENV") == "1" and NOLSFG not in env
+
+
+FEATURES = {
+    "fex": {"names": {f"FEX_{n}": r"[0-9a-z]{1,16}" for n in FEX}},
+    "wine": {"names": {NTSYNC: r"[01]"}},
+    "lsfg": {
+        "names": {NOLSFG: r"1", "LSFGVK_ENV": r"1", "LSFGVK_MULTIPLIER": r"[23]",
+                  "LSFGVK_FLOW_SCALE": r"(0\.25|0\.5|0\.75|1\.0)", "LSFGVK_PERFORMANCE_MODE": r"[01]",
+                  "LSFGVK_PRESENT_WAIT_OFFSET": r"[0-8]", LSFG_CAP: r"[0-9]{1,3}"},
+        "fragments": {k: r"[0-9]{1,3}" for k in LSFG_FRAGMENTS},
+        "tokens": {"lsfg-ready": lsfg_ready},
+        "final": ("lsfg-ready", lsfg_loads),
+        "state": "MICROOS_LSFG",
+        "states": ("off",),
+        "dropped": "cap-overridden",
+        "overrides": (NOLSFG, LSFG_CAP),
+        "groups": ((frozenset({NOLSFG}), False),
+                   (frozenset({"LSFGVK_ENV", "LSFGVK_MULTIPLIER", "LSFGVK_FLOW_SCALE", "LSFGVK_PERFORMANCE_MODE",
+                               "LSFGVK_PRESENT_WAIT_OFFSET"}), True)),
+    },
+}
 
 
 def env_map(d, what):
@@ -237,15 +283,16 @@ def token(feature, fname, name, environ, local):
         return False, {}, "check-failed"
 
 
-def groups_out(local, below):
+def groups_out(present, below, final=None):
     out = set()
     for feature in FEATURES.values():
+        loads = feature.get("final", (None, None))[1]
         groups = feature.get("groups", ())
-        for g in groups:
-            if any(n in local for n in g):
-                for other in groups:
+        for g, when in groups:
+            if any(n in present for n in g) and (final is None or loads is None or loads(final) == when):
+                for other, _ in groups:
                     if other is not g:
-                        out.update(n for n in other if n in below and n not in local)
+                        out.update(n for n in other if n in below and n not in present)
     return out
 
 
@@ -263,6 +310,8 @@ def settings(ctx):
     built = {}
     below = set()
     dropped = []
+    unchecked = []
+    tokened = {}
     path = ENV_DIR
     doc = None
 
@@ -272,6 +321,22 @@ def settings(ctx):
 
     def drop(name):
         names.pop(name, None)
+
+    def fall(fname):
+        feature = FEATURES[fname]
+        allow = feature.get("names", {})
+        got, other = tokened.pop(fname)
+        for n in [n for n in names if n in allow]:
+            names.pop(n)
+        for k, v in other.items():
+            if k.startswith("MICROOS_") or k not in allow or not re.fullmatch(allow[k], v):
+                dropped.append(k)
+            else:
+                names[k] = v
+        frags[:] = [f for f in frags if f[0] != fname]
+        for k in got:
+            built.pop(k, None)
+        built_states[feature["state"]] = "disabled-by-env"
 
     try:
         doc, path, state, why = env_file(environ)
@@ -291,9 +356,17 @@ def settings(ctx):
                     dropped.extend([*sec.get("env", {}), *sec.get("otherwise", {}), *sec.get("fallback", {}),
                                     *(f.partition(" = ")[0] for f in sec.get("dxvk", []))])
                     continue
-                use, got, state = True, {}, sec.get("state")
+                state = sec.get("state")
+                if "state" in sec and state not in feature.get("states", ()):
+                    dropped.append(f"{fname}.state")
+                    state = None
+                use, got = True, {}
                 if "requires" in sec:
                     use, got, state = token(feature, fname, sec["requires"], environ, local)
+                    if use and feature.get("final"):
+                        tokened[fname] = got, sec.get("otherwise", {})
+                else:
+                    unchecked.append(fname)
                 state_name = feature.get("state")
                 if state_name and state is not None:
                     built_states[state_name] = state
@@ -318,8 +391,6 @@ def settings(ctx):
                 built.update(got)
             except BaseException as e:
                 fail(f"section {fname}", e)
-        if dropped:
-            say(f"{path}: {len(set(dropped))} names dropped: {', '.join(sorted(set(dropped)))}")
 
         prof = doc.get("profile", {})
         try:
@@ -379,41 +450,55 @@ def settings(ctx):
         except BaseException as e:
             fail("sync rules", e)
 
-    dxvk = None
-    out = set()
-    try:
-        out = groups_out(local, below)
-        kept = [(fname, k, v) for fname, k, v in frags if k not in out]
-        if kept:
-            if DXVK in environ or DXVK in local:
-                for fname in dict.fromkeys(fname for fname, _, _ in kept):
-                    feature = FEATURES[fname]
-                    if feature.get("state") and feature.get("dropped"):
-                        built_states[feature["state"]] = feature["dropped"]
-                say(f"{DXVK} is set already, {len(kept)} fragments dropped")
-            else:
-                dxvk = ";".join(f"{k} = {v}" for _, k, v in kept)
-    except BaseException as e:
-        fail("dxvk", e)
+    overrides = {DXVK}
+    for feature in FEATURES.values():
+        overrides.update(feature.get("overrides", ()))
 
-    env = {}
+    def compose(out):
+        kept = [(fname, k, v) for fname, k, v in frags if k not in out]
+        lost = DXVK in environ or DXVK in local
+        merged = {n: v for n, v in names.items() if n in below and n not in out}
+        merged.update(built)
+        merged.update(local)
+        merged.update((n, v) for n, v in names.items() if n not in below and not (n in overrides and n in local))
+        if kept and not lost:
+            merged[DXVK] = ";".join(f"{k} = {v}" for _, k, v in kept)
+        return merged, kept if lost else []
+
+    env = dict(local)
     try:
-        overrides = {DXVK}
-        for feature in FEATURES.values():
-            overrides.update(feature.get("overrides", ()))
-        for n, v in names.items():
-            if n in below and n not in out:
-                env[n] = v
-        env.update(built)
-        env.update(local)
-        for n, v in names.items():
-            if n not in below and not (n in overrides and n in local):
-                env[n] = v
-        if dxvk:
-            env[DXVK] = dxvk
+        present = environ.keys() | local.keys()
+        out = groups_out(present, below)
+        final = {**compose(out)[0], **environ}
+        fell = [fname for fname in tokened if not FEATURES[fname]["final"][1](final)]
+        for fname in fell:
+            fall(fname)
+        if fell:
+            final = {**compose(out)[0], **environ}
+        env, lost = compose(groups_out(present, below, final))
+        for fname in dict.fromkeys(fname for fname, _, _ in lost):
+            feature = FEATURES[fname]
+            if feature.get("state") and feature.get("dropped"):
+                built_states[feature["state"]] = feature["dropped"]
+        if lost:
+            say(f"{DXVK} is set already, {len(lost)} fragments dropped")
     except BaseException as e:
         fail("merge", e)
         env = dict(local)
+    if dropped:
+        say(f"{path}: {len(set(dropped))} names dropped: {', '.join(sorted(set(dropped)))}")
+    try:
+        final = {**env, **environ}
+        for fname in unchecked:
+            feature = FEATURES[fname]
+            name, loads = feature.get("final", (None, None))
+            if name and loads(final):
+                _, got, state = token(feature, fname, name, environ, local)
+                env.update({k: v for k, v in got.items() if k not in local})
+                if feature.get("state") and state is not None:
+                    built_states[feature["state"]] = state
+    except BaseException as e:
+        fail("final checks", e)
     env.update(built_states)
     env[HOOK] = ",".join(dict.fromkeys(states)) or "ok"
     return {"api": API, "env": env}
