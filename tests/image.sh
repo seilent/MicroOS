@@ -615,6 +615,20 @@ for s in steam microdap microemu; do
       || fail "effective gamescope-session-plus@$s.service $k lacks the shm reap request with the - prefix: $v"
   done
 done
+for s in steam microdap microemu recovery; do
+  unit=$(systemctl --global cat "gamescope-session-plus@$s.service") || fail "systemctl --global cat gamescope-session-plus@$s.service"
+  for k in ExecStart ExecStartPre ExecStopPost; do
+    v=$(awk -v k="$k=" 'index($0, k) == 1 { v = substr($0, length(k) + 1); if (v == "") n = 0; else l[++n] = v }
+      END { for (i = 1; i <= n; i++) print l[i] }' <<< "$unit")
+    if [[ $k == ExecStart ]]; then
+      [[ $v == '/usr/share/gamescope-session-plus/gamescope-session-plus %i' ]] \
+        || fail "effective gamescope-session-plus@$s.service ExecStart does not pass the instance as the client: $v"
+    else
+      grep -qxF -- '-/usr/bin/rm -f %t/gamescope-session-plus/%i.env' <<< "$v" \
+        || fail "effective gamescope-session-plus@$s.service $k lacks the Wayland display file removal: $v"
+    fi
+  done
+done
 on=$'[Unit]\nOnSuccess=microos-shm-reap-request.service\nOnFailure=microos-shm-reap-request.service'
 for d in app-steam-.scope.d microemu-game.scope.d; do
   [[ $(< "/usr/lib/systemd/user/$d/50-microos-shm-reap.conf") == "$on" ]] || fail "$d shm reap drop-in"

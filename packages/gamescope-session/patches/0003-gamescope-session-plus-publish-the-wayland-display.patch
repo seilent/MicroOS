@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 30 Oct 2026 12:00:00 +0000
+Subject: [PATCH] gamescope-session-plus: publish the Wayland display per
+ session
+
+---
+ usr/share/gamescope-session-plus/gamescope-session-plus | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/usr/share/gamescope-session-plus/gamescope-session-plus b/usr/share/gamescope-session-plus/gamescope-session-plus
+index 683870e..3ff162f 100755
+--- a/usr/share/gamescope-session-plus/gamescope-session-plus
++++ b/usr/share/gamescope-session-plus/gamescope-session-plus
+@@ -295,12 +295,18 @@ if [[ "$short_session_count" -ge "$short_session_count_before_reset" ]]; then
+ fi
+ 
+ # Start gamescope compositor and background it
++display_file="$XDG_RUNTIME_DIR/gamescope-session-plus/${CLIENT}.env"
++rm -f "$display_file"
+ $GAMESCOPECMD &
+ gamescope_pid="$!"
+ 
+ if read -r -t "${GAMESCOPE_STARTUP_TIMEOUT:-5}" response_x_display response_wl_display <>"$socket"; then
+ 	export DISPLAY="$response_x_display"
+ 	export GAMESCOPE_WAYLAND_DISPLAY="$response_wl_display"
++	if mkdir -p -m 0755 "${display_file%/*}" && display_tmp=$(mktemp "$display_file.XXXXXX"); then
++		printf 'GAMESCOPE_WAYLAND_DISPLAY=%s\n' "$response_wl_display" >"$display_tmp" &&
++			chmod 0644 "$display_tmp" && mv -fT "$display_tmp" "$display_file" || rm -f "$display_tmp"
++	fi
+ 	# We're done!
+ else
+ 	echo "gamescope failed" >>"$short_session_tracker_file"
+@@ -356,6 +362,8 @@ fi
+ 
+ post_client_shutdown
+ 
++rm -f "$display_file"
++
+ # When the client exits, kill gamescope nicely
+ kill $gamescope_pid
+ 
+-- 
+2.43.0
+

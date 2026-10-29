@@ -10,6 +10,7 @@ URL:            https://github.com/OpenGamingCollective/gamescope-session
 Source0:        %{url}/archive/%{commit}/%{name}-%{commit}.tar.gz
 Patch0:         0001-device-quirks-add-ayaneo-pocket-micro2.patch
 Patch1:         0002-gamescope-session-plus-startup-timeout.patch
+Patch2:         0003-gamescope-session-plus-publish-the-wayland-display.patch
 Vendor:         MicroOS
 BuildArch:      noarch
 BuildRequires:  systemd-rpm-macros
