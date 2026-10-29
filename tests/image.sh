@@ -774,6 +774,24 @@ grep -qx 'Before=display-manager.service' /usr/lib/systemd/system/microos-vk-fea
   || fail "microos-vk-features.service is not before display-manager.service"
 SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no microos-vk-features.service \
   || fail "systemd-analyze verify microos-vk-features.service"
+lsfg=/usr/libexec/microos/microos-lsfg
+[[ -f $lsfg && ! -L $lsfg && $(stat -c '%a %U %G' "$lsfg") == '755 root root' ]] || fail "$lsfg missing, mode or owner"
+lsfgdata=/usr/share/microos/lsfg/branches.json
+[[ -f $lsfgdata && $(stat -c '%a %U %G' "$lsfgdata") == '644 root root' ]] || fail "$lsfgdata missing, mode or owner"
+python3 -c 'import json, sys; assert "public" in json.load(open(sys.argv[1]))["working"]' "$lsfgdata" \
+  || fail "$lsfgdata does not name the public branch"
+XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no \
+  microos-lsfg.service microos-lsfg-send@auto.service microos-lsfg-send@manual.service microos-lsfg-retry.timer \
+  microos-lsfg.path microos-lsfg-account@424242.path "microos-lsfg-library@$(systemd-escape --path /var/home/micro/.local/share/Steam).path" \
+  || fail "systemd-analyze verify --user microos-lsfg units"
+systemctl --global cat gamescope-session-plus@steam.service | grep -qxF 'Wants=microos-lsfg.path microos-lsfg.service' \
+  || fail "gamescope-session-plus@steam.service does not want microos-lsfg.path and microos-lsfg.service"
+mkdir -p "$tmp/lsfg-home"
+HOME=$tmp/lsfg-home "$lsfg" detect > "$tmp/lsfg-out" 2> "$tmp/lsfg-err" || fail "$lsfg detect exit $?: $(cat "$tmp/lsfg-err")"
+[[ ! -s $tmp/lsfg-out ]] || fail "$lsfg detect prints on stdout"
+python3 -c 'import json, sys; s = json.load(open(sys.argv[1])); assert s["owned"] == "unknown" and s["install"] == "none"' \
+  "$tmp/lsfg-home/.local/state/microos-lsfg/state.json" || fail "$lsfg detect on an empty home: $(cat "$tmp/lsfg-err")"
+>>>>>>> 974643b (lsfg: detect lossless scaling and start its install)
 protonhook=/usr/share/microos/proton
 for f in hook.py user_settings_stub.py; do
   [[ -f $protonhook/$f && ! -L $protonhook/$f && $(stat -c '%a %U %G' "$protonhook/$f") == '644 root root' ]] \

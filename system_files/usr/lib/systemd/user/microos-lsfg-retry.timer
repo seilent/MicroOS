@@ -1,0 +1,11 @@
+[Unit]
+Description=Lossless Scaling install retry
+DefaultDependencies=no
+Requisite=gamescope-session-plus@steam.service
+After=gamescope-session-plus@steam.service
+StopPropagatedFrom=gamescope-session-plus@steam.service
+
+[Timer]
+OnActiveSec=5min
+OnUnitActiveSec=5min
+Unit=microos-lsfg-send@auto.service
