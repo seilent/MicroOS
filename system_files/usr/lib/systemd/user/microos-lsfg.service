@@ -1,0 +1,13 @@
+[Unit]
+Description=Lossless Scaling ownership and install state
+BindsTo=gamescope-session-plus@steam.service
+After=gamescope-session-plus@steam.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+StateDirectory=microos-lsfg
+StateDirectoryMode=0700
+TimeoutStartSec=90
+Nice=10
+ExecStart=/usr/libexec/microos/microos-lsfg detect
