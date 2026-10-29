@@ -567,6 +567,21 @@ done
 rc=0
 env HOME="$tmp/steamvr" steamvr launch >/dev/null 2>&1 || rc=$?
 [[ $rc == 1 ]] || fail "steamvr launch exited $rc, not 1"
+[[ $(rpm -q --qf '%{VENDOR}' microos-android-guestos) == MicroOS ]] || fail "microos-android-guestos is not the MicroOS build"
+guestos=/usr/share/guestos/android
+[[ -d $guestos && ! -L $guestos ]] || fail "$guestos missing"
+while IFS= read -r f; do
+  owners=$(rpm -qf --qf '%{NAME}\n' "$f" | sort -u | paste -sd' ' || true)
+  [[ $owners == microos-android-guestos ]] || fail "$f is owned by $owners"
+done < <(find "$guestos")
+! grep -rqi armada "$guestos" /usr/share/vulkan/guestos-android || fail "guestos files name Armada"
+mapfile -t fzid < <(find /usr/share/vulkan -name '*.json' -type f -print0 | xargs -0 jq -r '.. | objects
+  | select(.library_path? | type == "string" and endswith("libVkLayer_fossilize.so")) | .name?' | grep -v '^null$')
+[[ ${#fzid[@]} == 1 && ${fzid[0]} == VK_LAYER_fossilize ]] || fail "Fossilize layer ids under /usr/share/vulkan: ${fzid[*]}"
+fzlib=$(jq -r .layer.library_path /usr/share/vulkan/guestos-android/VkLayer_fossilize.json)
+[[ $fzlib == "$guestos/vendor/vulkan_layers/libVkLayer_fossilize.so" && -f $fzlib ]] || fail "Fossilize layer JSON names $fzlib"
+[[ $(< "$guestos/vendor/etc/init/microos-noubwc.rc") == $'on early-init\n    setprop debug.mesa.tu.debug noubwc' ]] \
+  || fail "microos-noubwc.rc content"
 
 seedrpm=(/seed-rpm/microos-steam-seed-*.aarch64.rpm)
 [[ ${#seedrpm[@]} -eq 1 && -f ${seedrpm[0]} ]] || fail "expected one microos-steam-seed RPM in /seed-rpm"

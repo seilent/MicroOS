@@ -26,6 +26,7 @@ own=(
   plymouth/plymouth-graphics-libs
   plymouth/plymouth-plugin-script
   plymouth/plymouth-scripts
+  android-guestos/microos-android-guestos
 )
 
 own_rpm() {
