@@ -1,0 +1,19 @@
+[Unit]
+Description=USB display capture and touch for the %i session
+Requisite=gamescope-session-plus@%i.service
+After=gamescope-session-plus@%i.service
+PartOf=microos-usb-display@%i.path
+StartLimitIntervalSec=0
+
+[Service]
+Slice=app.slice
+ExecStart=/usr/libexec/microos/microos-usb-display %i
+Restart=on-failure
+RestartSec=2
+RestartSteps=3
+RestartMaxDelaySec=10
+WatchdogSec=10
+NoNewPrivileges=yes
+SystemCallArchitectures=native
+MemoryMax=512M
+RestrictAddressFamilies=AF_UNIX AF_NETLINK

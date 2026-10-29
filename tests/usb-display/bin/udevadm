@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+if [[ $1 == verify ]]; then
+  exec /usr/bin/udevadm "$@"
+fi
+printf 'udevadm %s\n' "${*//$MICROOS_SYSFS/}" >> "$STUB_LOG"
+echo "$STUB_ADDED"

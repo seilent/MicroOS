@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+if [[ -n ${STUB_MV_HOLD:-} ]]; then
+  exec 3<> "$STUB_DIR/mv.go"
+  echo mv 1<> "$STUB_DIR/mv.held"
+  read -r _ <&3
+  exit 1
+fi
+exec /usr/bin/mv "$@"

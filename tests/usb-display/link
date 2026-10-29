@@ -1,0 +1,1108 @@
+#!/usr/bin/env python3
+import fcntl
+import hmac
+import importlib.machinery
+import importlib.util
+import json
+import os
+import pwd
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+
+
+def load(path):
+    loader = importlib.machinery.SourceFileLoader("usbdisplaylink", path)
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("usbdisplaylink", loader))
+    loader.exec_module(mod)
+    return mod
+
+
+def serve(path, tcp, unix, creds, proc, current):
+    high = [fcntl.fcntl(int(fd), fcntl.F_DUPFD, 10) for fd in (tcp, unix)]
+    for want, fd in zip((3, 4), high):
+        os.dup2(fd, want)
+        os.close(fd)
+    os.environ.update(LISTEN_PID=str(os.getpid()), LISTEN_FDS="2", CREDENTIALS_DIRECTORY=creds)
+    d = load(path)
+    d.PEER, d.PROC, d.USER, d.CURRENT = "127.0.0.1", proc, pwd.getpwuid(os.getuid()).pw_name, current
+    return d.main()
+
+
+if sys.argv[1] == "serve":
+    sys.exit(serve(*sys.argv[2:8]))
+
+link_path, vectors_path, tmp = sys.argv[1:4]
+d = load(link_path)
+vectors = json.load(open(vectors_path))
+rc = 0
+KEY = bytes(range(32))
+MODE = (1280, 800, 60000, 172, 108)
+UID = os.getuid()
+JPEG = b"\xff\xd8" + bytes(range(256)) * 4 + b"\xff\xd9"
+
+
+def fail(msg):
+    global rc
+    print(f"FAIL: {msg}", file=sys.stderr)
+    rc = 1
+
+
+def check(what, ok, more=""):
+    if not ok:
+        fail(f"{what}{': ' if more != '' else ''}{more}")
+
+
+def exit_code(proc, timeout):
+    try:
+        return proc.wait(timeout)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+def refused(what, f, *args):
+    try:
+        f(*args)
+    except d.WireError:
+        return
+    fail(f"{what} not refused")
+
+
+def payload(name, allowed):
+    data = bytes.fromhex(vectors[name])
+    kind, length = d.unpack_header(data[:d.HEADER.size], allowed)
+    check(f"{name}: header length", length == len(data) - d.HEADER.size, length)
+    return kind, data[d.HEADER.size:]
+
+
+key, sn, tn = (bytes.fromhex(vectors[k]) for k in ("key", "sender_nonce", "tablet_nonce"))
+built = {
+    "nonce": d.nonce(sn),
+    "hello": d.hello(key, sn, tn, 1280, 800, 60000, 172, 108, d.FMT_NV12 | d.FMT_JPEG),
+    "accept_nv12": d.accept(key, tn, sn, d.FMT_NV12),
+    "frame": d.frame(7, 123456789, d.FMT_NV12, 4, 2, 4, 4, 1, bytes(range(12))),
+    "frame_ack": d.frame_ack(7, 1000, 2000),
+    "touch": d.touch(0, 3, d.TOUCH_DOWN, 0.25, 0.75),
+    "heartbeat": d.heartbeat(42),
+    "bye_gamescope_stream_failed": d.bye(d.BYE_GAMESCOPE, d.DETAILS["stream_failed"]),
+}
+for name, data in built.items():
+    check(f"{name} matches the golden vector byte for byte", data.hex() == vectors[name], data.hex())
+directions = {"nonce": (d.TO_TABLET_BEFORE_ACCEPT, d.NONCE), "accept_nv12": (d.TO_TABLET_BEFORE_ACCEPT, d.ACCEPT),
+              "frame": (d.TO_TABLET_AFTER_ACCEPT, d.FRAME), "hello": (d.TO_PM2_BEFORE_ACCEPT, d.HELLO),
+              "frame_ack": (d.TO_PM2_AFTER_ACCEPT, d.FRAME_ACK), "touch": (d.TO_PM2_AFTER_ACCEPT, d.TOUCH),
+              "heartbeat": (d.TO_PM2_AFTER_ACCEPT, d.HEARTBEAT),
+              "bye_gamescope_stream_failed": (d.TO_PM2_AFTER_ACCEPT, d.BYE)}
+for name, (allowed, kind) in directions.items():
+    check(f"{name}: type", payload(name, allowed)[0] == kind)
+check("phase sets", (d.TO_TABLET_BEFORE_ACCEPT, d.TO_TABLET_AFTER_ACCEPT, d.TO_PM2_BEFORE_ACCEPT, d.TO_PM2_AFTER_ACCEPT) ==
+      ((1, 3, 8), (7, 8, 4), (2, 8), (7, 6, 5, 8)))
+check("type caps", d.LENGTHS == {1: (32, 32), 2: (77, 77), 3: (33, 33), 4: (26, 26 + (2 << 20)), 5: (20, 20),
+                                 6: (11, 11), 7: (8, 8), 8: (2, 2)}, d.LENGTHS)
+H = d.HEADER.pack
+refused("HELLO after ACCEPT", d.unpack_header, H(b"SD", 1, d.HELLO, 77), d.TO_PM2_AFTER_ACCEPT)
+refused("TOUCH before ACCEPT", d.unpack_header, H(b"SD", 1, d.TOUCH, 11), d.TO_PM2_BEFORE_ACCEPT)
+refused("FRAME from the tablet", d.unpack_header, H(b"SD", 1, d.FRAME, 26), d.TO_PM2_AFTER_ACCEPT)
+refused("HELLO announcing 16 MiB", d.unpack_header, H(b"SD", 1, d.HELLO, 16 << 20), d.TO_PM2_BEFORE_ACCEPT)
+refused("HELLO of 76 bytes", d.unpack_header, H(b"SD", 1, d.HELLO, 76), d.TO_PM2_BEFORE_ACCEPT)
+refused("TOUCH of 12 bytes", d.unpack_header, H(b"SD", 1, d.TOUCH, 12), d.TO_PM2_AFTER_ACCEPT)
+refused("FRAME over 2 MiB of data", d.unpack_header, H(b"SD", 1, d.FRAME, 27 + (2 << 20)), d.TO_TABLET_AFTER_ACCEPT)
+refused("bad magic", d.unpack_header, H(b"XD", 1, d.HEARTBEAT, 8), d.TO_PM2_AFTER_ACCEPT)
+refused("version 2", d.unpack_header, H(b"SD", 2, d.HEARTBEAT, 8), d.TO_PM2_AFTER_ACCEPT)
+refused("packing a TOUCH of 12 bytes", d.pack, d.TOUCH, bytes(12))
+refused("packing FRAME data over 2 MiB", d.frame, 0, 0, 1, 1, 1, 1, 1, 1, bytes((2 << 20) + 1))
+refused("a 31 byte nonce", d.nonce, bytes(31))
+
+_, hello = payload("hello", d.TO_PM2_BEFORE_ACCEPT)
+mode = dict(width=1280, height=800, refresh_mhz=60000, mm_w=172, mm_h=108, formats=3)
+try:
+    check("parse_hello", d.parse_hello(key, sn, hello) == (tn, mode))
+except d.WireError as err:
+    fail(f"golden HELLO does not verify: {err}")
+refused("HELLO with another key", d.parse_hello, bytes(32), sn, hello)
+refused("HELLO for another sender nonce", d.parse_hello, key, tn, hello)
+refused("HELLO with a tampered body", d.parse_hello, key, sn, hello[:-1] + bytes([hello[-1] ^ 1]))
+refused("HELLO with a tampered MAC", d.parse_hello, key, sn, hello[:40] + bytes([hello[40] ^ 1]) + hello[41:])
+_, acc = payload("accept_nv12", d.TO_TABLET_BEFORE_ACCEPT)
+check("parse_accept", d.parse_accept(key, tn, sn, acc) == d.FMT_NV12)
+refused("ACCEPT with the nonces swapped", d.parse_accept, key, sn, tn, acc)
+refused("ACCEPT with a tampered format", d.parse_accept, key, tn, sn, acc[:32] + bytes([d.FMT_JPEG]))
+used = []
+real = hmac.compare_digest
+hmac.compare_digest = lambda a, b: used.append(len(a)) or real(a, b)
+d.parse_hello(key, sn, hello)
+hmac.compare_digest = real
+check("HELLO MAC compared with hmac.compare_digest", used == [32], used)
+
+
+def openssl_mac(msg):
+    out = subprocess.run(["openssl", "mac", "-digest", "SHA256", "-macopt", f"hexkey:{key.hex()}", "HMAC"], input=msg,
+                         capture_output=True, check=True).stdout
+    return bytes.fromhex(out.decode().strip())
+
+
+check("HELLO MAC against openssl", openssl_mac(b"hello" + sn + tn + hello[64:]) == hello[32:64])
+check("ACCEPT MAC against openssl", openssl_mac(b"accept" + tn + sn + acc[32:]) == acc[:32])
+
+check("v1 mode", d.check_mode(mode))
+for field, value in (("width", 1281), ("height", 799), ("refresh_mhz", 60006), ("mm_w", 173), ("mm_h", 107)):
+    check(f"HELLO mode with {field} {value} refused", not d.check_mode(dict(mode, **{field: value})))
+for args, want in (((0, 0, 1, 0.0, 0.0), True), ((1, 9, 5, 1.0, 1.0), True), ((0, 9, 2, 0.5, 0.5), True),
+                   ((2, 0, 1, 0.5, 0.5), False), ((0, 10, 1, 0.5, 0.5), False), ((0, 0, 0, 0.5, 0.5), False),
+                   ((0, 0, 6, 0.5, 0.5), False), ((0, 0, 1, float("nan"), 0.5), False),
+                   ((0, 0, 1, 0.5, float("inf")), False), ((0, 0, 1, -0.1, 0.5), False), ((0, 0, 1, 0.5, 1.1), False)):
+    check(f"touch_ok{args}", d.touch_ok(*args) == want)
+for fmt, data, want in ((d.FMT_NV12, bytes(1536000), True), (d.FMT_NV12, bytes(1535999), False),
+                        (d.FMT_NV12, bytes(1536001), False), (d.FMT_JPEG, JPEG, True), (d.FMT_JPEG, JPEG[1:], False),
+                        (d.FMT_JPEG, JPEG[:-1], False), (d.FMT_JPEG, b"\xff\xd8" + bytes(2 << 20) + b"\xff\xd9", False)):
+    check(f"frame_ok format {fmt}, {len(data)} bytes", d.frame_ok(fmt, data) == want)
+prefix = f"0::/user.slice/user-{UID}.slice/user@{UID}.service/app.slice/"
+for text, want in ((f"{prefix}microos-usb-display@steam.service\n", "steam"),
+                   (f"1:name=x:/\n{prefix}microos-usb-display@microdap.service\n", "microdap"),
+                   (f"{prefix}microos-usb-display@recovery.service", "recovery"),
+                   (f"{prefix}microos-usb-display@Steam.service", None), (f"{prefix}microos-usb-display@-x.service", None),
+                   (f"{prefix}microos-usb-display@a.b.service", None), (f"{prefix}microos-usb-display@.service", None),
+                   (f"{prefix}microos-usb-display@a/b.service", None), (f"{prefix}other.service", None),
+                   (f"{prefix}microos-usb-display@steam.service/x", None),
+                   (f"0::/user.slice/user-{UID + 1}.slice/user@{UID + 1}.service/app.slice/microos-usb-display@steam.service", None),
+                   ("0::/system.slice/microos-usb-display@steam.service", None), ("", None)):
+    check(f"cgroup {text!r}", d.cgroup_session(text, UID) == want, d.cgroup_session(text, UID))
+current_file = os.path.join(tmp, "session-current")
+d.CURRENT = current_file
+for what, text, want in (("missing", None, None), ("a session line", "steam gamescope-session-plus@steam.service 1 2\n",
+                                                   "steam"),
+                         ("a bad name", "Steam x\n", None), ("an empty file", "", None), ("a directory", "dir", None)):
+    if os.path.isdir(current_file):
+        os.rmdir(current_file)
+    elif os.path.exists(current_file):
+        os.remove(current_file)
+    if text == "dir":
+        os.mkdir(current_file)
+    elif text is not None:
+        with open(current_file, "w") as f:
+            f.write(text)
+    check(f"session-current {what}", d.current_session() == want, d.current_session())
+os.rmdir(current_file)
+now = [0.0]
+bucket = d.Bucket(lambda: now[0])
+check("bucket burst of 200", [bucket.take() for _ in range(201)] == [True] * 200 + [False])
+now[0] = 0.01
+check("bucket refills 2000 per s", sum(bucket.take() for _ in range(40)) == 20)
+now[0] = 100.0
+check("bucket caps at the burst", sum(bucket.take() for _ in range(300)) == 200)
+TO_SESSION = (d.START, d.STOP, d.SL_TOUCH)
+check("internal protocol caps", d.SL_LENGTHS == {1: (13, 13), 2: (0, 0), 3: (0, 0), 4: (1, 1 + (2 << 20)),
+                                                  5: (0, 0), 6: (1, 1), 7: (11, 11)} and
+      TO_SESSION == (1, 2, 7) and d.FROM_SESSION == (3, 4, 5, 6))
+refused("START from the session", d.sl_unpack_header, H(b"SL", 1, d.START, 13), d.FROM_SESSION)
+refused("READY to the session", d.sl_unpack_header, H(b"SL", 1, d.READY, 0), TO_SESSION)
+refused("unknown session type 9", d.sl_unpack_header, H(b"SL", 1, 9, 0), d.FROM_SESSION)
+refused("session FRAME over its cap", d.sl_unpack_header, H(b"SL", 1, d.SL_FRAME, 2 + (2 << 20)), d.FROM_SESSION)
+refused("session FAILED of 2 bytes", d.sl_unpack_header, H(b"SL", 1, d.FAILED, 2), d.FROM_SESSION)
+refused("session wire magic", d.sl_unpack_header, H(b"SD", 1, d.READY, 0), d.FROM_SESSION)
+
+tcp = socket.socket()
+tcp.bind(("127.0.0.1", 0))
+tcp.listen()
+unix = socket.socket(socket.AF_UNIX)
+unix.bind(os.path.join(tmp, "unit.sock"))
+unix.listen()
+unit = d.Link(tcp, unix, KEY, d.FMT_JPEG, UID)
+a, b = socket.socketpair()
+b.setblocking(False)
+conn = d.Conn(unit, a, unit.from_session)
+unit.sessions[conn] = d.Session("steam")
+unit.session = conn
+body = d.TOUCH_BODY.pack(0, 1, d.TOUCH_DOWN, 0.5, 0.5)
+for state, want in (("idle", b""), ("starting", b""), ("stopping", b""), ("streaming", d.sl_pack(d.SL_TOUCH, body))):
+    unit.sessions[conn].state = state
+    unit.touched(d.TOUCH_BODY.unpack(body), body, 0.0)
+    try:
+        got = b.recv(64)
+    except BlockingIOError:
+        got = b""
+    check(f"TOUCH relayed only while streaming ({state})", got == want, got)
+conn.close()
+b.close()
+sa, sb = socket.socketpair()
+sb.close()
+sconn = d.Conn(unit, sa, unit.from_session)
+unit.sessions = {sconn: d.Session("steam")}
+unit.sessions[sconn].state = "streaming"
+unit.session = sconn
+ta, tb = socket.socketpair()
+old = d.Conn(unit, ta, unit.from_tablet)
+unit.tablets[old] = d.Tablet(0.0)
+unit.tablets[old].live = True
+unit.tablet = old
+na, nb = socket.socketpair()
+new = d.Conn(unit, na, unit.from_tablet)
+nstate = d.Tablet(10.0)
+unit.tablets[new] = nstate
+unit.handshake(new, nstate, d.hello(KEY, nstate.nonce, os.urandom(32), *MODE, 3)[d.HEADER.size:], 0.0)
+nb.settimeout(1)
+got = nb.recv(64)
+check("session lost while a newer HELLO replaces the tablet: BYE(session)", got == d.bye(d.BYE_SESSION) and
+      unit.tablet is None and unit.session is None, got)
+for s in (sa, ta, tb, na, nb, tcp, unix):
+    s.close()
+
+creds = os.path.join(tmp, "creds")
+proc_dir = os.path.join(tmp, "proc")
+os.makedirs(creds)
+os.makedirs(os.path.join(proc_dir, str(os.getpid())))
+with open(os.path.join(creds, "key"), "wb") as f:
+    f.write(KEY)
+cgroup_file = os.path.join(proc_dir, str(os.getpid()), "cgroup")
+links = 0
+
+
+class Link:
+    def __init__(self, fmt=None):
+        global links
+        links += 1
+        tcp = socket.socket()
+        tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp.bind(("0.0.0.0", 0))
+        tcp.listen(16)
+        self.port = tcp.getsockname()[1]
+        self.path = f"\0microos-usb-display-link-test-{os.getpid()}-{links}"
+        unix = socket.socket(socket.AF_UNIX)
+        unix.bind(self.path)
+        unix.listen(16)
+        env = dict(os.environ)
+        env.pop("MICROOS_USB_DISPLAY_FORMAT", None)
+        if fmt is not None:
+            env["MICROOS_USB_DISPLAY_FORMAT"] = fmt
+        self.proc = subprocess.Popen([sys.executable, __file__, "serve", link_path, str(tcp.fileno()), str(unix.fileno()),
+                                      creds, proc_dir, current_file], pass_fds=(tcp.fileno(), unix.fileno()), env=env,
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        tcp.close()
+        unix.close()
+        self.lines = []
+        self.cond = threading.Condition()
+        threading.Thread(target=self.collect, daemon=True).start()
+        check("link starts", self.wait_log("listening") is not None, self.text())
+
+    def collect(self):
+        for line in self.proc.stderr:
+            with self.cond:
+                self.lines.append(line.decode(errors="replace"))
+                self.cond.notify_all()
+        with self.cond:
+            self.lines.append("")
+            self.cond.notify_all()
+
+    def mark(self):
+        with self.cond:
+            return len(self.lines)
+
+    def wait_log(self, text, timeout=5, start=0):
+        texts = (text,) if isinstance(text, str) else text
+        deadline = time.monotonic() + timeout
+        with self.cond:
+            while True:
+                for i in range(start, len(self.lines)):
+                    if any(t in self.lines[i] for t in texts):
+                        return i
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return None
+                self.cond.wait(left)
+
+    def count(self, text, start=0):
+        with self.cond:
+            return sum(text in line for line in self.lines[start:])
+
+    def text(self, start=0):
+        with self.cond:
+            return "".join(self.lines[start:])
+
+    def stop(self):
+        if self.proc.poll() is None:
+            self.proc.send_signal(signal.SIGTERM)
+        try:
+            return self.proc.wait(5)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            return self.proc.wait()
+
+
+class Peer:
+    def read(self, timeout):
+        deadline = time.monotonic() + timeout
+        while True:
+            msg = self.parse()
+            if msg is not None:
+                return msg
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise TimeoutError
+            self.s.settimeout(left)
+            try:
+                data = self.s.recv(1 << 20)
+            except (ConnectionResetError, BrokenPipeError):
+                return None
+            if not data:
+                return None
+            self.buf += data
+
+    def parse(self):
+        if len(self.buf) < d.HEADER.size:
+            return None
+        _, _, kind, length = d.HEADER.unpack(self.buf[:d.HEADER.size])
+        if len(self.buf) < d.HEADER.size + length:
+            return None
+        msg = kind, self.buf[d.HEADER.size:d.HEADER.size + length]
+        self.buf = self.buf[d.HEADER.size + length:]
+        return msg
+
+    def close(self):
+        self.s.close()
+
+
+class Session(Peer):
+    def __init__(self, link, name="steam", cgroup=None):
+        self.link = link
+        self.name = name
+        self.buf = b""
+        with open(cgroup_file, "w") as f:
+            f.write(cgroup or f"0::/user.slice/user-{UID}.slice/user@{UID}.service/app.slice/microos-usb-display@{name}.service\n")
+        mark = link.mark()
+        self.s = socket.socket(socket.AF_UNIX)
+        self.s.connect(link.path)
+        i = link.wait_log((f"session {name} connected", "closing a session connection"), 5, mark)
+        self.ok = i is not None and f"session {name} connected" in link.lines[i]
+
+    def send(self, kind, payload=b""):
+        self.s.sendall(d.sl_pack(kind, payload))
+
+    def expect(self, kind, timeout=5):
+        try:
+            msg = self.read(timeout)
+        except TimeoutError:
+            return None
+        return msg[1] if msg and msg[0] == kind else None
+
+    def quiet(self, timeout):
+        try:
+            self.read(timeout)
+        except TimeoutError:
+            return True
+        return False
+
+    def closed(self, timeout=5):
+        try:
+            while self.read(timeout) is not None:
+                pass
+            return True
+        except TimeoutError:
+            return False
+
+
+class Tablet(Peer):
+    def __init__(self, link, source="127.0.0.1", rcvbuf=None):
+        self.s = socket.socket()
+        if rcvbuf is not None:
+            self.s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+        self.s.settimeout(5)
+        self.s.bind((source, 0))
+        self.s.connect(("127.0.0.1", link.port))
+        self.s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.buf = b""
+        self.beat = 0.0
+        self.sn = None
+
+    def send(self, data):
+        self.s.sendall(data)
+
+    def until(self, kinds, timeout=5, beat=True):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if beat and time.monotonic() >= self.beat:
+                try:
+                    self.send(d.heartbeat(time.monotonic_ns()))
+                except OSError:
+                    return None
+                self.beat = time.monotonic() + 0.25
+            try:
+                msg = self.read(min(0.05, max(0.0, deadline - time.monotonic())))
+            except TimeoutError:
+                continue
+            if msg is None or msg[0] in kinds:
+                return msg
+        raise TimeoutError
+
+    def hello(self, key=KEY, mode=MODE, formats=3):
+        kind, self.sn = self.read(5)
+        if kind != d.NONCE:
+            raise RuntimeError(f"first message {kind}")
+        self.tn = os.urandom(32)
+        self.send(d.hello(key, self.sn, self.tn, *mode, formats))
+
+    def accepted(self):
+        msg = self.until({d.ACCEPT, d.BYE})
+        if msg is None or msg[0] != d.ACCEPT:
+            return None
+        return d.parse_accept(KEY, self.tn, self.sn, msg[1])
+
+    def frame(self, timeout=5, beat=True):
+        msg = self.until({d.FRAME}, timeout, beat)
+        return d.parse_frame(msg[1]) if msg else (None, None)
+
+    def bye(self, timeout=5, beat=True):
+        msg = self.until({d.BYE}, timeout, beat)
+        return d.parse_fixed(d.BYE, msg[1]) if msg else None
+
+    def rest(self, timeout=5, beat=False):
+        kinds = []
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                msg = self.until(set(range(1, 9)), deadline - time.monotonic(), beat)
+                if msg is None:
+                    return kinds
+                kinds.append(msg[0])
+        except TimeoutError:
+            kinds.append("open")
+            return kinds
+
+    def closed(self, timeout=5, beat=True):
+        try:
+            return self.until(set(), timeout, beat) is None
+        except TimeoutError:
+            return False
+
+
+def scenario(what, fn):
+    try:
+        fn()
+    except (OSError, RuntimeError, TimeoutError, d.WireError) as err:
+        fail(f"{what}: {type(err).__name__} {err}")
+
+
+def start_stream(link, session, fmt=d.FMT_JPEG, rcvbuf=None):
+    t = Tablet(link, rcvbuf=rcvbuf)
+    t.hello()
+    check("ACCEPT", t.accepted() == fmt)
+    start = session.expect(d.START)
+    check("START with the format and the v1 mode", start == d.START_BODY.pack(fmt, *MODE), start)
+    session.send(d.READY)
+    return t
+
+
+def end_stream(t, session):
+    t.send(d.bye(d.BYE_USER))
+    check("STOP after the tablet's BYE", session.expect(d.STOP) == b"")
+    session.send(d.STOPPED)
+    t.close()
+
+
+L = Link()
+
+
+def other_peer():
+    mark = L.mark()
+    t = Tablet(L, "127.0.0.2")
+    check("127.0.0.2: closed before NONCE", t.rest(3) == [], L.text(mark))
+    check("127.0.0.2: logged", L.wait_log("closing 127.0.0.2, only 127.0.0.1 may connect", start=mark) is not None)
+    t.close()
+
+
+def fresh_nonces():
+    a, b = Tablet(L), Tablet(L)
+    na, nb = a.read(5), b.read(5)
+    check("two connections get NONCEs", na[0] == nb[0] == d.NONCE)
+    check("two connections get different NONCEs", na[1] != nb[1])
+    a.close()
+    b.close()
+
+
+def no_hello():
+    mark = L.mark()
+    t = Tablet(L)
+    t.read(5)
+    start = time.monotonic()
+    nxt = Tablet(L)
+    check("no HELLO: the next connection gets its NONCE", nxt.read(2)[0] == d.NONCE)
+    check("no HELLO: EOF", t.closed(3, beat=False))
+    took = time.monotonic() - start
+    check("no HELLO: closed after 1 s", 0.8 <= took <= 2.5, took)
+    check("no HELLO: logged", L.wait_log("no HELLO within 1 s", start=mark) is not None)
+    t.close()
+    nxt.close()
+
+
+def no_session():
+    t = Tablet(L)
+    t.hello()
+    check("no session: BYE(session)", t.bye() == (d.BYE_SESSION, 0))
+    check("no session: EOF", t.closed())
+    t.close()
+
+
+def bad_mac():
+    mark = L.mark()
+    t = Tablet(L)
+    t.hello(key=bytes(32))
+    check("bad MAC: BYE(auth)", t.bye(beat=False) == (d.BYE_AUTH, 0))
+    refused_at = time.monotonic()
+    check("bad MAC: EOF", t.closed(beat=False))
+    nxt = Tablet(L)
+    kind, _ = nxt.read(3)
+    took = time.monotonic() - refused_at
+    check("bad MAC: the next connection waits for the 1 s back off", kind == d.NONCE and 0.8 <= took <= 2.5, took)
+    check("bad MAC: logged", L.wait_log("tablet refused: hello does not verify", start=mark) is not None)
+    t.close()
+    nxt.close()
+
+
+def no_backoff_after_mode():
+    t = Tablet(L)
+    t.hello(mode=(1280, 800, 60006, 172, 108))
+    check("BYE(invalid_mode)", t.bye(beat=False) == (d.BYE_INVALID_MODE, 0))
+    refused_at = time.monotonic()
+    nxt = Tablet(L)
+    kind, _ = nxt.read(3)
+    took = time.monotonic() - refused_at
+    check("no back off after BYE(invalid_mode)", kind == d.NONCE and took < 0.5, took)
+    t.close()
+    nxt.close()
+
+
+def other_uid():
+    mark = L.mark()
+    code = ("import os, socket, sys\n"
+            "print(os.getpid(), flush=True)\n"
+            "sys.stdin.readline()\n"
+            "s = socket.socket(socket.AF_UNIX)\n"
+            "s.connect('\\0' + sys.argv[1])\n"
+            "s.settimeout(3)\n"
+            "try:\n"
+            "    print('closed' if s.recv(64) == b'' else 'data', flush=True)\n"
+            "except TimeoutError:\n"
+            "    print('open', flush=True)\n")
+    child = subprocess.Popen(["setpriv", "--reuid=65534", "--regid=65534", "--clear-groups", sys.executable, "-c", code,
+                              L.path[1:]], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    pid = int(child.stdout.readline())
+    os.makedirs(os.path.join(proc_dir, str(pid)), exist_ok=True)
+    with open(os.path.join(proc_dir, str(pid), "cgroup"), "w") as f:
+        f.write(f"0::/user.slice/user-{UID}.slice/user@{UID}.service/app.slice/microos-usb-display@steam.service\n")
+    out, _ = child.communicate("go\n", timeout=10)
+    check("session peer with another uid and a valid cgroup: closed", out.strip() == "closed", out)
+    check("session peer with another uid: refused", L.wait_log("closing a session connection", 5, mark) is not None)
+
+
+def bad_modes():
+    for what, kw in (("60006 mHz", dict(mode=(1280, 800, 60006, 172, 108))), ("1920x1080", dict(mode=(1920, 1080, 60000, 172, 108))),
+                     ("no jpeg", dict(formats=d.FMT_NV12))):
+        t = Tablet(L)
+        t.hello(**kw)
+        check(f"HELLO {what}: BYE(invalid_mode)", t.bye() == (d.BYE_INVALID_MODE, 0))
+        check(f"HELLO {what}: EOF", t.closed())
+        t.close()
+
+
+def pre_accept_refusals():
+    for what, data, line in (("a HELLO header announcing 16 MiB", H(b"SD", 1, d.HELLO, 16 << 20), "bad length 16777216 for type 2"),
+                             ("TOUCH before ACCEPT", d.touch(0, 0, 1, 0.5, 0.5), "unexpected type 6")):
+        mark = L.mark()
+        t = Tablet(L)
+        t.read(5)
+        t.send(data)
+        check(f"{what}: closed without a reply", t.rest(3) == [], L.text(mark))
+        check(f"{what}: refused at the header", L.wait_log(f"tablet closed: {line}", start=mark) is not None,
+              L.text(mark))
+        t.close()
+
+
+for what, fn in (("other peer", other_peer), ("fresh nonces", fresh_nonces), ("no HELLO", no_hello),
+                 ("no session", no_session), ("bad MAC", bad_mac), ("bad modes", bad_modes),
+                 ("pre ACCEPT refusals", pre_accept_refusals),
+                 ("no back off after BYE(invalid_mode)", no_backoff_after_mode),
+                 ("session peer with another uid", other_uid)):
+    scenario(what, fn)
+
+S = Session(L)
+check("session steam accepted", S.ok, L.text())
+
+
+def renew():
+    global S
+    S.close()
+    S = Session(L)
+    check("session reconnects", S.ok, L.text())
+
+
+def stream():
+    t = Tablet(L)
+    t.hello()
+    check("ACCEPT", t.accepted() == d.FMT_JPEG)
+    check("HEARTBEAT right after ACCEPT", t.read(1)[0] == d.HEARTBEAT)
+    check("START", S.expect(d.START) == d.START_BODY.pack(d.FMT_JPEG, *MODE))
+    S.send(d.READY)
+    before = time.monotonic_ns()
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    head, data = t.frame()
+    after = time.monotonic_ns()
+    check("FRAME header written by the link", head is not None and {k: head[k] for k in head if k != "pts_ns"} ==
+          dict(seq=0, fmt=2, width=1280, height=800, stride0=1280, stride1=1280, colorimetry=1), head)
+    check("FRAME pts from the link's CLOCK_MONOTONIC at arrival", head is not None and before <= head["pts_ns"] <= after)
+    check("FRAME data", data == JPEG)
+    t.send(d.frame_ack(0, 1, 2))
+    t.send(d.touch(0, 3, d.TOUCH_DOWN, 0.25, 0.75))
+    t.send(d.touch(1, 9, d.TOUCH_MOVE, 1.0, 0.0))
+    check("TOUCH after READY relayed", S.expect(d.SL_TOUCH) == d.TOUCH_BODY.pack(0, 3, 1, 0.25, 0.75))
+    check("TOUCH on slot 9 relayed", S.expect(d.SL_TOUCH) == d.TOUCH_BODY.pack(1, 9, 2, 1.0, 0.0))
+    end_stream(t, S)
+
+
+def pacing():
+    t = start_stream(L, S)
+    frames = [b"\xff\xd8" + bytes([i]) * 64 + b"\xff\xd9" for i in range(6)]
+    S.s.sendall(b"".join(d.sl_pack(d.SL_FRAME, b"\x02" + f) for f in frames[:5]))
+    got = [t.frame() for _ in range(2)]
+    check("two frames in flight", [(h and h["seq"], x) for h, x in got] == [(0, frames[0]), (1, frames[1])],
+          [h for h, _ in got])
+    try:
+        extra = t.until({d.FRAME}, 0.5)
+    except TimeoutError:
+        extra = None
+    check("no third frame before an ack", extra is None, extra)
+    t.send(d.frame_ack(1, 1, 2))
+    head, data = t.frame()
+    check("the newest waiting frame wins after the ack", head is not None and head["seq"] == 2 and data == frames[4],
+          head)
+    t.send(d.frame_ack(2, 1, 2))
+    S.send(d.SL_FRAME, b"\x02" + frames[5])
+    head, data = t.frame()
+    check("frames continue after the acks", head is not None and head["seq"] == 3 and data == frames[5], head)
+    end_stream(t, S)
+
+
+def ack_timeout():
+    mark = L.mark()
+    t = start_stream(L, S)
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    check("ack timeout: frame", t.frame()[0] is not None)
+    sent = time.monotonic()
+    check("ack timeout: BYE(session)", t.bye(5) == (d.BYE_SESSION, 0))
+    took = time.monotonic() - sent
+    check("ack timeout: after 2 s", 1.7 <= took <= 3.5, took)
+    check("ack timeout: STOP", S.expect(d.STOP) == b"")
+    check("ack timeout: logged", L.wait_log("no FRAME_ACK for 2 s", start=mark) is not None)
+    S.send(d.STOPPED)
+    t.close()
+
+
+def ready_timeout():
+    t = Tablet(L)
+    t.hello()
+    check("ready timeout: ACCEPT", t.accepted() == d.FMT_JPEG)
+    check("ready timeout: START", S.expect(d.START) is not None)
+    started = time.monotonic()
+    check("ready timeout: BYE(gamescope, 0)", t.bye(8) == (d.BYE_GAMESCOPE, 0))
+    took = time.monotonic() - started
+    check("ready timeout: after 5 s", 4.7 <= took <= 6.5, took)
+    check("ready timeout: STOP", S.expect(d.STOP) == b"")
+    S.send(d.STOPPED)
+    t.close()
+
+
+def failed_detail():
+    t = start_stream(L, S)
+    S.send(d.FAILED, bytes([99]))
+    check("FAILED with an unknown detail: BYE(gamescope, 0)", t.bye() == (d.BYE_GAMESCOPE, 0))
+    S.send(d.STOPPED)
+    t.close()
+
+
+def failed_while_stopping():
+    t = start_stream(L, S)
+    t.close()
+    check("FAILED while stopping: STOP", S.expect(d.STOP) == b"")
+    t2 = Tablet(L)
+    t2.hello()
+    check("FAILED while stopping: ACCEPT", t2.accepted() == d.FMT_JPEG)
+    S.send(d.FAILED, bytes([d.DETAILS["stream_failed"]]))
+    try:
+        msg = t2.until({d.BYE}, 0.75)
+    except TimeoutError:
+        msg = "open"
+    check("FAILED while stopping: the waiting tablet stays", msg == "open", msg)
+    S.send(d.STOPPED)
+    check("FAILED while stopping: START once STOPPED arrives", S.expect(d.START) is not None)
+    S.send(d.READY)
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    check("FAILED while stopping: frames", t2.frame()[0] is not None)
+    end_stream(t2, S)
+
+
+def stopped_unasked():
+    t = start_stream(L, S)
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    check("STOPPED while streaming: frame", t.frame()[0] is not None)
+    S.send(d.STOPPED)
+    check("STOPPED while a tablet is live: BYE(session)", t.bye() == (d.BYE_SESSION, 0))
+    t.close()
+
+
+def failed():
+    t = start_stream(L, S)
+    S.send(d.FAILED, bytes([d.DETAILS["revoked"]]))
+    check("FAILED: BYE(gamescope, revoked)", t.bye() == (d.BYE_GAMESCOPE, d.DETAILS["revoked"]))
+    check("FAILED: EOF", t.closed())
+    S.send(d.STOPPED)
+    t.close()
+
+
+def waits_for_stopped():
+    t = start_stream(L, S)
+    t.close()
+    check("tablet EOF: STOP", S.expect(d.STOP) == b"")
+    t2 = Tablet(L)
+    t2.hello()
+    check("previous run not STOPPED: ACCEPT", t2.accepted() == d.FMT_JPEG)
+    check("previous run not STOPPED: heartbeats", t2.until({d.HEARTBEAT}) is not None)
+    check("previous run not STOPPED: no START yet", S.quiet(0.3))
+    S.send(d.STOPPED)
+    check("START once STOPPED arrives", S.expect(d.START) is not None)
+    S.send(d.READY)
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    check("frames after the wait", t2.frame()[0] is not None)
+    end_stream(t2, S)
+
+
+def stopped_timeout():
+    t = start_stream(L, S)
+    t.close()
+    check("STOP", S.expect(d.STOP) == b"")
+    stopped = time.monotonic()
+    t2 = Tablet(L)
+    t2.hello()
+    check("no STOPPED: ACCEPT", t2.accepted() == d.FMT_JPEG)
+    check("no STOPPED: BYE(session)", t2.bye(5) == (d.BYE_SESSION, 0))
+    took = time.monotonic() - stopped
+    check("no STOPPED: after 3 s", 2.7 <= took <= 4.5, took)
+    check("no STOPPED: the session connection is closed", S.closed())
+    t2.close()
+    renew()
+
+
+def second_hello():
+    t = start_stream(L, S)
+    t2 = Tablet(L)
+    t2.hello()
+    check("second HELLO: ACCEPT", t2.accepted() == d.FMT_JPEG)
+    check("second HELLO: the old connection closes without BYE", d.BYE not in t.rest(3), t.rest(0))
+    check("second HELLO: STOP", S.expect(d.STOP) == b"")
+    S.send(d.STOPPED)
+    check("second HELLO: START", S.expect(d.START) is not None)
+    S.send(d.READY)
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    check("second HELLO: frames to the new connection", t2.frame()[0] is not None)
+    end_stream(t2, S)
+    t.close()
+
+
+def touch_range():
+    for what, msg in (("NaN", d.TOUCH_BODY.pack(0, 0, 1, float("nan"), 0.5)),
+                      ("infinity", d.TOUCH_BODY.pack(0, 0, 1, 0.5, float("inf"))),
+                      ("-0.1", d.TOUCH_BODY.pack(0, 0, 1, -0.1, 0.5)), ("1.1", d.TOUCH_BODY.pack(0, 0, 1, 0.5, 1.1)),
+                      ("device 2", d.TOUCH_BODY.pack(2, 0, 1, 0.5, 0.5)), ("slot 10", d.TOUCH_BODY.pack(0, 10, 1, 0.5, 0.5)),
+                      ("kind 0", d.TOUCH_BODY.pack(0, 0, 0, 0.5, 0.5)), ("kind 6", d.TOUCH_BODY.pack(0, 0, 6, 0.5, 0.5))):
+        t = start_stream(L, S)
+        t.send(d.pack(d.TOUCH, msg))
+        check(f"TOUCH {what}: closed without BYE", d.BYE not in t.rest(3), what)
+        check(f"TOUCH {what}: STOP", S.expect(d.STOP) == b"")
+        S.send(d.STOPPED)
+        t.close()
+
+
+def bucket_flood():
+    t = start_stream(L, S)
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    head, _ = t.frame()
+    check("TOUCH flood: streaming before the flood", head is not None)
+    t.send(d.frame_ack(head["seq"] if head else 0, 1, 2))
+    t.send(d.touch(0, 0, d.TOUCH_DOWN, 0.5, 0.5) + d.touch(0, 0, d.TOUCH_MOVE, 0.5, 0.5) * 5000 +
+           d.touch(0, 0, d.TOUCH_UP, 0.5, 0.5) + d.touch(0, 0, d.TOUCH_FRAME, 0.0, 0.0))
+    kinds = []
+    while not kinds or kinds[-1] != d.TOUCH_FRAME:
+        body = S.expect(d.SL_TOUCH)
+        if body is None:
+            break
+        kinds.append(d.TOUCH_BODY.unpack(body)[2])
+    moves = kinds.count(d.TOUCH_MOVE)
+    check("TOUCH flood: down, up and frame pass", [k for k in kinds if k != d.TOUCH_MOVE] ==
+          [d.TOUCH_DOWN, d.TOUCH_UP, d.TOUCH_FRAME], kinds[:3])
+    check("TOUCH flood: moves dropped past the bucket", 199 <= moves < 5000, moves)
+    end_stream(t, S)
+
+
+def phase_errors():
+    for what, data in (("FRAME from the tablet", d.frame(0, 0, 2, 1280, 800, 0, 0, 1, JPEG)),
+                       ("HELLO after ACCEPT", H(b"SD", 1, d.HELLO, 77) + bytes(77)),
+                       ("TOUCH of 12 bytes", H(b"SD", 1, d.TOUCH, 12) + bytes(12))):
+        t = start_stream(L, S)
+        t.send(data)
+        check(f"{what}: closed", d.BYE not in t.rest(3))
+        check(f"{what}: STOP", S.expect(d.STOP) == b"")
+        S.send(d.STOPPED)
+        t.close()
+
+
+def bad_frames():
+    mark = L.mark()
+    for what, data in (("JPEG without FFD8", d.sl_pack(d.SL_FRAME, b"\x02" + JPEG[2:])),
+                       ("JPEG without FFD9", d.sl_pack(d.SL_FRAME, b"\x02" + JPEG[:-2])),
+                       ("NV12 on a JPEG link", d.sl_pack(d.SL_FRAME, b"\x01" + bytes(1536000))),
+                       ("JPEG over 2 MiB", H(b"SL", 1, d.SL_FRAME, 2 + (2 << 20)) + b"\x02\xff\xd8")):
+        t = start_stream(L, S)
+        S.s.sendall(data)
+        check(f"{what}: session closed", S.closed())
+        check(f"{what}: BYE(session)", t.bye() == (d.BYE_SESSION, 0))
+        t.close()
+        renew()
+    check("bad frames: one rate limited log line", L.count("sent a bad frame", mark) == 1, L.text(mark))
+
+
+def sl_errors():
+    for what, data in (("START from the session", H(b"SL", 1, d.START, 13) + bytes(13)),
+                       ("type 9", H(b"SL", 1, 9, 0)), ("READY of 1 byte", H(b"SL", 1, d.READY, 1) + b"\0"),
+                       ("FAILED of 2 bytes", H(b"SL", 1, d.FAILED, 2) + b"\0\0"), ("bad magic", H(b"SD", 1, d.READY, 0))):
+        S.s.sendall(data)
+        check(f"session {what}: closed", S.closed())
+        renew()
+
+
+def replaced():
+    global S
+    t = start_stream(L, S)
+    old = S
+    S = Session(L, "microdap")
+    check("replacement: accepted", S.ok)
+    check("replacement: STOP to the old one", old.expect(d.STOP) == b"")
+    check("replacement: START to the new one", S.expect(d.START) is not None)
+    S.send(d.READY)
+    old.send(d.STOPPED)
+    old.send(d.SL_FRAME, b"\x02\xff\xd8old\xff\xd9")
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    head, data = t.frame()
+    check("replacement: frames from the new one", data == JPEG, head)
+    t.send(d.frame_ack(head["seq"], 1, 2) if head else b"")
+    check("replacement: heartbeats continue", t.until({d.HEARTBEAT}) is not None)
+    end_stream(t, S)
+    t = start_stream(L, S)
+    check("replacement: the kept connection gets nothing and stays open", old.quiet(1.5))
+    end_stream(t, S)
+    old.close()
+
+
+def peers():
+    global S
+    for what, cg in (("another unit", f"0::/user.slice/user-{UID}.slice/user@{UID}.service/app.slice/other.service\n"),
+                     ("a system unit", "0::/system.slice/microos-usb-display@steam.service\n")):
+        s = Session(L, "steam", cg)
+        check(f"peer in {what} refused", not s.ok and s.closed())
+        s.close()
+    for name in ("Steam", "-x", "a.b"):
+        s = Session(L, name)
+        check(f"instance {name} refused", not s.ok and s.closed())
+        s.close()
+    for name in ("recovery", "microemu"):
+        S.close()
+        S = Session(L, name)
+        check(f"instance {name} accepted", S.ok)
+    renew()
+
+
+def set_current(name):
+    if name is None:
+        if os.path.exists(current_file):
+            os.remove(current_file)
+        return
+    with open(current_file, "w") as f:
+        f.write(f"{name} gamescope-session-plus@{name}.service 1 2\n")
+
+
+def current_preferred():
+    global S
+    set_current("steam")
+    t = start_stream(L, S)
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    head, _ = t.frame()
+    t.send(d.frame_ack(head["seq"] if head else 0, 1, 2))
+    mark = L.mark()
+    m = Session(L, "microdap")
+    check("session-current: the other instance kept idle", m.ok and
+          L.wait_log("session microdap connected, kept idle: steam is the current session", 5, mark) is not None,
+          L.text(mark))
+    check("session-current: the kept one gets nothing", m.quiet(0.5))
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    check("session-current: frames still from the current one", t.frame()[1] == JPEG)
+    set_current("microdap")
+    S.close()
+    check("session-current: the kept one is promoted with START", m.expect(d.START) is not None)
+    m.send(d.READY)
+    m.send(d.SL_FRAME, b"\x02" + JPEG)
+    check("session-current: frames from the promoted one", t.frame()[0] is not None)
+    end_stream(t, m)
+    set_current(None)
+    S = m
+    renew()
+
+
+def promoted_after_stopped():
+    set_current(None)
+    t = start_stream(L, S)
+    m = Session(L, "microdap")
+    check("newest wins without session-current", S.expect(d.STOP) == b"" and m.expect(d.START) is not None)
+    set_current("steam")
+    m.close()
+    check("promoted while its STOP is pending: no START before STOPPED", S.quiet(0.5))
+    S.send(d.STOPPED)
+    check("promoted while its STOP is pending: START after STOPPED", S.expect(d.START) is not None)
+    S.send(d.READY)
+    S.send(d.SL_FRAME, b"\x02" + JPEG)
+    check("promoted while its STOP is pending: frames", t.frame()[0] is not None)
+    end_stream(t, S)
+    set_current(None)
+
+
+def promoted_no_tablet():
+    global S
+    set_current(None)
+    m = Session(L, "microdap")
+    check("no tablet: newest wins", m.ok and S.expect(d.STOP) == b"")
+    set_current("steam")
+    mark = L.mark()
+    m.close()
+    t0 = time.monotonic()
+    i = L.wait_log("session steam ended: no STOPPED within 3 s", 5, mark)
+    took = time.monotonic() - t0
+    check("promoted with no tablet and no STOPPED: dropped after 3 s", i is not None and 2.7 <= took <= 4.5,
+          (took, L.text(mark)))
+    check("promoted with no tablet and no STOPPED: the connection is closed", S.closed())
+    set_current(None)
+    renew()
+
+
+def stall_session():
+    t = start_stream(L, S)
+    S.s.sendall(d.HEADER.pack(b"SL", 1, d.SL_FRAME, 1 + len(JPEG)) + b"\x02" + JPEG[:10])
+    beats = []
+    end = time.monotonic() + 1.5
+    while time.monotonic() < end:
+        try:
+            msg = t.until({d.HEARTBEAT}, end - time.monotonic())
+        except TimeoutError:
+            break
+        if msg is None:
+            break
+        beats.append(time.monotonic())
+    gaps = [b - a for a, b in zip(beats, beats[1:])]
+    check("session stalled mid FRAME: heartbeats on time", len(beats) >= 5 and max(gaps) < 0.6, gaps)
+    S.s.sendall(JPEG[10:])
+    check("session stalled mid FRAME: the frame completes", t.frame()[1] == JPEG)
+    end_stream(t, S)
+
+
+def stall_tablet():
+    mark = L.mark()
+    t = start_stream(L, S, rcvbuf=4096)
+    big = b"\xff\xd8" + os.urandom(1 << 20) + b"\xff\xd9"
+    S.send(d.SL_FRAME, b"\x02" + big)
+    S.send(d.SL_FRAME, b"\x02" + big)
+    stalled = time.monotonic()
+    other = Tablet(L)
+    check("tablet not reading: the link still answers", other.read(1)[0] == d.NONCE)
+    other.close()
+    check("tablet not reading: liveness", L.wait_log("no heartbeat for 1 s", 4, mark) is not None)
+    took = time.monotonic() - stalled
+    check("tablet not reading: closed after 1 s", took <= 2.5, took)
+    check("tablet not reading: STOP", S.expect(d.STOP) == b"")
+    S.send(d.STOPPED)
+    t.close()
+
+
+def tablet_gone():
+    t = start_stream(L, S)
+    t.close()
+    check("tablet gone: STOP", S.expect(d.STOP) == b"")
+    S.send(d.STOPPED)
+
+
+def silent_tablet():
+    t = start_stream(L, S)
+    gone = time.monotonic()
+    check("no heartbeat: STOP", S.expect(d.STOP, 4) == b"")
+    took = time.monotonic() - gone
+    check("no heartbeat: after 1 s", 0.5 <= took <= 2.5, took)
+    check("no heartbeat: closed without BYE", d.BYE not in t.rest(2))
+    S.send(d.STOPPED)
+    t.close()
+
+
+def session_closed():
+    t = start_stream(L, S)
+    S.close()
+    check("session closed: BYE(session)", t.bye() == (d.BYE_SESSION, 0))
+    t.close()
+    renew()
+
+
+for what, fn in (("stream", stream), ("pacing", pacing), ("FRAME_ACK timeout", ack_timeout),
+                 ("READY timeout", ready_timeout), ("FAILED", failed), ("wait for STOPPED", waits_for_stopped),
+                 ("STOPPED timeout", stopped_timeout), ("second HELLO", second_hello), ("TOUCH ranges", touch_range),
+                 ("TOUCH bucket", bucket_flood), ("phase errors", phase_errors), ("bad frames", bad_frames),
+                 ("internal protocol errors", sl_errors), ("session replaced", replaced), ("session peers", peers),
+                 ("session stall", stall_session), ("tablet stall", stall_tablet), ("tablet gone", tablet_gone),
+                 ("silent tablet", silent_tablet), ("session closed", session_closed),
+                 ("FAILED with an unknown detail", failed_detail), ("FAILED while stopping", failed_while_stopping),
+                 ("STOPPED while a tablet is live", stopped_unasked),
+                 ("session-current preferred", current_preferred), ("promoted after STOPPED", promoted_after_stopped),
+                 ("promoted with no tablet", promoted_no_tablet)):
+    scenario(what, fn)
+
+
+def sigterm():
+    t = start_stream(L, S)
+    L.proc.send_signal(signal.SIGTERM)
+    check("SIGTERM: BYE(session)", t.bye() == (d.BYE_SESSION, 0))
+    check("SIGTERM: STOP", S.expect(d.STOP) == b"")
+    check("SIGTERM: exit 0", exit_code(L.proc, 5) == 0)
+    t.close()
+
+
+scenario("SIGTERM", sigterm)
+log = L.text()
+for what, secret in (("key", KEY),):
+    check(f"no {what} in the log", secret.hex() not in log and repr(secret)[2:-1] not in log)
+check("no nonce or MAC bytes in the log", not any(len(w) >= 32 and all(c in "0123456789abcdef" for c in w)
+                                                  for w in log.split()), log[-500:])
+
+N = Link("nv12")
+S = Session(N)
+
+
+def nv12():
+    t = start_stream(N, S, d.FMT_NV12)
+    data = os.urandom(1536000)
+    S.send(d.SL_FRAME, b"\x01" + data)
+    head, got = t.frame()
+    check("NV12 frame header", head is not None and (head["fmt"], head["stride0"], head["stride1"]) == (1, 1280, 1280), head)
+    check("NV12 frame data", got == data)
+    t.send(d.frame_ack(0, 1, 2))
+    S.send(d.SL_FRAME, b"\x01" + data[:-1])
+    check("NV12 short frame: session closed", S.closed())
+    check("NV12 short frame: BYE(session)", t.bye() == (d.BYE_SESSION, 0))
+    t.close()
+
+
+scenario("NV12", nv12)
+check("NV12 link: exit 0 on SIGTERM", N.stop() == 0)
+sys.exit(rc)

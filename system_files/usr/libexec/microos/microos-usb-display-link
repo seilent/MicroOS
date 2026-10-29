@@ -1,0 +1,853 @@
+#!/usr/bin/env python3
+import collections
+import hashlib
+import hmac
+import math
+import os
+import pwd
+import re
+import selectors
+import signal
+import socket
+import struct
+import sys
+import time
+
+MAGIC = b"SD"
+VERSION = 1
+NONCE, HELLO, ACCEPT, FRAME, FRAME_ACK, TOUCH, HEARTBEAT, BYE = range(1, 9)
+FMT_NV12, FMT_JPEG = 1, 2
+TOUCH_DOWN, TOUCH_MOVE, TOUCH_UP, TOUCH_FRAME, TOUCH_CANCEL = range(1, 6)
+BYE_USER, BYE_SESSION, BYE_GAMESCOPE, BYE_INVALID_MODE, BYE_AUTH = range(1, 6)
+DETAILS = {
+    "busy": 1,
+    "invalid_mode": 2,
+    "output_disable_failed": 3,
+    "stream_failed": 4,
+    "revoked": 5,
+    "forced_internal": 6,
+    "wayland_gone": 7,
+    "no_global": 8,
+}
+HEADER = struct.Struct("<2sBBI")
+HELLO_BODY = struct.Struct("<HHIHHB")
+FRAME_HEAD = struct.Struct("<IQBHHIIB")
+FRAME_ACK_BODY = struct.Struct("<IQQ")
+TOUCH_BODY = struct.Struct("<BBBff")
+HEARTBEAT_BODY = struct.Struct("<Q")
+BYE_BODY = struct.Struct("<BB")
+FRAME_DATA_MAX = 2 << 20
+LENGTHS = {NONCE: (32, 32), HELLO: (77, 77), ACCEPT: (33, 33), FRAME: (26, 26 + FRAME_DATA_MAX), FRAME_ACK: (20, 20),
+           TOUCH: (11, 11), HEARTBEAT: (8, 8), BYE: (2, 2)}
+TO_TABLET_BEFORE_ACCEPT = (NONCE, ACCEPT, BYE)
+TO_TABLET_AFTER_ACCEPT = (HEARTBEAT, BYE, FRAME)
+TO_PM2_BEFORE_ACCEPT = (HELLO, BYE)
+TO_PM2_AFTER_ACCEPT = (HEARTBEAT, TOUCH, FRAME_ACK, BYE)
+
+
+class WireError(Exception):
+    pass
+
+
+def pack(kind, payload):
+    low, high = LENGTHS[kind]
+    if not low <= len(payload) <= high:
+        raise WireError(f"bad length {len(payload)} for type {kind}")
+    return HEADER.pack(MAGIC, VERSION, kind, len(payload)) + payload
+
+
+def unpack_header(data, allowed):
+    magic, version, kind, length = HEADER.unpack(data)
+    if magic != MAGIC or version != VERSION:
+        raise WireError("bad magic or version")
+    if kind not in allowed:
+        raise WireError(f"unexpected type {kind}")
+    low, high = LENGTHS[kind]
+    if not low <= length <= high:
+        raise WireError(f"bad length {length} for type {kind}")
+    return kind, length
+
+
+def nonce(value):
+    if len(value) != 32:
+        raise WireError("nonce must be 32 bytes")
+    return pack(NONCE, value)
+
+
+def hello_mac(key, sender_nonce, tablet_nonce, body):
+    return hmac.new(key, b"hello" + sender_nonce + tablet_nonce + body, hashlib.sha256).digest()
+
+
+def hello(key, sender_nonce, tablet_nonce, width, height, refresh_mhz, mm_w, mm_h, formats):
+    body = HELLO_BODY.pack(width, height, refresh_mhz, mm_w, mm_h, formats)
+    return pack(HELLO, tablet_nonce + hello_mac(key, sender_nonce, tablet_nonce, body) + body)
+
+
+def parse_hello(key, sender_nonce, payload):
+    if len(payload) != 64 + HELLO_BODY.size:
+        raise WireError("bad hello size")
+    tablet_nonce, mac, body = payload[:32], payload[32:64], payload[64:]
+    if not hmac.compare_digest(mac, hello_mac(key, sender_nonce, tablet_nonce, body)):
+        raise WireError("hello does not verify")
+    width, height, refresh_mhz, mm_w, mm_h, formats = HELLO_BODY.unpack(body)
+    return tablet_nonce, dict(width=width, height=height, refresh_mhz=refresh_mhz, mm_w=mm_w, mm_h=mm_h, formats=formats)
+
+
+def accept_mac(key, tablet_nonce, sender_nonce, fmt):
+    return hmac.new(key, b"accept" + tablet_nonce + sender_nonce + bytes([fmt]), hashlib.sha256).digest()
+
+
+def accept(key, tablet_nonce, sender_nonce, fmt):
+    return pack(ACCEPT, accept_mac(key, tablet_nonce, sender_nonce, fmt) + bytes([fmt]))
+
+
+def parse_accept(key, tablet_nonce, sender_nonce, payload):
+    if len(payload) != 33:
+        raise WireError("bad accept size")
+    fmt = payload[32]
+    if not hmac.compare_digest(payload[:32], accept_mac(key, tablet_nonce, sender_nonce, fmt)):
+        raise WireError("accept does not verify")
+    return fmt
+
+
+def frame(seq, pts_ns, fmt, width, height, stride0, stride1, colorimetry, data):
+    return pack(FRAME, FRAME_HEAD.pack(seq, pts_ns, fmt, width, height, stride0, stride1, colorimetry) + data)
+
+
+def parse_frame(payload):
+    if len(payload) < FRAME_HEAD.size:
+        raise WireError("bad frame size")
+    seq, pts_ns, fmt, width, height, stride0, stride1, colorimetry = FRAME_HEAD.unpack_from(payload)
+    return dict(seq=seq, pts_ns=pts_ns, fmt=fmt, width=width, height=height, stride0=stride0, stride1=stride1,
+                colorimetry=colorimetry), payload[FRAME_HEAD.size:]
+
+
+def frame_ack(seq, receive_ns, shown_ns):
+    return pack(FRAME_ACK, FRAME_ACK_BODY.pack(seq, receive_ns, shown_ns))
+
+
+def touch(device, slot, kind, x, y):
+    return pack(TOUCH, TOUCH_BODY.pack(device, slot, kind, x, y))
+
+
+def heartbeat(send_ns):
+    return pack(HEARTBEAT, HEARTBEAT_BODY.pack(send_ns))
+
+
+def bye(reason, detail=0):
+    return pack(BYE, BYE_BODY.pack(reason, detail))
+
+
+def parse_fixed(kind, payload):
+    body = {FRAME_ACK: FRAME_ACK_BODY, TOUCH: TOUCH_BODY, HEARTBEAT: HEARTBEAT_BODY, BYE: BYE_BODY}[kind]
+    if len(payload) != body.size:
+        raise WireError("bad size")
+    return body.unpack(payload)
+
+
+SL_MAGIC = b"SL"
+START, STOP, READY, SL_FRAME, STOPPED, FAILED, SL_TOUCH = range(1, 8)
+SL_LENGTHS = {START: (13, 13), STOP: (0, 0), READY: (0, 0), SL_FRAME: (1, 1 + FRAME_DATA_MAX), STOPPED: (0, 0),
+              FAILED: (1, 1), SL_TOUCH: (11, 11)}
+FROM_SESSION = (READY, SL_FRAME, STOPPED, FAILED)
+START_BODY = struct.Struct("<BHHIHH")
+
+
+def sl_pack(kind, payload=b""):
+    low, high = SL_LENGTHS[kind]
+    if not low <= len(payload) <= high:
+        raise WireError(f"bad length {len(payload)} for session type {kind}")
+    return HEADER.pack(SL_MAGIC, VERSION, kind, len(payload)) + payload
+
+
+def sl_unpack_header(data, allowed):
+    magic, version, kind, length = HEADER.unpack(data)
+    if magic != SL_MAGIC or version != VERSION:
+        raise WireError("bad session magic or version")
+    if kind not in allowed:
+        raise WireError(f"unexpected session type {kind}")
+    low, high = SL_LENGTHS[kind]
+    if not low <= length <= high:
+        raise WireError(f"bad length {length} for session type {kind}")
+    return kind, length
+
+
+ME = "microos-usb-display-link"
+PEER = "10.77.0.2"
+USER = "micro"
+PROC = "/proc"
+CURRENT = "/run/microos/session-current"
+WIDTH, HEIGHT, REFRESH_MHZ, MM_W, MM_H = 1280, 800, 60000, 172, 108
+FORMATS = {"jpeg": FMT_JPEG, "nv12": FMT_NV12}
+NV12_SIZE = WIDTH * HEIGHT * 3 // 2
+COLORIMETRY = 1
+TOUCH_SLOTS = 10
+HELLO_S = 1.0
+TICK_S = 0.25
+LIVE_S = 1.0
+BACKOFF_S = 1.0
+READY_S = 5.0
+STOPPED_S = 3.0
+ACK_S = 2.0
+DRAIN_S = 0.5
+LOG_S = 10.0
+WINDOW = 2
+BUCKET_RATE = 2000.0
+BUCKET_BURST = 200.0
+SNDBUF = 4 << 20
+SO_PEERPIDFD = getattr(socket, "SO_PEERPIDFD", 77)
+INSTANCE = re.compile(r"[a-z0-9][a-z0-9-]*")
+
+
+def log(msg):
+    print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+
+
+def check_mode(mode):
+    return (mode["width"], mode["height"], mode["refresh_mhz"], mode["mm_w"], mode["mm_h"]) == (
+        WIDTH, HEIGHT, REFRESH_MHZ, MM_W, MM_H)
+
+
+def touch_ok(device, slot, kind, x, y):
+    return (device in (0, 1) and slot < TOUCH_SLOTS and TOUCH_DOWN <= kind <= TOUCH_CANCEL and math.isfinite(x) and
+            math.isfinite(y) and 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0)
+
+
+def frame_ok(fmt, data):
+    if fmt == FMT_NV12:
+        return len(data) == NV12_SIZE
+    return len(data) <= FRAME_DATA_MAX and data[:2] == b"\xff\xd8" and data[-2:] == b"\xff\xd9"
+
+
+def current_session():
+    try:
+        with open(CURRENT) as f:
+            name = f.read().split(maxsplit=1)[0]
+    except (OSError, UnicodeDecodeError, IndexError):
+        return None
+    return name if INSTANCE.fullmatch(name) else None
+
+
+def cgroup_session(text, uid):
+    want = f"/user.slice/user-{uid}.slice/user@{uid}.service/app.slice/microos-usb-display@"
+    for line in text.splitlines():
+        if line.startswith("0::"):
+            path = line[3:]
+            if path.startswith(want) and path.endswith(".service"):
+                name = path[len(want):-len(".service")]
+                return name if INSTANCE.fullmatch(name) else None
+    return None
+
+
+def peer_session(sock, uid):
+    pid, peer_uid, _ = struct.unpack("3i", sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+    if peer_uid != uid:
+        return None
+    try:
+        pidfd = struct.unpack("i", sock.getsockopt(socket.SOL_SOCKET, SO_PEERPIDFD, 4))[0]
+    except OSError:
+        pidfd = None
+    try:
+        if pidfd is not None:
+            with open(f"/proc/self/fdinfo/{pidfd}") as f:
+                pid = int(next(line for line in f if line.startswith("Pid:")).split()[1])
+        with open(f"{PROC}/{pid}/cgroup") as f:
+            name = cgroup_session(f.read(), uid)
+        if pidfd is not None:
+            try:
+                signal.pidfd_send_signal(pidfd, 0)
+            except PermissionError:
+                pass
+        return name
+    except (OSError, StopIteration, ValueError):
+        return None
+    finally:
+        if pidfd is not None:
+            os.close(pidfd)
+
+
+class Bucket:
+    def __init__(self, clock):
+        self.clock = clock
+        self.tokens = BUCKET_BURST
+        self.at = clock()
+
+    def take(self):
+        now = self.clock()
+        self.tokens = min(BUCKET_BURST, self.tokens + (now - self.at) * BUCKET_RATE)
+        self.at = now
+        if self.tokens < 1.0:
+            return False
+        self.tokens -= 1.0
+        return True
+
+
+class Closed(Exception):
+    pass
+
+
+class Conn:
+    def __init__(self, link, sock, handler):
+        self.link = link
+        self.sock = sock
+        self.handler = handler
+        self.inbuf = bytearray()
+        self.out = collections.deque()
+        self.half = False
+        self.closed = False
+        sock.setblocking(False)
+        link.sel.register(sock, selectors.EVENT_READ, self)
+
+    def send(self, data):
+        if not self.closed:
+            self.out.append(memoryview(data))
+            self.flush()
+
+    def flush(self):
+        while self.out:
+            try:
+                n = self.sock.send(self.out[0])
+            except BlockingIOError:
+                break
+            except OSError as err:
+                self.link.lost(self, f"send failed: {err.strerror}")
+                return
+            self.out[0] = self.out[0][n:]
+            if not self.out[0]:
+                self.out.popleft()
+        if not self.out and self.half:
+            self.half = False
+            try:
+                self.sock.shutdown(socket.SHUT_WR)
+            except OSError:
+                pass
+        if not self.closed:
+            self.link.sel.modify(self.sock, selectors.EVENT_READ | (selectors.EVENT_WRITE if self.out else 0), self)
+
+    def pending(self):
+        return bool(self.out)
+
+    def receive(self):
+        try:
+            data = self.sock.recv(1 << 18)
+        except BlockingIOError:
+            return
+        except OSError as err:
+            raise Closed(f"receive failed: {err.strerror}")
+        if not data:
+            raise Closed("closed by the peer")
+        self.inbuf += data
+
+    def take(self, unpack, allowed):
+        if len(self.inbuf) < HEADER.size:
+            return None
+        kind, length = unpack(bytes(self.inbuf[:HEADER.size]), allowed)
+        end = HEADER.size + length
+        if len(self.inbuf) < end:
+            return None
+        payload = bytes(self.inbuf[HEADER.size:end])
+        del self.inbuf[:end]
+        return kind, payload
+
+    def close(self):
+        if not self.closed:
+            self.closed = True
+            self.link.sel.unregister(self.sock)
+            self.sock.close()
+
+
+class Tablet:
+    def __init__(self, due):
+        self.nonce = os.urandom(32)
+        self.hello_due = due
+        self.live = False
+        self.rx = self.beat = 0.0
+        self.seq = 0
+        self.inflight = collections.deque()
+        self.ack_due = None
+        self.waiting_start = False
+
+
+class Session:
+    def __init__(self, name):
+        self.name = name
+        self.state = "idle"
+        self.due = None
+
+
+class Link:
+    def __init__(self, tcp, unix, key, fmt, uid, clock=time.monotonic):
+        self.sel = selectors.DefaultSelector()
+        self.tcp = tcp
+        self.unix = unix
+        self.key = key
+        self.fmt = fmt
+        self.uid = uid
+        self.clock = clock
+        self.tablets = {}
+        self.tablet = None
+        self.sessions = {}
+        self.session = None
+        self.draining = {}
+        self.waiting = None
+        self.backoff = None
+        self.bucket = Bucket(clock)
+        self.bad_logged = None
+        self.stopping = False
+        tcp.setblocking(False)
+        unix.setblocking(False)
+        self.sel.register(tcp, selectors.EVENT_READ, "tcp")
+        self.sel.register(unix, selectors.EVENT_READ, "unix")
+
+    def sl(self, conn, kind, payload=b""):
+        conn.send(sl_pack(kind, payload))
+
+    def accept_tablet(self, now):
+        try:
+            sock, peer = self.tcp.accept()
+        except BlockingIOError:
+            return
+        except OSError as err:
+            log(f"accept failed: {err.strerror}")
+            return
+        if peer[0] != PEER:
+            log(f"closing {peer[0]}, only {PEER} may connect")
+            sock.close()
+            return
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SNDBUF)
+        except OSError as err:
+            log(f"setting up {peer[0]} failed: {err.strerror}")
+            sock.close()
+            return
+        state = Tablet(now + HELLO_S)
+        conn = Conn(self, sock, self.from_tablet)
+        self.tablets[conn] = state
+        conn.send(nonce(state.nonce))
+
+    def accept_session(self, now):
+        try:
+            sock, _ = self.unix.accept()
+        except BlockingIOError:
+            return
+        except OSError as err:
+            log(f"session accept failed: {err.strerror}")
+            return
+        try:
+            name = peer_session(sock, self.uid)
+        except OSError:
+            name = None
+        if name is None:
+            log(f"closing a session connection that is not a microos-usb-display@ unit of {USER}")
+            sock.close()
+            return
+        conn = Conn(self, sock, self.from_session)
+        self.sessions[conn] = Session(name)
+        old, current = self.session, current_session()
+        if old is not None and current is not None and self.sessions[old].name == current and name != current:
+            log(f"session {name} connected, kept idle: {current} is the current session")
+            return
+        self.session = conn
+        log(f"session {name} connected")
+        if old is not None:
+            log(f"session {self.sessions[old].name} replaced, kept idle")
+            self.sessions[old].state = "stopping"
+            self.sessions[old].due = None
+            self.sl(old, STOP)
+        if self.tablet is not None:
+            self.start_session(now)
+
+    def start_session(self, now):
+        s = self.sessions[self.session]
+        s.state = "starting"
+        s.due = now + READY_S
+        self.waiting = None
+        self.tablets[self.tablet].waiting_start = False
+        self.sl(self.session, START, START_BODY.pack(self.fmt, WIDTH, HEIGHT, REFRESH_MHZ, MM_W, MM_H))
+
+    def stop_session(self, now):
+        if self.session is None:
+            return
+        s = self.sessions[self.session]
+        self.waiting = None
+        if s.state in ("starting", "streaming"):
+            s.state = "stopping"
+            s.due = now + STOPPED_S
+            self.sl(self.session, STOP)
+
+    def end_tablet(self, reply=None, why=""):
+        conn = self.tablet
+        if conn is None:
+            return
+        self.tablet = None
+        self.waiting = None
+        if why:
+            log(f"tablet ended: {why}")
+        if reply is not None:
+            conn.send(bye(*reply))
+        self.close_tablet(conn, reply is not None)
+
+    def close_tablet(self, conn, drain):
+        self.tablets.pop(conn, None)
+        if conn.closed:
+            return
+        if not drain:
+            conn.close()
+            return
+        conn.handler = self.discard
+        conn.half = True
+        self.draining[conn] = self.clock() + DRAIN_S
+        conn.flush()
+
+    def discard(self, conn, now):
+        conn.inbuf.clear()
+
+    def lost(self, conn, why):
+        if conn in self.draining:
+            del self.draining[conn]
+            conn.close()
+        elif conn is self.tablet:
+            self.end_tablet(why=why)
+            self.stop_session(self.clock())
+        elif conn in self.tablets:
+            del self.tablets[conn]
+            conn.close()
+        elif conn in self.sessions:
+            self.drop_session(conn, why)
+
+    def refused(self, conn, why, now):
+        if conn in self.sessions:
+            self.drop_session(conn, why)
+        elif conn is self.tablet:
+            self.end_tablet(why=why)
+            self.stop_session(now)
+        else:
+            log(f"tablet closed: {why}")
+            self.tablets.pop(conn, None)
+            conn.close()
+
+    def drop_session(self, conn, why):
+        s = self.sessions.pop(conn)
+        conn.close()
+        if conn is not self.session:
+            return
+        self.session = None
+        self.waiting = None
+        log(f"session {s.name} ended: {why}")
+        current = current_session()
+        kept = [c for c, k in self.sessions.items() if k.name == current]
+        if not kept:
+            self.end_tablet((BYE_SESSION, 0))
+            return
+        self.session = kept[-1]
+        k = self.sessions[self.session]
+        log(f"session {k.name} promoted, it is the current session")
+        if k.state != "idle":
+            k.due = self.clock() + STOPPED_S
+        state = self.tablets.get(self.tablet)
+        if state is None:
+            return
+        if k.state == "idle":
+            self.start_session(self.clock())
+        else:
+            state.waiting_start = True
+
+    def handshake(self, conn, state, payload, now):
+        try:
+            tablet_nonce, mode = parse_hello(self.key, state.nonce, payload)
+        except WireError as err:
+            log(f"tablet refused: {err}")
+            conn.send(bye(BYE_AUTH))
+            self.close_tablet(conn, True)
+            if self.backoff is None:
+                self.sel.unregister(self.tcp)
+            self.backoff = now + BACKOFF_S
+            return
+        if not check_mode(mode) or not mode["formats"] & self.fmt:
+            log("tablet refused: HELLO mode {width}x{height} {refresh_mhz} mHz {mm_w}x{mm_h} mm, formats {formats}"
+                .format(**mode))
+            conn.send(bye(BYE_INVALID_MODE))
+            self.close_tablet(conn, True)
+            return
+        if self.session is None:
+            log("tablet refused: no session connected")
+            conn.send(bye(BYE_SESSION))
+            self.close_tablet(conn, True)
+            return
+        if self.tablet is not None:
+            self.end_tablet(why="a newer tablet connection verified")
+            self.stop_session(now)
+        if self.session is None:
+            log("tablet refused: the session connection closed")
+            conn.send(bye(BYE_SESSION))
+            self.close_tablet(conn, True)
+            return
+        self.tablet = conn
+        state.live = True
+        state.rx = now
+        state.beat = now + TICK_S
+        conn.send(accept(self.key, tablet_nonce, state.nonce, self.fmt))
+        conn.send(heartbeat(time.monotonic_ns()))
+        if self.tablet is not conn or self.session is None:
+            return
+        log("tablet accepted")
+        if self.sessions[self.session].state == "idle":
+            self.start_session(now)
+        else:
+            state.waiting_start = True
+
+    def from_tablet(self, conn, now):
+        state = self.tablets[conn]
+        while self.tablets.get(conn) is state:
+            msg = conn.take(unpack_header, TO_PM2_AFTER_ACCEPT if state.live else TO_PM2_BEFORE_ACCEPT)
+            if msg is None:
+                return
+            kind, payload = msg
+            if not state.live:
+                if kind == HELLO:
+                    self.handshake(conn, state, payload, now)
+                else:
+                    del self.tablets[conn]
+                    conn.close()
+            elif kind == HEARTBEAT:
+                state.rx = now
+            elif kind == FRAME_ACK:
+                self.acked(state, parse_fixed(FRAME_ACK, payload)[0], now)
+            elif kind == TOUCH:
+                self.touched(parse_fixed(TOUCH, payload), payload, now)
+            else:
+                self.end_tablet(why="BYE {} {}".format(*parse_fixed(BYE, payload)))
+                self.stop_session(now)
+
+    def touched(self, fields, payload, now):
+        if not touch_ok(*fields):
+            self.end_tablet(why="TOUCH out of range")
+            self.stop_session(now)
+            return
+        if self.session is None or self.sessions[self.session].state != "streaming":
+            return
+        if not self.bucket.take() and fields[2] == TOUCH_MOVE:
+            return
+        self.sl(self.session, SL_TOUCH, payload)
+
+    def acked(self, state, seq, now):
+        if seq not in state.inflight:
+            return
+        while state.inflight.popleft() != seq:
+            pass
+        state.ack_due = now + ACK_S if state.inflight else None
+        self.relay(now)
+
+    def relay(self, now):
+        state = self.tablets.get(self.tablet)
+        if state is None or self.waiting is None or len(state.inflight) >= WINDOW:
+            return
+        fmt, data, pts = self.waiting
+        self.waiting = None
+        seq, state.seq = state.seq, (state.seq + 1) & 0xFFFFFFFF
+        if not state.inflight:
+            state.ack_due = now + ACK_S
+        state.inflight.append(seq)
+        self.tablet.send(frame(seq, pts, fmt, WIDTH, HEIGHT, WIDTH, WIDTH, COLORIMETRY, data))
+
+    def from_session(self, conn, now):
+        s = self.sessions[conn]
+        while conn in self.sessions and conn is not self.session:
+            msg = conn.take(sl_unpack_header, FROM_SESSION)
+            if msg is None:
+                return
+            if msg[0] == STOPPED:
+                s.state = "idle"
+        while conn is self.session:
+            msg = conn.take(sl_unpack_header, FROM_SESSION)
+            if msg is None:
+                return
+            kind, payload = msg
+            if kind == READY:
+                if s.state == "starting":
+                    s.state = "streaming"
+                    s.due = None
+            elif kind == SL_FRAME:
+                self.framed(conn, s, payload, now)
+            elif kind == FAILED:
+                detail = payload[0] if payload[0] in DETAILS.values() else 0
+                log(f"session {s.name} failed, detail {payload[0]}")
+                if s.state in ("starting", "streaming"):
+                    s.state = "stopping"
+                    s.due = now + STOPPED_S
+                    self.waiting = None
+                    self.end_tablet((BYE_GAMESCOPE, detail))
+            else:
+                s.state = "idle"
+                s.due = None
+                state = self.tablets.get(self.tablet)
+                if state is not None and state.waiting_start:
+                    self.start_session(now)
+                elif state is not None:
+                    self.end_tablet((BYE_SESSION, 0), f"session {s.name} stopped")
+
+    def framed(self, conn, s, payload, now):
+        if s.state != "streaming" or self.tablet is None:
+            return
+        fmt, data = payload[0], payload[1:]
+        if fmt != self.fmt or not frame_ok(fmt, data):
+            if self.bad_logged is None or now - self.bad_logged >= LOG_S:
+                self.bad_logged = now
+                log(f"session {s.name} sent a bad frame: format {fmt}, {len(data)} bytes")
+            self.drop_session(conn, "bad frame")
+            return
+        self.waiting = fmt, data, time.monotonic_ns()
+        self.relay(now)
+
+    def timers(self, now):
+        for conn, state in list(self.tablets.items()):
+            if not state.live and now >= state.hello_due:
+                log("tablet closed: no HELLO within 1 s")
+                del self.tablets[conn]
+                conn.close()
+        for conn, until in list(self.draining.items()):
+            if now >= until:
+                del self.draining[conn]
+                conn.close()
+        state = self.tablets.get(self.tablet)
+        if state is not None:
+            if now - state.rx >= LIVE_S:
+                self.end_tablet(why="no heartbeat for 1 s")
+                self.stop_session(now)
+            elif state.ack_due is not None and now >= state.ack_due:
+                self.end_tablet((BYE_SESSION, 0), "no FRAME_ACK for 2 s")
+                self.stop_session(now)
+            elif now >= state.beat:
+                state.beat = now + TICK_S
+                self.tablet.send(heartbeat(time.monotonic_ns()))
+        if self.session is not None:
+            s = self.sessions[self.session]
+            if s.state == "starting" and now >= s.due:
+                self.stop_session(now)
+                self.end_tablet((BYE_GAMESCOPE, 0), "no READY within 5 s")
+            elif s.state == "stopping" and now >= s.due:
+                self.drop_session(self.session, "no STOPPED within 3 s")
+        if self.backoff is not None and now >= self.backoff:
+            self.backoff = None
+            self.sel.register(self.tcp, selectors.EVENT_READ, "tcp")
+
+    def deadline(self, now):
+        due = [now + TICK_S, *self.draining.values()]
+        due += [s.hello_due for s in self.tablets.values() if not s.live]
+        state = self.tablets.get(self.tablet)
+        if state is not None:
+            due += [state.rx + LIVE_S, state.beat]
+            if state.ack_due is not None:
+                due.append(state.ack_due)
+        if self.session is not None and self.sessions[self.session].due is not None:
+            due.append(self.sessions[self.session].due)
+        if self.backoff is not None:
+            due.append(self.backoff)
+        return min(due)
+
+    def dispatch(self, key, mask, now):
+        data = key.data
+        if not isinstance(data, Conn):
+            if data == "tcp":
+                self.accept_tablet(now)
+            elif data == "unix":
+                self.accept_session(now)
+            else:
+                os.read(key.fd, 64)
+            return
+        if mask & selectors.EVENT_WRITE:
+            data.flush()
+        if data.closed or not mask & selectors.EVENT_READ:
+            return
+        try:
+            data.receive()
+            data.handler(data, now)
+        except Closed as err:
+            self.lost(data, str(err))
+        except WireError as err:
+            self.refused(data, str(err), now)
+
+    def run(self):
+        wake_r, wake_w = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        signal.set_wakeup_fd(wake_w)
+        self.sel.register(wake_r, selectors.EVENT_READ, "signal")
+        while not self.stopping:
+            now = self.clock()
+            for key, mask in self.sel.select(max(0.0, self.deadline(now) - now)):
+                self.dispatch(key, mask, self.clock())
+            self.timers(self.clock())
+        log("stopping")
+        now = self.clock()
+        self.stop_session(now)
+        self.end_tablet((BYE_SESSION, 0))
+        until = now + DRAIN_S
+        for conn in [c for c in [*self.sessions, *self.draining] if c.pending() and not c.closed]:
+            left = until - self.clock()
+            if left <= 0:
+                break
+            conn.sock.settimeout(left)
+            try:
+                for chunk in conn.out:
+                    conn.sock.sendall(chunk)
+            except OSError:
+                pass
+
+
+def listen_fds():
+    if os.environ.get("LISTEN_PID") != str(os.getpid()) or os.environ.get("LISTEN_FDS") != "2":
+        return None, None
+    tcp = unix = None
+    for fd in (3, 4):
+        sock = socket.socket(fileno=fd)
+        if sock.family == socket.AF_INET and sock.type == socket.SOCK_STREAM and tcp is None:
+            tcp = sock
+        elif sock.family == socket.AF_UNIX and sock.type == socket.SOCK_STREAM and unix is None:
+            unix = sock
+    return tcp, unix
+
+
+def read_key():
+    path = os.path.join(os.environ.get("CREDENTIALS_DIRECTORY", ""), "key")
+    try:
+        with open(path, "rb") as f:
+            key = f.read(33)
+    except OSError as err:
+        return None, f"cannot read the key credential: {err.strerror}"
+    if len(key) != 32:
+        return None, "the key credential is not 32 bytes"
+    return key, None
+
+
+def main():
+    tcp, unix = listen_fds()
+    if tcp is None or unix is None:
+        log("needs a TCP and a unix stream listener from systemd")
+        return 1
+    key, err = read_key()
+    if key is None:
+        log(err)
+        return 1
+    name = os.environ.get("MICROOS_USB_DISPLAY_FORMAT", "jpeg")
+    if name not in FORMATS:
+        log(f"MICROOS_USB_DISPLAY_FORMAT={name} is not jpeg or nv12")
+        return 1
+    try:
+        uid = pwd.getpwnam(USER).pw_uid
+    except KeyError:
+        log(f"no user {USER}")
+        return 1
+    link = Link(tcp, unix, key, FORMATS[name], uid)
+
+    def stop(_sig, _frame):
+        link.stopping = True
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    log(f"listening, {name}")
+    link.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

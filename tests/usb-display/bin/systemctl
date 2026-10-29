@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+flag=no
+[[ ! -e $MICROOS_RUNDIR/usb-display/armed ]] || flag=$(stat -c %a "$MICROOS_RUNDIR/usb-display/armed")
+printf 'systemctl %s|flag=%s\n' "$*" "$flag" >> "$STUB_LOG"
+exit "${STUB_SYSTEMCTL_RC:-0}"

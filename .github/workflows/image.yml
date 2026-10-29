@@ -256,6 +256,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/testok"
           date -u > "$RUNNER_TEMP/testok/passed"
 
+      - name: USB display units
+        run: tests/usb-display-units.sh
+
       - name: Test
         env:
           TAG: ${{ steps.version.outputs.push_tag }}

@@ -160,7 +160,7 @@ test-services:
     fedora=registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
     dnf="dnf -yq --setopt=install_weak_deps=False install"
     run() { podman run --rm --memory=14g --cpus=8 --arch "$arch" -v "$PWD:/repo:ro,Z" "$@"; }
-    run "$fedora" sh -c "$dnf python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/steamos-manager-config.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh && /repo/tests/steam-compat.sh && /repo/tests/proton-hook.sh"
+    run "$fedora" sh -c "$dnf python3-gobject python3-evdev dbus-daemon util-linux systemd-udev gstreamer1-plugins-base gstreamer1-plugins-good openssl && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/steamos-manager-config.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh && /repo/tests/steam-compat.sh && /repo/tests/proton-hook.sh && /repo/tests/usb-display.sh"
     run docker.io/library/python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb \
       python3 /repo/tests/steam-compat/module.py
     run docker.io/library/python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb \
@@ -172,6 +172,7 @@ test-services:
     run "$fedora" sh -c "$pin pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ ladspa-devel util-linux && /repo/tests/audio-eq.sh"
     run "$fedora" sh -c "$dnf jq util-linux systemd-udev && /repo/tests/storage.sh"
     run "$fedora" sh -c "$dnf jq python3 util-linux systemd && /repo/tests/microos-session.sh"
+    FEDORA=$fedora tests/usb-display-units.sh
     run "$fedora" sh -c "$dnf python3 rpm-build rpm-sign gnupg2 cpio && /repo/tests/openh264.sh"
     run "$fedora" sh -c "$dnf git-core && /repo/tests/pkg-hash.sh"
     just pkg microset

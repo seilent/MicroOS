@@ -1,0 +1,26 @@
+[Unit]
+Description=USB display link to the tablet
+BindsTo=microos-usb-display-link.socket
+After=microos-usb-display-link.socket
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/libexec/microos/microos-usb-display-link
+DynamicUser=yes
+LoadCredential=key:/var/lib/microos/usb-display/key
+Environment=MICROOS_USB_DISPLAY_FORMAT=jpeg
+Restart=on-failure
+RestartSec=2
+RestartSteps=3
+RestartMaxDelaySec=10
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+InaccessiblePaths=/run/dbus
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+MemoryMax=256M

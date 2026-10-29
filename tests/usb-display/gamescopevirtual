@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+printf 'start %s\ndisplay %s\n' "$*" "${GAMESCOPE_WAYLAND_DISPLAY-unset}" >> "$STUB_DIR/log"
+read -r mode arg reason < "$STUB_DIR/mode" || mode=node
+case $mode in
+  node)
+    echo "node 42 gamescope-virtual-output"
+    cat > /dev/null
+    echo eof >> "$STUB_DIR/log"
+    ;;
+  chatty)
+    echo "node 42 gamescope-virtual-output"
+    head -c 1048576 /dev/zero | tr '\0' x
+    head -c 1048576 /dev/zero | tr '\0' y >&2
+    echo chatty >> "$STUB_DIR/log"
+    cat > /dev/null
+    echo eof >> "$STUB_DIR/log"
+    ;;
+  loud)
+    echo "node 42 gamescope-virtual-output"
+    cat > /dev/null
+    head -c 204800 /dev/zero | tr '\0' x
+    head -c 204800 /dev/zero | tr '\0' y >&2
+    echo eof >> "$STUB_DIR/log"
+    ;;
+  garbage)
+    echo "nothing useful"
+    cat > /dev/null
+    ;;
+  fail)
+    echo "node 42 gamescope-virtual-output"
+    read -r _ < "$STUB_DIR/go"
+    [[ -z $reason ]] || echo "failed: $reason" >&2
+    exit "$arg"
+    ;;
+esac

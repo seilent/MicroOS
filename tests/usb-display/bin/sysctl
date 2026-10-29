@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+printf 'sysctl %s\n' "$*" >> "$STUB_LOG"

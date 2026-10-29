@@ -1,0 +1,30 @@
+[Unit]
+Description=USB display NCM gadget in the usbdisp network namespace
+DefaultDependencies=no
+After=sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
+BindsTo=microos-usb-display-arm.service
+After=microos-usb-display-arm.service
+BindsTo=sys-subsystem-udc-devices-a600000.usb.device
+After=sys-subsystem-udc-devices-a600000.usb.device
+Wants=microos-usb-display-link.socket
+ConditionPathExists=/run/microos/usb-display/armed
+ConditionPathExists=/var/lib/microos/usb-display/key
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microos/microos-usb-display-gadget bind
+ExecStopPost=/usr/libexec/microos/microos-usb-display-gadget unbind
+Restart=on-failure
+RestartSec=2
+RestartSteps=3
+RestartMaxDelaySec=10
+RestartPreventExitStatus=3 4 5
+TimeoutStartSec=30
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_SYS_MODULE
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+SystemCallArchitectures=native

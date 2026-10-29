@@ -1,0 +1,17 @@
+[Unit]
+Description=USB display link sockets
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+BindsTo=microos-usb-display-gadget.service
+After=microos-usb-display-gadget.service
+
+[Socket]
+ListenStream=10.77.0.1:47800
+ListenStream=/run/microos/usb-display/session.sock
+NetworkNamespacePath=/run/netns/usbdisp
+SocketUser=root
+SocketGroup=micro
+SocketMode=0660
+RemoveOnStop=yes
+Accept=no
