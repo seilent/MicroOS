@@ -1,0 +1,2521 @@
+From c1a213a55c02cfba010a5c77d3bd983f1fafc97c Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 30 Oct 2026 01:50:05 +0900
+Subject: [PATCH] Add a virtual output
+
+---
+ protocol/gamescope-virtual-output.xml |  68 +++
+ protocol/meson.build                  |   1 +
+ src/Backends/DRMBackend.cpp           | 343 +++++++++++++-
+ src/Backends/DeferredBackend.h        |   5 +
+ src/Utils/LogRateLimit.h              |  32 ++
+ src/Utils/VirtualOutput.h             | 209 +++++++++
+ src/Utils/VirtualOutputNode.h         |  16 +
+ src/backend.h                         |   3 +
+ src/main.cpp                          |   1 +
+ src/main.hpp                          |   2 +
+ src/pipewire.cpp                      | 614 +++++++++++++++++++-------
+ src/pipewire.hpp                      |  51 ++-
+ src/wlserver.cpp                      | 218 +++++++++
+ src/wlserver.hpp                      |   7 +
+ tests/meson.build                     |   5 +-
+ tests/test_utils_vblank_schedule.cpp  |  10 +
+ tests/test_virtual_output.cpp         | 242 ++++++++++
+ 17 files changed, 1656 insertions(+), 171 deletions(-)
+ create mode 100644 protocol/gamescope-virtual-output.xml
+ create mode 100644 src/Utils/LogRateLimit.h
+ create mode 100644 src/Utils/VirtualOutput.h
+ create mode 100644 src/Utils/VirtualOutputNode.h
+ create mode 100644 tests/test_virtual_output.cpp
+
+diff --git a/protocol/gamescope-virtual-output.xml b/protocol/gamescope-virtual-output.xml
+new file mode 100644
+index 00000000..ed5967a6
+--- /dev/null
++++ b/protocol/gamescope-virtual-output.xml
+@@ -0,0 +1,68 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<protocol name="gamescope_virtual_output">
++
++  <copyright>
++    Copyright © 2026 seilent
++
++    Permission is hereby granted, free of charge, to any person obtaining a
++    copy of this software and associated documentation files (the "Software"),
++    to deal in the Software without restriction, including without limitation
++    the rights to use, copy, modify, merge, publish, distribute, sublicense,
++    and/or sell copies of the Software, and to permit persons to whom the
++    Software is furnished to do so, subject to the following conditions:
++
++    The above copyright notice and this permission notice (including the next
++    paragraph) shall be included in all copies or substantial portions of the
++    Software.
++
++    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
++    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
++    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
++    DEALINGS IN THE SOFTWARE.
++  </copyright>
++
++  <description summary="gamescope virtual output">
++    This is a private Gamescope protocol. Regular Wayland clients must not use
++    it.
++
++    A virtual output is a display that gamescope composites into a PipeWire
++    node. It lasts as long as its object.
++  </description>
++
++  <interface name="gamescope_virtual_output_manager" version="1">
++    <request name="destroy" type="destructor"></request>
++
++    <request name="create_virtual_output">
++      <arg name="id" type="new_id" interface="gamescope_virtual_output"/>
++      <arg name="width" type="uint"/>
++      <arg name="height" type="uint"/>
++      <arg name="refresh_mhz" type="uint"/>
++      <arg name="width_mm" type="uint"/>
++      <arg name="height_mm" type="uint"/>
++    </request>
++  </interface>
++
++  <interface name="gamescope_virtual_output" version="1">
++    <enum name="failure">
++      <entry name="busy" value="1"/>
++      <entry name="invalid_mode" value="2"/>
++      <entry name="output_disable_failed" value="3"/>
++      <entry name="stream_failed" value="4"/>
++      <entry name="revoked" value="5"/>
++      <entry name="forced_internal" value="6"/>
++    </enum>
++
++    <request name="destroy" type="destructor"></request>
++
++    <event name="stream_node">
++      <arg name="node_id" type="uint"/>
++    </event>
++
++    <event name="failed">
++      <arg name="reason" type="uint" enum="failure"/>
++    </event>
++  </interface>
++</protocol>
+diff --git a/protocol/meson.build b/protocol/meson.build
+index cf8fbd18..8a7dd7f3 100644
+--- a/protocol/meson.build
++++ b/protocol/meson.build
+@@ -42,6 +42,7 @@ protocols = [
+ 	'gamescope-limiter.xml',
+ 	'gamescope-private.xml',
+ 	'gamescope-action-binding.xml',
++	'gamescope-virtual-output.xml',
+ 
+ 	# wlroots protocols
+ 	'wlr-layer-shell-unstable-v1.xml',
+diff --git a/src/Backends/DRMBackend.cpp b/src/Backends/DRMBackend.cpp
+index 12b7bb07..d41fdc88 100644
+--- a/src/Backends/DRMBackend.cpp
++++ b/src/Backends/DRMBackend.cpp
+@@ -48,8 +48,13 @@
+ #include "vblankmanager.hpp"
+ #include "wlserver.hpp"
+ #include "refresh_rate.h"
++#include "Utils/VirtualOutput.h"
+ #include <sys/utsname.h>
+ 
++#if HAVE_PIPEWIRE
++#include "pipewire.hpp"
++#endif
++
+ #include "wlr_begin.hpp"
+ #include <libliftoff.h>
+ #include <wlr/types/wlr_buffer.h>
+@@ -59,6 +64,7 @@
+ #include "wlr_end.hpp"
+ 
+ #include "gamescope-control-protocol.h"
++#include "gamescope-virtual-output-protocol.h"
+ 
+ extern int g_nPreferredOutputWidth;
+ extern int g_nPreferredOutputHeight;
+@@ -624,6 +630,7 @@ static std::unordered_map< std::string, std::string > pnps = {};
+ 
+ static void drm_unset_mode( struct drm_t *drm, bool force );
+ static void drm_unset_connector( struct drm_t *drm );
++static int drm_disable_crtcs( struct drm_t *drm, const std::unordered_set< uint64_t > &affectedCRTCIds );
+ 
+ static constexpr uint32_t s_kSteamDeckLCDRates[] =
+ {
+@@ -705,9 +712,17 @@ static bool drm_detach_lease_resources(
+ 	};
+ 	affectedCRTCIds.erase( 0 );
+ 
++	return drm_disable_crtcs( drm, affectedCRTCIds ) == 0;
++}
++
++static int drm_disable_crtcs( struct drm_t *drm, const std::unordered_set< uint64_t > &affectedCRTCIds )
++{
++	if ( affectedCRTCIds.empty() )
++		return 0;
++
+ 	drmModeAtomicReq *pRequest = drmModeAtomicAlloc();
+ 	if ( !pRequest )
+-		return false;
++		return -ENOMEM;
+ 	defer( drmModeAtomicFree( pRequest ) );
+ 
+ 	std::vector< gamescope::CDRMAtomicProperty * > changedProperties;
+@@ -745,17 +760,40 @@ static bool drm_detach_lease_resources(
+ 		}
+ 	}
+ 
+-	if ( !bValid || drmModeAtomicCommit( drm->fd, pRequest, DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr ) != 0 )
++	int nRet = bValid ? drmModeAtomicCommit( drm->fd, pRequest, DRM_MODE_ATOMIC_ALLOW_MODESET, nullptr ) : -EINVAL;
++	if ( nRet != 0 )
+ 	{
+ 		for ( gamescope::CDRMAtomicProperty *pProperty : changedProperties )
+ 			pProperty->Rollback();
+-		return false;
++		return nRet;
+ 	}
+ 
+ 	for ( gamescope::CDRMAtomicProperty *pProperty : changedProperties )
+ 		pProperty->OnCommit();
+ 
+-	return true;
++	return 0;
++}
++
++static int drm_disable_outputs( struct drm_t *drm )
++{
++	std::unordered_set< uint64_t > crtcIds;
++	for ( const std::unique_ptr< gamescope::CDRMCRTC > &pCRTC : drm->crtcs )
++	{
++		if ( pCRTC->GetProperties().ACTIVE->GetCurrentValue() )
++			crtcIds.insert( pCRTC->GetObjectId() );
++	}
++
++	for ( auto &iter : drm->connectors )
++	{
++		gamescope::CDRMConnector *pConnector = &iter.second;
++		if ( !drm->leasedConnectorIds.contains( pConnector->GetObjectId() ) )
++			crtcIds.insert( pConnector->GetProperties().CRTC_ID->GetCurrentValue() );
++	}
++
++	crtcIds.erase( 0 );
++	std::erase_if( crtcIds, [drm]( uint64_t ulCRTCId ) { return drm->leasedCRTCIds.contains( ulCRTCId ); } );
++
++	return drm_disable_crtcs( drm, crtcIds );
+ }
+ 
+ static bool get_plane_formats( struct drm_t *drm, gamescope::CDRMPlane *pPlane, struct wlr_drm_format_set *pFormatSet )
+@@ -1381,6 +1419,261 @@ namespace gamescope
+ 
+ static gamescope::CDRMHeadlessConnector s_HeadlessConnector;
+ 
++extern gamescope::ConVar<bool> cv_drm_sleep_screens[];
++extern int g_nDynamicRefreshHz;
++
++namespace gamescope
++{
++	class CDRMVirtualOutputConnector final : public CBaseBackendConnector
++	{
++	public:
++		virtual GamescopeScreenType GetScreenType() const override
++		{
++			return GAMESCOPE_SCREEN_TYPE_EXTERNAL;
++		}
++		virtual GamescopePanelOrientation GetCurrentOrientation() const override
++		{
++			return GAMESCOPE_PANEL_ORIENTATION_0;
++		}
++		virtual bool SupportsHDR() const override
++		{
++			return false;
++		}
++		virtual bool IsHDRActive() const override
++		{
++			return false;
++		}
++		virtual const BackendConnectorHDRInfo &GetHDRInfo() const override
++		{
++			return m_HDRInfo;
++		}
++		virtual bool IsVRRActive() const override
++		{
++			return false;
++		}
++		virtual std::span<const BackendMode> GetModes() const override
++		{
++			return m_Modes;
++		}
++
++		virtual bool SupportsVRR() const override
++		{
++			return false;
++		}
++
++		virtual std::span<const uint8_t> GetRawEDID() const override
++		{
++			return m_Edid;
++		}
++		virtual std::span<const uint32_t> GetValidDynamicRefreshRates() const override
++		{
++			return std::span<const uint32_t>{};
++		}
++
++		virtual void GetNativeColorimetry(
++			bool bHDR10,
++			displaycolorimetry_t *displayColorimetry, EOTF *displayEOTF,
++			displaycolorimetry_t *outputEncodingColorimetry, EOTF *outputEncodingEOTF ) const override
++		{
++			*displayColorimetry = displaycolorimetry_709;
++			*displayEOTF = EOTF_Gamma22;
++			*outputEncodingColorimetry = displaycolorimetry_709;
++			*outputEncodingEOTF = EOTF_Gamma22;
++		}
++
++		virtual const char *GetName() const override
++		{
++			return "VIRTUAL-1";
++		}
++		virtual const char *GetMake() const override
++		{
++			return "Gamescope";
++		}
++		virtual const char *GetModel() const override
++		{
++			return "Virtual Output";
++		}
++
++		virtual int Present( const FrameInfo_t *pFrameInfo, bool bAsync ) override
++		{
++			m_PresentFeedback.m_uQueuedPresents++;
++			GetVBlankTimer().UpdateWasCompositing( true );
++
++#if HAVE_PIPEWIRE
++			if ( !cv_drm_sleep_screens[ GAMESCOPE_SCREEN_TYPE_EXTERNAL ] )
++			{
++				if ( struct pipewire_buffer *pBuffer = pipewire_virtual_dequeue() )
++				{
++					FrameInfo_t frameInfo = *pFrameInfo;
++					std::optional<uint64_t> oSequence = pBuffer->texture
++						? vulkan_composite( &frameInfo, Rc<CVulkanTexture>{ pBuffer->texture }, false )
++						: std::nullopt;
++					if ( oSequence )
++						vulkan_wait( *oSequence, true );
++					pipewire_virtual_push( pBuffer, !oSequence );
++				}
++			}
++#endif
++
++			const uint64_t ulTargetVBlank = g_SteamCompMgrVBlankTime.schedule.ulTargetVBlank;
++			GetVBlankTimer().UpdateLastDrawTime( get_time_in_nanos() - g_SteamCompMgrVBlankTime.ulWakeupTime );
++			GetVBlankTimer().MarkVBlank( ulTargetVBlank, true );
++			m_PresentFeedback.m_uCompletedPresents = m_PresentFeedback.m_uQueuedPresents.load();
++			mangoapp_output_update( ulTargetVBlank );
++			return 0;
++		}
++
++		bool IsStreamed() const
++		{
++			return m_oMode && m_bStreamed && !m_bFailed;
++		}
++
++		void Poll()
++		{
++			const bool bWasStreamed = IsStreamed();
++
++			std::optional<VirtualOutputMode> oMode;
++			if ( wlserver_virtual_output_poll( &m_ulSerial, &oMode ) )
++			{
++				m_oMode = oMode;
++				m_bStreamed = false;
++				m_bFailed = false;
++				m_bNodeReported = false;
++				m_bOutrankedNoted = false;
++				m_uDisableRetries = 0;
++#if HAVE_PIPEWIRE
++				if ( m_oMode )
++					pipewire_virtual_open( m_ulSerial, m_oMode->uWidth, m_oMode->uHeight, m_oMode->uRefreshmHz );
++				else
++					pipewire_virtual_close();
++#endif
++			}
++
++#if HAVE_PIPEWIRE
++			if ( m_oMode && !m_bFailed )
++			{
++				const pipewire_virtual_status status = pipewire_virtual_get_status();
++				if ( status.serial == m_ulSerial && status.failed )
++				{
++					drm_log.errorf( "virtual output stream failed" );
++					Fail( GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_STREAM_FAILED );
++				}
++				else if ( status.serial == m_ulSerial )
++				{
++					if ( status.node_id != SPA_ID_INVALID && !m_bNodeReported )
++					{
++						m_oNodeReport = status.node_id;
++						m_bNodeReported = true;
++					}
++					m_bStreamed |= status.streamed_once;
++				}
++			}
++#endif
++
++			if ( IsStreamed() != bWasStreamed )
++				GetBackend()->DirtyState();
++		}
++
++		bool Select( struct drm_t *drm )
++		{
++			int nRet = drm_disable_outputs( drm );
++			if ( nRet == -EACCES )
++				return true;
++
++			if ( nRet == -EBUSY && m_uDisableRetries++ < 3 )
++			{
++				GetBackend()->DirtyState();
++				return true;
++			}
++
++			if ( nRet != 0 )
++			{
++				drm_log.errorf( "virtual output: disabling the outputs failed: %s", strerror( -nRet ) );
++				Fail( GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_OUTPUT_DISABLE_FAILED );
++				return false;
++			}
++			m_uDisableRetries = 0;
++
++			{
++				std::scoped_lock lock{ drm->m_QueuedFbIdsMutex, drm->m_mutVisibleFbIds };
++				drm->m_QueuedFbIds.clear();
++				drm->m_VisibleFbIds.clear();
++			}
++			g_bVirtualOutputCurrent = true;
++			drm_unset_connector( drm );
++
++			drm_log.infof( "selecting connector %s", GetName() );
++
++			const VirtualOutputMode &mode = *m_oMode;
++			g_nOutputWidth = mode.uWidth;
++			g_nOutputHeight = mode.uHeight;
++			g_nOutputRefresh = mode.uRefreshmHz;
++			g_nDynamicRefreshHz = 0;
++			g_bRotated = false;
++			g_uOutputRotation = 0;
++
++			m_Modes = { BackendMode{ mode.uWidth, mode.uHeight, ConvertmHzToHz( mode.uRefreshmHz ) } };
++			m_Edid = GenerateSimpleEdid( mode.uWidth, mode.uHeight );
++
++			const struct wlserver_output_info wlserver_output_info = {
++				.description = "Gamescope Virtual Output",
++				.phys_width = (int) mode.uWidthMM,
++				.phys_height = (int) mode.uHeightMM,
++			};
++			wlserver_lock();
++			wlserver_set_output_info( &wlserver_output_info );
++			wlserver_unlock();
++
++			WritePatchedEdid( GetRawEDID(), GetHDRInfo(), false );
++			WriteModeListFile( GetModes() );
++			update_connector_display_info_wl( drm );
++
++			return true;
++		}
++
++		void NoteOutranked( const char *pszConnector )
++		{
++			if ( m_bOutrankedNoted )
++				return;
++
++			m_bOutrankedNoted = true;
++			drm_log.infof( "virtual output streams, but --prefer-output ranks %s above %s", pszConnector, GetName() );
++		}
++
++		void Fail( uint32_t uReason )
++		{
++			if ( m_bFailed )
++				return;
++
++			m_bFailed = true;
++			m_oFailureReport = uReason;
++		}
++
++		void Report()
++		{
++			if ( m_oNodeReport || m_oFailureReport )
++				wlserver_virtual_output_report( m_ulSerial, std::exchange( m_oNodeReport, std::nullopt ), std::exchange( m_oFailureReport, std::nullopt ) );
++		}
++
++	private:
++		BackendConnectorHDRInfo m_HDRInfo{};
++		std::vector<BackendMode> m_Modes;
++		std::vector<uint8_t> m_Edid;
++
++		uint64_t m_ulSerial = 0;
++		std::optional<VirtualOutputMode> m_oMode;
++		bool m_bStreamed = false;
++		bool m_bFailed = false;
++		bool m_bNodeReported = false;
++		bool m_bOutrankedNoted = false;
++		uint32_t m_uDisableRetries = 0;
++		std::optional<uint32_t> m_oNodeReport;
++		std::optional<uint32_t> m_oFailureReport;
++	};
++}
++
++static gamescope::CDRMVirtualOutputConnector s_VirtualOutputConnector;
++
+ // If --fake-output-mm is set (WIDTHxHEIGHT in millimetres, e.g. 508x286), use it for
+ // wl_output physical size instead of drmModeConnector mmWidth/mmHeight (panel/EDID).
+ static void get_wl_output_phys_mm( int connector_mmW, int connector_mmH, int *outW, int *outH )
+@@ -1430,6 +1723,28 @@ static bool setup_best_connector(struct drm_t *drm, bool force, bool initial)
+ 		}
+ 	}
+ 
++	const int nVirtualPriority = get_connector_priority( drm, s_VirtualOutputConnector.GetName() );
++	switch ( gamescope::ChooseVirtualOutput( s_VirtualOutputConnector.IsStreamed(), g_bForceInternal, nVirtualPriority, nBestPriority ) )
++	{
++		case gamescope::VirtualOutputChoice::Virtual:
++			if ( g_bVirtualOutputCurrent && !force )
++				return true;
++			if ( s_VirtualOutputConnector.Select( drm ) )
++				return true;
++			break;
++		case gamescope::VirtualOutputChoice::ForcedInternal:
++			drm_log.infof( "virtual output refused, the display is forced internal" );
++			s_VirtualOutputConnector.Fail( GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_FORCED_INTERNAL );
++			break;
++		case gamescope::VirtualOutputChoice::Kms:
++			if ( s_VirtualOutputConnector.IsStreamed() )
++				s_VirtualOutputConnector.NoteOutranked( best->GetName() );
++			break;
++	}
++
++	if ( g_bVirtualOutputCurrent )
++		drm_log.infof( "leaving connector %s", s_VirtualOutputConnector.GetName() );
++
+ 	if ( best && best == drm->pConnector )
+ 	{
+ 		// If the device's EDID changed from user us, force a mode-change
+@@ -1450,6 +1765,7 @@ static bool setup_best_connector(struct drm_t *drm, bool force, bool initial)
+ 	if (best == nullptr) {
+ 		drm_log.infof("cannot find any connected connector!");
+ 		drm_unset_connector(drm);
++		g_bVirtualOutputCurrent = false;
+ 		drm_unset_mode(drm, force);
+ 		s_HeadlessConnector.RebuildModes();
+ 
+@@ -1468,7 +1784,9 @@ static bool setup_best_connector(struct drm_t *drm, bool force, bool initial)
+ 		return true;
+ 	}
+ 
+-	if (!drm_set_connector(drm, best)) {
++	const bool bConnectorSet = drm_set_connector(drm, best);
++	g_bVirtualOutputCurrent = false;
++	if (!bConnectorSet) {
+ 		return false;
+ 	}
+ 
+@@ -4729,7 +5047,10 @@ namespace gamescope
+ 
+ 		virtual bool PollState() override
+ 		{
+-			return drm_poll_state( &g_DRM );
++			s_VirtualOutputConnector.Poll();
++			bool bPolled = drm_poll_state( &g_DRM );
++			s_VirtualOutputConnector.Report();
++			return bPolled;
+ 		}
+ 
+ 		virtual std::shared_ptr<BackendBlob> CreateBackendBlob( const std::type_info &type, std::span<const uint8_t> data ) override
+@@ -4779,6 +5100,9 @@ namespace gamescope
+ 			if ( g_DRM.pConnector )
+ 				return g_DRM.pConnector;
+ 
++			if ( g_bVirtualOutputCurrent )
++				return &s_VirtualOutputConnector;
++
+ 			return &s_HeadlessConnector;
+ 		}
+ 
+@@ -4807,7 +5131,7 @@ namespace gamescope
+ 
+ 		virtual bool SupportsTearing() const override
+ 		{
+-			return g_bSupportsAsyncFlips;
++			return g_bSupportsAsyncFlips && !g_bVirtualOutputCurrent;
+ 		}
+ 
+ 		virtual bool UsesVulkanSwapchain() const override
+@@ -4839,6 +5163,11 @@ namespace gamescope
+ 			return g_bSupportsSyncObjs && !cv_drm_debug_disable_explicit_sync;
+ 		}
+ 
++		virtual bool SupportsVirtualOutput() const override
++		{
++			return HAVE_PIPEWIRE;
++		}
++
+ 		virtual bool IsPaused() const override
+ 		{
+ 			return g_DRM.paused;
+diff --git a/src/Backends/DeferredBackend.h b/src/Backends/DeferredBackend.h
+index 7f76122e..198fa433 100644
+--- a/src/Backends/DeferredBackend.h
++++ b/src/Backends/DeferredBackend.h
+@@ -239,6 +239,11 @@ namespace gamescope
+             return m_pChild->SupportsExplicitSync();
+ 		}
+ 
++		virtual bool SupportsVirtualOutput() const override
++		{
++            return m_pChild->SupportsVirtualOutput();
++		}
++
+ 		virtual bool IsPaused() const override
+ 		{
+             {
+diff --git a/src/Utils/LogRateLimit.h b/src/Utils/LogRateLimit.h
+new file mode 100644
+index 00000000..bbc60796
+--- /dev/null
++++ b/src/Utils/LogRateLimit.h
+@@ -0,0 +1,32 @@
++#pragma once
++
++#include <cstdint>
++
++namespace gamescope
++{
++    class LogRateLimit
++    {
++    public:
++        static constexpr uint64_t k_ulInterval = 5'000'000'000ul;
++
++        bool Allow( uint64_t ulNow, uint64_t *pulSuppressed )
++        {
++            if ( m_bLogged && ulNow - m_ulLastLog < k_ulInterval )
++            {
++                m_ulSuppressed++;
++                return false;
++            }
++
++            *pulSuppressed = m_ulSuppressed;
++            m_ulSuppressed = 0;
++            m_ulLastLog = ulNow;
++            m_bLogged = true;
++            return true;
++        }
++
++    private:
++        uint64_t m_ulLastLog = 0;
++        uint64_t m_ulSuppressed = 0;
++        bool m_bLogged = false;
++    };
++}
+diff --git a/src/Utils/VirtualOutput.h b/src/Utils/VirtualOutput.h
+new file mode 100644
+index 00000000..ec58f771
+--- /dev/null
++++ b/src/Utils/VirtualOutput.h
+@@ -0,0 +1,209 @@
++#pragma once
++
++#include <charconv>
++#include <climits>
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++#include <span>
++#include <string_view>
++
++namespace gamescope
++{
++    struct VirtualOutputMode
++    {
++        uint32_t uWidth = 0;
++        uint32_t uHeight = 0;
++        uint32_t uRefreshmHz = 0;
++        uint32_t uWidthMM = 0;
++        uint32_t uHeightMM = 0;
++
++        bool operator==( const VirtualOutputMode & ) const = default;
++    };
++
++    inline bool IsValidVirtualOutputMode( const VirtualOutputMode &mode )
++    {
++        return mode.uWidth >= 2 && mode.uWidth <= 3840 && mode.uWidth % 2 == 0 &&
++               mode.uHeight >= 2 && mode.uHeight <= mode.uWidth && mode.uHeight % 2 == 0 &&
++               mode.uRefreshmHz >= 1'000 && mode.uRefreshmHz <= 240'000 &&
++               mode.uWidthMM >= 1 && mode.uWidthMM <= 2000 &&
++               mode.uHeightMM >= 1 && mode.uHeightMM <= 2000;
++    }
++
++    inline std::optional<VirtualOutputMode> ParseVirtualOutputMode( std::string_view svMode )
++    {
++        static constexpr char k_cSeparators[] = { 'x', '@', ':', 'x', '\0' };
++
++        uint32_t uValues[ std::size( k_cSeparators ) ];
++        const char *pCursor = svMode.data();
++        const char *pEnd = svMode.data() + svMode.size();
++        for ( size_t i = 0; i < std::size( k_cSeparators ); i++ )
++        {
++            auto [ pNext, eError ] = std::from_chars( pCursor, pEnd, uValues[ i ] );
++            if ( eError != std::errc{} )
++                return std::nullopt;
++
++            pCursor = pNext;
++            if ( k_cSeparators[ i ] )
++            {
++                if ( pCursor == pEnd || *pCursor != k_cSeparators[ i ] )
++                    return std::nullopt;
++                pCursor++;
++            }
++        }
++
++        if ( pCursor != pEnd || uValues[ 2 ] > UINT32_MAX / 1'000 )
++            return std::nullopt;
++
++        VirtualOutputMode mode =
++        {
++            .uWidth = uValues[ 0 ],
++            .uHeight = uValues[ 1 ],
++            .uRefreshmHz = uValues[ 2 ] * 1'000,
++            .uWidthMM = uValues[ 3 ],
++            .uHeightMM = uValues[ 4 ],
++        };
++        if ( !IsValidVirtualOutputMode( mode ) )
++            return std::nullopt;
++
++        return mode;
++    }
++
++    class VirtualOutputArbiter
++    {
++    public:
++        bool Create( void *pClient, const VirtualOutputMode &mode )
++        {
++            if ( m_oMode )
++                return false;
++
++            Take( pClient, mode );
++            return true;
++        }
++
++        bool Destroy( void *pClient )
++        {
++            if ( !pClient || pClient != m_pClient )
++                return false;
++
++            Clear();
++            return true;
++        }
++
++        bool Set( const VirtualOutputMode &mode )
++        {
++            if ( m_pClient )
++                return false;
++
++            if ( m_oMode != mode )
++                Take( nullptr, mode );
++            return true;
++        }
++
++        void *Off()
++        {
++            void *pRevoked = m_pClient;
++            if ( m_oMode )
++                Clear();
++            return pRevoked;
++        }
++
++        bool Release( uint64_t ulSerial )
++        {
++            if ( !m_oMode || ulSerial != m_ulSerial )
++                return false;
++
++            Clear();
++            return true;
++        }
++
++        uint64_t GetSerial() const { return m_ulSerial; }
++        const std::optional<VirtualOutputMode> &GetMode() const { return m_oMode; }
++        void *GetClient() const { return m_pClient; }
++
++    private:
++        void Take( void *pClient, const VirtualOutputMode &mode )
++        {
++            m_pClient = pClient;
++            m_oMode = mode;
++            m_ulSerial++;
++        }
++
++        void Clear()
++        {
++            m_pClient = nullptr;
++            m_oMode = std::nullopt;
++            m_ulSerial++;
++        }
++
++        void *m_pClient = nullptr;
++        std::optional<VirtualOutputMode> m_oMode;
++        uint64_t m_ulSerial = 0;
++    };
++
++    enum class VirtualOutputChoice
++    {
++        Kms,
++        Virtual,
++        ForcedInternal,
++    };
++
++    inline VirtualOutputChoice ChooseVirtualOutput( bool bStreamed, bool bForceInternal, int nVirtualPriority, int nBestKmsPriority )
++    {
++        if ( !bStreamed || nVirtualPriority > nBestKmsPriority )
++            return VirtualOutputChoice::Kms;
++
++        if ( bForceInternal )
++            return VirtualOutputChoice::ForcedInternal;
++
++        return VirtualOutputChoice::Virtual;
++    }
++
++    struct VirtualStreamReconcile
++    {
++        bool bDestroy = false;
++        bool bCreate = false;
++    };
++
++    inline VirtualStreamReconcile ReconcileVirtualStream( uint64_t ulWantedSerial, uint64_t ulStreamSerial, uint64_t ulFailedSerial )
++    {
++        const bool bKeep = ulStreamSerial && ulStreamSerial == ulWantedSerial && ulStreamSerial != ulFailedSerial;
++        return VirtualStreamReconcile
++        {
++            .bDestroy = ulStreamSerial && !bKeep,
++            .bCreate = ulWantedSerial && ulWantedSerial != ulStreamSerial && ulWantedSerial != ulFailedSerial,
++        };
++    }
++
++    enum class StreamFormat
++    {
++        BGRx,
++        NV12,
++    };
++
++    struct StreamOffer
++    {
++        StreamFormat eFormat;
++        bool bDmaBuf;
++    };
++
++    inline std::span<const StreamOffer> GetStreamOffers( bool bVirtualOutput )
++    {
++        static constexpr StreamOffer k_MainOffers[] =
++        {
++            { StreamFormat::BGRx, true },
++            { StreamFormat::BGRx, false },
++            { StreamFormat::NV12, false },
++        };
++        static constexpr StreamOffer k_VirtualOutputOffers[] =
++        {
++            { StreamFormat::NV12, false },
++            { StreamFormat::BGRx, true },
++            { StreamFormat::BGRx, false },
++        };
++
++        if ( bVirtualOutput )
++            return k_VirtualOutputOffers;
++        return k_MainOffers;
++    }
++}
+diff --git a/src/Utils/VirtualOutputNode.h b/src/Utils/VirtualOutputNode.h
+new file mode 100644
+index 00000000..35481184
+--- /dev/null
++++ b/src/Utils/VirtualOutputNode.h
+@@ -0,0 +1,16 @@
++#pragma once
++
++#include <pipewire/keys.h>
++#include <spa/utils/dict.h>
++
++namespace gamescope
++{
++    inline constexpr char k_szVirtualOutputNodeName[] = "gamescope-virtual-output";
++
++    inline constexpr spa_dict_item k_VirtualOutputNodeProps[] =
++    {
++        { PW_KEY_MEDIA_CLASS, "Video/Source" },
++        { PW_KEY_NODE_NAME, k_szVirtualOutputNodeName },
++        { PW_KEY_NODE_DESCRIPTION, "Gamescope virtual output" },
++    };
++}
+diff --git a/src/backend.h b/src/backend.h
+index d332f792..7865e4de 100644
+--- a/src/backend.h
++++ b/src/backend.h
+@@ -368,6 +368,8 @@ namespace gamescope
+ 
+         virtual bool SupportsExplicitSync() const = 0;
+ 
++        virtual bool SupportsVirtualOutput() const = 0;
++
+         // Dumb helper we should remove to support multi display someday.
+         gamescope::GamescopeScreenType GetScreenType()
+         {
+@@ -436,6 +438,7 @@ namespace gamescope
+         virtual void NotifyPhysicalInput( InputType eInputType ) override {}
+ 
+         virtual bool SupportsVROverlayForwarding() override { return false; }
++        virtual bool SupportsVirtualOutput() const override { return false; }
+         virtual void ForwardFramebuffer( std::shared_ptr<IBackendPlane> &pPlane, IBackendFb *pFramebuffer, const void *pData ) override {}
+ 
+         virtual bool NewlyInitted() override { return false; }
+diff --git a/src/main.cpp b/src/main.cpp
+index 7859cae3..f997a86b 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -779,6 +779,7 @@ const char *g_sOutputName = nullptr;
+ const char *g_sLeaseConnectorName = nullptr;
+ const char *g_sIgnoreTouchDevice = nullptr;
+ std::atomic<int> g_nActiveLeaseClients = { 0 };
++std::atomic<bool> g_bVirtualOutputCurrent = { false };
+ bool g_bDebugLayers = false;
+ bool g_bForceDisableColorMgmt = false;
+ bool g_bRt = false;
+diff --git a/src/main.hpp b/src/main.hpp
+index c80832fa..114abe84 100644
+--- a/src/main.hpp
++++ b/src/main.hpp
+@@ -50,6 +50,8 @@ extern std::vector<uint32_t> g_customRefreshRates;
+ // normally so the bottom touchscreen works in the Plasma session.
+ extern std::atomic<int> g_nActiveLeaseClients;
+ 
++extern std::atomic<bool> g_bVirtualOutputCurrent;
++
+ enum class GamescopeUpscaleFilter : uint32_t
+ {
+     LINEAR = 0,
+diff --git a/src/pipewire.cpp b/src/pipewire.cpp
+index 76b3ea8c..07a733b7 100644
+--- a/src/pipewire.cpp
++++ b/src/pipewire.cpp
+@@ -7,32 +7,45 @@
+ #include <unistd.h>
+ 
+ #include <atomic>
++#include <cinttypes>
+ #include <thread>
++#include <utility>
+ #include <vector>
+ 
+ #include "main.hpp"
+ #include "pipewire.hpp"
+ #include "log.hpp"
++#include "refresh_rate.h"
++#include "steamcompmgr.hpp"
++#include "Utils/VirtualOutput.h"
++#include "Utils/VirtualOutputNode.h"
+ 
+ #include <spa/debug/format.h>
+ 
+ static LogScope pwr_log("pipewire");
+ 
+-static struct pipewire_state pipewire_state = { .stream_node_id = SPA_ID_INVALID };
+-static int nudgePipe[2] = { -1, -1 };
++struct pipewire_connection {
++	struct pw_loop *loop;
++	struct pw_context *context;
++	struct pw_core *core;
++	bool running;
++};
+ 
+-// Pending buffer for PipeWire → steamcompmgr
+-static std::atomic<struct pipewire_buffer *> out_buffer;
+-// Pending buffer for steamcompmgr → PipeWire
+-static std::atomic<struct pipewire_buffer *> in_buffer;
++struct pipewire_virtual_request {
++	uint64_t serial;
++	uint32_t width;
++	uint32_t height;
++	uint32_t refresh_mhz;
++};
+ 
+-// Requested capture size
+-static uint32_t s_nRequestedWidth;
+-static uint32_t s_nRequestedHeight;
+-static uint32_t s_nCaptureWidth;
+-static uint32_t s_nCaptureHeight;
+-static uint32_t s_nOutputWidth;
+-static uint32_t s_nOutputHeight;
++static struct pipewire_connection connection = {};
++static struct pipewire_state pipewire_state = { .name = "gamescope", .stream_node_id = SPA_ID_INVALID };
++static struct pipewire_state virtual_state = { .name = gamescope::k_szVirtualOutputNodeName, .is_virtual = true, .stream_node_id = SPA_ID_INVALID };
++static int nudgePipe[2] = { -1, -1 };
++
++static std::mutex virtual_request_mutex;
++static struct pipewire_virtual_request virtual_request = {};
++static bool thread_running = false;
+ 
+ static void destroy_buffer(struct pipewire_buffer *buffer) {
+ 	assert(buffer->buffer == nullptr);
+@@ -54,12 +67,8 @@ static void destroy_buffer(struct pipewire_buffer *buffer) {
+ 		assert(false); // unreachable
+ 	}	
+ 
+-	// If out_buffer == buffer, then set it to nullptr.
+-	// We don't care about the result.
+-	struct pipewire_buffer *buffer1 = buffer;
+-	out_buffer.compare_exchange_strong(buffer1, nullptr);
+-	struct pipewire_buffer *buffer2 = buffer;
+-	in_buffer.compare_exchange_strong(buffer2, nullptr);
++	struct pipewire_buffer *pending = buffer;
++	buffer->state->in_buffer.compare_exchange_strong(pending, nullptr);
+ 
+ 	delete buffer;
+ }
+@@ -69,33 +78,33 @@ void pipewire_destroy_buffer(struct pipewire_buffer *buffer)
+ 	destroy_buffer(buffer);
+ }
+ 
+-static void calculate_capture_size()
++static void calculate_capture_size(struct pipewire_state *state)
+ {
+-	s_nCaptureWidth = s_nOutputWidth;
+-	s_nCaptureHeight = s_nOutputHeight;
++	state->capture_width = state->output_width;
++	state->capture_height = state->output_height;
+ 
+-	if (s_nRequestedWidth > 0 && s_nRequestedHeight > 0 &&
+-	    (s_nOutputWidth > s_nRequestedWidth || s_nOutputHeight > s_nRequestedHeight)) {
++	if (state->requested_width > 0 && state->requested_height > 0 &&
++	    (state->output_width > state->requested_width || state->output_height > state->requested_height)) {
+ 		// Need to clamp to the smallest dimension
+-		float flRatioW = static_cast<float>(s_nRequestedWidth) / s_nOutputWidth;
+-		float flRatioH = static_cast<float>(s_nRequestedHeight) / s_nOutputHeight;
++		float flRatioW = static_cast<float>(state->requested_width) / state->output_width;
++		float flRatioH = static_cast<float>(state->requested_height) / state->output_height;
+ 		if (flRatioW <= flRatioH) {
+-			s_nCaptureWidth = s_nRequestedWidth;
+-			s_nCaptureHeight = static_cast<uint32_t>(ceilf(flRatioW * s_nOutputHeight));
++			state->capture_width = state->requested_width;
++			state->capture_height = static_cast<uint32_t>(ceilf(flRatioW * state->output_height));
+ 		} else {
+-			s_nCaptureWidth = static_cast<uint32_t>(ceilf(flRatioH * s_nOutputWidth));
+-			s_nCaptureHeight = s_nRequestedHeight;
++			state->capture_width = static_cast<uint32_t>(ceilf(flRatioH * state->output_width));
++			state->capture_height = state->requested_height;
+ 		}
+ 	}
+ 
+ 	// NV12 is 4:2:0 subsampled and only valid at even dimensions, but the ratio math can round odd.
+ 	constexpr uint32_t kCaptureAlign = 2;
+-	s_nCaptureWidth = SPA_ROUND_UP_N(s_nCaptureWidth, kCaptureAlign);
+-	s_nCaptureHeight = SPA_ROUND_UP_N(s_nCaptureHeight, kCaptureAlign);
++	state->capture_width = SPA_ROUND_UP_N(state->capture_width, kCaptureAlign);
++	state->capture_height = SPA_ROUND_UP_N(state->capture_height, kCaptureAlign);
+ }
+ 
+-static void build_format_params(struct spa_pod_builder *builder, spa_video_format format, std::vector<const struct spa_pod *> &params) {
+-	struct spa_rectangle size = SPA_RECTANGLE(s_nCaptureWidth, s_nCaptureHeight);
++static const struct spa_pod *build_format_param(struct spa_pod_builder *builder, struct pipewire_state *state, spa_video_format format, bool dmabuf) {
++	struct spa_rectangle size = SPA_RECTANGLE(state->capture_width, state->capture_height);
+ 	struct spa_rectangle min_requested_size = { 0, 0 };
+ 	struct spa_rectangle max_requested_size = { UINT32_MAX, UINT32_MAX };
+ 	struct spa_fraction framerate = SPA_FRACTION(0, 1);
+@@ -109,39 +118,19 @@ static void build_format_params(struct spa_pod_builder *builder, spa_video_forma
+ 		SPA_FORMAT_VIDEO_format, SPA_POD_Id(format),
+ 		SPA_FORMAT_VIDEO_size, SPA_POD_Rectangle(&size),
+ 		SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&framerate),
+-		SPA_FORMAT_VIDEO_requested_size, SPA_POD_CHOICE_RANGE_Rectangle( &min_requested_size, &min_requested_size, &max_requested_size ),
+-		SPA_FORMAT_VIDEO_gamescope_focus_appid, SPA_POD_CHOICE_RANGE_Long( 0ll, INT64_MIN, INT64_MAX ),
+ 		0);
+-	if (format == SPA_VIDEO_FORMAT_NV12) {
++	if (!state->is_virtual) {
+ 		spa_pod_builder_add(builder,
+-			SPA_FORMAT_VIDEO_colorMatrix, SPA_POD_CHOICE_ENUM_Id(3,
+-							SPA_VIDEO_COLOR_MATRIX_BT601,
+-							SPA_VIDEO_COLOR_MATRIX_BT601,
+-							SPA_VIDEO_COLOR_MATRIX_BT709),
+-			SPA_FORMAT_VIDEO_colorRange, SPA_POD_CHOICE_ENUM_Id(3,
+-							SPA_VIDEO_COLOR_RANGE_16_235,
+-							SPA_VIDEO_COLOR_RANGE_16_235,
+-							SPA_VIDEO_COLOR_RANGE_0_255),
++			SPA_FORMAT_VIDEO_requested_size, SPA_POD_CHOICE_RANGE_Rectangle( &min_requested_size, &min_requested_size, &max_requested_size ),
++			SPA_FORMAT_VIDEO_gamescope_focus_appid, SPA_POD_CHOICE_RANGE_Long( 0ll, INT64_MIN, INT64_MAX ),
+ 			0);
+ 	}
+-	spa_pod_builder_prop(builder, SPA_FORMAT_VIDEO_modifier, SPA_POD_PROP_FLAG_MANDATORY);
+-	spa_pod_builder_push_choice(builder, &choice_frame, SPA_CHOICE_Enum, 0);
+-	spa_pod_builder_long(builder, modifier); // default
+-	spa_pod_builder_long(builder, modifier);
+-	spa_pod_builder_pop(builder, &choice_frame);
+-	params.push_back((const struct spa_pod *) spa_pod_builder_pop(builder, &obj_frame));
+-
+-	spa_pod_builder_push_object(builder, &obj_frame, SPA_TYPE_OBJECT_Format, SPA_PARAM_EnumFormat);
+-	spa_pod_builder_add(builder,
+-		SPA_FORMAT_mediaType, SPA_POD_Id(SPA_MEDIA_TYPE_video),
+-		SPA_FORMAT_mediaSubtype, SPA_POD_Id(SPA_MEDIA_SUBTYPE_raw),
+-		SPA_FORMAT_VIDEO_format, SPA_POD_Id(format),
+-		SPA_FORMAT_VIDEO_size, SPA_POD_Rectangle(&size),
+-		SPA_FORMAT_VIDEO_framerate, SPA_POD_Fraction(&framerate),
+-		SPA_FORMAT_VIDEO_requested_size, SPA_POD_CHOICE_RANGE_Rectangle( &min_requested_size, &min_requested_size, &max_requested_size ),
+-		SPA_FORMAT_VIDEO_gamescope_focus_appid, SPA_POD_CHOICE_RANGE_Long( 0ll, INT64_MIN, INT64_MAX ),
+-		0);
+-	if (format == SPA_VIDEO_FORMAT_NV12) {
++	if (format == SPA_VIDEO_FORMAT_NV12 && state->is_virtual) {
++		spa_pod_builder_add(builder,
++			SPA_FORMAT_VIDEO_colorMatrix, SPA_POD_Id(SPA_VIDEO_COLOR_MATRIX_BT601),
++			SPA_FORMAT_VIDEO_colorRange, SPA_POD_Id(SPA_VIDEO_COLOR_RANGE_0_255),
++			0);
++	} else if (format == SPA_VIDEO_FORMAT_NV12) {
+ 		spa_pod_builder_add(builder,
+ 			SPA_FORMAT_VIDEO_colorMatrix, SPA_POD_CHOICE_ENUM_Id(3,
+ 							SPA_VIDEO_COLOR_MATRIX_BT601,
+@@ -153,38 +142,66 @@ static void build_format_params(struct spa_pod_builder *builder, spa_video_forma
+ 							SPA_VIDEO_COLOR_RANGE_0_255),
+ 			0);
+ 	}
+-	params.push_back((const struct spa_pod *) spa_pod_builder_pop(builder, &obj_frame));
+-
+-//	for (auto& param : params)
+-//		spa_debug_format(2, nullptr, param);
++	if (dmabuf) {
++		spa_pod_builder_prop(builder, SPA_FORMAT_VIDEO_modifier, SPA_POD_PROP_FLAG_MANDATORY);
++		spa_pod_builder_push_choice(builder, &choice_frame, SPA_CHOICE_Enum, 0);
++		spa_pod_builder_long(builder, modifier);
++		spa_pod_builder_long(builder, modifier);
++		spa_pod_builder_pop(builder, &choice_frame);
++	}
++	return (const struct spa_pod *) spa_pod_builder_pop(builder, &obj_frame);
+ }
+ 
+ 
+-static std::vector<const struct spa_pod *> build_format_params(struct spa_pod_builder *builder)
++static std::vector<const struct spa_pod *> build_format_params(struct spa_pod_builder *builder, struct pipewire_state *state)
+ {
+ 	std::vector<const struct spa_pod *> params;
+ 
+-	build_format_params(builder, SPA_VIDEO_FORMAT_BGRx, params);
+-	build_format_params(builder, SPA_VIDEO_FORMAT_NV12, params);
++	for (const gamescope::StreamOffer &offer : gamescope::GetStreamOffers(state->is_virtual)) {
++		spa_video_format format = offer.eFormat == gamescope::StreamFormat::NV12 ? SPA_VIDEO_FORMAT_NV12 : SPA_VIDEO_FORMAT_BGRx;
++		params.push_back(build_format_param(builder, state, format, offer.bDmaBuf));
++	}
+ 
+ 	return params;
+ }
+ 
+-static void request_buffer(struct pipewire_state *state)
++static struct pipewire_buffer *request_buffer(struct pipewire_state *state)
+ {
+-	struct pw_buffer *pw_buffer = pw_stream_dequeue_buffer(state->stream);
++	std::scoped_lock lock(state->mutex);
++	if (state->dead || !state->streaming)
++		return nullptr;
++
++	if (state->in_buffer.load() != nullptr) {
++		state->skipped = true;
++		if (state->in_buffer.load() != nullptr)
++			return nullptr;
++	}
++
++	struct pw_buffer *pw_buffer = std::exchange(state->ready, nullptr);
++	if (!pw_buffer)
++		pw_buffer = pw_stream_dequeue_buffer(state->stream);
+ 	if (!pw_buffer) {
+-		pwr_log.errorf("warning: out of buffers");
+-		return;
++		uint64_t suppressed = 0;
++		if (state->out_of_buffers_log.Allow(get_time_in_nanos(), &suppressed))
++			pwr_log.errorf("warning: out of buffers on %s (%" PRIu64 " suppressed)", state->name, suppressed);
++		if (state->is_virtual && !state->starved.exchange(true))
++			nudge_pipewire();
++		return nullptr;
+ 	}
++	state->starved = false;
+ 
+ 	struct pipewire_buffer *buffer = (struct pipewire_buffer *) pw_buffer->user_data;
+-	buffer->copying = true;
++	if (!buffer) {
++		uint64_t suppressed = 0;
++		if (state->no_user_data_log.Allow(get_time_in_nanos(), &suppressed))
++			pwr_log.errorf("warning: buffer without user data on %s (%" PRIu64 " suppressed)", state->name, suppressed);
++		state->requeue.push_back(pw_buffer);
++		nudge_pipewire();
++		return nullptr;
++	}
+ 
+-	// Past this exchange, the PipeWire thread shares the buffer with the
+-	// steamcompmgr thread
+-	struct pipewire_buffer *old = out_buffer.exchange(buffer);
+-	assert(old == nullptr);
++	buffer->copying = true;
++	return buffer;
+ }
+ 
+ static void copy_buffer(struct pipewire_state *state, struct pipewire_buffer *buffer)
+@@ -196,11 +213,12 @@ static void copy_buffer(struct pipewire_state *state, struct pipewire_buffer *bu
+ 	struct spa_buffer *spa_buffer = pw_buffer->buffer;
+ 
+ 	bool needs_reneg = buffer->video_info.size.width != tex->width() || buffer->video_info.size.height != tex->height();
++	bool corrupted = needs_reneg || buffer->corrupted;
+ 
+ 	struct spa_meta_header *header = (struct spa_meta_header *) spa_buffer_find_meta_data(spa_buffer, SPA_META_Header, sizeof(*header));
+ 	if (header != nullptr) {
+ 		header->pts = -1;
+-		header->flags = needs_reneg ? SPA_META_HEADER_FLAG_CORRUPTED : 0;
++		header->flags = corrupted ? SPA_META_HEADER_FLAG_CORRUPTED : 0;
+ 		header->seq = state->seq++;
+ 		header->dts_offset = 0;
+ 	}
+@@ -211,7 +229,7 @@ static void copy_buffer(struct pipewire_state *state, struct pipewire_buffer *bu
+ 	}
+ 
+ 	struct spa_chunk *chunk = spa_buffer->datas[0].chunk;
+-	chunk->flags = needs_reneg ? SPA_CHUNK_FLAG_CORRUPTED : 0;
++	chunk->flags = corrupted ? SPA_CHUNK_FLAG_CORRUPTED : 0;
+ 
+ 	struct wlr_dmabuf_attributes dmabuf;
+ 	switch (buffer->type) {
+@@ -223,7 +241,7 @@ static void copy_buffer(struct pipewire_state *state, struct pipewire_buffer *bu
+ 		}
+ 		chunk->stride = buffer->shm.stride;
+ 
+-		if (!needs_reneg) {
++		if (!corrupted) {
+ 			uint8_t *pMappedData = tex->mappedData();
+ 
+ 			if (state->video_info.format == SPA_VIDEO_FORMAT_NV12) {
+@@ -269,6 +287,83 @@ static void copy_buffer(struct pipewire_state *state, struct pipewire_buffer *bu
+ 	}
+ }
+ 
++static void queue_in_buffer(struct pipewire_state *state)
++{
++	struct pipewire_buffer *buffer = state->in_buffer.exchange(nullptr);
++	if (buffer != nullptr) {
++		buffer->copying = false;
++
++		if (buffer->buffer != nullptr) {
++			copy_buffer(state, buffer);
++
++			int ret = pw_stream_queue_buffer(state->stream, buffer->buffer);
++			if (ret < 0) {
++				pwr_log.errorf("pw_stream_queue_buffer failed");
++			}
++		} else {
++			destroy_buffer(buffer);
++		}
++
++		if (state->skipped.exchange(false) && state->is_virtual)
++			force_repaint();
++	}
++}
++
++static void queue_requeued_buffers(struct pipewire_state *state)
++{
++	std::vector<struct pw_buffer *> requeue;
++	{
++		std::scoped_lock lock(state->mutex);
++		requeue.swap(state->requeue);
++	}
++
++	for (struct pw_buffer *pw_buffer : requeue) {
++		struct spa_chunk *chunk = pw_buffer->buffer->datas[0].chunk;
++		chunk->size = 0;
++		chunk->flags = SPA_CHUNK_FLAG_CORRUPTED;
++		if (pw_stream_queue_buffer(state->stream, pw_buffer) < 0)
++			pwr_log.errorf("pw_stream_queue_buffer failed");
++	}
++}
++
++static void reconcile_virtual_stream(void);
++
++static void arm_virtual_retry(void)
++{
++	if (!virtual_state.retry)
++		return;
++
++	const uint64_t cycle = gamescope::mHzToRefreshCycle(virtual_state.refresh_mhz);
++	struct timespec interval = { .tv_sec = (time_t) (cycle / 1'000'000'000ul), .tv_nsec = (long) (cycle % 1'000'000'000ul) };
++	if (pw_loop_update_timer(connection.loop, virtual_state.retry, &interval, nullptr, false) == 0)
++		virtual_state.retry_armed = true;
++}
++
++static void handle_virtual_retry(void *data, uint64_t expirations)
++{
++	struct pipewire_state *state = &virtual_state;
++	state->retry_armed = false;
++
++	bool got = false;
++	{
++		std::scoped_lock lock(state->mutex);
++		if (state->dead || !state->streaming)
++			state->starved = false;
++		if (!state->starved || state->ready)
++			return;
++
++		state->ready = pw_stream_dequeue_buffer(state->stream);
++		got = state->ready != nullptr;
++		if (got)
++			state->starved = false;
++	}
++
++	if (got)
++		force_repaint();
++	else
++		arm_virtual_retry();
++}
++
+ static void dispatch_nudge(struct pipewire_state *state, int fd)
+ {
+ 	while (true) {
+@@ -280,63 +375,71 @@ static void dispatch_nudge(struct pipewire_state *state, int fd)
+ 		}
+ 	}
+ 
+-	if (g_nOutputWidth != s_nOutputWidth || g_nOutputHeight != s_nOutputHeight) {
+-		s_nOutputWidth = g_nOutputWidth;
+-		s_nOutputHeight = g_nOutputHeight;
+-		calculate_capture_size();
++	reconcile_virtual_stream();
++
++	if (g_nOutputWidth != state->output_width || g_nOutputHeight != state->output_height) {
++		state->output_width = g_nOutputWidth;
++		state->output_height = g_nOutputHeight;
++		calculate_capture_size(state);
+ 	}
+-	if (s_nCaptureWidth != state->video_info.size.width || s_nCaptureHeight != state->video_info.size.height) {
+-		pwr_log.debugf("renegotiating stream params (size: %dx%d)", s_nCaptureWidth, s_nCaptureHeight);
++	if (state->capture_width != state->video_info.size.width || state->capture_height != state->video_info.size.height) {
++		pwr_log.debugf("renegotiating stream params (size: %dx%d)", state->capture_width, state->capture_height);
+ 
+ 		uint8_t buf[4096];
+ 		struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
+-		std::vector<const struct spa_pod *> format_params = build_format_params(&builder);
++		std::vector<const struct spa_pod *> format_params = build_format_params(&builder, state);
+ 		int ret = pw_stream_update_params(state->stream, format_params.data(), format_params.size());
+ 		if (ret < 0) {
+ 			pwr_log.errorf("pw_stream_update_params failed");
+ 		}
+ 	}
+ 
+-	struct pipewire_buffer *buffer = in_buffer.exchange(nullptr);
+-	if (buffer != nullptr) {
+-		// We now completely own the buffer, it's no longer shared with the
+-		// steamcompmgr thread.
++	queue_in_buffer(state);
++	queue_in_buffer(&virtual_state);
++	queue_requeued_buffers(state);
++	queue_requeued_buffers(&virtual_state);
+ 
+-		buffer->copying = false;
+-
+-		if (buffer->buffer != nullptr) {
+-			copy_buffer(state, buffer);
+-
+-			int ret = pw_stream_queue_buffer(state->stream, buffer->buffer);
+-			if (ret < 0) {
+-				pwr_log.errorf("pw_stream_queue_buffer failed");
+-			}
+-		} else {
+-			destroy_buffer(buffer);
+-		}
+-	}
++	if (virtual_state.starved && !virtual_state.retry_armed)
++		arm_virtual_retry();
+ }
+ 
+ static void stream_handle_state_changed(void *data, enum pw_stream_state old_stream_state, enum pw_stream_state stream_state, const char *error)
+ {
+ 	struct pipewire_state *state = (struct pipewire_state *) data;
+ 
+-	pwr_log.infof("stream state changed: %s", pw_stream_state_as_string(stream_state));
++	pwr_log.infof("stream %s state changed: %s", state->name, pw_stream_state_as_string(stream_state));
++
++	std::scoped_lock lock(state->mutex);
++	if (state->dead)
++		return;
+ 
+ 	switch (stream_state) {
+ 	case PW_STREAM_STATE_PAUSED:
+ 		if (state->stream_node_id == SPA_ID_INVALID) {
+ 			state->stream_node_id = pw_stream_get_node_id(state->stream);
++			if (state->is_virtual)
++				nudge_steamcompmgr();
+ 		}
+ 		state->streaming = false;
+ 		state->seq = 0;
+ 		break;
+ 	case PW_STREAM_STATE_STREAMING:
+ 		state->streaming = true;
++		if (state->is_virtual) {
++			state->streamed_once = true;
++			force_repaint();
++		}
+ 		break;
+ 	case PW_STREAM_STATE_ERROR:
+ 	case PW_STREAM_STATE_UNCONNECTED:
+-		state->running = false;
++		state->streaming = false;
++		if (state->is_virtual) {
++			state->failed = true;
++			nudge_pipewire();
++			nudge_steamcompmgr();
++		} else {
++			connection.running = false;
++		}
+ 		break;
+ 	default:
+ 		break;
+@@ -357,9 +460,11 @@ static void stream_handle_param_changed(void *data, uint32_t id, const struct sp
+ 		pwr_log.errorf("spa_format_video_raw_parse failed");
+ 		return;
+ 	}
+-	s_nRequestedWidth = gamescope_info.requested_size.width;
+-	s_nRequestedHeight = gamescope_info.requested_size.height;
+-	calculate_capture_size();
++	if (!state->is_virtual) {
++		state->requested_width = gamescope_info.requested_size.width;
++		state->requested_height = gamescope_info.requested_size.height;
++		calculate_capture_size(state);
++	}
+ 
+ 	state->gamescope_info = gamescope_info;
+ 
+@@ -403,14 +508,14 @@ static void stream_handle_param_changed(void *data, uint32_t id, const struct sp
+ 		SPA_PARAM_META_size, SPA_POD_Int(sizeof(float)));
+ 	const struct spa_pod *params[] = { buffers_param, meta_param, scale_param };
+ 
+-	ret = pw_stream_update_params(state->stream, params, sizeof(params) / sizeof(params[0]));
++	ret = pw_stream_update_params(state->stream, params, state->is_virtual ? 2 : 3);
+ 	if (ret != 0) {
+ 		pwr_log.errorf("pw_stream_update_params failed");
+ 	}
+ 
+ 	pwr_log.debugf("format changed (size: %dx%d, requested %dx%d, format %d, stride %d, size: %d, dmabuf: %d)",
+ 		state->video_info.size.width, state->video_info.size.height,
+-		s_nRequestedWidth, s_nRequestedHeight,
++		state->requested_width, state->requested_height,
+ 		state->video_info.format, state->shm_stride, shm_size, state->dmabuf);
+ }
+ 
+@@ -463,6 +568,7 @@ static void stream_handle_add_buffer(void *user_data, struct pw_buffer *pw_buffe
+ 	struct spa_data *spa_data = &spa_buffer->datas[0];
+ 
+ 	struct pipewire_buffer *buffer = new pipewire_buffer();
++	buffer->state = state;
+ 	buffer->buffer = pw_buffer;
+ 	buffer->video_info = state->video_info;
+ 	buffer->gamescope_info = state->gamescope_info;
+@@ -512,7 +618,7 @@ static void stream_handle_add_buffer(void *user_data, struct pw_buffer *pw_buffe
+ 		screenshotImageFlags.bExportable = true;
+ 		screenshotImageFlags.bLinear = true; // TODO: support multi-planar DMA-BUF export via PipeWire
+ 	}
+-	bool bImageInitSuccess = buffer->texture->BInit( s_nCaptureWidth, s_nCaptureHeight, 1u, drmFormat, screenshotImageFlags );
++	bool bImageInitSuccess = buffer->texture->BInit( state->capture_width, state->capture_height, 1u, drmFormat, screenshotImageFlags );
+ 	if ( !bImageInitSuccess )
+ 	{
+ 		pwr_log.errorf("Failed to initialize pipewire texture");
+@@ -588,18 +694,32 @@ static void stream_handle_add_buffer(void *user_data, struct pw_buffer *pw_buffe
+ 	return;
+ 
+ error:
++	pw_buffer->user_data = nullptr;
+ 	delete buffer;
+ }
+ 
+ static void stream_handle_remove_buffer(void *data, struct pw_buffer *pw_buffer)
+ {
+-	struct pipewire_buffer *buffer = (struct pipewire_buffer *) pw_buffer->user_data;
++	struct pipewire_state *state = (struct pipewire_state *) data;
+ 
+-	buffer->buffer = nullptr;
++	struct pipewire_buffer *buffer;
++	{
++		std::scoped_lock lock(state->mutex);
++		std::erase(state->requeue, pw_buffer);
++		if (state->ready == pw_buffer)
++			state->ready = nullptr;
+ 
+-	if (!buffer->copying) {
+-		destroy_buffer(buffer);
++		buffer = (struct pipewire_buffer *) pw_buffer->user_data;
++		if (!buffer)
++			return;
++
++		buffer->buffer = nullptr;
++
++		if (buffer->copying)
++			return;
+ 	}
++
++	destroy_buffer(buffer);
+ }
+ 
+ static const struct pw_stream_events stream_events = {
+@@ -611,6 +731,120 @@ static const struct pw_stream_events stream_events = {
+ 	.process = nullptr,
+ };
+ 
++static int connect_stream(struct pipewire_state *state)
++{
++	uint8_t buf[4096];
++	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
++	std::vector<const struct spa_pod *> format_params = build_format_params(&builder, state);
++
++	enum pw_stream_flags flags = (enum pw_stream_flags)(PW_STREAM_FLAG_DRIVER | PW_STREAM_FLAG_ALLOC_BUFFERS);
++	return pw_stream_connect(state->stream, PW_DIRECTION_OUTPUT, PW_ID_ANY, flags, format_params.data(), format_params.size());
++}
++
++static void destroy_stream(struct pipewire_state *state)
++{
++	struct pw_stream *stream;
++	{
++		std::scoped_lock lock(state->mutex);
++		state->dead = true;
++		state->streaming = false;
++		state->starved = false;
++		state->ready = nullptr;
++		state->requeue.clear();
++		stream = std::exchange(state->stream, nullptr);
++	}
++
++	if (state->retry) {
++		pw_loop_update_timer(connection.loop, state->retry, nullptr, nullptr, false);
++		state->retry_armed = false;
++	}
++
++	if (!stream)
++		return;
++
++	struct pipewire_buffer *buffer = state->in_buffer.exchange(nullptr);
++	if (buffer && buffer->buffer)
++		buffer->copying = false;
++	else if (buffer)
++		destroy_buffer(buffer);
++
++	pw_stream_destroy(stream);
++}
++
++static void fail_virtual_stream(uint64_t serial)
++{
++	{
++		std::scoped_lock lock(virtual_state.mutex);
++		virtual_state.serial = serial;
++		virtual_state.failed = true;
++	}
++	nudge_steamcompmgr();
++}
++
++static void create_virtual_stream(const struct pipewire_virtual_request &request)
++{
++	struct pipewire_state *state = &virtual_state;
++
++	pwr_log.infof("creating %s (size: %ux%u)", state->name, request.width, request.height);
++
++	const struct spa_dict props = SPA_DICT_INIT_ARRAY(gamescope::k_VirtualOutputNodeProps);
++	struct pw_stream *stream = pw_stream_new(connection.core, state->name, pw_properties_new_dict(&props));
++	if (!stream) {
++		pwr_log.errorf("pw_stream_new failed");
++		fail_virtual_stream(request.serial);
++		return;
++	}
++
++	state->video_info = {};
++	state->gamescope_info = {};
++	state->seq = 0;
++	state->output_width = request.width;
++	state->output_height = request.height;
++	state->refresh_mhz = request.refresh_mhz;
++	calculate_capture_size(state);
++
++	{
++		std::scoped_lock lock(state->mutex);
++		state->stream = stream;
++		state->dead = false;
++		state->serial = request.serial;
++		state->streamed_once = false;
++		state->failed = false;
++		state->stream_node_id = SPA_ID_INVALID;
++	}
++
++	static struct spa_hook stream_hook;
++	pw_stream_add_listener(stream, &stream_hook, &stream_events, state);
++
++	if (connect_stream(state) != 0) {
++		pwr_log.errorf("pw_stream_connect failed");
++		destroy_stream(state);
++		fail_virtual_stream(request.serial);
++	}
++}
++
++static void reconcile_virtual_stream(void)
++{
++	struct pipewire_virtual_request request;
++	{
++		std::scoped_lock lock(virtual_request_mutex);
++		request = virtual_request;
++	}
++
++	uint64_t stream_serial, failed_serial;
++	{
++		std::scoped_lock lock(virtual_state.mutex);
++		stream_serial = virtual_state.stream ? virtual_state.serial : 0;
++		failed_serial = virtual_state.failed ? virtual_state.serial : 0;
++	}
++
++	gamescope::VirtualStreamReconcile reconcile = gamescope::ReconcileVirtualStream(request.serial, stream_serial, failed_serial);
++	if (reconcile.bDestroy)
++		destroy_stream(&virtual_state);
++	if (reconcile.bCreate)
++		create_virtual_stream(request);
++}
++
+ enum pipewire_event_type {
+ 	EVENT_PIPEWIRE,
+ 	EVENT_NUDGE,
+@@ -619,11 +853,13 @@ enum pipewire_event_type {
+ 
+ static void run_pipewire(struct pipewire_state *state)
+ {
++	struct pipewire_connection *conn = &connection;
++
+ 	pthread_setname_np( pthread_self(), "gamescope-pw" );
+ 
+ 	struct pollfd pollfds[] = {
+ 		[EVENT_PIPEWIRE] = {
+-			.fd = pw_loop_get_fd(state->loop),
++			.fd = pw_loop_get_fd(conn->loop),
+ 			.events = POLLIN,
+ 		},
+ 		[EVENT_NUDGE] = {
+@@ -632,7 +868,7 @@ static void run_pipewire(struct pipewire_state *state)
+ 		},
+ 	};
+ 
+-	while (state->running) {
++	while (conn->running) {
+ 		int ret = poll(pollfds, EVENT_COUNT, -1);
+ 		if (ret < 0) {
+ 			pwr_log.errorf_errno("poll failed");
+@@ -647,9 +883,9 @@ static void run_pipewire(struct pipewire_state *state)
+ 		assert(!(pollfds[EVENT_NUDGE].revents & POLLHUP));
+ 
+ 		if (pollfds[EVENT_PIPEWIRE].revents & POLLIN) {
+-			pw_loop_enter(state->loop);
+-			ret = pw_loop_iterate(state->loop, -1);
+-			pw_loop_leave(state->loop);
++			pw_loop_enter(conn->loop);
++			ret = pw_loop_iterate(conn->loop, -1);
++			pw_loop_leave(conn->loop);
+ 			if (ret < 0) {
+ 				pwr_log.errorf("pw_loop_iterate failed");
+ 				break;
+@@ -662,14 +898,27 @@ static void run_pipewire(struct pipewire_state *state)
+ 	}
+ 
+ 	pwr_log.infof("exiting");
+-	pw_stream_destroy(state->stream);
+-	pw_core_disconnect(state->core);
+-	pw_context_destroy(state->context);
+-	pw_loop_destroy(state->loop);
++
++	uint64_t virtual_serial;
++	{
++		std::scoped_lock lock(virtual_request_mutex);
++		thread_running = false;
++		virtual_serial = virtual_request.serial;
++	}
++
++	destroy_stream(state);
++	destroy_stream(&virtual_state);
++	if (virtual_serial)
++		fail_virtual_stream(virtual_serial);
++
++	pw_core_disconnect(conn->core);
++	pw_context_destroy(conn->context);
++	pw_loop_destroy(conn->loop);
+ }
+ 
+ bool init_pipewire(void)
+ {
++	struct pipewire_connection *conn = &connection;
+ 	struct pipewire_state *state = &pipewire_state;
+ 
+ 	pw_init(nullptr, nullptr);
+@@ -679,25 +928,29 @@ bool init_pipewire(void)
+ 		return false;
+ 	}
+ 
+-	state->loop = pw_loop_new(nullptr);
+-	if (!state->loop) {
++	conn->loop = pw_loop_new(nullptr);
++	if (!conn->loop) {
+ 		pwr_log.errorf("pw_loop_new failed");
+ 		return false;
+ 	}
+ 
+-	state->context = pw_context_new(state->loop, nullptr, 0);
+-	if (!state->context) {
++	conn->context = pw_context_new(conn->loop, nullptr, 0);
++	if (!conn->context) {
+ 		pwr_log.errorf("pw_context_new failed");
+ 		return false;
+ 	}
+ 
+-	state->core = pw_context_connect(state->context, nullptr, 0);
+-	if (!state->core) {
++	conn->core = pw_context_connect(conn->context, nullptr, 0);
++	if (!conn->core) {
+ 		pwr_log.errorf("pw_context_connect failed");
+ 		return false;
+ 	}
+ 
+-	state->stream = pw_stream_new(state->core, "gamescope",
++	virtual_state.retry = pw_loop_add_timer(conn->loop, handle_virtual_retry, nullptr);
++	if (!virtual_state.retry)
++		pwr_log.errorf_errno("pw_loop_add_timer failed");
++
++	state->stream = pw_stream_new(conn->core, "gamescope",
+ 		pw_properties_new(
+ 			PW_KEY_MEDIA_CLASS, "Video/Source",
+ 			nullptr));
+@@ -709,39 +962,39 @@ bool init_pipewire(void)
+ 	static struct spa_hook stream_hook;
+ 	pw_stream_add_listener(state->stream, &stream_hook, &stream_events, state);
+ 
+-	s_nRequestedWidth = 0;
+-	s_nRequestedHeight = 0;
+-	s_nOutputWidth = g_nOutputWidth;
+-	s_nOutputHeight = g_nOutputHeight;
+-	calculate_capture_size();
+-
+-	uint8_t buf[4096];
+-	struct spa_pod_builder builder = SPA_POD_BUILDER_INIT(buf, sizeof(buf));
+-	std::vector<const struct spa_pod *> format_params = build_format_params(&builder);
++	state->requested_width = 0;
++	state->requested_height = 0;
++	state->output_width = g_nOutputWidth;
++	state->output_height = g_nOutputHeight;
++	calculate_capture_size(state);
+ 
+-	enum pw_stream_flags flags = (enum pw_stream_flags)(PW_STREAM_FLAG_DRIVER | PW_STREAM_FLAG_ALLOC_BUFFERS);
+-	int ret = pw_stream_connect(state->stream, PW_DIRECTION_OUTPUT, PW_ID_ANY, flags, format_params.data(), format_params.size());
++	int ret = connect_stream(state);
+ 	if (ret != 0) {
+ 		pwr_log.errorf("pw_stream_connect failed");
+ 		return false;
+ 	}
+ 
+-	state->running = true;
++	conn->running = true;
+ 	ret = 0;
+-	pw_loop_enter(state->loop);
++	pw_loop_enter(conn->loop);
+ 	while (state->stream_node_id == SPA_ID_INVALID) {
+-		ret = pw_loop_iterate(state->loop, -1);
++		ret = pw_loop_iterate(conn->loop, -1);
+ 		if (ret < 0)
+ 			break;
+ 	}
+-	pw_loop_leave(state->loop);
++	pw_loop_leave(conn->loop);
+ 
+ 	if (ret < 0) {
+ 		pwr_log.errorf("pw_loop_iterate failed");
+ 		return false;
+ 	}
+ 
+-	pwr_log.infof("stream available on node ID: %u", state->stream_node_id);
++	pwr_log.infof("stream available on node ID: %u", state->stream_node_id.load());
++
++	{
++		std::scoped_lock lock(virtual_request_mutex);
++		thread_running = true;
++	}
+ 
+ 	std::thread thread(run_pipewire, state);
+ 	thread.detach();
+@@ -762,16 +1015,14 @@ bool pipewire_is_streaming()
+ 
+ struct pipewire_buffer *dequeue_pipewire_buffer(void)
+ {
+-	struct pipewire_state *state = &pipewire_state;
+-	if (state->streaming) {
+-		request_buffer(state);
+-	}
+-	return out_buffer.exchange(nullptr);
++	return request_buffer(&pipewire_state);
+ }
+ 
+-void push_pipewire_buffer(struct pipewire_buffer *buffer)
++static void push_buffer(struct pipewire_state *state, struct pipewire_buffer *buffer, bool corrupted)
+ {
+-	struct pipewire_buffer *old = in_buffer.exchange(buffer);
++	buffer->corrupted = corrupted;
++
++	struct pipewire_buffer *old = state->in_buffer.exchange(buffer);
+ 	if ( old != nullptr )
+ 	{
+ 		pwr_log.errorf_errno("push_pipewire_buffer: Already had a buffer?!");
+@@ -779,6 +1030,55 @@ void push_pipewire_buffer(struct pipewire_buffer *buffer)
+ 	nudge_pipewire();
+ }
+ 
++void push_pipewire_buffer(struct pipewire_buffer *buffer)
++{
++	push_buffer(&pipewire_state, buffer, false);
++}
++
++void pipewire_virtual_open(uint64_t serial, uint32_t width, uint32_t height, uint32_t refresh_mhz)
++{
++	{
++		std::scoped_lock lock(virtual_request_mutex);
++		if (thread_running) {
++			virtual_request = { .serial = serial, .width = width, .height = height, .refresh_mhz = refresh_mhz };
++			nudge_pipewire();
++			return;
++		}
++	}
++
++	pwr_log.errorf("cannot create %s, the PipeWire thread is not running", virtual_state.name);
++	fail_virtual_stream(serial);
++}
++
++void pipewire_virtual_close(void)
++{
++	std::scoped_lock lock(virtual_request_mutex);
++	virtual_request = {};
++	if (thread_running)
++		nudge_pipewire();
++}
++
++struct pipewire_virtual_status pipewire_virtual_get_status(void)
++{
++	std::scoped_lock lock(virtual_state.mutex);
++	return pipewire_virtual_status{
++		.serial = virtual_state.serial,
++		.node_id = virtual_state.stream_node_id,
++		.streamed_once = virtual_state.streamed_once,
++		.failed = virtual_state.failed,
++	};
++}
++
++struct pipewire_buffer *pipewire_virtual_dequeue(void)
++{
++	return request_buffer(&virtual_state);
++}
++
++void pipewire_virtual_push(struct pipewire_buffer *buffer, bool corrupted)
++{
++	push_buffer(&virtual_state, buffer, corrupted);
++}
++
+ void nudge_pipewire(void)
+ {
+ 	if (write(nudgePipe[1], "\n", 1) < 0)
+diff --git a/src/pipewire.hpp b/src/pipewire.hpp
+index b4d7e296..9254ea50 100644
+--- a/src/pipewire.hpp
++++ b/src/pipewire.hpp
+@@ -1,20 +1,21 @@
+ #pragma once
+ 
+ #include <memory>
++#include <mutex>
++#include <vector>
+ #include <pipewire/pipewire.h>
+ #include <spa/param/video/format-utils.h>
+ 
+ #include "rendervulkan.hpp"
+ #include "pipewire_gamescope.hpp"
++#include "Utils/LogRateLimit.h"
+ 
+ struct pipewire_state {
+-	struct pw_loop *loop;
+-	struct pw_context *context;
+-	struct pw_core *core;
+-	bool running;
++	const char *name;
++	bool is_virtual;
+ 
+ 	struct pw_stream *stream;
+-	uint32_t stream_node_id;
++	std::atomic<uint32_t> stream_node_id;
+ 	std::atomic<bool> streaming;
+ 	struct spa_video_info_raw video_info;
+ 	struct spa_gamescope gamescope_info;
+@@ -22,6 +23,31 @@ struct pipewire_state {
+ 	bool dmabuf;
+ 	int shm_stride;
+ 	uint64_t seq;
++
++	std::mutex mutex;
++	bool dead;
++	uint64_t serial;
++	bool streamed_once;
++	bool failed;
++	std::vector<struct pw_buffer *> requeue;
++
++	std::atomic<struct pipewire_buffer *> in_buffer;
++	std::atomic<bool> skipped;
++	std::atomic<bool> starved;
++	struct pw_buffer *ready;
++	struct spa_source *retry;
++	bool retry_armed;
++
++	uint32_t requested_width;
++	uint32_t requested_height;
++	uint32_t capture_width;
++	uint32_t capture_height;
++	uint32_t output_width;
++	uint32_t output_height;
++	uint32_t refresh_mhz;
++
++	gamescope::LogRateLimit out_of_buffers_log;
++	gamescope::LogRateLimit no_user_data_log;
+ };
+ 
+ /**
+@@ -30,6 +56,7 @@ struct pipewire_state {
+  * push_pipewire_buffer) for copying.
+  */
+ struct pipewire_buffer {
++	struct pipewire_state *state;
+ 	enum spa_data_type type; // SPA_DATA_MemFd or SPA_DATA_DmaBuf
+ 	struct spa_video_info_raw video_info;
+ 	struct spa_gamescope gamescope_info;
+@@ -53,6 +80,14 @@ struct pipewire_buffer {
+ 	// We pass the buffer to the steamcompmgr thread for copying. This is set
+ 	// to true if the buffer is currently owned by the steamcompmgr thread.
+ 	bool copying;
++	bool corrupted;
++};
++
++struct pipewire_virtual_status {
++	uint64_t serial;
++	uint32_t node_id;
++	bool streamed_once;
++	bool failed;
+ };
+ 
+ bool init_pipewire(void);
+@@ -62,3 +97,9 @@ bool pipewire_is_streaming();
+ void pipewire_destroy_buffer(struct pipewire_buffer *buffer);
+ void push_pipewire_buffer(struct pipewire_buffer *buffer);
+ void nudge_pipewire(void);
++
++void pipewire_virtual_open(uint64_t serial, uint32_t width, uint32_t height, uint32_t refresh_mhz);
++void pipewire_virtual_close(void);
++struct pipewire_virtual_status pipewire_virtual_get_status(void);
++struct pipewire_buffer *pipewire_virtual_dequeue(void);
++void pipewire_virtual_push(struct pipewire_buffer *buffer, bool corrupted);
+diff --git a/src/wlserver.cpp b/src/wlserver.cpp
+index 6e789cfb..034d373b 100644
+--- a/src/wlserver.cpp
++++ b/src/wlserver.cpp
+@@ -54,6 +54,7 @@
+ #include "gamescope-control-protocol.h"
+ #include "gamescope-private-protocol.h"
+ #include "gamescope-swapchain-protocol.h"
++#include "gamescope-virtual-output-protocol.h"
+ #include "presentation-time-protocol.h"
+ 
+ #include "wlserver.hpp"
+@@ -493,6 +494,7 @@ static void wlserver_touch_associate_connector(struct wlserver_touch *touch)
+ 		if (subsystem) {
+ 			if (strcmp( subsystem, "i2c" ) == 0) {
+ 				connector = GetBackend()->GetConnector(gamescope::GAMESCOPE_SCREEN_TYPE_INTERNAL);
++				touch->bInternal = true;
+ 				break;
+ 			} else if (strcmp( subsystem, "usb" ) == 0) {
+ 				connector = GetBackend()->GetConnector(gamescope::GAMESCOPE_SCREEN_TYPE_EXTERNAL);
+@@ -510,6 +512,11 @@ static void wlserver_touch_associate_connector(struct wlserver_touch *touch)
+ 	}
+ }
+ 
++static uint64_t wlserver_touch_id_bit( int touch_id )
++{
++	return touch_id >= 0 && touch_id < 64 ? uint64_t( 1 ) << touch_id : 0;
++}
++
+ static void wlserver_handle_touch_down(struct wl_listener *listener, void *data)
+ {
+ 	struct wlserver_touch *touch = wl_container_of( listener, touch, down );
+@@ -519,6 +526,14 @@ static void wlserver_handle_touch_down(struct wl_listener *listener, void *data)
+ 		return;
+ 
+ 	wlserver_touch_associate_connector( touch );
++	const uint64_t ulTouchBit = wlserver_touch_id_bit( event->touch_id );
++	if ( touch->bInternal && g_bVirtualOutputCurrent )
++	{
++		touch->ulDroppedTouchIds |= ulTouchBit;
++		return;
++	}
++	touch->ulDroppedTouchIds &= ~ulTouchBit;
++
+ 	wlserver_touchdown( event->x, event->y, event->touch_id, event->time_msec, touch->connector );
+ }
+ 
+@@ -530,6 +545,13 @@ static void wlserver_handle_touch_up(struct wl_listener *listener, void *data)
+ 	if ( touch->bIgnoreWhileLeased && g_nActiveLeaseClients.load() > 0 )
+ 		return;
+ 
++	const uint64_t ulTouchBit = wlserver_touch_id_bit( event->touch_id );
++	if ( touch->ulDroppedTouchIds & ulTouchBit )
++	{
++		touch->ulDroppedTouchIds &= ~ulTouchBit;
++		return;
++	}
++
+ 	wlserver_touchup( event->touch_id, event->time_msec );
+ }
+ 
+@@ -542,6 +564,9 @@ static void wlserver_handle_touch_motion(struct wl_listener *listener, void *dat
+ 		return;
+ 
+ 	wlserver_touch_associate_connector( touch );
++	if ( ( touch->bInternal && g_bVirtualOutputCurrent ) || ( touch->ulDroppedTouchIds & wlserver_touch_id_bit( event->touch_id ) ) )
++		return;
++
+ 	wlserver_touchmotion( event->x, event->y, event->touch_id, event->time_msec, false, touch->connector );
+ }
+ 
+@@ -1669,6 +1694,196 @@ static void create_gamescope_private( void )
+ 	wl_global_create( wlserver.display, &gamescope_private_interface, version, NULL, gamescope_private_bind );
+ }
+ 
++static struct
++{
++	std::mutex mutex;
++	std::atomic<uint64_t> ulSerial = { 0 };
++	gamescope::VirtualOutputArbiter arbiter;
++	bool bSupported = false;
++} s_VirtualOutputSlot;
++
++static void gamescope_virtual_output_handle_destroy( struct wl_client *client, struct wl_resource *resource )
++{
++	wl_resource_destroy( resource );
++}
++
++static const struct gamescope_virtual_output_interface gamescope_virtual_output_impl = {
++	.destroy = gamescope_virtual_output_handle_destroy,
++};
++
++static void gamescope_virtual_output_resource_destroy( struct wl_resource *resource )
++{
++	bool bChanged;
++	{
++		std::scoped_lock lock( s_VirtualOutputSlot.mutex );
++		bChanged = s_VirtualOutputSlot.arbiter.Destroy( resource );
++		s_VirtualOutputSlot.ulSerial = s_VirtualOutputSlot.arbiter.GetSerial();
++	}
++
++	if ( bChanged )
++		nudge_steamcompmgr();
++}
++
++static void gamescope_virtual_output_manager_handle_destroy( struct wl_client *client, struct wl_resource *resource )
++{
++	wl_resource_destroy( resource );
++}
++
++static void gamescope_virtual_output_manager_create_virtual_output( struct wl_client *client, struct wl_resource *resource, uint32_t id,
++	uint32_t width, uint32_t height, uint32_t refresh_mhz, uint32_t width_mm, uint32_t height_mm )
++{
++	struct wl_resource *output = wl_resource_create( client, &gamescope_virtual_output_interface, wl_resource_get_version( resource ), id );
++	if ( !output )
++	{
++		wl_client_post_no_memory( client );
++		return;
++	}
++	wl_resource_set_implementation( output, &gamescope_virtual_output_impl, NULL, gamescope_virtual_output_resource_destroy );
++
++	const gamescope::VirtualOutputMode mode = {
++		.uWidth = width,
++		.uHeight = height,
++		.uRefreshmHz = refresh_mhz,
++		.uWidthMM = width_mm,
++		.uHeightMM = height_mm,
++	};
++	if ( !gamescope::IsValidVirtualOutputMode( mode ) )
++	{
++		wl_log.errorf( "virtual output %ux%u@%u mHz %ux%u mm refused: invalid mode", width, height, refresh_mhz, width_mm, height_mm );
++		gamescope_virtual_output_send_failed( output, GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_INVALID_MODE );
++		return;
++	}
++
++	bool bCreated;
++	{
++		std::scoped_lock lock( s_VirtualOutputSlot.mutex );
++		bCreated = s_VirtualOutputSlot.arbiter.Create( output, mode );
++		s_VirtualOutputSlot.ulSerial = s_VirtualOutputSlot.arbiter.GetSerial();
++	}
++
++	if ( !bCreated )
++	{
++		wl_log.errorf( "virtual output refused: busy" );
++		gamescope_virtual_output_send_failed( output, GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_BUSY );
++		return;
++	}
++
++	wl_log.infof( "virtual output %ux%u@%u mHz %ux%u mm requested", width, height, refresh_mhz, width_mm, height_mm );
++	nudge_steamcompmgr();
++}
++
++static const struct gamescope_virtual_output_manager_interface gamescope_virtual_output_manager_impl = {
++	.destroy = gamescope_virtual_output_manager_handle_destroy,
++	.create_virtual_output = gamescope_virtual_output_manager_create_virtual_output,
++};
++
++static void gamescope_virtual_output_manager_bind( struct wl_client *client, void *data, uint32_t version, uint32_t id )
++{
++	struct wl_resource *resource = wl_resource_create( client, &gamescope_virtual_output_manager_interface, version, id );
++	if ( !resource )
++	{
++		wl_client_post_no_memory( client );
++		return;
++	}
++	wl_resource_set_implementation( resource, &gamescope_virtual_output_manager_impl, NULL, NULL );
++}
++
++static void create_gamescope_virtual_output( void )
++{
++	s_VirtualOutputSlot.bSupported = true;
++
++	uint32_t version = 1;
++	wl_global_create( wlserver.display, &gamescope_virtual_output_manager_interface, version, NULL, gamescope_virtual_output_manager_bind );
++}
++
++static gamescope::ConCommand cc_virtual_output( "virtual_output", "Show the screen on a virtual output PipeWire node. Eg. virtual_output 1280x800@60:172x108 (size, refresh, size in mm), virtual_output off",
++[]( std::span<std::string_view> args )
++{
++	if ( !s_VirtualOutputSlot.bSupported )
++	{
++		console_log.errorf( "virtual_output: this backend has no virtual output" );
++		return;
++	}
++
++	if ( args.size() != 2 )
++	{
++		console_log.errorf( "Usage: virtual_output <WxH@Hz:WxH> or virtual_output off" );
++		return;
++	}
++
++	void *pRevoked = nullptr;
++	if ( args[1] == "off" )
++	{
++		std::scoped_lock lock( s_VirtualOutputSlot.mutex );
++		pRevoked = s_VirtualOutputSlot.arbiter.Off();
++		s_VirtualOutputSlot.ulSerial = s_VirtualOutputSlot.arbiter.GetSerial();
++	}
++	else
++	{
++		std::optional<gamescope::VirtualOutputMode> oMode = gamescope::ParseVirtualOutputMode( args[1] );
++		if ( !oMode )
++		{
++			console_log.errorf( "Invalid virtual output mode '%.*s'", (int)args[1].size(), args[1].data() );
++			return;
++		}
++
++		std::scoped_lock lock( s_VirtualOutputSlot.mutex );
++		if ( !s_VirtualOutputSlot.arbiter.Set( *oMode ) )
++		{
++			console_log.errorf( "The virtual output belongs to a client, use virtual_output off" );
++			return;
++		}
++		s_VirtualOutputSlot.ulSerial = s_VirtualOutputSlot.arbiter.GetSerial();
++	}
++
++	if ( pRevoked )
++		gamescope_virtual_output_send_failed( (struct wl_resource *) pRevoked, GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_REVOKED );
++	nudge_steamcompmgr();
++}, false );
++
++bool wlserver_virtual_output_poll( uint64_t *pulSerial, std::optional<gamescope::VirtualOutputMode> *poMode )
++{
++	if ( s_VirtualOutputSlot.ulSerial == *pulSerial )
++		return false;
++
++	std::scoped_lock lock( s_VirtualOutputSlot.mutex );
++	*pulSerial = s_VirtualOutputSlot.arbiter.GetSerial();
++	*poMode = s_VirtualOutputSlot.arbiter.GetMode();
++	return true;
++}
++
++void wlserver_virtual_output_report( uint64_t ulSerial, std::optional<uint32_t> oNodeId, std::optional<uint32_t> oFailure )
++{
++	bool bReleased = false;
++
++	wlserver_lock();
++	{
++		std::scoped_lock lock( s_VirtualOutputSlot.mutex );
++		if ( s_VirtualOutputSlot.arbiter.GetSerial() == ulSerial )
++		{
++			struct wl_resource *pOwner = (struct wl_resource *) s_VirtualOutputSlot.arbiter.GetClient();
++			if ( oNodeId )
++			{
++				wl_log.infof( "virtual output on PipeWire node %u", *oNodeId );
++				if ( pOwner )
++					gamescope_virtual_output_send_stream_node( pOwner, *oNodeId );
++			}
++
++			if ( oFailure )
++			{
++				if ( pOwner )
++					gamescope_virtual_output_send_failed( pOwner, *oFailure );
++				bReleased = s_VirtualOutputSlot.arbiter.Release( ulSerial );
++				s_VirtualOutputSlot.ulSerial = s_VirtualOutputSlot.arbiter.GetSerial();
++			}
++		}
++	}
++	wlserver_unlock();
++
++	if ( bReleased )
++		nudge_steamcompmgr();
++}
++
+ static void create_explicit_sync()
+ {
+ 	new gamescope::WaylandServer::CLinuxDrmSyncobj( wlserver.display );
+@@ -2370,6 +2585,9 @@ bool wlserver_init( void ) {
+ 
+ 	create_gamescope_private();
+ 
++	if ( GetBackend()->SupportsVirtualOutput() )
++		create_gamescope_virtual_output();
++
+ 	create_presentation_time();
+ 
+ 	// Have to make this old ancient thing for compat with older XWayland.
+diff --git a/src/wlserver.hpp b/src/wlserver.hpp
+index 75071d66..9ff60393 100644
+--- a/src/wlserver.hpp
++++ b/src/wlserver.hpp
+@@ -23,6 +23,7 @@
+ #include "vulkan_include.h"
+ 
+ #include "steamcompmgr_shared.hpp"
++#include "Utils/VirtualOutput.h"
+ 
+ #if HAVE_DRM
+ #define HAVE_SESSION 1
+@@ -252,6 +253,9 @@ struct wlserver_touch {
+     // matches --ignore-touch-device. Lets the companion own the touch
+     // exclusively in Game Mode without blackholing it in Desktop Mode.
+     bool bIgnoreWhileLeased;
++
++    bool bInternal;
++    uint64_t ulDroppedTouchIds;
+ };
+ 
+ void xwayland_surface_commit(struct wlr_surface *wlr_surface);
+@@ -337,6 +341,9 @@ void wlserver_set_frame_limiter_state( uint32_t uState );
+ uint32_t wlserver_get_frame_limiter_state( void );
+ void wlserver_flush_frame_limiter_state( void );
+ 
++bool wlserver_virtual_output_poll( uint64_t *pulSerial, std::optional<gamescope::VirtualOutputMode> *poMode );
++void wlserver_virtual_output_report( uint64_t ulSerial, std::optional<uint32_t> oNodeId, std::optional<uint32_t> oFailure );
++
+ bool wlsession_active();
+ 
+ void wlserver_fake_mouse_pos( double x, double y );
+diff --git a/tests/meson.build b/tests/meson.build
+index 90a934e0..ae20019f 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -8,9 +8,9 @@ endforeach
+ 
+ gamescope_tests = executable(
+ 	'gamescope_tests',
+-	unittest_src + ['test_convar.cpp', 'test_focus_placement.cpp', 'test_mangoapp_config.cpp', 'test_mangoapp_control.cpp', 'test_mode_list.cpp', 'test_process.cpp', 'test_upscale.cpp', 'test_utils_parsers.cpp', 'test_utils_frame_limit.cpp', 'test_utils_string.cpp', 'test_utils_vblank_schedule.cpp', 'test_vrclient_detect.cpp', 'test_waitable.cpp'],
++	unittest_src + ['test_convar.cpp', 'test_focus_placement.cpp', 'test_mangoapp_config.cpp', 'test_mangoapp_control.cpp', 'test_mode_list.cpp', 'test_process.cpp', 'test_upscale.cpp', 'test_utils_parsers.cpp', 'test_utils_frame_limit.cpp', 'test_utils_string.cpp', 'test_utils_vblank_schedule.cpp', 'test_virtual_output.cpp', 'test_vrclient_detect.cpp', 'test_waitable.cpp'],
+ 	include_directories: [srcdir, sol2_include],
+-	dependencies: [catch2_dep, luajit_dep, cap_dep, drm_dep, glm_dep, wlroots_dep],
++	dependencies: [catch2_dep, luajit_dep, cap_dep, drm_dep, glm_dep, wlroots_dep, pipewire_dep.partial_dependency(compile_args: true)],
+ 	cpp_args: gamescope_cpp_args,
+ )
+ 
+@@ -27,5 +27,6 @@ test('utils/parsers', gamescope_tests, args: ['[parsers]'])
+ test('utils/process', gamescope_tests, args: ['[process]'], depends: [reaper_test_helper])
+ test('utils/string', gamescope_tests, args: ['[string]'])
+ test('utils/vblank_schedule', gamescope_tests, args: ['[vblank_schedule]'])
++test('virtual_output', gamescope_tests, args: ['[virtual_output]'])
+ test('vrclient_detect', gamescope_tests, args: ['[vrclient_detect]'])
+ test('waitable', gamescope_tests, args: ['[waitable]'])
+diff --git a/tests/test_utils_vblank_schedule.cpp b/tests/test_utils_vblank_schedule.cpp
+index 1c7d4d0d..d37f1a2e 100644
+--- a/tests/test_utils_vblank_schedule.cpp
++++ b/tests/test_utils_vblank_schedule.cpp
+@@ -63,3 +63,13 @@ TEST_CASE("Missing feedback and idle periods still allow forward progress", "[vb
+ 	}
+ 	REQUIRE(NextWake( 1'000'000'000, 4'166'667, 4'118'333, 2'000'000'000, last ) == 2'000'048'414);
+ }
++
++TEST_CASE("A stale anchor catches up in one step", "[vblank_schedule]") {
++	REQUIRE(GetNextVBlank( 1'000'000'000, 16'666'667, 4'000'000, 86'401'000'000'000, 0 ) == 86'401'014'394'667);
++
++	const uint64_t ulNow = 1ull << 62;
++	const uint64_t ulWake = GetNextVBlank( 1'000'000'000, 16'666'667, 4'000'000, ulNow, 0 );
++	REQUIRE(ulWake >= ulNow);
++	REQUIRE(ulWake - ulNow < 16'666'667);
++	REQUIRE(( ulWake - 1'012'666'667 ) % 16'666'667 == 0);
++}
+diff --git a/tests/test_virtual_output.cpp b/tests/test_virtual_output.cpp
+new file mode 100644
+index 00000000..ec467282
+--- /dev/null
++++ b/tests/test_virtual_output.cpp
+@@ -0,0 +1,242 @@
++#include <catch2/catch_test_macros.hpp>
++#include "Utils/LogRateLimit.h"
++#include "Utils/VirtualOutput.h"
++#if HAVE_PIPEWIRE
++#include "Utils/VirtualOutputNode.h"
++#endif
++
++#include <climits>
++#include <string_view>
++
++using namespace gamescope;
++
++namespace
++{
++
++constexpr VirtualOutputMode k_Tablet{ 1280, 800, 60'000, 172, 108 };
++constexpr VirtualOutputMode k_Monitor{ 1920, 1080, 60'000, 527, 296 };
++
++int g_nClientA;
++int g_nClientB;
++
++}
++
++TEST_CASE("The virtual output mode parses and validates", "[virtual_output]") {
++	REQUIRE(ParseVirtualOutputMode( "1280x800@60:172x108" ) == k_Tablet);
++	REQUIRE(ParseVirtualOutputMode( "3840x2160@240:2000x2000" ) == VirtualOutputMode{ 3840, 2160, 240'000, 2000, 2000 });
++	REQUIRE(ParseVirtualOutputMode( "2x2@1:1x1" ) == VirtualOutputMode{ 2, 2, 1'000, 1, 1 });
++
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1281x800@60:172x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x801@60:172x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "0x0@60:172x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "3842x800@60:172x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "800x1280@60:108x172" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x800@0:172x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x800@241:172x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x800@4294968:172x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x800@60:0x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x800@60:172x2001" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x800@60" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x800:172x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x800@60:172x108x" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x800@60:172x108 " ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "+1280x800@60:172x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "1280x-800@60:172x108" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "" ));
++	REQUIRE_FALSE(ParseVirtualOutputMode( "off" ));
++
++	REQUIRE(IsValidVirtualOutputMode( VirtualOutputMode{ 1280, 800, 59'940, 172, 108 } ));
++	REQUIRE(IsValidVirtualOutputMode( VirtualOutputMode{ 1280, 1280, 240'000, 172, 172 } ));
++	REQUIRE_FALSE(IsValidVirtualOutputMode( VirtualOutputMode{ 1280, 800, 999, 172, 108 } ));
++	REQUIRE_FALSE(IsValidVirtualOutputMode( VirtualOutputMode{ 1280, 800, 240'001, 172, 108 } ));
++	REQUIRE_FALSE(IsValidVirtualOutputMode( VirtualOutputMode{ 3842, 2160, 60'000, 172, 108 } ));
++	REQUIRE_FALSE(IsValidVirtualOutputMode( VirtualOutputMode{ 1280, 0, 60'000, 172, 108 } ));
++}
++
++TEST_CASE("A client owns the virtual output until it goes", "[virtual_output]") {
++	VirtualOutputArbiter arbiter;
++	REQUIRE(arbiter.GetSerial() == 0);
++	REQUIRE_FALSE(arbiter.GetMode());
++
++	REQUIRE(arbiter.Create( &g_nClientA, k_Tablet ));
++	REQUIRE(arbiter.GetSerial() == 1);
++	REQUIRE(arbiter.GetMode() == k_Tablet);
++	REQUIRE(arbiter.GetClient() == &g_nClientA);
++
++	REQUIRE_FALSE(arbiter.Create( &g_nClientB, k_Monitor ));
++	REQUIRE_FALSE(arbiter.Set( k_Monitor ));
++	REQUIRE_FALSE(arbiter.Destroy( &g_nClientB ));
++	REQUIRE_FALSE(arbiter.Destroy( nullptr ));
++	REQUIRE(arbiter.GetSerial() == 1);
++	REQUIRE(arbiter.GetMode() == k_Tablet);
++
++	REQUIRE(arbiter.Destroy( &g_nClientA ));
++	REQUIRE(arbiter.GetSerial() == 2);
++	REQUIRE_FALSE(arbiter.GetMode());
++	REQUIRE(arbiter.GetClient() == nullptr);
++
++	REQUIRE_FALSE(arbiter.Destroy( &g_nClientA ));
++	REQUIRE(arbiter.GetSerial() == 2);
++}
++
++TEST_CASE("The command sets the virtual output and off always wins", "[virtual_output]") {
++	VirtualOutputArbiter arbiter;
++	REQUIRE(arbiter.Set( k_Tablet ));
++	REQUIRE(arbiter.GetSerial() == 1);
++	REQUIRE(arbiter.GetClient() == nullptr);
++
++	REQUIRE(arbiter.Set( k_Tablet ));
++	REQUIRE(arbiter.GetSerial() == 1);
++	REQUIRE(arbiter.Set( k_Monitor ));
++	REQUIRE(arbiter.GetSerial() == 2);
++	REQUIRE(arbiter.GetMode() == k_Monitor);
++
++	REQUIRE_FALSE(arbiter.Create( &g_nClientA, k_Tablet ));
++	REQUIRE(arbiter.GetSerial() == 2);
++
++	REQUIRE(arbiter.Off() == nullptr);
++	REQUIRE(arbiter.GetSerial() == 3);
++	REQUIRE_FALSE(arbiter.GetMode());
++	REQUIRE(arbiter.Off() == nullptr);
++	REQUIRE(arbiter.GetSerial() == 3);
++
++	REQUIRE(arbiter.Create( &g_nClientA, k_Tablet ));
++	REQUIRE(arbiter.GetSerial() == 4);
++	REQUIRE(arbiter.Off() == &g_nClientA);
++	REQUIRE(arbiter.GetSerial() == 5);
++	REQUIRE_FALSE(arbiter.GetMode());
++
++	REQUIRE_FALSE(arbiter.Destroy( &g_nClientA ));
++	REQUIRE(arbiter.GetSerial() == 5);
++}
++
++TEST_CASE("A backend failure releases only its own request", "[virtual_output]") {
++	VirtualOutputArbiter arbiter;
++	REQUIRE(arbiter.Create( &g_nClientA, k_Tablet ));
++	REQUIRE_FALSE(arbiter.Release( 0 ));
++	REQUIRE_FALSE(arbiter.Release( 2 ));
++	REQUIRE(arbiter.GetSerial() == 1);
++
++	REQUIRE(arbiter.Release( 1 ));
++	REQUIRE(arbiter.GetSerial() == 2);
++	REQUIRE_FALSE(arbiter.GetMode());
++	REQUIRE_FALSE(arbiter.Release( 2 ));
++
++	REQUIRE_FALSE(arbiter.Destroy( &g_nClientA ));
++	REQUIRE(arbiter.Create( &g_nClientB, k_Tablet ));
++	REQUIRE(arbiter.GetSerial() == 3);
++}
++
++TEST_CASE("The virtual output is chosen like a DP monitor once it streams", "[virtual_output]") {
++	REQUIRE(ChooseVirtualOutput( true, false, 0, 1 ) == VirtualOutputChoice::Virtual);
++	REQUIRE(ChooseVirtualOutput( true, false, 1, 0 ) == VirtualOutputChoice::Kms);
++	REQUIRE(ChooseVirtualOutput( true, false, 0, 0 ) == VirtualOutputChoice::Virtual);
++	REQUIRE(ChooseVirtualOutput( true, false, 0, INT_MAX ) == VirtualOutputChoice::Virtual);
++	REQUIRE(ChooseVirtualOutput( false, false, 0, 1 ) == VirtualOutputChoice::Kms);
++	REQUIRE(ChooseVirtualOutput( false, false, 0, INT_MAX ) == VirtualOutputChoice::Kms);
++	REQUIRE(ChooseVirtualOutput( true, true, 0, 1 ) == VirtualOutputChoice::ForcedInternal);
++	REQUIRE(ChooseVirtualOutput( false, true, 0, 1 ) == VirtualOutputChoice::Kms);
++	REQUIRE(ChooseVirtualOutput( true, true, 1, 0 ) == VirtualOutputChoice::Kms);
++}
++
++TEST_CASE("The virtual stream follows the newest request", "[virtual_output]") {
++	VirtualStreamReconcile none = ReconcileVirtualStream( 0, 0, 0 );
++	REQUIRE_FALSE(none.bDestroy);
++	REQUIRE_FALSE(none.bCreate);
++
++	VirtualStreamReconcile open = ReconcileVirtualStream( 1, 0, 0 );
++	REQUIRE_FALSE(open.bDestroy);
++	REQUIRE(open.bCreate);
++
++	VirtualStreamReconcile keep = ReconcileVirtualStream( 1, 1, 0 );
++	REQUIRE_FALSE(keep.bDestroy);
++	REQUIRE_FALSE(keep.bCreate);
++
++	VirtualStreamReconcile close = ReconcileVirtualStream( 0, 1, 0 );
++	REQUIRE(close.bDestroy);
++	REQUIRE_FALSE(close.bCreate);
++
++	VirtualStreamReconcile reopen = ReconcileVirtualStream( 3, 1, 0 );
++	REQUIRE(reopen.bDestroy);
++	REQUIRE(reopen.bCreate);
++
++	VirtualStreamReconcile closedThenOpen = ReconcileVirtualStream( 3, 0, 0 );
++	REQUIRE_FALSE(closedThenOpen.bDestroy);
++	REQUIRE(closedThenOpen.bCreate);
++}
++
++TEST_CASE("A failed virtual stream is not recreated for the same request", "[virtual_output]") {
++	VirtualStreamReconcile failed = ReconcileVirtualStream( 1, 1, 1 );
++	REQUIRE(failed.bDestroy);
++	REQUIRE_FALSE(failed.bCreate);
++
++	VirtualStreamReconcile destroyed = ReconcileVirtualStream( 1, 0, 1 );
++	REQUIRE_FALSE(destroyed.bDestroy);
++	REQUIRE_FALSE(destroyed.bCreate);
++
++	VirtualStreamReconcile next = ReconcileVirtualStream( 2, 0, 1 );
++	REQUIRE_FALSE(next.bDestroy);
++	REQUIRE(next.bCreate);
++
++	VirtualStreamReconcile replaced = ReconcileVirtualStream( 2, 1, 1 );
++	REQUIRE(replaced.bDestroy);
++	REQUIRE(replaced.bCreate);
++}
++
++TEST_CASE("No stream offers NV12 over DMA-BUF", "[virtual_output]") {
++	for ( bool bVirtualOutput : { false, true } )
++	{
++		for ( const StreamOffer &offer : GetStreamOffers( bVirtualOutput ) )
++			REQUIRE_FALSE(( offer.eFormat == StreamFormat::NV12 && offer.bDmaBuf ));
++	}
++
++	std::span<const StreamOffer> virtualOffers = GetStreamOffers( true );
++	REQUIRE(virtualOffers.size() == 3);
++	REQUIRE(virtualOffers[0].eFormat == StreamFormat::NV12);
++	REQUIRE_FALSE(virtualOffers[0].bDmaBuf);
++	REQUIRE(virtualOffers[1].eFormat == StreamFormat::BGRx);
++	REQUIRE(virtualOffers[1].bDmaBuf);
++	REQUIRE(virtualOffers[2].eFormat == StreamFormat::BGRx);
++	REQUIRE_FALSE(virtualOffers[2].bDmaBuf);
++
++	std::span<const StreamOffer> mainOffers = GetStreamOffers( false );
++	REQUIRE(mainOffers.size() == 3);
++	REQUIRE(mainOffers[0].eFormat == StreamFormat::BGRx);
++	REQUIRE(mainOffers[0].bDmaBuf);
++	REQUIRE(mainOffers[1].eFormat == StreamFormat::BGRx);
++	REQUIRE_FALSE(mainOffers[1].bDmaBuf);
++	REQUIRE(mainOffers[2].eFormat == StreamFormat::NV12);
++	REQUIRE_FALSE(mainOffers[2].bDmaBuf);
++}
++
++#if HAVE_PIPEWIRE
++TEST_CASE("The virtual output node is named gamescope-virtual-output", "[virtual_output]") {
++	const spa_dict props = SPA_DICT_INIT_ARRAY( k_VirtualOutputNodeProps );
++	const char *pszName = spa_dict_lookup( &props, PW_KEY_NODE_NAME );
++	const char *pszClass = spa_dict_lookup( &props, PW_KEY_MEDIA_CLASS );
++	REQUIRE(pszName);
++	REQUIRE(std::string_view( pszName ) == "gamescope-virtual-output");
++	REQUIRE(pszClass);
++	REQUIRE(std::string_view( pszClass ) == "Video/Source");
++}
++#endif
++
++TEST_CASE("A repeated log line is let through every 5 s with the suppressed count", "[virtual_output]") {
++	LogRateLimit limit;
++	uint64_t ulSuppressed = 99;
++
++	REQUIRE(limit.Allow( 1'000, &ulSuppressed ));
++	REQUIRE(ulSuppressed == 0);
++
++	ulSuppressed = 99;
++	REQUIRE_FALSE(limit.Allow( 2'000, &ulSuppressed ));
++	REQUIRE_FALSE(limit.Allow( 4'999'999'999ul, &ulSuppressed ));
++	REQUIRE_FALSE(limit.Allow( 5'000'000'999ul, &ulSuppressed ));
++	REQUIRE(ulSuppressed == 99);
++
++	REQUIRE(limit.Allow( 5'000'001'000ul, &ulSuppressed ));
++	REQUIRE(ulSuppressed == 3);
++
++	REQUIRE(limit.Allow( 20'000'000'000ul, &ulSuppressed ));
++	REQUIRE(ulSuppressed == 0);
++}
+-- 
+2.43.0
+

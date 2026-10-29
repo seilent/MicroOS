@@ -1,0 +1,183 @@
+From 5d1f11e2d1c673495153e16b4584a3a3085d4ab9 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 30 Oct 2026 01:50:41 +0900
+Subject: [PATCH] Add gamescopevirtual
+
+---
+ src/Apps/gamescopevirtual.cpp | 152 ++++++++++++++++++++++++++++++++++
+ src/meson.build               |   2 +
+ 2 files changed, 154 insertions(+)
+ create mode 100644 src/Apps/gamescopevirtual.cpp
+
+diff --git a/src/Apps/gamescopevirtual.cpp b/src/Apps/gamescopevirtual.cpp
+new file mode 100644
+index 00000000..bb967fd5
+--- /dev/null
++++ b/src/Apps/gamescopevirtual.cpp
+@@ -0,0 +1,152 @@
++#include <cerrno>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <optional>
++
++#include <poll.h>
++#include <unistd.h>
++
++#include <wayland-client.h>
++#include <gamescope-virtual-output-client-protocol.h>
++
++#include "Utils/VirtualOutput.h"
++
++static gamescope_virtual_output_manager *s_pManager = nullptr;
++static int s_nFailedExitCode = 0;
++
++static const char *FailureName( uint32_t uReason )
++{
++	switch ( uReason )
++	{
++		case GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_BUSY: return "busy";
++		case GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_INVALID_MODE: return "invalid_mode";
++		case GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_OUTPUT_DISABLE_FAILED: return "output_disable_failed";
++		case GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_STREAM_FAILED: return "stream_failed";
++		case GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_REVOKED: return "revoked";
++		case GAMESCOPE_VIRTUAL_OUTPUT_FAILURE_FORCED_INTERNAL: return "forced_internal";
++		default: return "unknown";
++	}
++}
++
++static void Registry_Global( void *pData, wl_registry *pRegistry, uint32_t uName, const char *pInterface, uint32_t uVersion )
++{
++	if ( !strcmp( pInterface, gamescope_virtual_output_manager_interface.name ) )
++		s_pManager = (gamescope_virtual_output_manager *) wl_registry_bind( pRegistry, uName, &gamescope_virtual_output_manager_interface, 1 );
++}
++
++static void Registry_GlobalRemove( void *pData, wl_registry *pRegistry, uint32_t uName )
++{
++}
++
++static const wl_registry_listener s_RegistryListener =
++{
++	.global = Registry_Global,
++	.global_remove = Registry_GlobalRemove,
++};
++
++static void VirtualOutput_StreamNode( void *pData, gamescope_virtual_output *pOutput, uint32_t uNodeId )
++{
++	printf( "node %u gamescope-virtual-output\n", uNodeId );
++	fflush( stdout );
++}
++
++static void VirtualOutput_Failed( void *pData, gamescope_virtual_output *pOutput, uint32_t uReason )
++{
++	fprintf( stderr, "failed: %s\n", FailureName( uReason ) );
++	s_nFailedExitCode = 3;
++}
++
++static const gamescope_virtual_output_listener s_VirtualOutputListener =
++{
++	.stream_node = VirtualOutput_StreamNode,
++	.failed = VirtualOutput_Failed,
++};
++
++static int Disconnected( const char *pDisplayName )
++{
++	fprintf( stderr, "lost the connection to %s\n", pDisplayName );
++	return 1;
++}
++
++int main( int argc, char **argv )
++{
++	std::optional<gamescope::VirtualOutputMode> oMode;
++	if ( argc == 2 )
++		oMode = gamescope::ParseVirtualOutputMode( argv[1] );
++	if ( !oMode )
++	{
++		fprintf( stderr, "usage: gamescopevirtual WxH@Hz:WxH, the size, the refresh rate and the size in mm, eg. 1280x800@60:172x108\n" );
++		return 2;
++	}
++
++	const char *pDisplayName = getenv( "GAMESCOPE_WAYLAND_DISPLAY" );
++	if ( !pDisplayName || !*pDisplayName )
++		pDisplayName = "gamescope-0";
++
++	wl_display *pDisplay = wl_display_connect( pDisplayName );
++	if ( !pDisplay )
++	{
++		fprintf( stderr, "cannot connect to %s\n", pDisplayName );
++		return 1;
++	}
++
++	wl_registry *pRegistry = wl_display_get_registry( pDisplay );
++	wl_registry_add_listener( pRegistry, &s_RegistryListener, nullptr );
++	if ( wl_display_roundtrip( pDisplay ) < 0 )
++		return Disconnected( pDisplayName );
++	wl_registry_destroy( pRegistry );
++
++	if ( !s_pManager )
++	{
++		fprintf( stderr, "%s has no gamescope_virtual_output_manager\n", pDisplayName );
++		return 2;
++	}
++
++	gamescope_virtual_output *pOutput = gamescope_virtual_output_manager_create_virtual_output( s_pManager,
++		oMode->uWidth, oMode->uHeight, oMode->uRefreshmHz, oMode->uWidthMM, oMode->uHeightMM );
++	gamescope_virtual_output_add_listener( pOutput, &s_VirtualOutputListener, nullptr );
++
++	pollfd fds[] =
++	{
++		{ .fd = wl_display_get_fd( pDisplay ), .events = POLLIN },
++		{ .fd = STDIN_FILENO, .events = POLLIN },
++	};
++
++	for ( ;; )
++	{
++		if ( wl_display_dispatch_pending( pDisplay ) < 0 )
++			return Disconnected( pDisplayName );
++		if ( s_nFailedExitCode )
++			return s_nFailedExitCode;
++		if ( wl_display_flush( pDisplay ) < 0 && errno != EAGAIN )
++			return Disconnected( pDisplayName );
++
++		if ( poll( fds, 2, -1 ) < 0 )
++		{
++			if ( errno == EINTR )
++				continue;
++			fprintf( stderr, "poll failed: %s\n", strerror( errno ) );
++			return 1;
++		}
++
++		if ( fds[0].revents && wl_display_dispatch( pDisplay ) < 0 )
++			return Disconnected( pDisplayName );
++		if ( s_nFailedExitCode )
++			return s_nFailedExitCode;
++
++		if ( fds[1].revents )
++		{
++			char buf[256];
++			ssize_t nRead = read( STDIN_FILENO, buf, sizeof( buf ) );
++			if ( nRead == 0 || ( nRead < 0 && errno != EINTR && errno != EAGAIN ) )
++				break;
++		}
++	}
++
++	gamescope_virtual_output_destroy( pOutput );
++	gamescope_virtual_output_manager_destroy( s_pManager );
++	wl_display_flush( pDisplay );
++	wl_display_disconnect( pDisplay );
++	return 0;
++}
+diff --git a/src/meson.build b/src/meson.build
+index ae3ac167..6ee47c8e 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -229,4 +229,6 @@ executable('gamescopectl', ['Apps/gamescopectl.cpp'], gamescope_core_src, gamesc
+ 
+ executable('gamescope-type', ['Apps/gamescope_type.c'], protocols_client_src, dependencies: [dep_wayland, cap_dep], install:true )
+ 
++executable('gamescopevirtual', ['Apps/gamescopevirtual.cpp'], protocols_client_src, dependencies: [dep_wayland], install: true )
++
+ executable('gamescope_hotkey_example', ['Apps/gamescope_hotkey_example.cpp'], gamescope_core_src, gamescope_version, protocols_client_src, dependencies: [dep_wayland, xkbcommon, cap_dep], install: false )
+-- 
+2.43.0
+

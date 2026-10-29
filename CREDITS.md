@@ -10,6 +10,7 @@ Projects MicroOS builds, with their authors and license.
 | `gamescope-session-steam` | [OpenGamingCollective/gamescope-session-steam](https://github.com/OpenGamingCollective/gamescope-session-steam) `82c45fc112` | ChimeraOS and Open Gaming Collective contributors | MIT |
 | `gamescope` | [OpenGamingCollective/gamescope](https://github.com/OpenGamingCollective/gamescope) `3.16.31-ogc2` `76a1563a83` | Valve (Joshua Ashton and gamescope contributors), Open Gaming Collective contributors | BSD-2-Clause, BSD-3-Clause |
 | `gamescope` RPM spec and packaging patches | Fedora [rpms/gamescope](https://src.fedoraproject.org/rpms/gamescope) `a846be4c` | František Zatloukal, Neal Gompa and Fedora packagers | MIT |
+| `gamescope` one step vblank catch up | OGC `72ad630c018e`, first in `3b3cced787e3` | Matthew Schwartz | BSD-2-Clause |
 | `inputplumber` | [ShadowBlip/InputPlumber](https://github.com/ShadowBlip/InputPlumber) `v0.82.0` `d951ef9` | William Edwards, Derek J. Clark and InputPlumber contributors | GPL-3.0-or-later |
 | `steamos-manager` | [holo/steamos-manager](https://gitlab.steamos.cloud/holo/steamos-manager) `8e2883d0d7` | Valve Software, Collabora, Igalia and steamos-manager contributors | MIT |
 | `mangohud` | [flightlessmango/MangoHud](https://github.com/flightlessmango/MangoHud) `v0.8.4` `992103e4fb` | flightlessmango and MangoHud contributors | MIT |
@@ -39,11 +40,12 @@ Projects MicroOS builds, with their authors and license.
 | `plymouth` CloseFB on retain | SteamOS plymouth `22.02.122-7.7` `0010` | Robert Beckett (Collabora) | GPL-2.0-or-later |
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
-carries Fedora's packaging patches, `mangohud` carries ten upstream MangoHud patches, five of them backported by
-me, and five of mine, `plymouth` carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine,
-`es-de` carries my launch path escape patch and `inputplumber` carries three of mine and my polkit rule (`PATCHES.md`
-in each package); the others are built as is. License texts in `packages/gamescope/`, `packages/gamescope-session/`,
-`packages/es-de/`, `packages/hexagonrpc/`, `packages/inputplumber/`, `packages/mangohud/`, `packages/plymouth/` and
+carries Fedora's packaging patches, five of mine and an OGC patch backported by me (`0003` to `0008`, `0006` from
+OGC), `mangohud` carries ten upstream MangoHud patches, five of them backported by me, and five of mine, `plymouth`
+carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine, `es-de` carries my launch path
+escape patch and `inputplumber` carries three of mine and my polkit rule (`PATCHES.md` in each package); the others
+are built as is. License texts in `packages/gamescope/`, `packages/gamescope-session/`, `packages/es-de/`,
+`packages/hexagonrpc/`, `packages/inputplumber/`, `packages/mangohud/`, `packages/plymouth/` and
 `packages/steamos-manager/`.
 
 ## Kernel

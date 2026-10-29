@@ -22,6 +22,9 @@ Patch:          Use-system-stb-glm.patch
 Patch:          0003-pace-the-non-vrr-fps-limit-on-time.patch
 Patch:          0004-latch-done-commits-in-commit-order.patch
 Patch:          0005-release-the-kms-device-under-the-wlserver-lock.patch
+Patch:          0006-catch-up-to-the-next-vblank-in-one-step.patch
+Patch:          0007-add-a-virtual-output.patch
+Patch:          0008-add-gamescopevirtual.patch
 
 Vendor:         MicroOS
 BuildRequires:  cmake
@@ -115,7 +118,7 @@ export PKG_CONFIG_PATH=pkgconfig
 %meson_install --skip-subprojects
 
 %check
-%meson_test utils/frame_limit
+%meson_test utils/frame_limit utils/vblank_schedule virtual_output
 
 %files
 %license LICENSE
@@ -125,6 +128,7 @@ export PKG_CONFIG_PATH=pkgconfig
 %{_bindir}/gamescopereaper
 %{_bindir}/gamescopestream
 %{_bindir}/gamescope-type
+%{_bindir}/gamescopevirtual
 %{_datadir}/gamescope
 %{_libdir}/libVkLayer_FROG_gamescope_wsi_*.so
 %{_datadir}/vulkan/implicit_layer.d/VkLayer_FROG_gamescope_wsi.*.json
