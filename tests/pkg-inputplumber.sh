@@ -12,7 +12,9 @@ if [[ -z $rpm || $(wc -l <<<"$rpm") -ne 1 ]]; then
   echo "FAIL: expected one inputplumber RPM in $dir" >&2
   exit 1
 fi
-if [[ -z $(find "$dir" -maxdepth 1 -name "inputplumber-$version-*.src.rpm") ]]; then fail "SRPM missing"; fi
+srpm=$(find "$dir" -maxdepth 1 -name "inputplumber-$version-*.src.rpm")
+if [[ -z $srpm ]]; then fail "SRPM missing"
+elif ! grep -q '^0004-.*\.patch$' <<<"$(rpm -qlp "$srpm")"; then fail "SRPM lacks 0004"; fi
 if [[ -n $(find "$dir" -maxdepth 1 \( -name '*-debuginfo-*' -o -name '*-debugsource-*' \)) ]]; then fail "debug RPM present"; fi
 
 if [[ $(rpm -qp --qf '%{RELEASE}' "$rpm") != *.microos ]]; then fail "release"; fi

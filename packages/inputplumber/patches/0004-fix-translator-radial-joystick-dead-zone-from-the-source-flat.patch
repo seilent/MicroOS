@@ -1,0 +1,983 @@
+From ff852fe728d7e8b969e5b640e1c41bb0b9ec3fc2 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 30 Oct 2026 04:52:03 +0900
+Subject: [PATCH] fix(translator): radial joystick dead zone from the source
+ axis flat
+
+---
+ src/input/event/evdev/translator.rs | 899 ++++++++++++++++++++++++++++
+ 1 file changed, 899 insertions(+)
+
+diff --git a/src/input/event/evdev/translator.rs b/src/input/event/evdev/translator.rs
+index dc70e6b..218b4cc 100644
+--- a/src/input/event/evdev/translator.rs
++++ b/src/input/event/evdev/translator.rs
+@@ -25,6 +25,125 @@ type EventType = u16;
+ type EventCode = u16;
+ type EventSignature = (EventType, EventCode);
+ 
++const SYN_REPORT: EventSignature = (
++    evdev::EventType::SYNCHRONIZATION.0,
++    evdev::SynchronizationCode::SYN_REPORT.0,
++);
++
++#[derive(Debug, Clone, Copy)]
++enum StickAxis {
++    X,
++    Y,
++}
++
++#[derive(Debug)]
++struct StickPair {
++    capability: Capability,
++    zone: f64,
++    band: f64,
++    x: f64,
++    y: f64,
++    pending: bool,
++    outside: bool,
++    emitted: (f64, f64),
++}
++
++impl StickPair {
++    fn new(
++        mapping: &CapabilityMapping,
++        mapping_type: &EvdevMappingType,
++        abs_info: &HashMap<evdev::AbsoluteAxisCode, AbsInfo>,
++    ) -> Option<(Self, [(EventSignature, StickAxis); 2])> {
++        if *mapping_type != EvdevMappingType::MultiSource {
++            return None;
++        }
++        let [first, second] = mapping.source_events.as_slice() else {
++            return None;
++        };
++        let (Some(first), Some(second)) = (first.evdev.as_ref(), second.evdev.as_ref()) else {
++            return None;
++        };
++        let (x, y) = match (&first.value_type, &second.value_type) {
++            (ValueType::JoystickX, ValueType::JoystickY) => (first, second),
++            (ValueType::JoystickY, ValueType::JoystickX) => (second, first),
++            _ => return None,
++        };
++        let abs = evdev::EventType::ABSOLUTE.0;
++        let x_code = x.event_code.as_u16();
++        let y_code = y.event_code.as_u16();
++        if x.event_type.as_u16() != abs
++            || y.event_type.as_u16() != abs
++            || x.axis_direction.is_some()
++            || y.axis_direction.is_some()
++            || x_code == y_code
++        {
++            return None;
++        }
++        let capability: Capability = mapping.target_event.clone().into();
++        if capability == Capability::NotImplemented {
++            return None;
++        }
++
++        let x_info = abs_info.get(&evdev::AbsoluteAxisCode(x_code));
++        let y_info = abs_info.get(&evdev::AbsoluteAxisCode(y_code));
++        let (Some(x_info), Some(y_info)) = (x_info, y_info) else {
++            let level = if abs_info.is_empty() {
++                log::Level::Debug
++            } else {
++                log::Level::Warn
++            };
++            log::log!(
++                level,
++                "No ABS info for stick mapping '{}', no dead zone",
++                mapping.name
++            );
++            return None;
++        };
++        let (Some(x_half), Some(y_half)) = (half_range(x_info), half_range(y_info)) else {
++            log::warn!(
++                "Empty ABS range on stick mapping '{}', no dead zone",
++                mapping.name
++            );
++            return None;
++        };
++        let zone = (x_info.flat() as f64 / x_half).max(y_info.flat() as f64 / y_half);
++        if zone <= 0.0 {
++            return None;
++        }
++        let band = (2.0 * x_info.fuzz() as f64 / x_half)
++            .max(2.0 * y_info.fuzz() as f64 / y_half)
++            .max(0.0);
++        if zone + band >= 0.5 {
++            log::warn!(
++                "ABS flat plus twice the fuzz on stick mapping '{}' is not under half the travel from center, no dead zone",
++                mapping.name
++            );
++            return None;
++        }
++
++        let pair = Self {
++            capability,
++            zone,
++            band,
++            x: normalize_signed_value(x_info.value(), x_info.minimum(), x_info.maximum()),
++            y: normalize_signed_value(y_info.value(), y_info.minimum(), y_info.maximum()),
++            pending: false,
++            outside: false,
++            emitted: (0.0, 0.0),
++        };
++        Some((
++            pair,
++            [((abs, x_code), StickAxis::X), ((abs, y_code), StickAxis::Y)],
++        ))
++    }
++}
++
++fn half_range(info: &AbsInfo) -> Option<f64> {
++    let max = i64::from(info.maximum());
++    let half = max - (max + i64::from(info.minimum())) / 2;
++    (half > 0).then_some(half as f64)
++}
++
+ /// Used to translate evdev events into native inputplumber events using a
+ /// capability map.
+ #[derive(Debug)]
+@@ -50,6 +169,8 @@ pub struct EventTranslator {
+     emitted_mappings: Vec<CapabilityMapping>,
+     /// Events to emit during polling
+     scheduled_events: Vec<ScheduledNativeEvent>,
++    stick_pairs: Vec<StickPair>,
++    stick_axes: HashMap<EventSignature, Vec<(usize, StickAxis)>>,
+ }
+ 
+ impl EventTranslator {
+@@ -64,6 +185,8 @@ impl EventTranslator {
+         let mut delayed_chord_mappings: HashMap<EventSignature, CapabilityMapping> = HashMap::new();
+         let mut multi_source_mappings: HashMap<EventSignature, Vec<CapabilityMapping>> =
+             HashMap::new();
++        let mut stick_pairs = Vec::new();
++        let mut stick_axes: HashMap<EventSignature, Vec<(usize, StickAxis)>> = HashMap::new();
+ 
+         // Sort events to translate.
+         for mapping in capability_map.mapping.iter() {
+@@ -74,6 +197,18 @@ impl EventTranslator {
+                 .and_then(|t| t.evdev)
+                 .unwrap_or_default();
+ 
++            if let Some((pair, axes)) = StickPair::new(mapping, &mapping_type, &abs_info) {
++                for (signature, axis) in axes {
++                    translatable_events.insert(signature);
++                    stick_axes
++                        .entry(signature)
++                        .or_default()
++                        .push((stick_pairs.len(), axis));
++                }
++                stick_pairs.push(pair);
++                continue;
++            }
++
+             // Only consider evdev mappings
+             for event in mapping.source_events.iter() {
+                 let Some(evdev_event) = event.evdev.as_ref() else {
+@@ -134,6 +269,10 @@ impl EventTranslator {
+             }
+         }
+ 
++        if !stick_pairs.is_empty() {
++            translatable_events.insert(SYN_REPORT);
++        }
++
+         Self {
+             abs_info,
+             chord_mappings,
+@@ -144,6 +283,8 @@ impl EventTranslator {
+             translatable_active_inputs: HashSet::new(),
+             translatable_active_inputs_used: HashSet::new(),
+             scheduled_events: Vec::new(),
++            stick_pairs,
++            stick_axes,
+         }
+     }
+ 
+@@ -185,6 +326,10 @@ impl EventTranslator {
+             return vec![];
+         }
+ 
++        if event_signature == SYN_REPORT && !self.stick_pairs.is_empty() {
++            return self.translate_stick_pairs();
++        }
++
+         // Check if this event is part of a chord mapping
+         if self.delayed_chord_mappings.contains_key(&event_signature)
+             && !event.is_pressed()
+@@ -203,6 +348,8 @@ impl EventTranslator {
+                 .unwrap_or_default();
+         }
+ 
++        self.update_stick_pairs(event_signature, event);
++
+         // Check if this event is part of a multi_source mapping
+         if self.multi_source_mappings.contains_key(&event_signature) {
+             return self.translate_multi_source(event);
+@@ -211,6 +358,54 @@ impl EventTranslator {
+         vec![]
+     }
+ 
++    fn update_stick_pairs(&mut self, event_signature: EventSignature, event: &InputEvent) {
++        let Some(axes) = self.stick_axes.get(&event_signature) else {
++            return;
++        };
++        let Some(info) = self.abs_info.get(&evdev::AbsoluteAxisCode(event.code())) else {
++            return;
++        };
++        let value = normalize_signed_value(event.value(), info.minimum(), info.maximum());
++        for (index, axis) in axes.iter() {
++            let pair = &mut self.stick_pairs[*index];
++            match axis {
++                StickAxis::X => pair.x = value,
++                StickAxis::Y => pair.y = value,
++            }
++            pair.pending = true;
++        }
++    }
++
++    fn translate_stick_pairs(&mut self) -> Vec<NativeEvent> {
++        let mut events = vec![];
++        for pair in self.stick_pairs.iter_mut().filter(|pair| pair.pending) {
++            pair.pending = false;
++            let distance = pair.x.hypot(pair.y);
++            pair.outside = if pair.outside {
++                distance > pair.zone
++            } else {
++                distance > pair.zone + pair.band
++            };
++            let value = if pair.outside {
++                (pair.x, pair.y)
++            } else {
++                (0.0, 0.0)
++            };
++            if value == pair.emitted {
++                continue;
++            }
++            pair.emitted = value;
++            events.push(NativeEvent::new(
++                pair.capability.clone(),
++                InputValue::Vector2 {
++                    x: Some(value.0),
++                    y: Some(value.1),
++                },
++            ));
++        }
++        events
++    }
++
+     /// Translate the given evdev event into a single native inputplumber event
+     fn translate_multi_source(&mut self, event: &InputEvent) -> Vec<NativeEvent> {
+         let event_signature = (event.event_type().0, event.code());
+@@ -529,3 +724,707 @@ impl Pressable for InputEvent {
+         self.value() != 0
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use evdev::{
++        AbsInfo, AbsoluteAxisCode, EventType, InputEvent, KeyCode, RelativeAxisCode,
++        SynchronizationCode,
++    };
++
++    use crate::{
++        config::capability_map::CapabilityMapConfigV2,
++        input::{
++            capability::{Capability, Gamepad, GamepadAxis, GamepadButton, GamepadTrigger, Source},
++            event::{native::NativeEvent, value::InputValue},
++        },
++    };
++
++    use super::EventTranslator;
++
++    const HALF: f64 = 32767.0;
++    const LEFT: Capability = Capability::Gamepad(Gamepad::Axis(GamepadAxis::LeftStick));
++    const RIGHT: Capability = Capability::Gamepad(Gamepad::Axis(GamepadAxis::RightStick));
++    const SYN: (u16, u16, i32) = (
++        EventType::SYNCHRONIZATION.0,
++        SynchronizationCode::SYN_REPORT.0,
++        0,
++    );
++
++    const LEFT_STICK: &str = "
++  - name: Left stick
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_X, value_type: joystick_x}
++      - evdev: {event_type: ABS, event_code: ABS_Y, value_type: joystick_y}
++    target_event: {gamepad: {axis: {name: LeftStick}}}
++";
++
++    const RIGHT_STICK: &str = "
++  - name: Right stick
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_Z, value_type: joystick_x}
++      - evdev: {event_type: ABS, event_code: ABS_RZ, value_type: joystick_y}
++    target_event: {gamepad: {axis: {name: RightStick}}}
++";
++
++    type Stick = (Capability, Option<f64>, Option<f64>);
++
++    const NOTHING: Vec<Stick> = Vec::new();
++
++    fn axis(value: i32) -> AbsInfo {
++        AbsInfo::new(value, -32768, 32767, 255, 4095, 0)
++    }
++
++    fn translator(mapping: &str, abs_info: &[(AbsoluteAxisCode, AbsInfo)]) -> EventTranslator {
++        let map: CapabilityMapConfigV2 = serde_yaml::from_str(&format!(
++            "version: 2\nkind: CapabilityMap\nname: Test\nid: test\nmapping:\n{mapping}"
++        ))
++        .unwrap();
++        EventTranslator::new(&map, abs_info.iter().copied().collect())
++    }
++
++    fn pm2() -> EventTranslator {
++        translator(
++            &[LEFT_STICK, RIGHT_STICK].concat(),
++            &[
++                (AbsoluteAxisCode::ABS_X, axis(0)),
++                (AbsoluteAxisCode::ABS_Y, axis(0)),
++                (AbsoluteAxisCode::ABS_Z, axis(0)),
++                (AbsoluteAxisCode::ABS_RZ, axis(0)),
++            ],
++        )
++    }
++
++    fn abs(code: AbsoluteAxisCode, value: i32) -> (u16, u16, i32) {
++        (EventType::ABSOLUTE.0, code.0, value)
++    }
++
++    fn feed(translator: &mut EventTranslator, events: &[(u16, u16, i32)]) -> Vec<NativeEvent> {
++        let mut out = vec![];
++        for (kind, code, value) in events.iter().copied() {
++            let event = InputEvent::new(kind, code, value);
++            if translator.has_translation(&event) {
++                out.extend(translator.translate(&event));
++            }
++        }
++        out
++    }
++
++    fn sticks(events: &[NativeEvent]) -> Vec<Stick> {
++        events
++            .iter()
++            .map(|event| match event.get_value() {
++                InputValue::Vector2 { x, y } => (event.as_capability(), x, y),
++                value => panic!("not a stick value: {value:?}"),
++            })
++            .collect()
++    }
++
++    fn right(translator: &mut EventTranslator, x: i32, y: i32) -> Vec<Stick> {
++        sticks(&feed(
++            translator,
++            &[
++                abs(AbsoluteAxisCode::ABS_Z, x),
++                abs(AbsoluteAxisCode::ABS_RZ, y),
++                SYN,
++            ],
++        ))
++    }
++
++    fn syn_report_translated(translator: &EventTranslator) -> bool {
++        translator.has_translation(&InputEvent::new(SYN.0, SYN.1, SYN.2))
++    }
++
++    fn single(events: Vec<NativeEvent>) -> (Capability, InputValue) {
++        assert_eq!(events.len(), 1, "{events:?}");
++        (events[0].as_capability(), events[0].get_value())
++    }
++
++    #[test]
++    fn rest_reports_emit_nothing() {
++        let mut t = pm2();
++        for (x, y) in [(754, 2978), (600, 3200), (0, 0)] {
++            assert_eq!(right(&mut t, x, y), NOTHING);
++        }
++    }
++
++    #[test]
++    fn a_pair_starts_inside() {
++        let mut t = pm2();
++        assert_eq!(right(&mut t, 4300, 0), NOTHING);
++    }
++
++    #[test]
++    fn leaves_above_flat_plus_twice_fuzz_and_returns_at_flat() {
++        let mut t = pm2();
++        assert_eq!(right(&mut t, 4094, 0), NOTHING);
++        assert_eq!(right(&mut t, 4604, 0), NOTHING);
++        assert_eq!(
++            right(&mut t, 4606, 0),
++            vec![(RIGHT, Some(4606.0 / HALF), Some(0.0))]
++        );
++        assert_eq!(
++            right(&mut t, 4096, 0),
++            vec![(RIGHT, Some(4096.0 / HALF), Some(0.0))]
++        );
++        assert_eq!(right(&mut t, 4094, 0), vec![(RIGHT, Some(0.0), Some(0.0))]);
++        assert_eq!(right(&mut t, 4093, 0), NOTHING);
++        assert_eq!(right(&mut t, 4600, 0), NOTHING);
++    }
++
++    #[test]
++    fn the_larger_flat_sets_the_zone() {
++        let wide = AbsInfo::new(0, -32768, 32767, 255, 8191, 0);
++        for (z, rz) in [(axis(0), wide), (wide, axis(0))] {
++            let mut t = translator(
++                RIGHT_STICK,
++                &[(AbsoluteAxisCode::ABS_Z, z), (AbsoluteAxisCode::ABS_RZ, rz)],
++            );
++            assert_eq!(right(&mut t, 8000, 0), NOTHING);
++        }
++    }
++
++    #[test]
++    fn the_larger_fuzz_sets_the_band() {
++        let noisy = AbsInfo::new(0, -32768, 32767, 1023, 4095, 0);
++        for (z, rz) in [(axis(0), noisy), (noisy, axis(0))] {
++            let mut t = translator(
++                RIGHT_STICK,
++                &[(AbsoluteAxisCode::ABS_Z, z), (AbsoluteAxisCode::ABS_RZ, rz)],
++            );
++            assert_eq!(right(&mut t, 6000, 0), NOTHING);
++            assert_eq!(
++                right(&mut t, 6200, 0),
++                vec![(RIGHT, Some(6200.0 / HALF), Some(0.0))]
++            );
++        }
++    }
++
++    #[test]
++    fn a_diagonal_leaves_by_its_radius() {
++        let mut t = pm2();
++        assert_eq!(
++            right(&mut t, 3500, 3500),
++            vec![(RIGHT, Some(3500.0 / HALF), Some(3500.0 / HALF))]
++        );
++    }
++
++    #[test]
++    fn fuzz_zero_is_a_plain_hard_zone() {
++        let flat_only = AbsInfo::new(0, -32768, 32767, 0, 4095, 0);
++        let mut t = translator(
++            RIGHT_STICK,
++            &[
++                (AbsoluteAxisCode::ABS_Z, flat_only),
++                (AbsoluteAxisCode::ABS_RZ, flat_only),
++            ],
++        );
++        assert_eq!(right(&mut t, 4094, 0), NOTHING);
++        assert_eq!(
++            right(&mut t, 4096, 0),
++            vec![(RIGHT, Some(4096.0 / HALF), Some(0.0))]
++        );
++        assert_eq!(right(&mut t, 4094, 0), vec![(RIGHT, Some(0.0), Some(0.0))]);
++    }
++
++    #[test]
++    fn values_outside_the_zone_are_the_source_values() {
++        let mut t = pm2();
++        for (x, y, want) in [
++            (32767, 0, (1.0, 0.0)),
++            (-32768, 0, (-1.0, 0.0)),
++            (0, 32767, (0.0, 1.0)),
++            (0, -32768, (0.0, -1.0)),
++            (32767, 32767, (1.0, 1.0)),
++            (23170, 23170, (23170.0 / HALF, 23170.0 / HALF)),
++            (-20000, 0, (-20000.0 / 32768.0, 0.0)),
++            (40000, 0, (40000.0 / HALF, 0.0)),
++        ] {
++            assert_eq!(
++                right(&mut t, x, y),
++                vec![(RIGHT, Some(want.0), Some(want.1))]
++            );
++        }
++    }
++
++    #[test]
++    fn both_axes_of_one_report_give_one_event() {
++        let mut t = pm2();
++        assert_eq!(
++            right(&mut t, 10000, 5000),
++            vec![(RIGHT, Some(10000.0 / HALF), Some(5000.0 / HALF))]
++        );
++    }
++
++    #[test]
++    fn one_axis_report_gives_one_event() {
++        let mut t = pm2();
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 10000), SYN])),
++            vec![(RIGHT, Some(10000.0 / HALF), Some(0.0))]
++        );
++    }
++
++    #[test]
++    fn a_read_ending_before_its_syn_report_keeps_the_value() {
++        let mut t = pm2();
++        assert!(feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 10000)]).is_empty());
++        assert_eq!(
++            sticks(&feed(&mut t, &[SYN])),
++            vec![(RIGHT, Some(10000.0 / HALF), Some(0.0))]
++        );
++    }
++
++    #[test]
++    fn a_syn_report_with_no_change_emits_nothing() {
++        let mut t = pm2();
++        assert!(feed(&mut t, &[SYN]).is_empty());
++        assert!(feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 1000), SYN]).is_empty());
++        assert_eq!(
++            feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 10000), SYN]).len(),
++            1
++        );
++        assert!(feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 10000), SYN]).is_empty());
++        assert!(feed(&mut t, &[SYN]).is_empty());
++    }
++
++    #[test]
++    fn syn_report_is_translated_only_with_a_pair() {
++        assert!(syn_report_translated(&pm2()));
++        assert!(!syn_report_translated(&translator(RIGHT_STICK, &[])));
++    }
++
++    #[test]
++    fn a_y_report_carries_the_stored_x() {
++        let mut t = pm2();
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 10000), SYN])),
++            vec![(RIGHT, Some(10000.0 / HALF), Some(0.0))]
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_RZ, 6000), SYN])),
++            vec![(RIGHT, Some(10000.0 / HALF), Some(6000.0 / HALF))]
++        );
++    }
++
++    #[test]
++    fn a_y_source_listed_first_forms_the_same_pair() {
++        let mapping = "
++  - name: Right stick
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_RZ, value_type: joystick_y}
++      - evdev: {event_type: ABS, event_code: ABS_Z, value_type: joystick_x}
++    target_event: {gamepad: {axis: {name: RightStick}}}
++";
++        let mut t = translator(
++            mapping,
++            &[
++                (AbsoluteAxisCode::ABS_Z, axis(0)),
++                (AbsoluteAxisCode::ABS_RZ, axis(0)),
++            ],
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 10000), SYN])),
++            vec![(RIGHT, Some(10000.0 / HALF), Some(0.0))]
++        );
++    }
++
++    #[test]
++    fn left_and_right_sticks_keep_separate_state() {
++        let mut t = pm2();
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_X, 10000), SYN])),
++            vec![(LEFT, Some(10000.0 / HALF), Some(0.0))]
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_RZ, 8000), SYN])),
++            vec![(RIGHT, Some(0.0), Some(8000.0 / HALF))]
++        );
++        assert_eq!(
++            sticks(&feed(
++                &mut t,
++                &[
++                    abs(AbsoluteAxisCode::ABS_Y, 9000),
++                    abs(AbsoluteAxisCode::ABS_Z, 7000),
++                    SYN
++                ]
++            )),
++            vec![
++                (LEFT, Some(10000.0 / HALF), Some(9000.0 / HALF)),
++                (RIGHT, Some(7000.0 / HALF), Some(8000.0 / HALF)),
++            ]
++        );
++    }
++
++    #[test]
++    fn a_value_read_at_open_is_used_at_the_first_report() {
++        let mut t = translator(
++            RIGHT_STICK,
++            &[
++                (AbsoluteAxisCode::ABS_Z, axis(0)),
++                (AbsoluteAxisCode::ABS_RZ, axis(8000)),
++            ],
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 1000), SYN])),
++            vec![(RIGHT, Some(1000.0 / HALF), Some(8000.0 / HALF))]
++        );
++    }
++
++    #[test]
++    fn two_pairs_with_one_target_keep_separate_state() {
++        let mapping = [LEFT_STICK, &RIGHT_STICK.replace("RightStick", "LeftStick")].concat();
++        let mut t = translator(
++            &mapping,
++            &[
++                (AbsoluteAxisCode::ABS_X, axis(0)),
++                (AbsoluteAxisCode::ABS_Y, axis(0)),
++                (AbsoluteAxisCode::ABS_Z, axis(0)),
++                (AbsoluteAxisCode::ABS_RZ, axis(0)),
++            ],
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_X, 10000), SYN])),
++            vec![(LEFT, Some(10000.0 / HALF), Some(0.0))]
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_RZ, 9000), SYN])),
++            vec![(LEFT, Some(0.0), Some(9000.0 / HALF))]
++        );
++    }
++
++    #[test]
++    fn flat_zero_keeps_the_upstream_output() {
++        let no_flat = AbsInfo::new(0, -32768, 32767, 255, 0, 0);
++        let mut t = translator(
++            RIGHT_STICK,
++            &[
++                (AbsoluteAxisCode::ABS_Z, no_flat),
++                (AbsoluteAxisCode::ABS_RZ, no_flat),
++            ],
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 754), SYN])),
++            vec![(RIGHT, Some(754.0 / HALF), None)]
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_RZ, 2978), SYN])),
++            vec![(RIGHT, None, Some(2978.0 / HALF))]
++        );
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn a_single_axis_mapping_keeps_the_upstream_output() {
++        let mapping = "
++  - name: Right stick x
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_Z, value_type: joystick_x}
++    target_event: {gamepad: {axis: {name: RightStick}}}
++";
++        let mut t = translator(mapping, &[(AbsoluteAxisCode::ABS_Z, axis(0))]);
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 754), SYN])),
++            vec![(RIGHT, Some(754.0 / HALF), None)]
++        );
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn rel_axes_keep_the_upstream_output() {
++        let mapping = "
++  - name: Wheels
++    source_events:
++      - evdev: {event_type: REL, event_code: REL_HWHEEL, value_type: joystick_x}
++      - evdev: {event_type: REL, event_code: REL_WHEEL, value_type: joystick_y}
++    target_event: {gamepad: {axis: {name: LeftStick}}}
++";
++        let mut t = translator(mapping, &[]);
++        let rel = |code: RelativeAxisCode, value| (EventType::RELATIVE.0, code.0, value);
++        assert_eq!(
++            sticks(&feed(&mut t, &[rel(RelativeAxisCode::REL_HWHEEL, 1), SYN])),
++            vec![(LEFT, Some(1.0), None)]
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[rel(RelativeAxisCode::REL_WHEEL, -1), SYN])),
++            vec![(LEFT, None, Some(-1.0))]
++        );
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn one_code_as_both_axes_keeps_the_upstream_output() {
++        let mapping = "
++  - name: Right stick
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_Z, value_type: joystick_x}
++      - evdev: {event_type: ABS, event_code: ABS_Z, value_type: joystick_y}
++    target_event: {gamepad: {axis: {name: RightStick}}}
++";
++        let mut t = translator(mapping, &[(AbsoluteAxisCode::ABS_Z, axis(0))]);
++        let v = 754.0 / HALF;
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 754), SYN])),
++            vec![
++                (RIGHT, Some(v), None),
++                (RIGHT, None, Some(v)),
++                (RIGHT, Some(v), None),
++                (RIGHT, None, Some(v)),
++            ]
++        );
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn an_axis_direction_keeps_the_upstream_output() {
++        let mapping = "
++  - name: Right stick
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_Z, value_type: joystick_x, axis_direction: positive}
++      - evdev: {event_type: ABS, event_code: ABS_RZ, value_type: joystick_y}
++    target_event: {gamepad: {axis: {name: RightStick}}}
++";
++        let mut t = translator(
++            mapping,
++            &[
++                (AbsoluteAxisCode::ABS_Z, axis(0)),
++                (AbsoluteAxisCode::ABS_RZ, axis(0)),
++            ],
++        );
++        assert!(feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, -5000), SYN]).is_empty());
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 5000), SYN])),
++            vec![(RIGHT, Some(5000.0 / HALF), None)]
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_RZ, 3000), SYN])),
++            vec![(RIGHT, None, Some(3000.0 / HALF))]
++        );
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn a_chord_with_joystick_values_keeps_the_upstream_output() {
++        let mapping = "
++  - name: Right stick
++    mapping_type: {evdev: chord}
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_Z, value_type: joystick_x}
++      - evdev: {event_type: ABS, event_code: ABS_RZ, value_type: joystick_y}
++    target_event: {gamepad: {axis: {name: RightStick}}}
++";
++        let mut t = translator(
++            mapping,
++            &[
++                (AbsoluteAxisCode::ABS_Z, axis(0)),
++                (AbsoluteAxisCode::ABS_RZ, axis(0)),
++            ],
++        );
++        assert!(right(&mut t, 10000, 10000).is_empty());
++        assert!(right(&mut t, 0, 0).is_empty());
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn a_chord_on_a_pair_code_takes_its_events_as_upstream() {
++        let chord = "
++  - name: Right stick x chord
++    mapping_type: {evdev: chord}
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_Z, value_type: button}
++      - evdev: {event_type: KEY, event_code: BTN_SOUTH, value_type: button}
++    target_event: {gamepad: {button: North}}
++";
++        let mut t = translator(
++            &[RIGHT_STICK, chord].concat(),
++            &[
++                (AbsoluteAxisCode::ABS_Z, axis(0)),
++                (AbsoluteAxisCode::ABS_RZ, axis(0)),
++            ],
++        );
++        assert!(feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 10000), SYN]).is_empty());
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_RZ, 6000), SYN])),
++            vec![(RIGHT, Some(0.0), Some(6000.0 / HALF))]
++        );
++    }
++
++    #[test]
++    fn a_second_mapping_on_a_pair_code_keeps_its_upstream_output() {
++        let copy = "
++  - name: Right stick x on the left stick
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_Z, value_type: joystick_x}
++    target_event: {gamepad: {axis: {name: LeftStick}}}
++";
++        let mut t = translator(
++            &[RIGHT_STICK, copy].concat(),
++            &[
++                (AbsoluteAxisCode::ABS_Z, axis(0)),
++                (AbsoluteAxisCode::ABS_RZ, axis(0)),
++            ],
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 10000)])),
++            vec![(LEFT, Some(10000.0 / HALF), None)]
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[SYN])),
++            vec![(RIGHT, Some(10000.0 / HALF), Some(0.0))]
++        );
++    }
++
++    #[test]
++    fn a_source_without_abs_info_keeps_the_upstream_output() {
++        let mut t = translator(RIGHT_STICK, &[]);
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 754), SYN])),
++            vec![(RIGHT, Some(754.0), None)]
++        );
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn an_unimplemented_target_keeps_the_upstream_output() {
++        let mut t = translator(
++            &RIGHT_STICK.replace("RightStick", "Bogus"),
++            &[
++                (AbsoluteAxisCode::ABS_Z, axis(0)),
++                (AbsoluteAxisCode::ABS_RZ, axis(0)),
++            ],
++        );
++        assert!(feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 10000), SYN]).is_empty());
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn an_empty_range_keeps_the_upstream_output() {
++        let empty = AbsInfo::new(0, 0, 0, 255, 4095, 0);
++        let mut t = translator(
++            RIGHT_STICK,
++            &[
++                (AbsoluteAxisCode::ABS_Z, empty),
++                (AbsoluteAxisCode::ABS_RZ, axis(0)),
++            ],
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 754), SYN])),
++            vec![(RIGHT, Some(f64::INFINITY), None)]
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_RZ, 2978), SYN])),
++            vec![(RIGHT, None, Some(2978.0 / HALF))]
++        );
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn a_flat_of_half_the_travel_from_center_keeps_the_upstream_output() {
++        let wide = AbsInfo::new(0, -32768, 32767, 255, 16384, 0);
++        let mut t = translator(
++            RIGHT_STICK,
++            &[
++                (AbsoluteAxisCode::ABS_Z, wide),
++                (AbsoluteAxisCode::ABS_RZ, wide),
++            ],
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 754), SYN])),
++            vec![(RIGHT, Some(754.0 / HALF), None)]
++        );
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn a_flat_plus_twice_the_fuzz_of_half_the_travel_from_center_keeps_the_upstream_output() {
++        let at_half = AbsInfo::new(0, -128, 128, 16, 32, 0);
++        let mut t = translator(
++            RIGHT_STICK,
++            &[
++                (AbsoluteAxisCode::ABS_Z, at_half),
++                (AbsoluteAxisCode::ABS_RZ, at_half),
++            ],
++        );
++        assert_eq!(
++            sticks(&feed(&mut t, &[abs(AbsoluteAxisCode::ABS_Z, 10), SYN])),
++            vec![(RIGHT, Some(10.0 / 128.0), None)]
++        );
++        assert!(!syn_report_translated(&t));
++    }
++
++    #[test]
++    fn a_flat_plus_twice_the_fuzz_just_under_half_the_travel_from_center_forms_a_pair() {
++        let under_half = AbsInfo::new(0, -128, 128, 16, 31, 0);
++        let t = translator(
++            RIGHT_STICK,
++            &[
++                (AbsoluteAxisCode::ABS_Z, under_half),
++                (AbsoluteAxisCode::ABS_RZ, under_half),
++            ],
++        );
++        assert!(syn_report_translated(&t));
++    }
++
++    #[test]
++    fn triggers_buttons_and_imu_keep_the_upstream_output() {
++        let others = "
++  - name: Left trigger
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_BRAKE, value_type: trigger}
++    target_event: {gamepad: {trigger: {name: LeftTrigger}}}
++  - name: South
++    source_events:
++      - evdev: {event_type: KEY, event_code: BTN_SOUTH, value_type: button}
++    target_event: {gamepad: {button: South}}
++  - name: Gyro
++    source_events:
++      - evdev: {event_type: ABS, event_code: ABS_RX, value_type: imu_x}
++    target_event: {gyroscope: {name: Center}}
++";
++        let mut t = translator(
++            &[RIGHT_STICK, others].concat(),
++            &[
++                (AbsoluteAxisCode::ABS_Z, axis(0)),
++                (AbsoluteAxisCode::ABS_RZ, axis(0)),
++                (
++                    AbsoluteAxisCode::ABS_BRAKE,
++                    AbsInfo::new(0, 0, 1023, 0, 0, 0),
++                ),
++                (AbsoluteAxisCode::ABS_RX, axis(0)),
++            ],
++        );
++
++        let (cap, value) = single(feed(&mut t, &[abs(AbsoluteAxisCode::ABS_BRAKE, 512)]));
++        assert_eq!(
++            cap,
++            Capability::Gamepad(Gamepad::Trigger(GamepadTrigger::LeftTrigger))
++        );
++        assert!(
++            matches!(value, InputValue::Float(v) if v == 512.0 / 1023.0),
++            "{value:?}"
++        );
++
++        let (cap, value) = single(feed(&mut t, &[(EventType::KEY.0, KeyCode::BTN_SOUTH.0, 1)]));
++        assert_eq!(
++            cap,
++            Capability::Gamepad(Gamepad::Button(GamepadButton::South))
++        );
++        assert!(matches!(value, InputValue::Bool(true)), "{value:?}");
++
++        let (cap, value) = single(feed(&mut t, &[abs(AbsoluteAxisCode::ABS_RX, 100)]));
++        assert_eq!(cap, Capability::Gyroscope(Source::Center));
++        assert!(
++            matches!(
++                value,
++                InputValue::Vector3 {
++                    x: Some(x),
++                    y: None,
++                    z: None
++                } if x == 1.0
++            ),
++            "{value:?}"
++        );
++
++        assert!(feed(&mut t, &[SYN]).is_empty());
++    }
++}
+-- 
+2.43.0
+
