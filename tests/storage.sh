@@ -345,8 +345,8 @@ classify mmcblk0 data "/boot on dm with no slaves"
 
 setup booted-sd
 classify mmcblk0 system "booted from the MicroOS SD"
-classify sda system "UFS while booted from the MicroOS SD"
 grep -q 'blkid' "$tmp/bcalls" && fail "booted from the MicroOS SD: rule 1 did not decide before blkid"
+classify sda system "UFS while booted from the MicroOS SD"
 for p in mmcblk0p1 mmcblk0p2 mmcblk0p3; do
   setup booted-sd
   echo "/dev/$p /x ext4 rw 1" >> "$tmp/mounts"
@@ -354,10 +354,12 @@ for p in mmcblk0p1 mmcblk0p2 mmcblk0p3; do
   code 0 "unmount $p booted from the MicroOS SD"
   not_called '^busctl' "unmount $p booted from the MicroOS SD"
   not_called '^umount' "unmount $p booted from the MicroOS SD"
+  grep -q blkid "$tmp/bcalls" && fail "unmount $p booted from the MicroOS SD: blkid ran"
   run mount "$p"
   code 0 "mount $p booted from the MicroOS SD"
   not_called '^busctl' "mount $p booted from the MicroOS SD"
   not_called '^fsck' "mount $p booted from the MicroOS SD"
+  grep -q blkid "$tmp/bcalls" && fail "mount $p booted from the MicroOS SD: blkid ran"
 done
 
 setup internal
@@ -637,6 +639,16 @@ for args in "--skip-validation" "" "--dry-run" "--dry-run --skip-validation"; do
   no_writer "format MicroOS SD $args"
   not_called '^systemctl' "format MicroOS SD $args"
 done
+setup booted-sd
+for args in "--skip-validation" "" "--dry-run" "--dry-run --skip-validation"; do
+  read -ra a <<< "$args"
+  run format "${a[@]}" --device /dev/mmcblk0
+  code 13 "format booted MicroOS SD $args"
+  not_called '^microos-pad-hold' "format booted MicroOS SD $args"
+  no_writer "format booted MicroOS SD $args"
+  not_called '^systemctl' "format booted MicroOS SD $args"
+  grep -q blkid "$tmp/bcalls" && fail "format booted MicroOS SD $args: blkid ran"
+done
 setup internal
 echo MMC > "$sys/block/mmcblk0/device/type"
 run format --skip-validation --device /dev/mmcblk0
@@ -757,6 +769,12 @@ setup microos-sd
 storage=$sdcard run --skip-validation
 code 19 "format-sdcard.sh with only system disks"
 no_writer "format-sdcard.sh with only system disks"
+setup booted-sd
+storage=$sdcard run --skip-validation
+code 19 "format-sdcard.sh booted from the MicroOS SD"
+not_called '^microos-pad-hold' "format-sdcard.sh booted from the MicroOS SD"
+no_writer "format-sdcard.sh booted from the MicroOS SD"
+grep -q blkid "$tmp/bcalls" && fail "format-sdcard.sh booted from the MicroOS SD: blkid ran"
 setup internal
 storage=$sdcard run --skip-validation
 code 0 "format-sdcard.sh with the card"
@@ -803,6 +821,20 @@ logged 'no size' "trim without a partition size"
 run trim
 code 0 "trim nothing mounted"
 not_called '^fstrim' "trim nothing mounted"
+setup booted-sd
+printf '%s\n' "/dev/mmcblk0p3 /sysroot btrfs rw,noatime" "/dev/mmcblk0p3 /var btrfs rw,noatime" \
+  "/dev/mmcblk0p2 /boot ext4 ro,relatime" "/dev/mmcblk0p1 /boot/efi vfat rw,relatime" > "$tmp/mounts"
+run trim
+code 0 "trim booted from the MicroOS SD"
+not_called '^fstrim' "trim booted from the MicroOS SD"
+logged '/sysroot: mmcblk0 is not safe to trim, skipped' "trim booted from the MicroOS SD"
+grep -q blkid "$tmp/bcalls" && fail "trim booted from the MicroOS SD: blkid ran"
+echo 0x000002 > "$sys/block/mmcblk0/device/manfid"
+echo 0x544d > "$sys/block/mmcblk0/device/oemid"
+run trim
+code 0 "trim booted from the MicroOS SD with manfid and oemid"
+[[ $(grep '^fstrim' "$tmp/calls") == "fstrim /sysroot" ]] || fail "trim booted from the MicroOS SD with manfid and oemid: $(cat "$tmp/calls")"
+grep -q blkid "$tmp/bcalls" && fail "trim booted from the MicroOS SD with manfid and oemid: blkid ran"
 
 probe=$fixtures/internal/mounts
 setup internal
@@ -852,6 +884,18 @@ run content
 code 0 "content MicroOS SD"
 link_is "" "content MicroOS SD"
 logged 'mmcblk0p2 is on a system disk' "content MicroOS SD"
+
+setup booted-sd
+cp "$fixtures/booted-sd/mounts" "$tmp/mounts"
+run content
+code 0 "content booted from the MicroOS SD"
+link_is "" "content booted from the MicroOS SD"
+log_lines 0 "content booted from the MicroOS SD"
+grep -q blkid "$tmp/bcalls" && fail "content booted from the MicroOS SD: blkid ran"
+run FINDMNT_FAIL=/boot content
+code 0 "content booted from the MicroOS SD, system disks not read"
+logged 'mmcblk0p2 at /boot refused' "content booted from the MicroOS SD, system disks not read"
+logged 'mmcblk0p1 at /boot/efi refused' "content booted from the MicroOS SD, system disks not read"
 
 setup internal
 grep -v '^/dev/mmcblk' "$probe" > "$tmp/mounts"

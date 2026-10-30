@@ -249,7 +249,7 @@ safe_target() {
 }
 
 content_update() {
-  local cached=$1 rows src raw t n disk best="" bestn="" bestsrc="" cur r err=0 quiet=0
+  local cached=$1 rows src raw t n disk sys best="" bestn="" bestsrc="" cur r err=0 quiet=0
   local -A data=()
   local -a other=()
   if ! rows=$(findmnt -rno SOURCE,TARGET); then
@@ -263,6 +263,7 @@ content_update() {
   if (( cached )) && [[ $rows == "$errseen" ]]; then
     quiet=1
   fi
+  sys=$(system_disks) || sys=""
   while read -r src raw; do
     [[ $src =~ ^/dev/(mmcblk[0-9])p([0-9]+)$ ]] || continue
     disk=${BASH_REMATCH[1]}
@@ -270,7 +271,7 @@ content_update() {
     t=$(printf '%bx' "$raw")
     t=${t%x}
     if ! safe_target "$t"; then
-      (( quiet )) || log "content: $src at $raw refused"
+      (( quiet )) || grep -qxF "$disk" <<< "$sys" || log "content: $src at $raw refused"
       continue
     fi
     if [[ -z ${data[$disk]:-} ]]; then
