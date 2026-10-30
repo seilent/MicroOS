@@ -2,6 +2,7 @@ import struct
 
 MAGIC = 0x07564429
 LIMIT = 64 << 20
+NAME_LIMIT = 1 << 20
 APP_HEADER = 60
 HEAD = struct.Struct("<IIq")
 APP = struct.Struct("<II")
@@ -12,6 +13,8 @@ def strings(data, offset, deadline):
     if offset < HEAD.size or offset + 4 > len(data):
         raise vdf.Error(f"string table offset {offset} outside the file")
     n = COUNT.unpack_from(data, offset)[0]
+    if n > NAME_LIMIT:
+        raise vdf.Error(f"string table count {n}, over {NAME_LIMIT}")
     if n > len(data) - offset:
         raise vdf.Error(f"string table count {n} too large")
     out = []

@@ -291,6 +291,27 @@ def case_states(ms, tmp):
     return out
 
 
+def case_names(ms, tmp):
+    cap = 1 << 20
+    out = {}
+    path = os.path.join(tmp, "appinfo.vdf")
+    data = fx.appinfo(apps_base({50: fx.game(50, deck="proton-experimental")}))
+    table = struct.unpack_from("<q", data, 8)[0]
+    used = struct.unpack_from("<I", data, table)[0]
+    for name, n in (("cap", cap), ("over", cap + 1)):
+        fx.write(path, data[:table] + struct.pack("<I", n) + data[table + 4:] + b"\0" * (n - used))
+        a = ms.appinfo.read(path, None)
+        out[name] = [a["state"], sorted(a["apps"]), a["error"]]
+    check(out["cap"] == ["ok", [50, 891390, 3043620], None], f"names at the cap {out['cap']}")
+    check(out["over"] == ["failed", [], f"string table count {cap + 1}, over {cap}"], f"names over the cap {out['over']}")
+    for name, n in (("cap spent", cap), ("over spent", cap + 1)):
+        names = b"\0" * 16 + struct.pack("<I", n) + b"\0" * n
+        out[name] = outcome(lambda: ms.appinfo.strings(names, 16, time.monotonic() - 1), ms.vdf)
+    check(out["cap spent"] == "timeout" and out["over spent"] == f"error: string table count {cap + 1}, over {cap}",
+          f"names refused before the first name {out['cap spent']} {out['over spent']}")
+    return out
+
+
 def project(d, spec):
     if spec is True or not isinstance(d, dict):
         return d
@@ -604,8 +625,8 @@ def case_packageinfo(ms, tmp):
     return out
 
 
-CASES = [case_text, case_binary, case_read, case_tiers, case_branch, case_states, case_keep, case_config, case_accounts,
-         case_mappings, case_libraries, case_licensecache, case_packageinfo]
+CASES = [case_text, case_binary, case_read, case_tiers, case_branch, case_states, case_names, case_keep, case_config,
+         case_accounts, case_mappings, case_libraries, case_licensecache, case_packageinfo]
 
 
 def main():
