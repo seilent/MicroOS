@@ -57,6 +57,10 @@ runs `tests/test_virtual_output.cpp` and the stale anchor case 0007 adds to `tes
 `node <id> gamescope-virtual-output` once the stream exists, and exits 0 on stdin EOF, 1 when the Wayland connection
 goes, 2 on a usage error or a missing global and 3 on `failed`, with `failed: <reason>` on stderr.
 
+`0009` publishes the FPS limit the frame limiter applies as `GAMESCOPE_FPS_LIMIT_FEEDBACK` (CARDINAL, 0 for no limit) on
+every Xwayland root, written when it changes and on each root as its server starts. Steam's quick access frame limit
+arrives over `gamescope_control` and never shows in `GAMESCOPE_FPS_LIMIT`.
+
 Fedora's `0001-cstdint.patch` is not carried: reshade `696b14cd` already includes `<cstdint>` in
 `source/effect_token.hpp` (reshade `5c8b8f09`).
 
