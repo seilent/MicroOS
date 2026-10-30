@@ -1,1 +1,1 @@
-PM2 booted from the MicroOS SD: internal rows with the sda partitions replaced by the SD layout from build/finalize-disk.sh
+PM2 booted from the MicroOS SD: internal rows with the sda partitions replaced by the SD layout from build/finalize-disk.sh; mounts is internal/mounts without the mmcblk0p1 data card row and with sda22, sda21, sda20 as mmcblk0p3, mmcblk0p2, mmcblk0p1
