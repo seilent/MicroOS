@@ -197,10 +197,14 @@ for want in 0 13 53 77; do
   srun "$want" 0 "$hw/format-sdcard.sh" --label "" --device /dev/mmcblk0
   slog "format --label '' --device /dev/mmcblk0 --device /dev/mmcblk1 " "format-sdcard.sh exit $want"
 done
-echo system > "$tmp/class/mmcblk1"
+echo os-image > "$tmp/class/mmcblk1"
 echo bogus > "$tmp/class/mmcblk2"
+srun 0 0 "$hw/format-sdcard.sh" --skip-validation
+slog "format --skip-validation --device /dev/mmcblk1 " "format-sdcard.sh with an os-image card"
+echo system > "$tmp/class/mmcblk1"
 srun 19 0 "$hw/format-sdcard.sh"
 slog "" "format-sdcard.sh with only system disks"
+grep -qxF "format-sdcard: no card to format" "$tmp/out" || fail "format-sdcard.sh with only system disks: $(cat "$tmp/out")"
 rm -rf "$tmp/ssys/block"/*
 srun 19 0 "$hw/format-sdcard.sh"
 slog "" "format-sdcard.sh with no card"
