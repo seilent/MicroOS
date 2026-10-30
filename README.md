@@ -10,6 +10,7 @@ from other branches, each with an SD card image as a workflow artifact.
 ## microSD Format
 
 After the Format confirm in Settings > Storage, release A, then hold it for 1 s within 15 s.
+A MicroOS card formats the same way, except the one the PM2 is running from.
 
 ## License
 

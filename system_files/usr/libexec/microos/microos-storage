@@ -83,18 +83,26 @@ children() {
 }
 
 is_data() {
-  local disk=$1 type sys out c r
+  local disk=$1 type sys out all="" c r
   [[ $disk =~ ^mmcblk[0-9]$ ]] || return 1
   type=$(cat "$sysfs/block/$disk/device/type" 2> /dev/null) || return 1
   [[ $type == SD ]] || return 1
   sys=$(system_disks) || return 2
-  ! grep -qxF "$disk" <<< "$sys" || return 1
+  [[ $'\n'$sys$'\n' == *$'\n'"$disk"$'\n'* ]] && return 1
   for c in $(children "$disk"); do
     r=0
     out=$(blkid -p -o export "/dev/$c") || r=$?
     (( r == 0 || r == 2 )) || return 2
-    ! grep -qxE 'LABEL=MICROOS|PART_ENTRY_NAME=ARMADA(_BOOT|_ROOT)?' <<< "$out" || return 1
+    all+=$out$'\n'
   done
+  r=0
+  grep -qxE 'PART_ENTRY_NAME=ARMADA(_BOOT|_ROOT)?' <<< "$all" || r=$?
+  (( r != 0 )) || return 1
+  (( r == 1 )) || return 2
+  r=0
+  grep -qxF 'LABEL=MICROOS' <<< "$all" || r=$?
+  (( r != 0 )) || return 3
+  (( r == 1 )) || return 2
 }
 
 mount_targets() {
@@ -142,7 +150,12 @@ cmd_mount() {
     log "$part: $disk lock not taken within $lockwait s, not mounted"
     exit 1
   fi
-  if ! is_data "$disk"; then
+  r=0
+  is_data "$disk" || r=$?
+  if (( r == 3 )); then
+    log "$part: $disk holds an OS image, not mounted"
+    exit 0
+  elif (( r )); then
     log "$part: $disk is a system disk, not mounted"
     exit 0
   fi
@@ -309,6 +322,10 @@ content_update() {
     if (( data[$disk] == 2 )); then
       (( quiet || nosys )) || log "content: $disk not readable, $src checked again at the next tick"
       err=1
+      continue
+    fi
+    if (( data[$disk] == 3 )); then
+      (( quiet )) || log "content: $disk holds an OS image, $src not used"
       continue
     fi
     if (( data[$disk] )); then
@@ -488,7 +505,7 @@ wipe() {
 }
 
 cmd_format() {
-  local opts validate=1 ext=nodiscard owner="" label="" device="" dry=0 p m
+  local opts validate=1 ext=nodiscard owner="" label="" device="" dry=0 p m r
   local -a lab=() parts=()
   opts=$(getopt -q -l version,force,skip-validation,full,quick,owner:,device:,label:,dry-run -n "$me" -- "" "$@") ||
     quit 22 "bad option"
@@ -528,7 +545,9 @@ cmd_format() {
   [[ -e $devroot/$disk && -d $sysfs/block/$disk ]] || quit 19 "$device does not exist"
   seq=$(read_seq) || quit 19 "$device has no diskseq"
 
-  is_data "$disk" || quit 13 "$disk is a system disk"
+  r=0
+  is_data "$disk" || r=$?
+  (( r == 0 || r == 3 )) || quit 13 "$disk is a system disk or not readable"
   seq_check
   if (( validate )) && ! command -v f3probe > /dev/null; then
     quit 2 "f3probe missing"
@@ -578,7 +597,9 @@ cmd_format() {
   exec {lockfd}< "$devroot/$disk" || quit 19 "$device does not exist"
   flock -x -w 2 "$lockfd" || quit 53 "$disk is locked"
   seq_check
-  is_data "$disk" || quit 13 "$disk is a system disk"
+  r=0
+  is_data "$disk" || r=$?
+  (( r == 0 || r == 3 )) || quit 13 "$disk is a system disk or not readable"
   if (( ! dry )); then
     m=$(held)
     [[ -z $m ]] || quit 32 "still mounted: ${m//$'\n'/, }"
@@ -616,7 +637,13 @@ cmd_format() {
 case $1 in
   classify)
     (( $# == 2 )) || usage
-    if is_data "${2#/dev/}"; then echo data; else echo system; fi
+    r=0
+    is_data "${2#/dev/}" || r=$?
+    case $r in
+      0) echo data ;;
+      3) echo os-image ;;
+      *) echo system ;;
+    esac
     ;;
   mount)
     (( $# == 2 )) || usage

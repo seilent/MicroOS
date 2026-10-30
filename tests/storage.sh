@@ -64,6 +64,10 @@ if flock -n -s "$LOCK_NODE" true; then lock=free; else lock=held; fi
 if [[ ${SEQ_BUMP:-} == systemctl ]]; then
   echo 99 > "$SEQ_FILE"
 fi
+if [[ $1 == stop ]]; then
+  [[ -z ${STOP_FLAG:-} ]] || : > "$STOP_FLAG"
+  [[ -z ${STOP_ROWS:-} ]] || cp "$STOP_ROWS" "$FINDMNT_ROWS"
+fi
 { printf 'systemctl'; printf ' %q' "$@"; echo " lock=$lock"; } >> "$CALLS"
 exit "${RC_systemctl:-0}"
 EOF
@@ -73,7 +77,7 @@ cat > "$bin/findmnt" <<'EOF'
 case "$*" in
   "-rno SOURCE,FSTYPE,UUID --mountpoint "*)
     t=${*: -1}
-    [[ ${FINDMNT_FAIL:-} != "$t" ]] || exit 1
+    [[ ${FINDMNT_FAIL:-} != "$t" ]] || [[ -n ${STOP_FLAG:-} && ! -e $STOP_FLAG ]] || exit 1
     awk -v t="$t" '$1 == t { sub(/^[^ ]* /, ""); print; f = 1 } END { exit !f }' "$FINDMNT_ROWS"
     ;;
   "-rno TARGET --source "*)
@@ -106,7 +110,7 @@ cat > "$bin/blkid" <<'EOF'
 #!/usr/bin/env bash
 { printf 'blkid'; printf ' %q' "$@"; echo; } >> "$BLKID_CALLS"
 [[ $# == 4 && $1 == -p && $2 == -o && $3 == export ]] || exit 4
-[[ ${BLKID_FAIL:-} != "$4" ]] || exit 8
+[[ ${BLKID_FAIL:-} != "$4" ]] || [[ -n ${STOP_FLAG:-} && ! -e $STOP_FLAG ]] || exit 8
 if [[ -n ${BLKID_FAIL_ONCE:-} && -e $BLKID_FAIL_ONCE ]]; then
   rm "$BLKID_FAIL_ONCE"
   exit 8
@@ -382,17 +386,29 @@ jq '(.. | objects | select(.name? == "mmcblk0p1")).partlabel = "ARMADA_ROOT"' "$
 classify mmcblk0 system "card with partlabel ARMADA_ROOT"
 setup internal
 jq '(.. | objects | select(.name? == "mmcblk0p1")).label = "MICROOS"' "$tmp/lsblk.json" > "$tmp/j" && mv "$tmp/j" "$tmp/lsblk.json"
-classify mmcblk0 system "card with label MICROOS"
+classify mmcblk0 os-image "card with label MICROOS"
 
 setup microos-sd
-classify mmcblk0 system "MicroOS SD hot inserted"
+classify mmcblk0 os-image "MicroOS SD hot inserted"
+for p in mmcblk0p1 mmcblk0p2 mmcblk0p3; do
+  grep -qxF "blkid -p -o export /dev/$p" "$tmp/bcalls" || fail "classify MicroOS SD did not read $p: $(cat "$tmp/bcalls")"
+done
 classify sda system "UFS with the MicroOS SD in"
+for v in FINDMNT_FAIL=/boot/efi BLKID_FAIL=/dev/mmcblk0p1 BLKID_FAIL=/dev/mmcblk0p2 BLKID_FAIL=/dev/mmcblk0p3; do
+  run "$v" classify mmcblk0
+  code 0 "classify MicroOS SD $v"
+  out_is system "classify MicroOS SD $v"
+done
+setup microos-sd
+jq '(.. | objects | select(.name? == "mmcblk0p3")).partlabel = "ARMADA_ROOT"' "$tmp/lsblk.json" > "$tmp/j" && mv "$tmp/j" "$tmp/lsblk.json"
+classify mmcblk0 system "MicroOS SD with partlabel ARMADA_ROOT on p3"
+setup microos-sd
 run mount mmcblk0p2
 code 0 "mount MicroOS SD p2"
 not_called '^fsck.ext4' "mount MicroOS SD p2"
 not_called '^busctl' "mount MicroOS SD p2"
 log_lines 2 "mount MicroOS SD p2"
-logged 'system disk' "mount MicroOS SD p2"
+logged 'mmcblk0p2: mmcblk0 holds an OS image, not mounted' "mount MicroOS SD p2"
 grep -q 'blkid -p -o export /dev/mmcblk0p1' "$tmp/bcalls" || fail "mount p2 did not probe p1 with blkid -p"
 
 setup internal
@@ -638,12 +654,43 @@ run format --skip-validation
 code 19 "format without --device"
 
 setup microos-sd
-for args in "--skip-validation" "" "--dry-run" "--dry-run --skip-validation"; do
+run RC_pad_hold=1 format --skip-validation --device /dev/mmcblk0
+code 77 "format MicroOS SD without the hold"
+called '^microos-pad-hold BTN_SOUTH 1 15 hint=live:/dev/mmcblk0 lock=held$' "format MicroOS SD without the hold"
+no_writer "format MicroOS SD without the hold"
+not_called '^systemctl' "format MicroOS SD without the hold"
+run format --skip-validation --device /dev/mmcblk0
+code 0 "format MicroOS SD"
+called '^microos-pad-hold BTN_SOUTH 1 15 hint=live:/dev/mmcblk0 lock=held$' "format MicroOS SD"
+for p in mmcblk0p1 mmcblk0p2 mmcblk0p3; do
+  called "^systemctl stop microos-automount@$p.service lock=free\$" "format MicroOS SD"
+  called "^wipefs -a /dev/$p\$" "format MicroOS SD"
+done
+called '^sfdisk -q /dev/mmcblk0$' "format MicroOS SD"
+called '^mkfs.ext4 -m 0 -O casefold -E nodiscard\\,root_owner=1000:1000 -F /dev/mmcblk0p1$' "format MicroOS SD"
+called '^systemctl start microos-automount@mmcblk0p1.service lock=free$' "format MicroOS SD"
+(( $(line_of '^microos-pad-hold') < $(line_of '^systemctl stop') )) || fail "format MicroOS SD: units stopped before the hold"
+(( $(line_of '^wipefs -a /dev/mmcblk0p1$') < $(line_of '^wipefs -a /dev/mmcblk0p2$') &&
+  $(line_of '^wipefs -a /dev/mmcblk0p2$') < $(line_of '^wipefs -a /dev/mmcblk0p3$') &&
+  $(line_of '^wipefs -a /dev/mmcblk0p3$') < $(line_of '^wipefs -a /dev/mmcblk0$') &&
+  $(line_of '^wipefs -a /dev/mmcblk0$') < $(line_of '^sfdisk') && $(line_of '^sfdisk') < $(line_of '^mkfs.ext4') )) ||
+  fail "format MicroOS SD: writer order: $(cat "$tmp/calls")"
+for args in "--dry-run" "--dry-run --skip-validation"; do
   read -ra a <<< "$args"
-  run format "${a[@]}" --device /dev/mmcblk0
-  code 13 "format MicroOS SD $args"
+  run RC_pad_hold=1 format "${a[@]}" --device /dev/mmcblk0
+  code 0 "format MicroOS SD $args"
+  not_called '^microos-pad-hold' "format MicroOS SD $args"
   no_writer "format MicroOS SD $args"
   not_called '^systemctl' "format MicroOS SD $args"
+done
+setup internal
+jq '(.. | objects | select(.name? == "mmcblk0p1")).partlabel = "ARMADA_ROOT"' "$tmp/lsblk.json" > "$tmp/j" && mv "$tmp/j" "$tmp/lsblk.json"
+for args in "--skip-validation" "--dry-run"; do
+  run format "$args" --device /dev/mmcblk0
+  code 13 "format Armada card $args"
+  not_called '^microos-pad-hold' "format Armada card $args"
+  no_writer "format Armada card $args"
+  not_called '^systemctl' "format Armada card $args"
 done
 setup booted-sd
 for args in "--skip-validation" "" "--dry-run" "--dry-run --skip-validation"; do
@@ -654,6 +701,57 @@ for args in "--skip-validation" "" "--dry-run" "--dry-run --skip-validation"; do
   no_writer "format booted MicroOS SD $args"
   not_called '^systemctl' "format booted MicroOS SD $args"
   grep -q blkid "$tmp/bcalls" && fail "format booted MicroOS SD $args: blkid ran"
+done
+for fx in booted-sd internal microos-sd; do
+  for v in FINDMNT_FAIL=/boot/efi BLKID_FAIL=/dev/mmcblk0p1; do
+    for args in "--skip-validation" "--dry-run"; do
+      setup "$fx"
+      run "$v" format "$args" --device /dev/mmcblk0
+      code 13 "format $fx $v $args"
+      not_called '^microos-pad-hold' "format $fx $v $args"
+      no_writer "format $fx $v $args"
+      not_called '^systemctl' "format $fx $v $args"
+    done
+  done
+done
+for p in mmcblk0p2 mmcblk0p3; do
+  for args in "--skip-validation" "--dry-run"; do
+    setup microos-sd
+    run BLKID_FAIL=/dev/$p format "$args" --device /dev/mmcblk0
+    code 13 "format MicroOS SD with a $p read error $args"
+    grep -qxF 'blkid -p -o export /dev/mmcblk0p1' "$tmp/bcalls" || fail "format MicroOS SD with a $p read error $args: p1 not read"
+    grep -qF 'mmcblk0 is a system disk or not readable' "$tmp/out" ||
+      fail "format MicroOS SD with a $p read error $args: $(cat "$tmp/out")"
+    not_called '^microos-pad-hold' "format MicroOS SD with a $p read error $args"
+    no_writer "format MicroOS SD with a $p read error $args"
+    not_called '^systemctl' "format MicroOS SD with a $p read error $args"
+  done
+done
+setup microos-sd
+echo "/dev/mmcblk0p2 /run/media/micro/x ext4 rw 1" >> "$tmp/mounts"
+run format --skip-validation --device /dev/mmcblk0
+code 32 "format MicroOS SD with p2 mounted"
+called '^systemctl stop microos-automount@mmcblk0p2.service lock=free$' "format MicroOS SD with p2 mounted"
+no_writer "format MicroOS SD with p2 mounted"
+not_called '^systemctl start' "format MicroOS SD with p2 mounted"
+for fx in internal microos-sd; do
+  for v in FINDMNT_FAIL=/boot/efi BLKID_FAIL=/dev/mmcblk0p1; do
+    setup "$fx"
+    run STOP_FLAG="$tmp/run/stopped" "$v" format --skip-validation --device /dev/mmcblk0
+    code 13 "format $fx $v after the unit stop"
+    called '^microos-pad-hold BTN_SOUTH 1 15 ' "format $fx $v after the unit stop"
+    called '^systemctl stop microos-automount@mmcblk0p1.service lock=free$' "format $fx $v after the unit stop"
+    no_writer "format $fx $v after the unit stop"
+    not_called '^systemctl start' "format $fx $v after the unit stop"
+  done
+  setup "$fx"
+  sed 's|^/boot /dev/sda21 ext4 |/boot /dev/mmcblk0p1 ext4 |' "$tmp/findmnt" > "$tmp/findmnt.card"
+  grep -q '^/boot /dev/mmcblk0p1 ' "$tmp/findmnt.card" || fail "fixture: /boot row not swapped"
+  run STOP_ROWS="$tmp/findmnt.card" format --skip-validation --device /dev/mmcblk0
+  code 13 "format $fx, the card backs /boot after the unit stop"
+  called '^systemctl stop microos-automount@mmcblk0p1.service lock=free$' "format $fx, the card backs /boot after the unit stop"
+  no_writer "format $fx, the card backs /boot after the unit stop"
+  not_called '^systemctl start' "format $fx, the card backs /boot after the unit stop"
 done
 setup internal
 echo MMC > "$sys/block/mmcblk0/device/type"
@@ -745,12 +843,40 @@ for f in "$bin"/*; do
 done
 printf '#!/usr/bin/env bash\nexit 1\n' > "$tmp/badlog/logger"
 chmod +x "$tmp/badlog/logger"
-setup microos-sd
+setup booted-sd
 STUB_PATH=$tmp/badlog run format --skip-validation --device /dev/mmcblk0
 code 13 "format system disk with a failing logger"
+not_called '^microos-pad-hold' "format system disk with a failing logger"
 setup internal
 STUB_PATH=$tmp/badlog run mount mmcblk0p1
 code 0 "mount with a failing logger"
+
+mkdir -p "$tmp/badgrep"
+for f in "$bin"/*; do
+  ln -s "$f" "$tmp/badgrep/${f##*/}"
+done
+printf '#!/usr/bin/env bash\nexit "${RC_grep:-2}"\n' > "$tmp/badgrep/grep"
+chmod +x "$tmp/badgrep/grep"
+for g in 2 127; do
+  for fx in booted-sd microos-sd internal armada; do
+    if [[ $fx == armada ]]; then
+      setup internal
+      jq '(.. | objects | select(.name? == "mmcblk0p1")).partlabel = "ARMADA_ROOT"' "$tmp/lsblk.json" > "$tmp/j" && mv "$tmp/j" "$tmp/lsblk.json"
+    else
+      setup "$fx"
+    fi
+    STUB_PATH=$tmp/badgrep run RC_grep="$g" classify mmcblk0
+    out_is system "classify $fx with grep exiting $g"
+    STUB_PATH=$tmp/badgrep run RC_grep="$g" format --skip-validation --device /dev/mmcblk0
+    code 13 "format $fx with grep exiting $g"
+    not_called '^microos-pad-hold' "format $fx with grep exiting $g"
+    no_writer "format $fx with grep exiting $g"
+    not_called '^systemctl' "format $fx with grep exiting $g"
+    if [[ $fx == booted-sd ]]; then
+      grep -q blkid "$tmp/bcalls" && fail "format booted-sd with grep exiting $g: blkid ran"
+    fi
+  done
+done
 
 mkdir -p "$tmp/nof3"
 for f in "$bin"/*; do
@@ -773,8 +899,16 @@ sed "s|/usr/libexec/microos/microos-storage|$storage|" "$tree/usr/lib/hwsupport/
 chmod +x "$sdcard"
 setup microos-sd
 storage=$sdcard run --skip-validation
+code 0 "format-sdcard.sh with the MicroOS SD"
+called '^microos-pad-hold BTN_SOUTH 1 15 hint=live:/dev/mmcblk0 lock=held$' "format-sdcard.sh with the MicroOS SD"
+called '^mkfs.ext4 .* -F /dev/mmcblk0p1$' "format-sdcard.sh with the MicroOS SD"
+setup internal
+jq '(.. | objects | select(.name? == "mmcblk0p1")).partlabel = "ARMADA_ROOT"' "$tmp/lsblk.json" > "$tmp/j" && mv "$tmp/j" "$tmp/lsblk.json"
+storage=$sdcard run --skip-validation
 code 19 "format-sdcard.sh with only system disks"
 no_writer "format-sdcard.sh with only system disks"
+not_called '^microos-pad-hold' "format-sdcard.sh with only system disks"
+grep -qxF 'format-sdcard: no card to format' "$tmp/out" || fail "format-sdcard.sh with only system disks: $(cat "$tmp/out")"
 setup booted-sd
 storage=$sdcard run --skip-validation
 code 19 "format-sdcard.sh booted from the MicroOS SD"
@@ -892,7 +1026,7 @@ echo "/dev/mmcblk0p2 /run/media/micro/MICROOS_ROOT ext4 rw,nosuid,nodev" >> "$tm
 run content
 code 0 "content MicroOS SD"
 link_is "" "content MicroOS SD"
-logged 'mmcblk0p2 is on a system disk' "content MicroOS SD"
+logged 'mmcblk0 holds an OS image, /dev/mmcblk0p2 not used' "content MicroOS SD"
 card_is none "content MicroOS SD"
 
 setup booted-sd
