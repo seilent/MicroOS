@@ -250,6 +250,12 @@ link_is() {
   [[ $l == "$1" ]] || fail "$2: link '$l', want '$1'"
   [[ -n $1 || ! -e $tmp/run/content && ! -L $tmp/run/content ]] || fail "$2: $tmp/run/content left"
 }
+card_is() {
+  local c
+  checks=$(( checks + 1 ))
+  c=$(cat "$tmp/run/system-card" 2> /dev/null) || c=absent
+  [[ $c == "$1" ]] || fail "$2: system-card '$c', want '$1'"
+}
 content_locked() {
   checks=$(( checks + 1 ))
   grep -qxF "content lock=held" "$tmp/fcalls" || fail "$1: mount table not read: $(cat "$tmp/fcalls")"
@@ -385,7 +391,7 @@ run mount mmcblk0p2
 code 0 "mount MicroOS SD p2"
 not_called '^fsck.ext4' "mount MicroOS SD p2"
 not_called '^busctl' "mount MicroOS SD p2"
-log_lines 1 "mount MicroOS SD p2"
+log_lines 2 "mount MicroOS SD p2"
 logged 'system disk' "mount MicroOS SD p2"
 grep -q 'blkid -p -o export /dev/mmcblk0p1' "$tmp/bcalls" || fail "mount p2 did not probe p1 with blkid -p"
 
@@ -471,7 +477,7 @@ run mount mmcblk0p1
 code 0 "mount MMC type"
 not_called '^busctl' "mount MMC type"
 not_called '^fsck' "mount MMC type"
-log_lines 1 "mount MMC type"
+log_lines 2 "mount MMC type"
 
 setup internal
 run unmount mmcblk0p1
@@ -526,7 +532,7 @@ run mount mmcblk0p1
 code 1 "mount lock timeout"
 not_called '^busctl' "mount lock timeout"
 not_called '^fsck' "mount lock timeout"
-log_lines 1 "mount lock timeout"
+log_lines 2 "mount lock timeout"
 run format --skip-validation --device /dev/mmcblk0
 code 53 "format with a held lock"
 no_writer "format with a held lock"
@@ -846,8 +852,10 @@ content_locked "content rw card"
 card_untouched "content rw card"
 called "^mv -T -- $tmp/run/content.new $tmp/run/content\$" "content rw card"
 not_called "^ln -sfn -- [^ ]* $tmp/run/content\$" "content rw card"
-log_lines 1 "content rw card"
+log_lines 2 "content rw card"
 logged "mmcblk0p1 at $media is the content card" "content rw card"
+logged 'content: system card none$' "content rw card"
+card_is none "content rw card"
 grep -q 'blkid -p -o export /dev/mmcblk0p1' "$tmp/bcalls" || fail "content rw card: is_data did not probe mmcblk0p1"
 grep -qvE '/dev/mmcblk' "$tmp/bcalls" && fail "content rw card: blkid on a non card device: $(cat "$tmp/bcalls")"
 before=$(mtime)
@@ -857,6 +865,7 @@ link_is "$media" "content unchanged"
 [[ $(mtime) == "$before" ]] || fail "content unchanged: link rewritten"
 not_called '^mv ' "content unchanged"
 log_lines 0 "content unchanged"
+card_is none "content unchanged"
 
 setup internal
 sed 's|^\(/dev/mmcblk0p1 [^ ]* ext4 \)rw,|\1ro,|' "$probe" > "$tmp/mounts"
@@ -884,18 +893,102 @@ run content
 code 0 "content MicroOS SD"
 link_is "" "content MicroOS SD"
 logged 'mmcblk0p2 is on a system disk' "content MicroOS SD"
+card_is none "content MicroOS SD"
 
 setup booted-sd
 cp "$fixtures/booted-sd/mounts" "$tmp/mounts"
+run classify mmcblk0
+card_is absent "classify booted from the MicroOS SD"
+old=$(umask)
+umask 077
 run content
+umask "$old"
 code 0 "content booted from the MicroOS SD"
 link_is "" "content booted from the MicroOS SD"
-log_lines 0 "content booted from the MicroOS SD"
+log_lines 1 "content booted from the MicroOS SD"
+logged 'content: system card mmcblk0$' "content booted from the MicroOS SD"
 grep -q blkid "$tmp/bcalls" && fail "content booted from the MicroOS SD: blkid ran"
+card_is mmcblk0 "content booted from the MicroOS SD"
+called "^mv -T -- $tmp/run/system-card.new $tmp/run/system-card\$" "content booted from the MicroOS SD"
+[[ $(/usr/bin/stat -c %a "$tmp/run/system-card") == 644 ]] ||
+  fail "content booted from the MicroOS SD: system-card mode $(/usr/bin/stat -c %a "$tmp/run/system-card")"
+[[ ! -e $tmp/run/system-card.new ]] || fail "content booted from the MicroOS SD: system-card.new left"
+run content
+code 0 "content booted from the MicroOS SD again"
+not_called '^mv ' "content booted from the MicroOS SD again"
+log_lines 0 "content booted from the MicroOS SD again"
+card_is mmcblk0 "content booted from the MicroOS SD again"
 run FINDMNT_FAIL=/boot content
 code 0 "content booted from the MicroOS SD, system disks not read"
 logged 'mmcblk0p2 at /boot refused' "content booted from the MicroOS SD, system disks not read"
 logged 'mmcblk0p1 at /boot/efi refused' "content booted from the MicroOS SD, system disks not read"
+logged 'system disks not read' "content booted from the MicroOS SD, system disks not read"
+card_is mmcblk0 "content booted from the MicroOS SD, system disks not read"
+mv "$sys/block/mmcblk0/device/type" "$tmp/type"
+run content
+code 0 "content booted from the MicroOS SD, device/type not read"
+logged 'mmcblk0 type not read' "content booted from the MicroOS SD, device/type not read"
+log_lines 1 "content booted from the MicroOS SD, device/type not read"
+card_is mmcblk0 "content booted from the MicroOS SD, device/type not read"
+mv "$tmp/type" "$sys/block/mmcblk0/device/type"
+mv "$tmp/run" "$tmp/run.keep"
+setup internal
+rm -rf "$tmp/run"
+mv "$tmp/run.keep" "$tmp/run"
+cp "$probe" "$tmp/mounts"
+run content
+code 0 "content internal after the MicroOS SD"
+card_is none "content internal after the MicroOS SD"
+logged 'content: system card none$' "content internal after the MicroOS SD"
+link_is "$media" "content internal after the MicroOS SD"
+
+setup internal
+ln -s "$media" "$tmp/run/content"
+echo none > "$tmp/run/system-card"
+cp "$probe" "$tmp/mounts"
+{ run FINDMNT_FAIL=/boot POLL_KILL=2 content-watch; } 2> /dev/null
+code 143 "content-watch system disks not read"
+link_is "$media" "content-watch system disks not read"
+card_is none "content-watch system disks not read"
+log_lines 1 "content-watch system disks not read"
+logged 'system disks not read' "content-watch system disks not read"
+
+setup internal
+cp "$probe" "$tmp/mounts"
+mkdir "$tmp/run/system-card.new"
+run content
+code 1 "content system card not written"
+link_is "$media" "content system card not written"
+card_is absent "content system card not written"
+logged "$tmp/run/system-card not written" "content system card not written"
+rmdir "$tmp/run/system-card.new"
+run content
+code 0 "content system card written after a failed write"
+card_is none "content system card written after a failed write"
+rm -f "$tmp/run/system-card"
+mkdir -p "$tmp/run/system-card/x"
+run content
+code 1 "content system card not renamed"
+link_is "$media" "content system card not renamed"
+logged "$tmp/run/system-card not written" "content system card not renamed"
+[[ ! -e $tmp/run/system-card.new ]] || fail "content system card not renamed: system-card.new left"
+rm -r "${tmp:?}/run/system-card"
+run content
+code 0 "content system card written after a failed rename"
+card_is none "content system card written after a failed rename"
+setup internal
+cp "$probe" "$tmp/mounts"
+mkdir -p "$tmp/run/system-card/x"
+{ run POLL_KILL=3 content-watch; } 2> /dev/null
+code 143 "content-watch system card not renamed"
+link_is "$media" "content-watch system card not renamed"
+(( $(grep -c 'system-card not written' "$tmp/log") == 1 )) ||
+  fail "content-watch system card not renamed: logged $(grep -c 'system-card not written' "$tmp/log") times"
+(( $(grep -c "^mv -T -- $tmp/run/system-card.new " "$tmp/calls") == 3 )) ||
+  fail "content-watch system card not renamed: $(grep -c "^mv -T -- $tmp/run/system-card.new " "$tmp/calls") renames, want one per tick"
+(( $(grep -c "^mv -T -- $tmp/run/content.new " "$tmp/calls") == 1 )) ||
+  fail "content-watch system card not renamed: link written $(grep -c "^mv -T -- $tmp/run/content.new " "$tmp/calls") times"
+[[ ! -e $tmp/run/system-card.new ]] || fail "content-watch system card not renamed: system-card.new left"
 
 setup internal
 grep -v '^/dev/mmcblk' "$probe" > "$tmp/mounts"
@@ -959,7 +1052,11 @@ read -r b3 m3 <<< "${ticks[2]#* }"
 [[ $m2 != none && $m3 == "$m2" ]] || fail "content-watch: link mtime changed on an unchanged set: ${ticks[*]}"
 content_locked "content-watch"
 card_untouched "content-watch"
-(( $(grep -c '^mv -T ' "$tmp/calls") == 1 )) || fail "content-watch: link written $(grep -c '^mv -T ' "$tmp/calls") times"
+(( $(grep -c "^mv -T -- $tmp/run/content.new " "$tmp/calls") == 1 )) ||
+  fail "content-watch: link written $(grep -c "^mv -T -- $tmp/run/content.new " "$tmp/calls") times"
+(( $(grep -c "^mv -T -- $tmp/run/system-card.new " "$tmp/calls") == 1 )) ||
+  fail "content-watch: system card written $(grep -c "^mv -T -- $tmp/run/system-card.new " "$tmp/calls") times"
+card_is none "content-watch"
 
 setup internal
 cp "$probe" "$tmp/mounts"
@@ -991,21 +1088,24 @@ code 143 "content-watch loop mounts"
 link_is "$media" "content-watch loop mounts"
 (( $(grep -c '^blkid ' "$tmp/bcalls") == 1 )) ||
   fail "content-watch loop mounts: $(grep -c '^blkid ' "$tmp/bcalls") blkid runs, want 1"
-log_lines 1 "content-watch loop mounts"
+log_lines 2 "content-watch loop mounts"
 setup internal
 ln -s "$media" "$tmp/run/content"
 cp "$probe" "$tmp/mounts"
 run BLKID_FAIL=/dev/mmcblk0p1 content
 code 0 "content blkid error keeps the link"
 link_is "$media" "content blkid error keeps the link"
+card_is none "content blkid error writes the system card"
 
 setup internal
 ln -s "$media" "$tmp/run/content"
+echo mmcblk0 > "$tmp/run/system-card"
 cp "$probe" "$tmp/mounts"
 run FINDMNT_TABLE_FAIL=1 content
 code 1 "content mount table error keeps the link"
 link_is "$media" "content mount table error keeps the link"
 logged 'mount table not read' "content mount table error keeps the link"
+card_is mmcblk0 "content mount table error keeps the system card"
 : > "$tmp/mounts"
 run content
 code 0 "content empty mount table"
@@ -1045,7 +1145,9 @@ run content
 code 0 "content behind a held lock"
 link_is "$media" "content behind a held lock"
 wait "$holder" || true
+card_is none "content behind a held lock"
 rm "$tmp/run/content"
+echo mmcblk0 > "$tmp/run/system-card"
 flock -o -x "$tmp/run/lock/content" sleep 6 &
 holder=$!
 sleep 0.3
@@ -1053,6 +1155,7 @@ run content
 code 1 "content lock timeout"
 link_is "" "content lock timeout"
 logged 'lock not taken' "content lock timeout"
+card_is mmcblk0 "content lock timeout keeps the system card"
 : > "$tmp/mounts"
 run mount mmcblk0p1
 code 0 "mount with the content lock held"
