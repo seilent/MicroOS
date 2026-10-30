@@ -11,6 +11,7 @@ commits come from `SOURCE.env` (same commits as the OGC tag's submodules and Fed
 | `0003-pace-the-non-vrr-fps-limit-on-time.patch` | mine | seilent |
 | `0004-latch-done-commits-in-commit-order.patch` | mine | seilent |
 | `0005-release-the-kms-device-under-the-wlserver-lock.patch` | mine | seilent |
+| `0009-publish-the-applied-fps-limit-on-the-root-windows.patch` | mine | seilent |
 
 The first two are Fedora packaging patches, not sent upstream. `stb.pc` is from Fedora `rpms/gamescope` `e2cc884` (Neal Gompa).
 
@@ -26,6 +27,10 @@ two images per game frame lost about 40% of them.
 logind D-Bus connection while the wlserver thread dispatches the same connection. Both threads read it at once:
 gamescope crashed in `sd_bus` on a session switch, and the close can wait out the 25 s D-Bus timeout (Valve
 gamescope issue 2287).
+
+`0009` publishes the FPS limit the frame limiter applies as `GAMESCOPE_FPS_LIMIT_FEEDBACK` (CARDINAL, 0 for no limit) on
+every Xwayland root, written when it changes and on each root as its server starts. Steam's quick access frame limit
+arrives over `gamescope_control` and never shows in `GAMESCOPE_FPS_LIMIT`.
 
 Fedora's `0001-cstdint.patch` is not carried: reshade `696b14cd` already includes `<cstdint>` in
 `source/effect_token.hpp` (reshade `5c8b8f09`).

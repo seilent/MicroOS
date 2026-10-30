@@ -39,5 +39,6 @@ help=$("$root/usr/bin/gamescope" --help 2>&1) || fail "gamescope --help exit $?"
 for opt in --fake-output-mm --custom-refresh-rates --force-panel-type --touch-gestures; do
   if ! grep -q -- "^ *$opt " <<<"$help"; then fail "--help lacks $opt"; fi
 done
+if ! grep -a -q GAMESCOPE_FPS_LIMIT_FEEDBACK "$root/usr/bin/gamescope"; then fail "gamescope lacks GAMESCOPE_FPS_LIMIT_FEEDBACK"; fi
 
 exit "$rc"

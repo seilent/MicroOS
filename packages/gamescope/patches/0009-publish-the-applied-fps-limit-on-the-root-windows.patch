@@ -1,0 +1,107 @@
+From ddbe106bb0be5ace2f419ffbb55cfff3c52986b6 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 30 Oct 2026 10:30:12 +0900
+Subject: [PATCH] Publish the applied FPS limit on the X11 root windows
+
+---
+ src/steamcompmgr.cpp | 36 ++++++++++++++++++++++++++++++++++++
+ src/xwayland_ctx.hpp |  1 +
+ 2 files changed, 37 insertions(+)
+
+diff --git a/src/steamcompmgr.cpp b/src/steamcompmgr.cpp
+index 46321c1..87582ad 100644
+--- a/src/steamcompmgr.cpp
++++ b/src/steamcompmgr.cpp
+@@ -8823,6 +8823,8 @@ xwayland_ctx_t g_ctx;
+ 
+ static bool setup_error_handlers = false;
+ 
++static uint32_t g_uFPSLimitFeedback_CachedValue = 0;
++
+ void init_xwayland_ctx(uint32_t serverId, gamescope_xwayland_server_t *xwayland_server)
+ {
+ 	assert(!xwayland_server->ctx);
+@@ -8985,6 +8987,7 @@ void init_xwayland_ctx(uint32_t serverId, gamescope_xwayland_server_t *xwayland_
+ 	ctx->atoms.gamescopeFPSLimit = XInternAtom( ctx->dpy, "GAMESCOPE_FPS_LIMIT", false );
+ 	ctx->atoms.gamescopeKeyboardLayout = XInternAtom( ctx->dpy, "GAMESCOPE_KEYBOARD_LAYOUT", false );
+ 	ctx->atoms.gamescopeLimiterFeedback = XInternAtom( ctx->dpy, "GAMESCOPE_LIMITER_FEEDBACK", false );
++	ctx->atoms.gamescopeFPSLimitFeedback = XInternAtom( ctx->dpy, "GAMESCOPE_FPS_LIMIT_FEEDBACK", false );
+ 	ctx->atoms.gamescopeDynamicRefresh[gamescope::GAMESCOPE_SCREEN_TYPE_INTERNAL] = XInternAtom( ctx->dpy, "GAMESCOPE_DYNAMIC_REFRESH", false );
+ 	ctx->atoms.gamescopeDynamicRefresh[gamescope::GAMESCOPE_SCREEN_TYPE_EXTERNAL] = XInternAtom( ctx->dpy, "GAMESCOPE_DYNAMIC_REFRESH_EXTERNAL", false );
+ 	ctx->atoms.gamescopeLowLatency = XInternAtom( ctx->dpy, "GAMESCOPE_LOW_LATENCY", false );
+@@ -9097,6 +9100,9 @@ void init_xwayland_ctx(uint32_t serverId, gamescope_xwayland_server_t *xwayland_
+ 	uint32_t uLimiterFeedback = wlserver_get_frame_limiter_state();
+ 	XChangeProperty(ctx->dpy, ctx->root, ctx->atoms.gamescopeLimiterFeedback, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&uLimiterFeedback, 1 );
+ 
++	uint32_t uFPSLimitFeedback = g_uFPSLimitFeedback_CachedValue;
++	XChangeProperty(ctx->dpy, ctx->root, ctx->atoms.gamescopeFPSLimitFeedback, XA_CARDINAL, 32, PropModeReplace, (unsigned char *)&uFPSLimitFeedback, 1 );
++
+ 	XGrabServer(ctx->dpy);
+ 
+ 	XCompositeRedirectSubwindows(ctx->dpy, ctx->root, CompositeRedirectManual);
+@@ -9243,6 +9249,33 @@ void update_limiter_atoms(xwayland_ctx_t *root_ctx, bool force, bool* needs_flus
+ 	}
+ }
+ 
++static void update_fps_limit_atoms(xwayland_ctx_t *root_ctx, bool force, bool* needs_flush = nullptr)
++{
++	int nTargetFPS = g_nSteamCompMgrTargetFPS;
++	uint32_t uFPSLimitFeedback = uint32_t( std::max( nTargetFPS, 0 ) );
++	if ( uFPSLimitFeedback == g_uFPSLimitFeedback_CachedValue && !force )
++		return;
++
++	g_uFPSLimitFeedback_CachedValue = uFPSLimitFeedback;
++
++	gamescope_xwayland_server_t *server = NULL;
++	for (size_t i = 0; (server = wlserver_get_xwayland_server(i)); i++)
++	{
++		XChangeProperty(server->ctx->dpy, server->ctx->root, server->ctx->atoms.gamescopeFPSLimitFeedback, XA_CARDINAL, 32, PropModeReplace,
++			(unsigned char *)&uFPSLimitFeedback, 1 );
++
++		if (server->ctx.get() == root_ctx)
++		{
++			if (needs_flush)
++				*needs_flush = true;
++		}
++		else
++		{
++			XFlush(server->ctx->dpy);
++		}
++	}
++}
++
+ void update_mode_atoms(xwayland_ctx_t *root_ctx, bool* needs_flush = nullptr)
+ {
+ 	if (needs_flush)
+@@ -9988,6 +10021,7 @@ steamcompmgr_main(int argc, char **argv)
+ 
+ 	update_vrr_atoms(root_ctx, true);
+ 	update_limiter_atoms(root_ctx, true);
++	update_fps_limit_atoms(root_ctx, true);
+ 	update_mode_atoms(root_ctx);
+ 	XFlush(root_ctx->dpy);
+ 
+@@ -10740,6 +10774,8 @@ steamcompmgr_main(int argc, char **argv)
+ 
+ 		update_limiter_atoms(root_ctx, false, &flush_root);
+ 
++		update_fps_limit_atoms(root_ctx, false, &flush_root);
++
+ 		if (GetCurrentFocus() && GetCurrentFocus()->cursor)
+ 		{
+ 			GetCurrentFocus()->cursor->checkSuspension();
+diff --git a/src/xwayland_ctx.hpp b/src/xwayland_ctx.hpp
+index 7b39ecb..89689a9 100644
+--- a/src/xwayland_ctx.hpp
++++ b/src/xwayland_ctx.hpp
+@@ -173,6 +173,7 @@ struct xwayland_ctx_t final : public gamescope::IWaitable
+ 		Atom gamescopeFPSLimit;
+ 		Atom gamescopeKeyboardLayout;
+ 		Atom gamescopeLimiterFeedback;
++		Atom gamescopeFPSLimitFeedback;
+ 		Atom gamescopeDynamicRefresh[gamescope::GAMESCOPE_SCREEN_TYPE_COUNT];
+ 		Atom gamescopeLowLatency;
+ 
+-- 
+2.55.0
+
