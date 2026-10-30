@@ -249,7 +249,7 @@ safe_target() {
 }
 
 content_update() {
-  local cached=$1 rows src raw t n disk sys best="" bestn="" bestsrc="" cur r err=0 quiet=0
+  local cached=$1 rows src raw t n disk sys card d type best="" bestn="" bestsrc="" cur r err=0 quiet=0 nosys=0 werr=0
   local -A data=()
   local -a other=()
   if ! rows=$(findmnt -rno SOURCE,TARGET); then
@@ -263,7 +263,34 @@ content_update() {
   if (( cached )) && [[ $rows == "$errseen" ]]; then
     quiet=1
   fi
-  sys=$(system_disks) || sys=""
+  card=none
+  if ! sys=$(system_disks); then
+    sys=""
+    card=""
+    nosys=1
+    (( quiet )) || log "content: system disks not read, checked again at the next tick"
+  fi
+  while read -r d; do
+    [[ $card == none && $d =~ ^mmcblk[0-9]$ ]] || continue
+    if ! type=$(cat "$sysfs/block/$d/device/type" 2> /dev/null); then
+      card=""
+      (( quiet )) || log "content: $d type not read, checked again at the next tick"
+    elif [[ $type == SD ]]; then
+      card=$d
+    fi
+  done <<< "$sys"
+  if [[ -z $card ]]; then
+    err=1
+  elif [[ $(cat "$rundir/system-card" 2> /dev/null) != "$card" ]]; then
+    if printf '%s\n' "$card" > "$rundir/system-card.new" && chmod 0644 "$rundir/system-card.new" &&
+      mv -T -- "$rundir/system-card.new" "$rundir/system-card"; then
+      log "content: system card $card"
+    else
+      (( quiet )) || log "content: $rundir/system-card not written"
+      rm -f -- "$rundir/system-card.new"
+      werr=1
+    fi
+  fi
   while read -r src raw; do
     [[ $src =~ ^/dev/(mmcblk[0-9])p([0-9]+)$ ]] || continue
     disk=${BASH_REMATCH[1]}
@@ -280,7 +307,7 @@ content_update() {
       data[$disk]=$r
     fi
     if (( data[$disk] == 2 )); then
-      (( quiet )) || log "content: $disk not readable, $src checked again at the next tick"
+      (( quiet || nosys )) || log "content: $disk not readable, $src checked again at the next tick"
       err=1
       continue
     fi
@@ -300,7 +327,7 @@ content_update() {
   done
   if (( err )); then
     (( ! cached )) || errseen=$rows
-    return 0
+    return "$werr"
   fi
   cur=$(readlink "$rundir/content") || cur=""
   if [[ -z $best ]]; then
@@ -314,6 +341,10 @@ content_update() {
       return 1
     fi
     log "content: $bestsrc at $best is the content card"
+  fi
+  if (( werr )); then
+    (( ! cached )) || errseen=$rows
+    return 1
   fi
   (( ! cached )) || seen=$rows
 }
