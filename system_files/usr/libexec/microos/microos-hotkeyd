@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import fcntl
+import functools
 import glob
 import os
 import re
@@ -18,6 +19,7 @@ ME = "microos-hotkeyd"
 LOGIN1 = ("org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager")
 MICROSET = ("net.seilent.MicroSet", "/net/seilent/MicroSet", "net.seilent.MicroSet1")
 INTERCEPT = ("net.seilent.MicroOs.Intercept", "/net/seilent/MicroOs/Intercept", "net.seilent.MicroOs.Intercept1")
+SESSION_MENU = ("net.seilent.MicroOs.SessionMenu", "/net/seilent/MicroOs/SessionMenu", "net.seilent.MicroOs.SessionMenu1")
 IP = "org.shadowblip.InputPlumber"
 IP_ROOT = "/org/shadowblip/InputPlumber"
 COMPOSITE = "org.shadowblip.Input.CompositeDevice"
@@ -29,6 +31,9 @@ XML = f"""
   <interface name="{INTERCEPT[2]}">
     <method name="Acquire"/>
     <method name="Release"/>
+    <method name="Consume">
+      <arg type="s" name="key" direction="in"/>
+    </method>
     <property name="Holder" type="s" access="read"/>
   </interface>
 </node>
@@ -41,10 +46,13 @@ REPEAT_MS = 100
 RUMBLE_MS = 60
 CONFIRM_S = 3
 REOPEN_S = 2
+MENU_S = 5
+SHOW_MS = 1000
 WAKE_GRACE = 1.5
 INPUT = os.environ.get("MICROOS_HOTKEYD_INPUT")
 TABLES = os.environ.get("MICROOS_HOTKEYD_TABLES", "/usr/lib/microos/hotkeys.d")
 SESSIONS = os.environ.get("MICROOS_HOTKEYD_SESSIONS", "/usr/lib/microos/sessions.d")
+SYSFS = os.environ.get("MICROOS_HOTKEYD_SYSFS", "/sys")
 STEAM = os.environ.get("MICROOS_HOTKEYD_STEAM", "/usr/bin/steam")
 PIPE = os.path.expanduser("~/.steam/steam.pipe")
 E = evdev.ecodes
@@ -59,7 +67,7 @@ KEYS = {
 PWR = KEYS["power"][0]
 ARGS = {
     "steam-uri": (1, 1), "suspend": (0, 0), "switch": (1, 2), "back": (0, 0), "call": (4, 4), "volume": (1, 1),
-    "unit": (1, 1), "none": (0, 0),
+    "unit": (1, 1), "none": (0, 0), "session-menu": (0, 0),
 }
 GESTURES = ("tap", "hold", "press")
 NAME = re.compile(r"[a-z0-9][a-z0-9-]*")
@@ -92,7 +100,7 @@ def valid(action, args):
 
 
 def load_table(session):
-    table = {("power", "tap"): ("suspend",)}
+    table = {("power", "tap"): ("suspend",), ("guide", "hold"): ("session-menu",)}
     main = os.path.join(TABLES, f"{session}.conf")
     for path in [main] + sorted(glob.glob(os.path.join(glob.escape(main) + ".d", "*.conf"))):
         try:
@@ -226,6 +234,7 @@ def game_running():
 
 class Hotkeyd:
     def __init__(self, session, system, user):
+        self.session = session
         self.system = system
         self.user = user
         self.table = load_table(session)
@@ -233,7 +242,8 @@ class Hotkeyd:
         keys = {"power"} | {k for (k, _), row in self.table.items() if row[0] != "none"}
         self.codes = {KEYS[k]: k for k in keys}
         self.wanted = sorted({KEYS[k][0] for k in keys})
-        self.state = {k: [None, None] for k in keys}
+        self.state = {k: [None, None, False] for k in keys}
+        self.skip = set()
         self.fds = {}
         self.bufs = {}
         self.failing = set()
@@ -328,7 +338,8 @@ class Hotkeyd:
             if KEYS[key][0] == name:
                 if st[1] is not None:
                     GLib.source_remove(st[1])
-                self.state[key] = [None, None]
+                self.state[key] = [None, None, False]
+                self.skip.discard(key)
         self.arm(True)
 
     def prepare_for_sleep(self, _conn, _sender, _path, _iface, _signal, params):
@@ -380,16 +391,12 @@ class Hotkeyd:
             now = time.monotonic()
             if first is not None and now - first <= CONFIRM_S:
                 self.run(key, gesture, row)
-            elif game_running():
-                self.ask(key, gesture, now)
-            elif self.scope:
-                self.pending.add((key, gesture))
-                self.user.call(
-                    *SYSTEMD, "GetUnit", GLib.Variant("(s)", (self.scope,)), GLib.VariantType("(o)"),
-                    NO_AUTO_START, 1000, None, self.scope_unit, (key, gesture, row, now, down_at, sleeps),
-                )
             else:
-                self.run(key, gesture, row)
+                self.pending.add((key, gesture))
+                self.in_game(functools.partial(self.scope_state, (key, gesture, row, now, down_at, sleeps)))
+            return
+        if row[0] == "session-menu":
+            self.session_menu((key, gesture), down_at, sleeps)
             return
         self.run(key, gesture, row)
 
@@ -398,24 +405,35 @@ class Hotkeyd:
         log(f"{key} {gesture} in a game, again within {CONFIRM_S} s to switch")
         self.buzz(2)
 
-    def scope_unit(self, bus, result, pending):
+    def in_game(self, cb):
+        if game_running():
+            cb("running")
+        elif self.scope:
+            self.user.call(
+                *SYSTEMD, "GetUnit", GLib.Variant("(s)", (self.scope,)), GLib.VariantType("(o)"),
+                NO_AUTO_START, 1000, None, self.scope_unit, cb,
+            )
+        else:
+            cb(None)
+
+    def scope_unit(self, bus, result, cb):
         try:
             path = bus.call_finish(result).unpack()[0]
         except GLib.Error as err:
-            self.scope_state(pending, None if "NoSuchUnit" in (Gio.DBusError.get_remote_error(err) or "") else err)
+            cb(None if "NoSuchUnit" in (Gio.DBusError.get_remote_error(err) or "") else err)
             return
         bus.call(
             SYSTEMD[0], path, PROPS, "Get", GLib.Variant("(ss)", ("org.freedesktop.systemd1.Unit", "ActiveState")),
-            GLib.VariantType("(v)"), NO_AUTO_START, 1000, None, self.scope_active, pending,
+            GLib.VariantType("(v)"), NO_AUTO_START, 1000, None, self.scope_active, cb,
         )
 
-    def scope_active(self, bus, result, pending):
+    def scope_active(self, bus, result, cb):
         try:
             state = bus.call_finish(result).unpack()[0]
         except GLib.Error as err:
-            self.scope_state(pending, err)
+            cb(err)
             return
-        self.scope_state(pending, None if state in STOPPED else state)
+        cb(None if state in STOPPED else state)
 
     def scope_state(self, pending, game):
         key, gesture, row, now, down_at, sleeps = pending
@@ -428,6 +446,105 @@ class Hotkeyd:
             self.run(key, gesture, row)
         else:
             self.ask(key, gesture, now)
+
+    def panel_off(self):
+        for path in sorted(glob.glob(f"{SYSFS}/class/backlight/*/bl_power")):
+            try:
+                with open(path) as f:
+                    value = f.read().strip()
+            except OSError as err:
+                self.warn(path, f"cannot read {path}: {err}")
+                continue
+            if value != "0":
+                log("session menu: panel off")
+                return True
+        return False
+
+    def session_menu(self, tag, down_at, sleeps):
+        if tag in self.pending or self.panel_off():
+            return
+        self.pending.add(tag)
+        self.buzz(1)
+        ctx = (tag, down_at, sleeps)
+        try:
+            proc = Gio.Subprocess.new(
+                ["timeout", str(MENU_S), "microos-session", "menu", self.session], Gio.SubprocessFlags.STDOUT_PIPE
+            )
+        except GLib.Error as err:
+            log(f"session menu: microos-session menu failed: {err.message}")
+            self.menu_fallback(ctx)
+            return
+        proc.communicate_utf8_async(None, None, self.menu_out, ctx)
+
+    def menu_out(self, proc, result, ctx):
+        try:
+            _, out, _ = proc.communicate_utf8_finish(result)
+        except GLib.Error as err:
+            log(f"session menu: microos-session menu failed: {err.message}")
+            self.menu_fallback(ctx)
+            return
+        if self.dropped(*ctx[1:]):
+            self.pending.discard(ctx[0])
+            return
+        rc = proc.get_exit_status() if proc.get_if_exited() else None
+        if rc == 3:
+            self.show(ctx, [], "", {"switching": GLib.Variant("b", True)}, True)
+            return
+        rows = []
+        for line in (out or "").splitlines() if rc == 0 else []:
+            f = line.split("\t")
+            if len(f) == 4:
+                rows.append((f[0], f[1], {"state": GLib.Variant("s", f[2]), "install": GLib.Variant("b", f[3] == "yes")}))
+            else:
+                log(f"session menu: row ignored: {line}")
+        if not rows:
+            log(f"session menu: no rows (exit {rc})")
+            self.menu_fallback(ctx)
+            return
+        current = self.session if any(r[0] == self.session for r in rows) else ""
+        self.in_game(functools.partial(self.menu_game, ctx, rows, current))
+
+    def menu_game(self, ctx, rows, current, game):
+        if self.dropped(*ctx[1:]):
+            self.pending.discard(ctx[0])
+            return
+        if isinstance(game, GLib.Error):
+            log(f"{self.scope} state unknown, taking it as a game: {game.message}")
+        self.show(ctx, rows, current, {"in-game": GLib.Variant("b", game is not None)})
+
+    def show(self, ctx, rows, current, hints, busy=False):
+        self.user.call(
+            *SESSION_MENU, "Show", GLib.Variant("(a(ssa{sv})sa{sv})", (rows, current, hints)),
+            None, Gio.DBusCallFlags.NONE, SHOW_MS, None, self.show_done, (ctx, busy),
+        )
+
+    def show_done(self, bus, result, data):
+        ctx, busy = data
+        try:
+            bus.call_finish(result)
+        except GLib.Error as err:
+            remote = Gio.DBusError.get_remote_error(err) if Gio.DBusError.is_remote_error(err) else None
+            if remote and remote != "org.freedesktop.DBus.Error.NoReply":
+                log(f"session menu: Show refused ({remote}): {err.message}")
+                if not busy:
+                    self.menu_fallback(ctx)
+                    return
+            log(f"session menu: Show unanswered: {err.message}")
+        self.pending.discard(ctx[0])
+
+    def menu_fallback(self, ctx):
+        tag, down_at, sleeps = ctx
+        self.pending.discard(tag)
+        if self.dropped(down_at, sleeps):
+            return
+        first = self.confirm.pop(tag, None)
+        now = down_at
+        if first is not None and now - first <= CONFIRM_S:
+            self.act(*tag, ("back",))
+            return
+        self.confirm[tag] = now
+        log(f"{tag[0]} {tag[1]} without a session menu, again within {CONFIRM_S} s to go back")
+        self.buzz(1, 2 * RUMBLE_MS)
 
     def run(self, key, gesture, row):
         if gesture == "hold":
@@ -516,11 +633,11 @@ class Hotkeyd:
     def ip_down(self, _conn, _name):
         self.composites = set()
 
-    def buzz(self, count):
+    def buzz(self, count, delay=0):
         paths = sorted(self.composites)
         for i in range(count):
-            GLib.timeout_add(2 * i * RUMBLE_MS, self.rumble, paths, 1.0)
-            GLib.timeout_add((2 * i + 1) * RUMBLE_MS, self.rumble, paths, 0.0)
+            GLib.timeout_add(delay + 2 * i * RUMBLE_MS, self.rumble, paths, 1.0)
+            GLib.timeout_add(delay + (2 * i + 1) * RUMBLE_MS, self.rumble, paths, 0.0)
 
     def rumble(self, paths, level):
         for path in paths:
@@ -569,7 +686,10 @@ class Hotkeyd:
         self.stack.remove(name)
         Gio.bus_unwatch_name(self.watches.pop(name))
 
-    def method(self, conn, sender, _path, _iface, name, _params, invocation):
+    def method(self, conn, sender, _path, _iface, name, params, invocation):
+        if name == "Consume":
+            self.consume(sender, params.unpack()[0], invocation)
+            return
         before = self.holder()
         if name == "Acquire" and sender in self.stack:
             self.stack.remove(sender)
@@ -583,6 +703,50 @@ class Hotkeyd:
             self.drop(sender)
         invocation.return_value(None)
         self.changed(before)
+
+    def pull(self, path):
+        while True:
+            try:
+                data = os.read(self.fds[path][1], EVENT.size * 64)
+            except OSError:
+                return
+            if not data:
+                return
+            self.bufs[path] += data
+
+    def queued_down(self, path, code):
+        buf = self.bufs[path]
+        for off in range(0, len(buf) - EVENT.size + 1, EVENT.size):
+            _, _, etype, ecode, value = EVENT.unpack_from(buf, off)
+            if etype == E.EV_KEY and ecode == code and value == 1:
+                return True
+        return False
+
+    def consume(self, sender, key, invocation):
+        if sender != self.holder():
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.AccessDenied", "Consume is for the holder")
+            return
+        if key not in KEYS:
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.InvalidArgs", f"unknown key {key}")
+            return
+        st = self.state.get(key)
+        if st is not None:
+            name, code = KEYS[key]
+            queued = False
+            for path in [p for p, (n, _) in self.fds.items() if n == name]:
+                self.pull(path)
+                queued = queued or self.queued_down(path, code)
+            if st[0] is not None:
+                st[2] = True
+            elif queued:
+                self.skip.add(key)
+            GLib.idle_add(self.flush)
+        invocation.return_value(None)
+
+    def flush(self):
+        for path in list(self.fds):
+            self.dispatch(path)
+        return GLib.SOURCE_REMOVE
 
     def vanished(self, _conn, name):
         if name in self.stack:
@@ -605,15 +769,24 @@ class Hotkeyd:
         if not data:
             self.close_node(path, f"{name} ({path}) closed")
             return GLib.SOURCE_REMOVE
-        buf = self.bufs[path] + data
+        self.bufs[path] += data
+        self.dispatch(path)
+        return GLib.SOURCE_CONTINUE
+
+    def dispatch(self, path):
+        if path not in self.fds:
+            return
+        name = self.fds[path][0]
+        buf = self.bufs[path]
+        self.bufs[path] = b""
         while len(buf) >= EVENT.size:
             sec, usec, etype, code, value = EVENT.unpack_from(buf)
             buf = buf[EVENT.size:]
             key = self.codes.get((name, code))
             if etype == E.EV_KEY and key:
                 self.key(key, sec + usec / 1e6, value)
-        self.bufs[path] = buf
-        return GLib.SOURCE_CONTINUE
+        if path in self.fds:
+            self.bufs[path] = buf + self.bufs[path]
 
     def key(self, key, at, value):
         st = self.state[key]
@@ -630,14 +803,17 @@ class Hotkeyd:
             if st[1] is not None:
                 GLib.source_remove(st[1])
             st[0] = (at, self.sleeps)
+            st[2] = key in self.skip
+            self.skip.discard(key)
             st[1] = GLib.timeout_add(LONG_MS, self.held, key)
         elif value == 0:
             if st[1] is not None:
                 GLib.source_remove(st[1])
                 st[1] = None
-                if st[0] is not None:
+                if st[0] is not None and not st[2]:
                     self.fire(key, "tap")
             st[0] = None
+            st[2] = False
 
     def pressed(self, key, down, n):
         st = self.state[key]
@@ -658,7 +834,7 @@ class Hotkeyd:
     def held(self, key):
         st = self.state[key]
         st[1] = None
-        if st[0] is not None:
+        if st[0] is not None and not st[2]:
             self.fire(key, "hold")
         return GLib.SOURCE_REMOVE
 

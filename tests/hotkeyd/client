@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import signal
 import sys
 
@@ -24,6 +25,18 @@ OVERLAY_XML = f"""
   </interface>
 </node>
 """
+MENU = ("net.seilent.MicroOs.SessionMenu", "/net/seilent/MicroOs/SessionMenu", "net.seilent.MicroOs.SessionMenu1")
+MENU_XML = f"""
+<node>
+  <interface name="{MENU[2]}">
+    <method name="Show">
+      <arg type="a(ssa{{sv}})" direction="in"/>
+      <arg type="s" direction="in"/>
+      <arg type="a{{sv}}" direction="in"/>
+    </method>
+  </interface>
+</node>
+"""
 LOG = sys.argv[1]
 
 
@@ -40,6 +53,32 @@ def poke(_conn, _sender, _path, _iface, _name, _params, invocation):
 def toggle(_conn, _sender, _path, _iface, _name, _params, invocation):
     record("toggle")
     invocation.return_value(None)
+
+
+def show(_conn, _sender, _path, _iface, _name, params, invocation):
+    record(f"show {params.print_(False)}")
+    try:
+        with open(LOG + ".mode") as f:
+            mode = f.read().split()
+    except FileNotFoundError:
+        mode = ["ok"]
+    if mode[0] == "error":
+        invocation.return_dbus_error(mode[1], "stub")
+    elif mode[0] == "delay":
+        GLib.timeout_add(int(mode[1]), lambda: invocation.return_value(None) or False)
+    elif mode[0] == "die":
+        os._exit(0)
+    else:
+        invocation.return_value(None)
+
+
+def consume(bus, key):
+    try:
+        bus.call_sync(*INTERCEPT, "Consume", GLib.Variant("(s)", (key,)), None, Gio.DBusCallFlags.NONE, 5000, None)
+        record(f"consumed {key}")
+    except GLib.Error as err:
+        record(f"consume {key} failed {Gio.DBusError.get_remote_error(err)}")
+    return True
 
 
 def changed(_conn, _sender, _path, _iface, _signal, params):
@@ -82,6 +121,16 @@ def main(cmds):
             )
         elif cmd == "usr1":
             GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, again, bus)
+        elif cmd == "menu":
+            bus.register_object_with_closures2(
+                MENU[1], Gio.DBusNodeInfo.new_for_xml(MENU_XML).interfaces[0], show, None, None
+            )
+            bus.call_sync(
+                "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName",
+                GLib.Variant("(su)", (MENU[0], 4)), None, Gio.DBusCallFlags.NONE, 5000, None,
+            )
+        elif cmd.startswith("consume:"):
+            GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR2, consume, bus, cmd[8:])
         elif cmd == "watch":
             bus.signal_subscribe(
                 INTERCEPT[0], "org.freedesktop.DBus.Properties", "PropertiesChanged", INTERCEPT[1], None,

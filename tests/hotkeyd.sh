@@ -111,7 +111,7 @@ start() {
   coproc KEYS { exec python3 "$here/hotkeyd/keys" "$tmp/input" 3<&- 4<&-; }
   pids+=("$KEYS_PID")
   HOME=$tmp/home MICROOS_HOTKEYD_INPUT=$tmp/input MICROOS_HOTKEYD_TABLES=${2:-$tables} MICROOS_HOTKEYD_SESSIONS=$tmp/sd \
-    MICROOS_HOTKEYD_STEAM=$tmp/bin/steam python3 "$hotkeyd" "$1" 2> "$tmp/hotkeyd.err" 3<&- 4<&- & hk=$!
+    MICROOS_HOTKEYD_STEAM=$tmp/bin/steam MICROOS_HOTKEYD_SYSFS=$tmp/sys python3 "$hotkeyd" "$1" 2> "$tmp/hotkeyd.err" 3<&- 4<&- & hk=$!
   pids+=("$hk")
   until_ok is_holder "" || fail "$1: no Intercept arbiter: $(cat "$tmp/hotkeyd.err")"
 }
@@ -176,7 +176,7 @@ waitfor "$tmp/logind.log" "inhibit sleep delay" || fail "no sleep delay inhibito
 waitfor "$tmp/logind.log" "inhibit handle-power-key:handle-suspend-key block" || fail "steam: no block inhibitor"
 until_ok want_modes 0 2 || fail "InterceptMode 0 at start: $(modes)"
 fd_open event0 || fail "steam: pwrkey node not open"
-fd_open event1 && fail "steam: InputPlumber Keyboard open without a row"
+fd_open event1 || fail "steam: InputPlumber Keyboard not open for the built in guide row"
 touch -a -d @946684800 "$tmp/input/event0/device/name"
 k wait:4.5
 atime_old || fail "steam: node scan while every node is held"
@@ -243,6 +243,9 @@ press
 
 boot recovery
 waitfor "$tmp/logind.log" "inhibit handle-power-key:handle-suspend-key block" || fail "recovery: no block inhibitor"
+fd_open event1 && fail "recovery: InputPlumber Keyboard open with guide hold none"
+hold guide
+[[ -z $(calls) ]] || fail "recovery: guide hold ran $(calls)"
 press
 grep -qx suspend "$tmp/logind.log" || fail "recovery: power tap did not suspend: $(cat "$tmp/logind.log")"
 [[ -z $(calls) ]] || fail "recovery: power tap ran $(calls)"
@@ -553,6 +556,243 @@ client v overlay
 press rc
 until_ok grep -qsx toggle "$tmp/v.log" || fail "rc did not toggle the MicroSET overlay: $(cat "$tmp/hotkeyd.err")"
 (( $(grep -cx toggle "$tmp/v.log") == 1 )) || fail "one rc tap toggled $(grep -cx toggle "$tmp/v.log") times"
+
+python3 "$here/hotkeyd/consume.py" "$tree" || fail "Consume cases"
+
+cat > "$tmp/bin/microos-session" <<EOF
+#!/usr/bin/env bash
+printf 'microos-session %s\n' "\$*" >> "$tmp/calls.log"
+[[ \$1 == menu ]] || exit 0
+[[ ! -f "$tmp/menu.sleep" ]] || sleep "\$(cat "$tmp/menu.sleep")"
+[[ ! -f "$tmp/menu.rows" ]] || cat "$tmp/menu.rows"
+exit "\$(cat "$tmp/menu.rc" 2> /dev/null || echo 0)"
+EOF
+rows() { printf "$1" > "$tmp/menu.rows"; echo "${2:-0}" > "$tmp/menu.rc"; rm -f "$tmp/menu.sleep"; }
+rows 'm\tM\tavailable\tno\nsteam\tSteam OS\tnot-installed\tyes\n'
+mkdir -p "$tmp/m"
+printf 'power tap steam-uri steam://a\nguide tap steam-uri steam://t\n' > "$tmp/m/m.conf"
+printf 'GAME_SCOPE=microemu-game.scope\n' > "$tmp/sd/m.conf"
+rm -f "$tmp/units/microemu-game.scope"
+shows() { grep -c '^show ' "$tmp/p.log" 2> /dev/null || true; }
+shows_are() { [[ $(shows) == "$1" ]]; }
+consumed_is() { [[ $(grep -c '^consumed guide' "$tmp/c.log") == "$1" ]]; }
+last_show() { grep '^show ' "$tmp/p.log" | tail -n 1; }
+provider() {
+  [[ -z ${client_pid[p]:-} ]] || stop "${client_pid[p]}"
+  rm -f "$tmp/p.log" "$tmp/p.log.mode"
+  client p menu
+}
+mode() { echo "$*" > "$tmp/p.log.mode"; }
+backs() { grep -cx 'microos-session back' "$tmp/calls.log" 2> /dev/null || true; }
+menus() { grep -cx 'microos-session menu m' "$tmp/calls.log" 2> /dev/null || true; }
+mkdir -p "$tmp/sys/class/backlight/bl0"
+echo 0 > "$tmp/sys/class/backlight/bl0/bl_power"
+boot m "$tmp/m"
+provider
+
+: > "$tmp/ip.log"
+rm -f "$tmp/calls.log"
+hold guide
+calls_are "microos-session menu m" || fail "menu: $(calls)"
+rumbles 2 || fail "menu: not one pulse: $(grep rumble "$tmp/ip.log")"
+until_ok grep -q '^show ' "$tmp/p.log" || fail "menu: no Show"
+[[ $(last_show) == "show ([('m', 'M', {'state': <'available'>, 'install': <false>}), ('steam', 'Steam OS', {'state': <'not-installed'>, 'install': <true>})], 'm', {'in-game': <false>})" ]] ||
+  fail "menu: Show $(last_show)"
+(( $(shows) == 1 )) || fail "menu: $(shows) Shows"
+(( $(backs) == 0 )) || fail "menu: back after an ok Show"
+
+rows 'steam\tSteam OS\tavailable\tno\n'
+hold guide
+until_ok shows_are 2 || fail "no current: no Show"
+[[ $(last_show) == "show ([('steam', 'Steam OS', {'state': <'available'>, 'install': <false>})], '', {'in-game': <false>})" ]] ||
+  fail "no current: Show $(last_show)"
+
+rows '' 3
+hold guide
+until_ok shows_are 3 || fail "busy: no Show"
+[[ $(last_show) == "show ([], '', {'switching': <true>})" ]] || fail "busy: Show $(last_show)"
+(( $(backs) == 0 )) || fail "busy: back"
+
+rows 'm\tM\tavailable\tno\n'
+python3 -c 'import time; time.sleep(60)' SteamLaunch AppId=7 3<&- 4<&- & game=$!
+pids+=("$game")
+hold guide
+until_ok shows_are 4 || fail "game: no Show"
+[[ $(last_show) == *"'in-game': <true>"* ]] || fail "game: Show $(last_show)"
+kill "$game"
+hold guide
+until_ok shows_are 5 || fail "no game: no Show"
+[[ $(last_show) == *"'in-game': <false>"* ]] || fail "no game: Show $(last_show)"
+echo active > "$tmp/units/microemu-game.scope"
+hold guide
+until_ok shows_are 6 || fail "scope: no Show"
+[[ $(last_show) == *"'in-game': <true>"* ]] || fail "scope active: Show $(last_show)"
+echo inactive > "$tmp/units/microemu-game.scope"
+hold guide
+until_ok shows_are 7 || fail "scope inactive: no Show"
+[[ $(last_show) == *"'in-game': <false>"* ]] || fail "scope inactive: Show $(last_show)"
+echo active > "$tmp/units/microemu-game.scope"
+stop "$sd"
+hold guide
+until_ok shows_are 8 || fail "no user manager: no Show"
+[[ $(last_show) == *"'in-game': <true>"* ]] || fail "no user manager: Show $(last_show)"
+rm -f "$tmp/units/microemu-game.scope"
+: > "$tmp/units/systemd.log"
+python3 "$here/hotkeyd/systemd-stub" "$tmp/units" 3<&- 4<&- & sd=$!
+pids+=("$sd")
+until_ok grep -qsx ready "$tmp/units/systemd.log" || fail "systemd stub did not restart"
+
+for err in org.freedesktop.DBus.Error.UnknownMethod org.freedesktop.DBus.Error.AccessDenied org.freedesktop.DBus.Error.InvalidArgs; do
+  provider
+  mode error "$err"
+  rm -f "$tmp/calls.log"
+  : > "$tmp/ip.log"
+  hold guide
+  calls_are "microos-session menu m" || fail "$err: first hold: $(calls)"
+  rumbles 4 || fail "$err: not two pulses: $(grep rumble "$tmp/ip.log")"
+  hold guide
+  (( $(backs) == 1 && $(menus) == 2 )) || fail "$err: second hold within 3 s: $(calls)"
+  rm -f "$tmp/calls.log"
+  hold guide
+  k wait:3.2
+  hold guide
+  (( $(backs) == 0 && $(menus) == 2 )) || fail "$err: holds 3 s apart: $(calls)"
+  k wait:3.2
+done
+stop "${client_pid[p]}"
+client_pid[p]=
+rm -f "$tmp/calls.log"
+hold guide
+hold guide
+(( $(backs) == 1 && $(menus) == 2 )) || fail "no provider: $(calls)"
+
+provider
+mode delay 1500
+rm -f "$tmp/calls.log"
+hold guide
+hold guide
+k wait:1.5
+(( $(backs) == 0 && $(menus) == 2 )) || fail "a Show past the client bound: $(calls)"
+grep -q "Show unanswered" "$tmp/hotkeyd.err" || fail "timed out Show not logged: $(cat "$tmp/hotkeyd.err")"
+provider
+mode die
+rm -f "$tmp/calls.log"
+hold guide
+hold guide
+(( $(backs) == 0 && $(menus) == 2 )) || fail "a provider that exits before replying: $(calls)"
+provider
+
+rows '' 3
+provider
+mode error org.freedesktop.DBus.Error.UnknownMethod
+rm -f "$tmp/calls.log"
+hold guide
+hold guide
+(( $(backs) == 0 && $(menus) == 2 )) || fail "a refused Show while switching: $(calls)"
+provider
+
+for code in 1 0; do
+  rows '' "$code"
+  rm -f "$tmp/calls.log"
+  hold guide
+  hold guide
+  (( $(backs) == 1 && $(menus) == 2 )) || fail "menu exit $code without rows: $(calls)"
+done
+rows '' 1
+echo 4 > "$tmp/menu.sleep"
+rm -f "$tmp/calls.log"
+hold guide
+k wait:3
+rm -f "$tmp/menu.sleep"
+hold guide
+(( $(backs) == 0 && $(menus) == 2 )) || fail "a slow menu stretched the confirm window: $(calls)"
+k wait:3.2
+
+rows 'm\tM\tavailable\tno\n' 0
+echo 6 > "$tmp/menu.sleep"
+rm -f "$tmp/calls.log"
+: > "$tmp/ip.log"
+hold guide
+k wait:5.5
+calls_are "microos-session menu m" || fail "menu past the 5 s bound: $(calls)"
+rumbles 4 || fail "menu past the 5 s bound: not two pulses: $(grep rumble "$tmp/ip.log")"
+rm -f "$tmp/menu.sleep"
+k wait:3.2
+
+echo 4 > "$tmp/sys/class/backlight/bl0/bl_power"
+rm -f "$tmp/calls.log"
+: > "$tmp/ip.log"
+before=$(shows)
+hold guide
+[[ -z $(calls) ]] || fail "panel off: $(calls)"
+grep -q "^rumble" "$tmp/ip.log" && fail "panel off: pulse"
+(( $(shows) == before )) || fail "panel off: Show"
+grep -q "session menu: panel off" "$tmp/hotkeyd.err" || fail "panel off not logged"
+echo 0 > "$tmp/sys/class/backlight/bl0/bl_power"
+mkdir -p "$tmp/sys/class/backlight/bl1/bl_power"
+hold guide
+hold guide
+until_ok shows_are $((before + 2)) || fail "unreadable bl_power: $(shows) Shows"
+(( $(grep -c "bl_power: " "$tmp/hotkeyd.err") == 1 )) || fail "unreadable bl_power not logged once: $(cat "$tmp/hotkeyd.err")"
+rm -rf "$tmp/sys/class/backlight/bl1"
+
+before=$(shows)
+rm -f "$tmp/calls.log"
+k guide.down wait:0.1 sleep:true sleep:false wait:1.6 guide.up wait:0.3
+[[ -z $(calls) ]] || fail "a hold across a sleep: $(calls)"
+echo 1 > "$tmp/menu.sleep"
+k guide.down wait:1.2 sleep:true sleep:false wait:1.2 guide.up wait:0.3
+calls_are "microos-session menu m" || fail "a sleep while the menu runs: $(calls)"
+(( $(shows) == before )) || fail "a Show after a sleep"
+rm -f "$tmp/menu.sleep"
+
+echo 2 > "$tmp/menu.sleep"
+rm -f "$tmp/calls.log"
+hold guide
+hold guide
+k wait:2
+(( $(menus) == 1 )) || fail "a hold while the first is pending: $(calls)"
+rm -f "$tmp/menu.sleep"
+
+rm -f "$tmp/calls.log"
+client c acquire consume:guide
+client d consume:guide
+before=$(shows)
+k guide.down wait:0.3
+kill -USR2 "${client_pid[c]}"
+until_ok grep -qx "consumed guide" "$tmp/c.log" || fail "Consume from the holder: $(cat "$tmp/c.log")"
+k wait:1 guide.up wait:0.3
+[[ -z $(calls) ]] || fail "a consumed hold: $(calls)"
+(( $(shows) == before )) || fail "a Show after a consumed hold"
+n=$(grep -c '^consumed guide' "$tmp/c.log")
+k guide.down wait:0.3
+kill -USR2 "${client_pid[c]}"
+until_ok consumed_is $((n + 1)) || fail "Consume before a tap: $(cat "$tmp/c.log")"
+k guide.up wait:0.3
+[[ -z $(calls) ]] || fail "a consumed tap: $(calls)"
+kill -USR2 "${client_pid[d]}"
+until_ok grep -qx "consume guide failed org.freedesktop.DBus.Error.AccessDenied" "$tmp/d.log" || fail "Consume from another name: $(cat "$tmp/d.log")"
+n=$(grep -c "^consumed guide" "$tmp/c.log")
+kill -USR2 "${client_pid[c]}"
+until_ok consumed_is $((n + 1)) || fail "idle Consume: $(cat "$tmp/c.log")"
+press guide
+calls_are "steam -ifrunning steam://t" || fail "a tap after an idle Consume: $(calls)"
+rm -f "$tmp/calls.log"
+hold guide
+until_ok shows_are $((before + 1)) || fail "a hold after a consumed one"
+kill "${client_pid[c]}" "${client_pid[d]}"
+
+mkdir -p "$tmp/n"
+printf 'guide hold none\n' > "$tmp/n/n.conf"
+boot n "$tmp/n"
+fd_open event1 && fail "guide hold none: InputPlumber Keyboard open"
+rm -f "$tmp/calls.log"
+hold guide
+[[ -z $(calls) ]] || fail "guide hold none: $(calls)"
+printf 'guide hold switch recovery confirm-in-game\n' > "$tmp/n/n.conf"
+boot n "$tmp/n"
+hold guide
+[[ $(calls) == "systemctl start --no-block microos-session-switch@recovery.service" ]] || fail "a table row over the built in guide hold: $(calls)"
 
 if (( rc == 0 )); then
   echo "hotkeyd: ok"
