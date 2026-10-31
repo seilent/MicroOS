@@ -759,6 +759,10 @@ grep -qx 'ExecStart=/usr/libexec/microos/microos-hotkeyd %i' /usr/lib/systemd/us
 grep -qx 'BindsTo=gamescope-session-plus@%i.service' /usr/lib/systemd/user/microos-hotkeyd@.service || fail "hotkeyd unit BindsTo"
 grep -qx 'After=gamescope-session-plus@%i.service' /usr/lib/systemd/user/microos-hotkeyd@.service || fail "hotkeyd unit After"
 [[ -f /usr/lib/microos/hotkeys.d/steam.conf && -f /usr/lib/microos/hotkeys.d/recovery.conf ]] || fail "hotkeys.d tables missing"
+grep -qxF 'guide hold none' /usr/lib/microos/hotkeys.d/recovery.conf || fail "recovery.conf lacks guide hold none"
+grep -qxF $'steam\tSteam OS\tyes' <<< "$(microos-session list)" || fail "microos-session list lacks steam as Steam OS"
+grep -qxF 'ExecStart=/usr/bin/microos-session install %i' /usr/lib/systemd/user/microos-session-install@.service ||
+  fail "microos-session-install@.service ExecStart"
 [[ -f /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf ]] || fail "gamescope-session-plus@steam drop-in missing"
 grep -qx 'ExecStartPre=-/usr/libexec/microos/microos-pad-target deck-uhid keyboard' \
   /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/30-microos-pad.conf || fail "steam pad target drop-in"
