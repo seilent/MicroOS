@@ -138,7 +138,7 @@ panel_on() {
 }
 
 usage() {
-  echo "usage: $me list | current | get-default | set-default <name> | switch <name> [requested|fallback] | request <name> requested|fallback | switcher | up <name> | back" >&2
+  echo "usage: $me list | current | get-default | set-default <name> | switch <name> [requested|fallback] | request <name> requested|fallback | switcher | up <name> | back | menu <from> | install <name>" >&2
   exit 2
 }
 
@@ -152,7 +152,7 @@ plain() { [[ $1 == ?*"$2" && $1 != */* && $1 != .* ]]; }
 
 load() {
   local f=$sessions/$1.conf line k v dir=$root/usr/lib/systemd/user
-  LABEL="" DESKTOP="" UNIT="" STOP="" DEFAULT="" INPUT_PROFILE=""
+  LABEL="" DESKTOP="" UNIT="" STOP="" DEFAULT="" INPUT_PROFILE="" CHECK="" INSTALL=""
   [[ $1 =~ $namere && -f $f ]] || return 1
   while IFS= read -r line || [[ -n $line ]]; do
     line=$(trim "$line")
@@ -163,7 +163,7 @@ load() {
       v=${v:1:-1}
     fi
     case $k in
-      LABEL | DESKTOP | UNIT | STOP | DEFAULT | INPUT_PROFILE) printf -v "$k" '%s' "$v" ;;
+      LABEL | DESKTOP | UNIT | STOP | DEFAULT | INPUT_PROFILE | CHECK | INSTALL) printf -v "$k" '%s' "$v" ;;
     esac
   done < "$f"
   plain "$DESKTOP" .desktop && [[ -f $root/usr/share/wayland-sessions/$DESKTOP ]] || return 1
@@ -173,7 +173,8 @@ load() {
   fi
   [[ $UNIT != gamescope-session-plus@* || $UNIT == "gamescope-session-plus@$1.service" ]] || return 1
   [[ $STOP == steam || $STOP == unit ]] || return 1
-  [[ -z $INPUT_PROFILE || $INPUT_PROFILE == /* ]]
+  [[ -z $INPUT_PROFILE || $INPUT_PROFILE == /* ]] || return 1
+  [[ -z $CHECK || $CHECK == /usr/* ]] && [[ -z $INSTALL || $INSTALL == /usr/* ]]
 }
 
 list() {
@@ -184,6 +185,52 @@ list() {
     load "$n" || continue
     printf '%s\t%s\t%s\n' "$n" "${LABEL:-$n}" "$([[ $DEFAULT == yes ]] && echo yes || echo no)"
   done
+}
+
+check_state() {
+  local rc=0
+  [[ -n $CHECK ]] || { echo available; return; }
+  timeout -k 1 1 "$root$CHECK" < /dev/null > /dev/null || rc=$?
+  case $rc in
+    0) echo available ;;
+    1) echo not-installed ;;
+    2) echo refused ;;
+    *) log "check of $1 exited $rc, taking it as available"; echo available ;;
+  esac
+}
+
+busy() {
+  local sw=""
+  read_current
+  [[ $cur_name == "$1" && ! -e $rundir/session-pending ]] || return 0
+  if [[ -f $rundir/switching ]]; then
+    read -r sw < "$rundir/switching" || true
+    [[ $sw =~ ^[0-9]+$ ]] || return 1
+    (( sw > cur_serial )) && return 0
+  fi
+  return 1
+}
+
+menu() {
+  local f n label
+  [[ $1 =~ $namere ]] || usage
+  busy "$1" && exit 3
+  for f in "$sessions"/*.conf; do
+    n=${f##*/}
+    n=${n%.conf}
+    load "$n" && [[ $DEFAULT == yes ]] || continue
+    label=${LABEL:-$n}
+    if [[ $label == *[[:cntrl:]]* ]]; then
+      log "label of $n holds a control character, skipped"
+      continue
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$n" "$label" "$(check_state "$n")" "$([[ -n $INSTALL ]] && echo yes || echo no)"
+  done
+}
+
+install_action() {
+  load "$1" && [[ -n $INSTALL ]] || exit 2
+  exec "$root$INSTALL"
 }
 
 get_default() {
@@ -581,6 +628,7 @@ back() {
   read_current
   [[ $t != "$cur_name" ]] || t=steam
   if [[ $t == "$cur_name" ]] && load "$t" && ids && active "$UNIT"; then
+    log "back: $t is current"
     exit 0
   fi
   exec systemctl start --no-block "microos-session-switch@$t.service"
@@ -602,6 +650,8 @@ main() {
     switcher) (( $# == 1 )) || usage; switcher ;;
     up) (( $# == 2 )) || usage; up "$2" ;;
     back) (( $# == 1 )) || usage; back ;;
+    menu) (( $# == 2 )) || usage; menu "$2" ;;
+    install) (( $# == 2 )) || usage; install_action "$2" ;;
     *) usage ;;
   esac
 }

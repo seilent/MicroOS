@@ -173,7 +173,7 @@ P=$(c64 a)
 
 reset
 out=$(MICROOS_ROOT=$root "$session" list)
-[[ $out == $'microdap\tMicroDAP\tyes\nrecovery\tRecovery\tno\nsteam\tSteam\tyes' ]] || fail "list: $out"
+[[ $out == $'microdap\tMicroDAP\tyes\nrecovery\tRecovery\tno\nsteam\tSteam OS\tyes' ]] || fail "list: $out"
 [[ -z $(calls) ]] || fail "list called a tool: $(calls)"
 rm "$root/usr/share/wayland-sessions/microdap.desktop"
 [[ $("$session" list | cut -f1 | paste -sd,) == recovery,steam ]] || fail "list kept a session without its desktop file"
@@ -181,6 +181,92 @@ echo '[Desktop Entry]' > "$root/usr/share/wayland-sessions/microdap.desktop"
 mv "$root/usr/lib/systemd/user/gamescope-session-plus@.service" "$tmp/gsp"
 [[ -z $("$session" list) ]] || fail "list kept sessions without their unit file"
 mv "$tmp/gsp" "$root/usr/lib/systemd/user/gamescope-session-plus@.service"
+
+reset
+lb=$root/usr/libexec/microos
+mkdir -p "$lb"
+for n in 0 1 2 7; do
+  printf '#!/usr/bin/env bash\necho junk\nexit %s\n' "$n" > "$lb/chk$n"
+done
+printf '#!/usr/bin/env bash\nsleep 3\n' > "$lb/chksleep"
+printf '#!/usr/bin/env bash\ntrap "" TERM\nsleep 5\n' > "$lb/chktrap"
+printf '#!/usr/bin/env bash\necho ran > "%s/inst"\n' "$FAKE" > "$lb/inst"
+chmod 755 "$lb"/chk* "$lb/inst"
+mkconf() {
+  local n=$1
+  shift
+  printf 'DESKTOP=microdap.desktop\nUNIT=gamescope-session-plus@%s.service\nSTOP=unit\nDEFAULT=yes\n' "$n" > "$sd/$n.conf"
+  (( $# == 0 )) || printf '%s\n' "$@" >> "$sd/$n.conf"
+}
+mkconf a1 CHECK=/usr/libexec/microos/chk0
+mkconf a2 CHECK=/usr/libexec/microos/chk1 INSTALL=/usr/libexec/microos/inst
+mkconf a3 CHECK=/usr/libexec/microos/chk2
+mkconf a4 CHECK=/usr/libexec/microos/chk7
+mkconf a5 CHECK=/usr/libexec/microos/chksleep
+mkconf a6 CHECK=/usr/libexec/microos/missing
+mkconf a7 "$(printf 'LABEL=x\ty')"
+mkconf a8 CHECK=chk0
+mkconf a9 CHECK=/etc/chk0
+mkconf c1 CHECK=/usr/libexec/microos/chktrap
+mkconf b1 INSTALL=inst
+mkconf b2 INSTALL=/etc/inst
+
+want_rows=$'a1\ta1\tavailable\tno\na2\ta2\tnot-installed\tyes\na3\ta3\trefused\tno\na4\ta4\tavailable\tno\na5\ta5\tavailable\tno\na6\ta6\tavailable\tno\nc1\tc1\tavailable\tno\nmicrodap\tMicroDAP\tavailable\tno\nsteam\tSteam OS\tavailable\tno'
+cur steam
+r=0
+out=$("$session" menu steam 2> "$tmp/err") || r=$?
+[[ $r == 0 && $out == "$want_rows" ]] || fail "menu rows: exit $r $out"
+grep -q "check of a4 exited 7" "$tmp/err" || fail "menu: exit 7 not logged: $(cat "$tmp/err")"
+grep -q "check of a5 exited 124" "$tmp/err" || fail "menu: the check bound not logged: $(cat "$tmp/err")"
+grep -q "check of c1 exited 137" "$tmp/err" || fail "menu: a check that ignores TERM not killed: $(cat "$tmp/err")"
+grep -q "check of a6 exited 127" "$tmp/err" || fail "menu: a missing check not logged: $(cat "$tmp/err")"
+grep -q "label of a7 holds a control character" "$tmp/err" || fail "menu: a label with a tab not logged: $(cat "$tmp/err")"
+[[ $("$session" list | head -n 1) == $'a1\ta1\tyes' ]] || fail "list changed: $("$session" list | head -n 1)"
+[[ $("$session" list | cut -f1 | grep -cE '^(a8|a9|b1|b2)$') == 0 ]] || fail "load took a relative or non /usr/ CHECK or INSTALL"
+
+touch "$run/session-pending"
+r=0
+out=$("$session" menu steam 2> /dev/null) || r=$?
+[[ $r == 3 && -z $out ]] || fail "menu with session-pending: exit $r $out"
+rm -f "$run/session-pending"
+read -r _ _ cs _ < "$run/session-current"
+echo $(( cs + 1 )) > "$run/switching"
+r=0
+out=$("$session" menu steam 2> /dev/null) || r=$?
+[[ $r == 3 && -z $out ]] || fail "menu with a switch ahead of the current serial: exit $r $out"
+echo $(( cs - 1 )) > "$run/switching"
+r=0
+out=$("$session" menu steam 2> /dev/null) || r=$?
+[[ $r == 0 && $out == "$want_rows" ]] || fail "menu in the new session's first seconds: exit $r"
+rm -f "$run/switching"
+cur microdap
+r=0
+out=$("$session" menu steam 2> /dev/null) || r=$?
+[[ $r == 3 && -z $out ]] || fail "menu for a session that is not current: exit $r $out"
+rm -f "$run/session-current"
+r=0
+out=$("$session" menu steam 2> /dev/null) || r=$?
+[[ $r == 3 && -z $out ]] || fail "menu without session-current: exit $r $out"
+r=0
+"$session" menu 2> /dev/null || r=$?
+[[ $r == 2 ]] || fail "menu without a session: exit $r"
+r=0
+"$session" menu 'Bad/name' 2> /dev/null || r=$?
+[[ $r == 2 ]] || fail "menu with a bad name: exit $r"
+
+for n in a1 a3 recovery nope 'a;b'; do
+  r=0
+  "$session" install "$n" 2> /dev/null || r=$?
+  [[ $r == 2 ]] || fail "install $n: exit $r"
+done
+[[ ! -e $FAKE/inst ]] || fail "install ran for an entry without INSTALL"
+"$session" install a2 || fail "install a2"
+[[ $(< "$FAKE/inst") == ran ]] || fail "install a2 did not run INSTALL"
+r=0
+"$session" install 2> /dev/null || r=$?
+[[ $r == 2 ]] || fail "install without a name: exit $r"
+
+rm -f "$sd"/a?.conf "$sd"/b?.conf "$sd"/c?.conf "$lb"/chk* "$lb/inst"
 
 for d in nope ../steam recovery nodesk "" Bad; do
   reset

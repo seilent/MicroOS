@@ -1,0 +1,8 @@
+[Unit]
+Description=Install the %i session
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30
+ExecStart=/usr/bin/microos-session install %i
+NoNewPrivileges=yes
