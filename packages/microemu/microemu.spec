@@ -83,10 +83,6 @@ just test
 %{_prefix}/lib/microos/sessions.d/microemu.conf
 %dir %{_prefix}/lib/microos/hotkeys.d
 %{_prefix}/lib/microos/hotkeys.d/microemu.conf
-%dir %{_prefix}/lib/microos/hotkeys.d/steam.conf.d
-%{_prefix}/lib/microos/hotkeys.d/steam.conf.d/50-microemu.conf
-%dir %{_prefix}/lib/microos/hotkeys.d/microdap.conf.d
-%{_prefix}/lib/microos/hotkeys.d/microdap.conf.d/50-microemu.conf
 %{_userunitdir}/microemu-*.service
 %{_userunitdir}/gamescope-session-plus@microemu.service.d/
 %{_datadir}/gamescope-session-plus/sessions.d/microemu

@@ -47,7 +47,6 @@ for f in \
   /usr/lib/microos/sessions.d/microdap.conf \
   /usr/lib/microos/hotkeys.d/microdap.conf \
   /usr/lib/microos/hotkeys.d/steam.conf.d/50-microdap.conf \
-  /usr/lib/microos/hotkeys.d/microemu.conf.d/50-microdap.conf \
   /usr/lib/systemd/user/gamescope-session-plus@microdap.service.d/05-microdap-fiio.conf \
   /usr/lib/systemd/user/gamescope-session-plus@microdap.service.d/50-microdap.conf \
   /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/40-microdap-fiio.conf \
@@ -82,8 +81,8 @@ while read -r mode f; do
 done < <(rpm -qp --qf '[%{FILEMODES:octal} %{FILENAMES}\n]' "$rpm" | awk 'substr($1, 1, 2) == "10"')
 
 conf=$tmp/usr/lib/microos/sessions.d/microdap.conf
-for kv in LABEL=MicroDAP DESKTOP=microdap.desktop UNIT=gamescope-session-plus@microdap.service STOP=unit DEFAULT=yes; do
-  if ! grep -qx "$kv" "$conf"; then fail "sessions.d/microdap.conf lacks $kv"; fi
+for kv in 'LABEL=Micro DAP' DESKTOP=microdap.desktop UNIT=gamescope-session-plus@microdap.service STOP=unit DEFAULT=yes; do
+  if ! grep -qxF "$kv" "$conf"; then fail "sessions.d/microdap.conf lacks $kv"; fi
 done
 if ! grep -qx 'Exec=gamescope-session-plus microdap' "$tmp/usr/share/wayland-sessions/microdap.desktop"; then fail "microdap.desktop Exec"; fi
 client=$tmp/usr/share/gamescope-session-plus/sessions.d/microdap
@@ -94,19 +93,18 @@ if sed -n '/^short_session_recover()/,/^}/p' "$client" | grep -qE 'systemctl|swi
 
 player=net.seilent.MicroDap.Player
 table=$tmp/usr/lib/microos/hotkeys.d/microdap.conf
-for row in 'guide tap none' 'guide hold none' \
+for row in 'guide tap none' \
   "power tap call $player /net/seilent/MicroDap/Player $player ToggleScreen" \
   "power hold call $player /net/seilent/MicroDap/Player $player ShowPowerMenu"; do
   if ! grep -qxF "$row" "$table"; then fail "hotkeys.d/microdap.conf lacks '$row'"; fi
 done
 if grep -qE '^(volup|voldown)[[:space:]]' "$table"; then fail "hotkeys.d/microdap.conf has volume rows"; fi
+if grep -qE '^guide hold' "$table"; then fail "hotkeys.d/microdap.conf has a guide hold row"; fi
 steam=$tmp/usr/lib/microos/hotkeys.d/steam.conf.d/50-microdap.conf
-for row in "guide tap call $player /net/seilent/MicroDap/Player $player ToggleOverlay" 'guide hold switch microdap confirm-in-game'; do
-  if ! grep -qxF "$row" "$steam"; then fail "steam.conf.d/50-microdap.conf lacks '$row'"; fi
-done
-if ! grep -qxF 'guide hold switch microdap confirm-in-game' "$tmp/usr/lib/microos/hotkeys.d/microemu.conf.d/50-microdap.conf"; then
-  fail "microemu.conf.d/50-microdap.conf lacks the guide hold switch"
-fi
+row="guide tap call $player /net/seilent/MicroDap/Player $player ToggleOverlay"
+if ! grep -qxF "$row" "$steam"; then fail "steam.conf.d/50-microdap.conf lacks '$row'"; fi
+if grep -qE '^guide hold' "$steam"; then fail "steam.conf.d/50-microdap.conf has a guide hold row"; fi
+if [[ -e $tmp/usr/lib/microos/hotkeys.d/microemu.conf.d/50-microdap.conf ]]; then fail "microemu.conf.d/50-microdap.conf is shipped"; fi
 
 dropin=$tmp/usr/lib/systemd/user/gamescope-session-plus@microdap.service.d/50-microdap.conf
 if ! grep -qx 'ExecStopPost=-/usr/libexec/microdap/microdap-stopped' "$dropin"; then fail "session drop-in lacks the microdap-stopped ExecStopPost"; fi

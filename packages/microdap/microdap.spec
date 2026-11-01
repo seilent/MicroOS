@@ -98,8 +98,6 @@ session, its hotkey tables, session entry and MicroSET schema.
 %{_prefix}/lib/microos/hotkeys.d/microdap.conf
 %dir %{_prefix}/lib/microos/hotkeys.d/steam.conf.d
 %{_prefix}/lib/microos/hotkeys.d/steam.conf.d/50-microdap.conf
-%dir %{_prefix}/lib/microos/hotkeys.d/microemu.conf.d
-%{_prefix}/lib/microos/hotkeys.d/microemu.conf.d/50-microdap.conf
 %dir %{_userunitdir}/gamescope-session-plus@microdap.service.d
 %{_userunitdir}/gamescope-session-plus@microdap.service.d/05-microdap-fiio.conf
 %{_userunitdir}/gamescope-session-plus@microdap.service.d/50-microdap.conf

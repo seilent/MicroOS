@@ -42,8 +42,6 @@ for f in \
   /usr/share/licenses/microemu/retro-crisis/LICENSE \
   /usr/lib/microos/sessions.d/microemu.conf \
   /usr/lib/microos/hotkeys.d/microemu.conf \
-  /usr/lib/microos/hotkeys.d/steam.conf.d/50-microemu.conf \
-  /usr/lib/microos/hotkeys.d/microdap.conf.d/50-microemu.conf \
   /usr/share/microset/schema.d/50-microemu.json \
   /usr/share/wayland-sessions/microemu.desktop \
   /usr/share/gamescope-session-plus/sessions.d/microemu \
@@ -89,10 +87,13 @@ hits=$(grep -rlE 'armada|/run/armada|session-control|date \+%s|EPOCHREALTIME' "$
 if [[ -n $hits ]]; then fail "Armada names or wall clock waits in: ${hits//$root/}"; fi
 
 conf=$root/usr/lib/microos/sessions.d/microemu.conf
-for kv in LABEL=MicroEMU DESKTOP=microemu.desktop UNIT=gamescope-session-plus@microemu.service STOP=unit DEFAULT=yes GAME_SCOPE=microemu-game.scope; do
-  if ! grep -qx "$kv" "$conf"; then fail "sessions.d/microemu.conf lacks $kv"; fi
+for kv in 'LABEL=Micro EMU' DESKTOP=microemu.desktop UNIT=gamescope-session-plus@microemu.service STOP=unit DEFAULT=yes GAME_SCOPE=microemu-game.scope; do
+  if ! grep -qxF "$kv" "$conf"; then fail "sessions.d/microemu.conf lacks $kv"; fi
 done
 if ! grep -qx 'Exec=gamescope-session-plus microemu' "$root/usr/share/wayland-sessions/microemu.desktop"; then fail "desktop Exec"; fi
+for d in steam microdap; do
+  if [[ -e $root/usr/lib/microos/hotkeys.d/$d.conf.d/50-microemu.conf ]]; then fail "$d.conf.d/50-microemu.conf is shipped"; fi
+done
 client=$root/usr/share/gamescope-session-plus/sessions.d/microemu
 if grep -q short_session_recover "$client"; then fail "client file sets short_session_recover"; fi
 if grep -q -- '--steam' "$client"; then fail "client file passes --steam"; fi

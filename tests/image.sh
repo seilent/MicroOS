@@ -791,6 +791,21 @@ if bad:
     sys.exit(1)
 PY
 
+python3 - <<'PY' || fail "a session still has its own Guide hold or LC hold switch row"
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("hotkeyd", "/usr/libexec/microos/microos-hotkeyd")
+h = importlib.util.module_from_spec(importlib.util.spec_from_loader("hotkeyd", loader))
+loader.exec_module(h)
+bad = []
+for s in ("steam", "microdap", "microemu"):
+    t = h.load_table(s)
+    if t.get(("guide", "hold")) != ("session-menu",) or t.get(("lc", "hold"), ("",))[0] == "switch":
+        bad.append(s)
+if bad:
+    print(f"FAIL: guide hold or lc hold in {bad}", file=sys.stderr)
+    sys.exit(1)
+PY
+
 [[ $(grep '^ExecStop=' /usr/lib/systemd/system/ostree-finalize-staged.service) == 'ExecStop=/usr/bin/ostree admin finalize-staged' ]] \
   || fail "ostree-finalize-staged.service ExecStop changed"
 stops=$(systemctl cat ostree-finalize-staged.service \
@@ -857,7 +872,8 @@ for p in microdap microemu; do
   done < <(rpm -ql "$p")
 done
 sessions=$(microos-session list) || fail "microos-session list"
-grep -qxF $'microdap\tMicroDAP\tyes' <<< "$sessions" || fail "microos-session list lacks microdap: $(tr '\n' ' ' <<< "$sessions")"
+grep -qxF $'microdap\tMicro DAP\tyes' <<< "$sessions" || fail "microos-session list lacks microdap: $(tr '\n' ' ' <<< "$sessions")"
+grep -qxF $'microemu\tMicro EMU\tyes' <<< "$sessions" || fail "microos-session list lacks microemu: $(tr '\n' ' ' <<< "$sessions")"
 for u in microdap-radio.service microdap-usb-audio.service; do
   [[ $(systemctl is-enabled "$u") == enabled ]] || fail "$u is not enabled"
 done
