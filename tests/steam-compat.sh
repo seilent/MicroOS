@@ -34,6 +34,18 @@ for line in StartLimitIntervalSec=0 Type=oneshot TimeoutStartSec=90 Nice=10 IOSc
 done
 grep -qxF Wants=microos-steam-compat-refresh.path "$tree/usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf" \
   || fail "the Steam session does not want microos-steam-compat-refresh.path"
+lepton=$tree/usr/lib/systemd/user/microos-lepton-install.service
+for line in BindsTo=gamescope-session-plus@steam.service After=gamescope-session-plus@steam.service \
+  ConditionPathExists=%S/microemu/lepton-install-requested Type=oneshot TimeoutStartSec=330 \
+  'ExecStart=/usr/libexec/microos/microos-steam-compat lepton-install'; do
+  grep -qxF "$line" "$lepton" || fail "microos-lepton-install.service lacks $line"
+done
+[[ $(grep -c '^After=' "$lepton") == 1 ]] || fail "microos-lepton-install.service has more than one After="
+grep -qxF Wants=microos-lepton-install.service "$tree/usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf" \
+  || fail "the Steam session does not want microos-lepton-install.service"
+grep -qE '^(After|Before|Requires|Requisite|BindsTo)=.*microos-lepton-install' \
+  "$tree/usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf" \
+  && fail "the Steam drop-in orders or requires microos-lepton-install.service"
 
 if (( rc == 0 )); then
   echo "steam-compat: ok"

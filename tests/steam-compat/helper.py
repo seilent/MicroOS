@@ -654,7 +654,8 @@ def case_first():
         rc = h.run("refresh", env)
         c = calls()
         check(rc == "" and h.rc == 0 and not any(x.startswith("systemd-run") for x in c), f"first {name}: rc {h.rc} calls {c}")
-        check(h.has(why) and h.has("no restart now") and not os.path.exists(stamp), f"first {name}: {h.lines()}")
+        check(h.has(why) and h.has("no restart now") and not os.path.exists(stamp)
+              and not os.path.exists(os.path.join(h.state, "first-settled")), f"first {name}: {h.lines()}")
         if undo:
             undo()
     reader = os.open(pipe, os.O_RDONLY | os.O_NONBLOCK)
@@ -672,6 +673,8 @@ def case_first():
     h.run("refresh", env)
     check(h.has("computed: 0 titles") and h.has("first session: computed, 0 titles, no restart") and not calls()
           and not os.path.exists(stamp), f"first nothing to map: {h.lines()}")
+    settled = os.path.join(h.state, "first-settled")
+    check(not os.path.lexists(settled), f"first nothing to map wrote first-settled: {os.listdir(h.state)}")
     ready()
     fx.write(h.vk, "storageBuffer8BitAccess=1\n")
     calls()
@@ -682,6 +685,7 @@ def case_first():
     calls()
     h.run("refresh", env)
     check(h.has("first session: failed, ") and h.has("titles, no restart") and not calls(), f"first failed: {h.lines()}")
+    check(not os.path.lexists(settled), f"first no restart exits wrote first-settled: {os.listdir(h.state)}")
     ready()
     h.appinfo({**exp_games(200, 201), 202: padded(202, START)})
     lockf = os.path.join(run, "microos-steam.lock")
@@ -745,9 +749,11 @@ def case_first():
         check(h.rc == 0 and not any(x.startswith("systemd-run") for x in c) and os.path.exists(stamp)
               and h.has(f"first session: client {mapped.pid} has STEAM_COMPAT_TOOL_MAPPINGS, no restart")
               and not h.has("restarting"), f"first with a mapped client, {how}: {c} {h.lines()}")
+        check(h.record("first-settled") == {"version": 1, "by": "first"},
+              f"first settled after a mapped client, {how}: {h.record('first-settled') if os.path.exists(settled) else None}")
         close(mapped)
-        if os.path.exists(stamp):
-            os.remove(stamp)
+        os.remove(stamp)
+        os.remove(settled)
     for name, how, listed in (("write only holder", "os.O_WRONLY | os.O_NONBLOCK", True), ("no pipe", None, True),
                               ("reader not in steam.pid", "os.O_RDONLY | os.O_NONBLOCK", False)):
         other = holder(value(200), how, listed)
@@ -756,9 +762,9 @@ def case_first():
         close(other)
         c = calls()
         check(h.rc == 0 and c[-1:] == [shutdown] and os.path.exists(stamp) and not h.has("STEAM_COMPAT_TOOL_MAPPINGS")
-              and h.has("first session: restarting Steam once"), f"first with a {name} carrying a value: {c} {h.lines()}")
-        if os.path.exists(stamp):
-            os.remove(stamp)
+              and h.has("first session: restarting Steam once") and not os.path.lexists(settled),
+              f"first with a {name} carrying a value: {c} {h.lines()}")
+        os.remove(stamp)
     login = f"{h.root}/config/loginusers.vdf"
     for name, users in (("the PM2's keys", {SID: PM2_USER}),
                         ("the newest Timestamp", {SID: {"Timestamp": "1790000001"},
@@ -771,8 +777,7 @@ def case_first():
         c = calls()
         check(h.rc == 0 and c[-1:] == [shutdown] and os.path.exists(stamp) and h.has("first session: restarting Steam once"),
               f"first restart with {name}, no MostRecent: {c} {h.lines()}")
-        if os.path.exists(stamp):
-            os.remove(stamp)
+        os.remove(stamp)
     fx.write(login, fx.loginusers([(SID, "1")]))
     empty = holder("")
     calls()
@@ -805,9 +810,198 @@ def case_first():
     h.clean()
 
 
-CASES = [case_first, case_vk_features, case_computed, case_forward_usage, case_default_tool, case_config_failed,
-         case_failed_absent, case_corrupt_app, case_target_and_shadows, case_cache, case_compat_log, case_bound, case_refresh,
-         case_budget, case_refresh_change, case_bad_state, case_detached, case_tmp, case_branch_timeout]
+def case_lepton_install():
+    h = Home()
+    flag = os.path.join(h.home, ".local/state/microemu/lepton-install-requested")
+    steam = os.path.join(h.dir, "steam")
+    log = os.path.join(h.dir, "steam.log")
+    pipe = f"{h.home}/.steam/steam.pipe"
+    pidfile = f"{h.home}/.steam/steam.pid"
+    start = os.path.join(h.state, "start")
+    settled = os.path.join(h.state, "first-settled")
+    stamp = os.path.join(h.state, "first-restart")
+    absent = json.dumps({"version": 1, "result": "absent", "entries": []})
+    cached = json.dumps({"version": 1, "result": "cached", "entries": [[200, T]]})
+    url = "-ifrunning steam://install/3029110"
+    fx.write(steam, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STEAM_LOG"\n[ -z "$STEAM_HANG" ] || exec sleep "$STEAM_HANG"\n'
+                     'exit "${STEAM_RC:-0}"\n', 0o755)
+    os.makedirs(os.path.dirname(pipe), exist_ok=True)
+    os.mkfifo(pipe)
+    env = {"MICROOS_STEAM": steam, "STEAM_LOG": log, "MICROOS_LEPTON_INSTALL_WAIT": "5", "XDG_RUNTIME_DIR": h.dir}
+
+    def calls():
+        try:
+            with open(log) as f:
+                lines = f.read().splitlines()
+        except FileNotFoundError:
+            lines = []
+        open(log, "w").close()
+        return lines
+
+    def holder(how="os.O_RDONLY | os.O_NONBLOCK", listed=True):
+        p = subprocess.Popen([sys.executable, "-c",
+                              f"import os, sys\nos.open(sys.argv[1], {how})\nprint(flush=True)\nsys.stdin.read()\n", pipe],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        check(p.stdout.readline() == "\n", f"lepton: a holder with {how} did not start")
+        if listed:
+            fx.write(pidfile, f"{p.pid}\n")
+        return p
+
+    def close(p):
+        p.stdin.close()
+        p.wait()
+
+    out = h.run("lepton-install", env)
+    check(out == "" and h.rc == 0 and not calls(), f"lepton flag absent: {out!r} rc {h.rc} {h.lines()}")
+
+    target = os.path.join(h.dir, "target")
+    fx.write(target, "")
+    os.makedirs(os.path.dirname(flag))
+    os.symlink(target, flag)
+    h.run("lepton-install", env)
+    check(h.rc == 0 and not os.path.lexists(flag) and os.path.exists(target) and not calls()
+          and h.has(f"{flag}: not a regular file, removed"), f"lepton symlink flag: rc {h.rc} {h.lines()}")
+
+    os.makedirs(flag)
+    fx.write(os.path.join(flag, "x"), "")
+    h.run("lepton-install", env)
+    check(h.rc == 0 and not os.path.lexists(flag) and not calls() and h.has(f"{flag}: not a regular file, removed"),
+          f"lepton directory flag: rc {h.rc} {h.lines()}")
+
+    fx.write(start, cached)
+    fx.write(flag, "whatever")
+    calls()
+    p = holder()
+    out = h.run("lepton-install", env)
+    check(out == "" and h.rc == 0 and calls() == [url] and not os.path.lexists(flag)
+          and h.has(f"{flag} acted on, steam://install/3029110 handed to Steam")
+          and not os.path.lexists(settled), f"lepton reader: {out!r} rc {h.rc} {h.lines()}")
+    close(p)
+
+    for name, how, listed in (("no reader", None, True), ("write only holder", "os.O_WRONLY | os.O_NONBLOCK", True)):
+        fx.write(start, cached)
+        fx.write(flag, "")
+        calls()
+        other = holder("os.O_RDONLY | os.O_NONBLOCK", False) if how else None
+        p = holder(how, listed) if how else None
+        out = h.run("lepton-install", {**env, "MICROOS_LEPTON_INSTALL_WAIT": "2"})
+        c = calls()
+        check(out == "" and h.rc == 0 and not c and os.path.lexists(flag) and 1.8 <= h.took < 8
+              and h.has(f"{flag}: no settled client") and h.has("after 2 s, kept"),
+              f"lepton {name}: out {out!r} rc {h.rc} took {h.took:.1f} calls {c} {h.lines()}")
+        for q in (p, other):
+            if q:
+                close(q)
+        if listed:
+            os.remove(pidfile)
+
+    fx.write(start, absent)
+    fx.write(stamp, json.dumps({"version": 1, "titles": 2}))
+    fx.write(flag, "")
+    calls()
+    p = holder()
+    out = h.run("lepton-install", {**env, "MICROOS_LEPTON_INSTALL_WAIT": "2"})
+    check(out == "" and h.rc == 0 and not calls() and os.path.lexists(flag) and 1.8 <= h.took < 8
+          and h.has(f"{flag}: no settled client") and h.has("after 2 s, kept") and not os.path.lexists(settled),
+          f"lepton stamp only: {out!r} rc {h.rc} took {h.took:.1f} {h.lines()}")
+    close(p)
+    os.remove(stamp)
+
+    fx.write(start, absent)
+    fx.write(flag, "")
+    calls()
+    out = h.run("lepton-install", {**env, "MICROOS_LEPTON_INSTALL_WAIT": "2"})
+    check(out == "" and h.rc == 0 and not calls() and os.path.lexists(flag) and not os.path.lexists(settled)
+          and h.has("after 2 s, kept"), f"lepton absent without a client: {out!r} rc {h.rc} {h.lines()}")
+
+    p = holder()
+    out = h.run("lepton-install", {**env, "STEAM_RC": "1"})
+    check(out == "" and h.rc == 0 and calls() == [url] and os.path.lexists(flag) and not os.path.lexists(settled)
+          and h.has(f"{flag}: {steam} -ifrunning exit 1, kept"), f"lepton absent, send fails: {out!r} rc {h.rc} {h.lines()}")
+    close(p)
+
+    p = holder()
+    lockf = os.path.join(h.dir, "microos-steam.lock")
+    locker = subprocess.Popen(["flock", "-o", lockf, "sleep", "30"])
+    check(until(lambda: opened(locker.pid, lockf) or locker.poll() is not None, 5), "lepton: the lock holder did not start")
+    out = h.run("lepton-install", {**env, "MICROOS_LEPTON_INSTALL_WAIT": "2"})
+    locker.kill()
+    locker.wait()
+    check(out == "" and h.rc == 0 and not calls() and os.path.lexists(flag) and not os.path.lexists(settled)
+          and h.has("after 2 s, kept"), f"lepton lock held: {out!r} rc {h.rc} {h.lines()}")
+    close(p)
+
+    fx.write(start, absent)
+    fx.write(flag, "")
+    calls()
+    p = holder()
+    out = h.run("lepton-install", env)
+    check(out == "" and h.rc == 0 and calls() == [url] and not os.path.lexists(flag)
+          and h.record("first-settled") == {"version": 1, "by": "lepton-install"},
+          f"lepton writes the settle: {out!r} rc {h.rc} {h.lines()}")
+    h.appinfo(exp_games(200, 201))
+    fx.write(f"{h.root}/config/loginusers.vdf", fx.loginusers([("76561190000000001", "1")]))
+    os.makedirs(f"{h.root}/steamapps/downloading", exist_ok=True)
+    fx.write(f"{h.stub}/systemctl", '#!/bin/sh\necho "$*" >> "$STUB_LOG"\n', 0o755)
+    fx.write(f"{h.stub}/systemd-run", '#!/bin/sh\necho "systemd-run $*" >> "$STUB_LOG"\n', 0o755)
+    stub_log = os.path.join(h.dir, "stub.log")
+    refresh_env = {"XDG_RUNTIME_DIR": h.dir, "STUB_LOG": stub_log, "PATH": f"{h.stub}:/usr/bin:/bin",
+                   "MICROOS_VK_FEATURES": h.vk}
+    open(stub_log, "w").close()
+    out = h.run("refresh", refresh_env)
+    with open(stub_log) as f:
+        stub = f.read().splitlines()
+    check(out == "" and h.rc == 0 and h.has(f"computed: 2 titles to {T}") and not h.has("first session")
+          and not stub and os.path.lexists(settled), f"lepton settled refresh: {out!r} {stub} {h.lines()}")
+    close(p)
+    os.remove(settled)
+
+    fx.write(start, cached)
+    fx.write(os.path.join(h.state, "first-restart"), json.dumps({"version": 1, "titles": 2}))
+    fx.write(flag, "")
+    calls()
+    p = holder()
+    h.run("lepton-install", env)
+    check(h.rc == 0 and calls() == [url] and not os.path.lexists(flag)
+          and not os.path.lexists(os.path.join(h.state, "first-settled")),
+          f"lepton settled stamp: rc {h.rc} {h.lines()}")
+    os.remove(os.path.join(h.state, "first-restart"))
+
+    fx.write(flag, "")
+    calls()
+    h.run("lepton-install", {**env, "STEAM_RC": "1"})
+    check(h.rc == 0 and os.path.lexists(flag) and calls() == [url] and h.has(f"{flag}: {steam} -ifrunning exit 1, kept"),
+          f"lepton steam fails: rc {h.rc} {h.lines()}")
+
+    calls()
+    h.run("lepton-install", {**env, "STEAM_HANG": "30"})
+    check(h.rc == 0 and os.path.lexists(flag) and 9.5 <= h.took < 20 and h.has(f"{flag}: {steam} -ifrunning failed")
+          and h.has("timed out after 10 seconds") and h.has("kept"),
+          f"lepton steam hangs: rc {h.rc} took {h.took:.1f} {h.lines()}")
+
+    for name, value in (("nonsense", "soon"), ("nan", "nan"), ("inf", "inf"), ("negative", "-1"), ("empty", "")):
+        fx.write(start, absent)
+        fx.write(stamp, json.dumps({"version": 1, "titles": 2}))
+        fx.write(flag, "")
+        calls()
+        p = holder()
+        q = h.spawn("lepton-install", {**env, "MICROOS_LEPTON_INSTALL_WAIT": value})
+        exited = until(lambda: q.poll() is not None, 3)
+        if not exited:
+            q.kill()
+        out, err = q.communicate()
+        c = calls()
+        check(not exited and out == "" and not c and os.path.lexists(flag) and "no settled client" not in err
+              and "error: " not in err, f"lepton wait {name}: exited {exited} out {out!r} calls {c} {err}")
+        close(p)
+        os.remove(stamp)
+    h.clean()
+
+
+CASES = [case_first, case_lepton_install, case_vk_features, case_computed, case_forward_usage, case_default_tool,
+         case_config_failed, case_failed_absent, case_corrupt_app, case_target_and_shadows, case_cache, case_compat_log,
+         case_bound, case_refresh, case_budget, case_refresh_change, case_bad_state, case_detached, case_tmp,
+         case_branch_timeout]
 
 
 def main():
