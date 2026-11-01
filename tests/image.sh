@@ -578,9 +578,13 @@ while read -r f; do
   [[ -f $f && ( $f == *.so || -x $f ) ]] || fail "es_systems.xml runs $f, which is missing"
   [[ $f != /usr/lib64/libretro/* || $(rpm -qf --qf '%{VENDOR}' "$f") == 'Fedora Project' ]] || fail "$f is not from a Fedora core package"
 done < <(sort -u <<< "$emucores")
-hits=$(grep -rlE 'armada|/run/armada|session-control|date \+%s|EPOCHREALTIME' /usr/libexec/microemu /usr/lib/microos/sessions.d/microemu.conf \
+hits=$(grep -rlE 'armada|/run/armada|session-control|date \+%s|EPOCHREALTIME' /usr/libexec/microemu /usr/bin/microemu-* \
+  /usr/lib/microos/sessions.d/microemu.conf \
   /usr/lib/microos/hotkeys.d/microemu.conf /usr/share/gamescope-session-plus/sessions.d/microemu /usr/share/microemu/retroarch || true)
 [[ -z $hits ]] || fail "Armada names or wall clock waits in MicroEMU files: $hits"
+[[ -d /usr/share/microemu/android/steam-empty && ! -L /usr/share/microemu/android/steam-empty \
+  && -z $(find /usr/share/microemu/android/steam-empty -mindepth 1) ]] \
+  || fail "/usr/share/microemu/android/steam-empty is not an empty dir"
 
 rpm -q podman passt catatonit attr jq android-tools util-linux util-linux-core procps-ng ncurses iproute inotify-tools which \
   >/dev/null || fail "Lepton host rpms missing"

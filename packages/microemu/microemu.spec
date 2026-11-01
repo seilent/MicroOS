@@ -23,6 +23,8 @@ BuildRequires:  gobject-introspection
 BuildRequires:  libxml2
 BuildRequires:  unzip
 BuildRequires:  zip
+BuildRequires:  curl
+BuildRequires:  java-25-openjdk-devel
 BuildRequires:  retroarch
 BuildRequires:  libretro-mgba
 BuildRequires:  libretro-pcsx-rearmed
@@ -54,6 +56,15 @@ Requires:       xprop
 Requires:       util-linux-core
 Requires:       pulseaudio-utils
 Requires:       wireplumber
+Requires:       podman
+Requires:       passt
+Requires:       catatonit
+Requires:       android-tools
+Requires:       attr
+Requires:       curl
+Requires:       unzip
+Requires:       zip
+Requires:       procps-ng
 
 %description
 The MicroEMU session for MicroOS: ES-DE with the Art Book Next theme, the
@@ -68,7 +79,8 @@ tar -xzf %{SOURCE1} -C assets
 %build
 
 %install
-MICROEMU_CACHE="$PWD/assets/cache" MICROEMU_VERSION=%{commit} build/install.sh %{buildroot}
+MICROEMU_CACHE="$PWD/assets/cache" MICROEMU_STUB_CACHE="${MICROEMU_STUB_CACHE:-$PWD/stub-cache}" \
+MICROEMU_VERSION=%{commit} build/install.sh %{buildroot}
 
 %check
 MICROEMU_OSD_TEST_THEME=%{buildroot}%{_datadir}/microemu/es-de/themes/art-book-next-es-de \
@@ -78,6 +90,7 @@ just test
 %files
 %license LICENSE
 %{_libexecdir}/microemu/
+%{_bindir}/microemu-*
 %dir %{_prefix}/lib/microos
 %dir %{_prefix}/lib/microos/sessions.d
 %{_prefix}/lib/microos/sessions.d/microemu.conf

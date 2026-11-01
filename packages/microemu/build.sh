@@ -30,9 +30,18 @@ fi
 
 mkdir "$top/assets" "$top/tree"
 tar -xzf "$top/SOURCES/microemu-$ref.tar.gz" -C "$top/tree"
+export MICROEMU_STUB_CACHE=$top/stub-cache
 MICROEMU_CACHE=$top/assets/cache "$top/tree/MicroEMU-$ref/build/install.sh" "$top/assets/root" >/dev/null
 tar -C "$top/assets" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
   -czf "$top/SOURCES/microemu-assets-$ref.tar.gz" cache
+for t in "$top"/SOURCES/microemu-*.tar.gz; do
+  list=$(tar -tzf "$t")
+  sdk=$(grep -E '(^|/)(android\.jar|platform-[^/]*\.zip|r8-[^/]*\.jar)$' <<<"$list" || true)
+  if [[ -n $sdk ]]; then
+    echo "build.sh: ${t##*/} holds an Android SDK file: $sdk" >&2
+    exit 1
+  fi
+done
 
 rpmbuild -ba \
   --define "_topdir $top" \

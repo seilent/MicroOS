@@ -28,7 +28,8 @@ writable=$(rpm -qp --qf '[%{FILEMODES:perms} %{FILENAMES}\n]' "$rpm" | awk 'subs
 if [[ -n $writable ]]; then fail "group or other writable: $writable"; fi
 
 requires=$(rpm -qp --requires "$rpm" | awk '{ print $1 }')
-need=(es-de retroarch gamescope-session microset python3 python3-gobject python3-cairo gtk3 pango gobject-introspection xprop pulseaudio-utils wireplumber)
+need=(es-de retroarch gamescope-session microset python3 python3-gobject python3-cairo gtk3 pango gobject-introspection xprop pulseaudio-utils wireplumber
+  podman passt catatonit android-tools attr curl unzip zip procps-ng util-linux-core)
 for r in "${need[@]}"; do
   if ! grep -qx "$r" <<<"$requires"; then fail "does not require $r"; fi
 done
@@ -51,6 +52,33 @@ for f in \
   /usr/libexec/microemu/microemu-gamescope \
   /usr/libexec/microemu/microemu-osd \
   /usr/libexec/microemu/microemu-lc \
+  /usr/libexec/microemu/microemu-apk \
+  /usr/libexec/microemu/microemu-apk-watch \
+  /usr/libexec/microemu/microemu-android-roms \
+  /usr/libexec/microemu/microemu-android-sync \
+  /usr/libexec/microemu/microemu-context-move \
+  /usr/libexec/microemu/microemu-lepton \
+  /usr/libexec/microemu/microemu-lepton-dir \
+  /usr/libexec/microemu/microemu-liblepton.sh \
+  /usr/libexec/microemu/microemu-pad-fuzz \
+  /usr/libexec/microemu/microemu-pad-nodes \
+  /usr/libexec/microemu/microemu-play-run \
+  /usr/libexec/microemu/microemu-play-stop \
+  /usr/libexec/microemu/microemu-sideload \
+  /usr/libexec/microemu/game-stop.d/50-android \
+  /usr/lib/systemd/user/microemu-play.service \
+  /usr/lib/systemd/user/microemu-play-update.service \
+  /usr/bin/microemu-android-prune \
+  /usr/bin/microemu-fetch \
+  /usr/bin/microemu-gapps-install \
+  /usr/bin/microemu-keyboard-install \
+  /usr/bin/microemu-play-reset \
+  /usr/bin/microemu-play-update \
+  /usr/share/microemu/android/display \
+  /usr/share/microemu/android/opts \
+  /usr/share/microemu/android/lepton-reviewed/25772114 \
+  /usr/share/microemu/android/microemu-restrictions-stub.jar \
+  /usr/share/microemu/android/microemu-restrictions-stub.rc \
   /usr/libexec/microemu/bin/retroarch \
   /usr/share/microemu/es-de/es_systems.xml \
   /usr/share/microemu/retroarch/microemu.cfg \
@@ -62,8 +90,8 @@ done
 if grep -qE '^/usr/lib/(armada|extension-release\.d|extensions)|^/var/|^/etc/|^/usr/lib/microemu(/|$)' <<<"$files"; then
   fail "sysext, Armada or bundled tree paths: $(grep -E '^/usr/lib/(armada|extension-release\.d|extensions)|^/var/|^/etc/|^/usr/lib/microemu(/|$)' <<<"$files" | head -n5)"
 fi
-for f in microemu-apk microemu-play-run microemu-sideload microemu-guard microemu-hotkeyd microemu-leave microemu-pad-nodes; do
-  if grep -q "/$f\$" <<<"$files"; then fail "removed or Android file $f installed"; fi
+for f in microemu-guard microemu-hotkeyd microemu-leave; do
+  if grep -q "/$f\$" <<<"$files"; then fail "removed file $f installed"; fi
 done
 if grep -qE '/(lcd-grid-v2\.slang|pixel_transparency\.slang)$' <<<"$files"; then fail "an LCD shader without a license grant is shipped"; fi
 
@@ -73,15 +101,38 @@ rpm2cpio "$rpm" > "$tmp/microemu.cpio"
 (cd "$tmp" && cpio -idm --quiet < microemu.cpio)
 root=$tmp
 
+mkdir "$tmp/src"
+rpm2cpio "$srpm" > "$tmp/srpm.cpio"
+(cd "$tmp/src" && cpio -idm --quiet < "$tmp/srpm.cpio")
+mapfile -t tars < <(find "$tmp/src" -maxdepth 1 -name 'microemu-*.tar.gz' | sort)
+if (( ${#tars[@]} != 2 )); then fail "the SRPM does not unpack Source0 and Source1"; fi
+for t in "${tars[@]}"; do
+  list=$(tar -tzf "$t") || { fail "cannot list ${t##*/}"; continue; }
+  sdk=$(grep -E '(^|/)(android\.jar|platform-[^/]*\.zip|r8-[^/]*\.jar)$' <<<"$list" || true)
+  if [[ -n $sdk ]]; then fail "${t##*/} holds an Android SDK file: ${sdk//$'\n'/ }"; fi
+done
+
 elf=$(find "$root/usr" -type f -exec sh -c 'for f; do if [ "$(head -c4 "$f" | od -An -tx1 | tr -d " ")" = 7f454c46 ]; then echo "$f"; fi; done' sh {} +)
 if [[ -n $elf ]]; then fail "ELF files shipped (bundled RetroArch or cores): ${elf//$root/}"; fi
 
-for f in "$root"/usr/libexec/microemu/* "$root"/usr/libexec/microemu/bin/*; do
+for f in "$root"/usr/libexec/microemu/* "$root"/usr/libexec/microemu/bin/* "$root"/usr/libexec/microemu/game-stop.d/*; do
+  [[ -f $f ]] || continue
+  [[ $f == */microemu-liblepton.sh ]] && continue
+  if [[ $(stat -c %a "$f") != 755 ]]; then fail "${f#"$root"} is not 755"; fi
+done
+if [[ $(stat -c %a "$root/usr/libexec/microemu/microemu-liblepton.sh" 2>/dev/null) != 644 ]]; then
+  fail "/usr/libexec/microemu/microemu-liblepton.sh is not 644"
+fi
+for f in "$root"/usr/bin/microemu-*; do
   [[ -f $f ]] || continue
   if [[ $(stat -c %a "$f") != 755 ]]; then fail "${f#"$root"} is not 755"; fi
 done
+steamempty=$root/usr/share/microemu/android/steam-empty
+if [[ ! -d $steamempty || -L $steamempty || -n $(find "$steamempty" -mindepth 1) ]]; then
+  fail "usr/share/microemu/android/steam-empty is not an empty dir"
+fi
 
-app=("$root/usr/libexec/microemu" "$root/usr/lib/microos" "$root/usr/lib/systemd" "$root/usr/share/gamescope-session-plus" \
+app=("$root/usr/libexec/microemu" "$root/usr/bin" "$root/usr/lib/microos" "$root/usr/lib/systemd" "$root/usr/share/gamescope-session-plus" \
   "$root/usr/share/wayland-sessions" "$root/usr/share/microemu/es-de/es_systems.xml" "$root/usr/share/microemu/retroarch")
 hits=$(grep -rlE 'armada|/run/armada|session-control|date \+%s|EPOCHREALTIME' "${app[@]}" || true)
 if [[ -n $hits ]]; then fail "Armada names or wall clock waits in: ${hits//$root/}"; fi
@@ -134,10 +185,13 @@ for key, k in keys.items():
 text = open(f"{root}/usr/share/microemu/es-de/es_systems.xml").read()
 systems = ET.fromstring("<root>" + text.split("?>", 1)[-1] + "</root>")
 names = [s.findtext("name") for s in systems.iter("system")]
-if "androidgames" in names:
-    fail("es_systems.xml has the androidgames system")
 if "microos" not in names:
     fail("es_systems.xml has no microos system")
+android = [s for s in systems.iter("system") if s.findtext("name") == "androidgames"]
+if len(android) != 1:
+    fail("es_systems.xml has no single androidgames system")
+elif (android[0].findtext("command") or "").split() != ["/usr/libexec/microemu/microemu-apk", "%ROM%"]:
+    fail(f"androidgames command: {android[0].findtext('command')}")
 cores = set()
 for c in systems.iter("command"):
     words = (c.text or "").split()
