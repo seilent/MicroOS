@@ -91,6 +91,7 @@ meson setup build-mesa mesa-%{version} \
   -Dgles1=enabled \
   -Dgles2=enabled \
   -Dgbm=disabled \
+  -Dandroid-strict=false \
   -Degl-lib-suffix=_mesa \
   -Dgles-lib-suffix=_mesa \
   -Dllvm=disabled \

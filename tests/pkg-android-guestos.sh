@@ -102,6 +102,10 @@ EOF
 
 if [[ $(cat "$root$guestos/vendor/etc/init/microos-noubwc.rc") != $'on early-init\n    setprop debug.mesa.tu.debug noubwc' ]]; then fail "microos-noubwc.rc content"; fi
 
+if ! grep -qF -- ' -Dandroid-strict=false ' "$tmp/src/microos-android-guestos.spec"; then
+  fail "the SRPM spec does not build with -Dandroid-strict=false"
+fi
+
 lic=$root$licdir
 if [[ ! -s $lic/SOURCES.tsv ]]; then
   fail "no $licdir/SOURCES.tsv"
