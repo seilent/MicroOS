@@ -194,7 +194,12 @@ class Inventory:
         return {expr}
 
     def generated(self, bdir, rel, seen):
-        out = run(['ninja', '-C', bdir, '-t', 'query', rel])
+        try:
+            out = run(['ninja', '-C', bdir, '-t', 'query', rel])
+        except subprocess.CalledProcessError as e:
+            if f"unknown target '{rel}'" not in e.stderr:
+                raise
+            out = ''
         inputs, state = [], None
         for line in out.splitlines()[1:]:
             s = line.strip()
