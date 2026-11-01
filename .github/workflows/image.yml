@@ -205,7 +205,27 @@ jobs:
           podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install python3 && /repo/tests/steamos-manager-config.sh'
 
+      - name: Repo test key
+        id: testkey
+        run: |
+          sum=$(git ls-files -s -- tests system_files build packages .github/workflows/image.yml \
+            ':!packages/microset' ':!packages/microdap' ':!packages/microemu' | sha256sum | cut -c1-32)
+          echo "sum=$sum" >> "$GITHUB_OUTPUT"
+          echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Repo test cache
+        id: testcache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/testok
+          key: repo-tests-${{ steps.testkey.outputs.sum }}-${{ steps.testkey.outputs.week }}
+
+      - name: Repo tests passed earlier
+        if: steps.testcache.outputs.cache-hit == 'true'
+        run: echo "::notice::EQ chains and the repo script tests passed for key ${{ steps.testkey.outputs.sum }}, skipped"
+
       - name: EQ chains
+        if: steps.testcache.outputs.cache-hit != 'true'
         run: |
           podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
             sh -c '/repo/build/pin-pipewire.sh /repo/packages/pipewire-aptx/SOURCE.env pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ ladspa-devel util-linux && /repo/tests/audio-eq.sh'
@@ -218,14 +238,20 @@ jobs:
         run: |
           podman run --rm -v "$PWD:/repo:ro" "$PYTHON313" python3 /repo/tests/proton-hook/hook.py
 
+      - name: Repo tests
+        if: steps.testcache.outputs.cache-hit != 'true'
+        run: |
+          podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
+            sh -c 'dnf -yq --setopt=install_weak_deps=False install python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh && /repo/tests/steam-compat.sh && /repo/tests/proton-hook.sh'
+          mkdir -p "$RUNNER_TEMP/testok"
+          date -u > "$RUNNER_TEMP/testok/passed"
+
       - name: Test
         env:
           TAG: ${{ steps.version.outputs.push_tag }}
         run: |
           git fetch --no-tags --depth=1 origin main
           PKG_HASH_BASE=FETCH_HEAD tests/pkg-hash.sh
-          podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
-            sh -c 'dnf -yq --setopt=install_weak_deps=False install python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh && /repo/tests/steam-compat.sh && /repo/tests/proton-hook.sh'
           podman run --rm -v "$PWD/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/seed-rpm:ro" "$IMAGE:$TAG" /tests/image.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/helpers.sh
           podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/storage.sh
