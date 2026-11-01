@@ -16,6 +16,13 @@ chmod 755 "$top"
 trap 'rm -rf "$top"' EXIT
 mkdir -p "$top/SOURCES"
 
+if [[ -d /ccache ]]; then
+  export CCACHE_DIR=/ccache CCACHE_BASEDIR=$top CCACHE_NOHASHDIR=1 CCACHE_MAXSIZE=1G CCACHE_COMPRESS=1
+  export CCACHE_SLOPPINESS=include_file_mtime,include_file_ctime
+  export CMAKE_C_COMPILER_LAUNCHER=ccache CMAKE_CXX_COMPILER_LAUNCHER=ccache
+  ccache -z > /dev/null
+fi
+
 if [[ -n ${MICRODAP_SRC:-} ]]; then
   ref=local
   date=$(date -u +%Y%m%d)
@@ -37,5 +44,7 @@ rpmbuild -ba \
   --define "commit $ref" \
   --define "snapdate $date" \
   "$src/microdap.spec"
+
+[[ ! -d /ccache ]] || ccache -s
 
 find "$top/RPMS" "$top/SRPMS" -name '*.rpm' -exec cp -t "$out" {} +

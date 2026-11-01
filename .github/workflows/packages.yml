@@ -204,7 +204,7 @@ jobs:
 
       - name: Restore ccache
         if: >-
-          (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && matrix.package == 'kernel'
+          (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && contains(fromJSON('["kernel","microset"]'), matrix.package)
           && steps.local.outputs.skip != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
@@ -215,7 +215,7 @@ jobs:
       - name: Build
         if: (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && steps.local.outputs.skip != 'true'
         env:
-          CACHE: ${{ matrix.package == 'kernel' && format('{0}/ccache', runner.temp) || '' }}
+          CACHE: ${{ contains(fromJSON('["kernel","microset"]'), matrix.package) && format('{0}/ccache', runner.temp) || '' }}
         run: PKG_CCACHE="$CACHE" just pkg "$PKG"
 
       - name: Save
@@ -373,9 +373,19 @@ jobs:
             echo "$tag from $from"
           done
 
+      - name: Restore ccache
+        if: (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && matrix.package == 'microdap'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ runner.temp }}/ccache
+          key: ccache-${{ matrix.package }}-${{ steps.hash.outputs.hash }}
+          restore-keys: ccache-${{ matrix.package }}-
+
       - name: Build
         if: steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true'
-        run: just pkg "$PKG"
+        env:
+          CACHE: ${{ matrix.package == 'microdap' && format('{0}/ccache', runner.temp) || '' }}
+        run: PKG_CCACHE="$CACHE" just pkg "$PKG"
 
       - name: Save
         if: steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true'
