@@ -1,6 +1,7 @@
 %{!?commit:%{error:commit is not defined}}
 %{!?snapdate:%{error:snapdate is not defined}}
 %global debug_package %{nil}
+%global _lto_cflags %{nil}
 
 Name:           microdap
 Version:        0^%{snapdate}git%{lua:print(rpm.expand("%{commit}"):sub(1, 10))}
