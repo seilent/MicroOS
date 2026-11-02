@@ -1,0 +1,26 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+[[ "$#" == 4 ]] || { echo "usage: microos-fetch <url> <size> <sha> <file>" >&2; exit 1; }
+url=$1
+size=$2
+sha=$3
+file=$4
+
+say() { printf 'microos-fetch: %s\n' "$*"; }
+
+fail() {
+    rm -f "${file}.part"
+    printf 'microos-fetch: %s\n' "$*" >&2
+    exit 1
+}
+
+if [[ "$(stat -c %s "${file}" 2>/dev/null)" == "${size}" ]] && echo "${sha}  ${file}" | sha256sum -c --status 2>/dev/null; then
+    exit 0
+fi
+say "downloading ${url##*/}"
+curl -sS --proto =https --proto-redir =https -fL --retry 3 --connect-timeout 30 -o "${file}.part" "${url}" \
+    || fail "download failed: ${url}"
+[[ "$(stat -c %s "${file}.part")" == "${size}" ]] || fail "${url##*/}: size differs from ${size}"
+echo "${sha}  ${file}.part" | sha256sum -c --status || fail "${url##*/}: sha256 mismatch"
+mv "${file}.part" "${file}"

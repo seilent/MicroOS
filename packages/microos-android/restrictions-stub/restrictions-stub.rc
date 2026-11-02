@@ -1,0 +1,7 @@
+service microos_restrictions_stub /system/bin/app_process -Djava.class.path=/system/framework/restrictions-stub.jar /system/bin RestrictionsStub
+    user root
+    group root
+    disabled
+
+on zygote-start && property:ro.build.version.sdk=30
+    start microos_restrictions_stub

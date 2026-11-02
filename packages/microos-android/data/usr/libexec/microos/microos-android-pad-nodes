@@ -1,0 +1,14 @@
+#!/usr/bin/bash
+set -u
+
+SYS_INPUT="${MICROOS_SYS_INPUT:-/sys/class/input}"
+DEV_INPUT="${MICROOS_DEV_INPUT:-/dev/input}"
+
+for dir in "${SYS_INPUT}"/event*; do
+    [[ -d "${dir}" ]] || continue
+    [[ "$(cat "${dir}/device/name" 2>/dev/null)" == "Microsoft X-Box 360 pad" ]] || continue
+    [[ "$(cat "${dir}/device/id/vendor" 2>/dev/null)" == 045e ]] || continue
+    [[ "$(cat "${dir}/device/id/product" 2>/dev/null)" == 028e ]] || continue
+    [[ -e "${DEV_INPUT}/${dir##*/}" ]] && printf '%s\n' "${DEV_INPUT}/${dir##*/}"
+done
+exit 0

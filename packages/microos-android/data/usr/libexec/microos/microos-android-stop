@@ -1,0 +1,30 @@
+#!/usr/bin/bash
+set -u
+
+CONTAINER=lepton-android
+verb=${1:-}
+
+say() { printf 'microos-android-stop: %s\n' "$*" >&2; }
+
+case "${verb}" in
+    "")
+        podman stop -t 1 "${CONTAINER}" >/dev/null 2>&1
+        ;;
+    --post)
+        prefix=$(podman inspect -f '{{ index .Config.Labels "PREFIX" }}' "${CONTAINER}" 2>/dev/null)
+        podman stop -t 1 "${CONTAINER}" >/dev/null 2>&1
+        podman rm -fi "${CONTAINER}" >/dev/null 2>&1
+        if [[ "${prefix}" =~ ^/tmp/lepton-context\.[A-Za-z0-9]+$ && -d "${prefix}" ]]; then
+            if rm -rf "${prefix}" 2>/dev/null || podman unshare rm -rf "${prefix}"; then
+                say "removed the leftover ${prefix}"
+            else
+                say "cannot remove ${prefix}"
+            fi
+        fi
+        ;;
+    *)
+        echo "usage: microos-android-stop [--post]" >&2
+        exit 1
+        ;;
+esac
+exit 0

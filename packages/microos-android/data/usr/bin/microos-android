@@ -1,0 +1,225 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+DATA="${MICROOS_ANDROID_DATA:-${HOME}/.local/share/microos-android}"
+CONTEXT="${MICROOS_ANDROID_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/android}"
+GAPPS="${MICROOS_GAPPS:-${DATA}/gapps}"
+CACHE="${MICROOS_GAPPS_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/microos-android/gapps}"
+FETCH="${MICROOS_FETCH:-/usr/libexec/microos/microos-fetch}"
+SET=mtg11-20230922.vending-36.6.25
+
+MTG11_URL=https://github.com/MindTheGapps/11.0.0-arm64/releases/download/MindTheGapps-11.0.0-arm64-20230922_081122/MindTheGapps-11.0.0-arm64-20230922_081122.zip
+MTG11_SIZE=194494611
+MTG11_SHA=a34e054b952b8d5117e5c011b807ef25be1f02d71f0d1ce11db42e89da2962ce
+MTG14_URL=https://github.com/MindTheGapps/14.0.0-arm64/releases/download/MindTheGapps-14.0.0-arm64-20250203_200051/MindTheGapps-14.0.0-arm64-20250203_200051.zip
+MTG14_SIZE=431524182
+MTG14_SHA=6e1c3616862ce5b33e2b96074f86ae846eb1351a26a980e1ed140f8a7e7a4fd6
+DONOR=system/product/etc/permissions/privapp-permissions-google-product.xml
+DONOR_SHA=af730bf23ca2408fd642d64b5ca8a846b1d31c9a348368e6df26e91905b7bc11
+MERGED=system/product/etc/permissions/privapp-permissions-google-p.xml
+MERGED_SOURCE_SHA=1d06370c2d94d519907b87c13e42789131e9a0a811a8b53fe60439062238d541
+
+FILES="
+11 system/system_ext/priv-app/GoogleServicesFramework/GoogleServicesFramework.apk 482798ab45ae314ae8084ee15295d0acb7da4ea9cdc3c2701a75ab2dbc10f252
+11 system/product/priv-app/PrebuiltGmsCore/PrebuiltGmsCore.apk 0b4e47b1e53d8d035fda2f5d8369f67de6f9985ed49001c207aac329d563b56f
+14 system/product/priv-app/Phonesky/Phonesky.apk a11f673c924a5900672793ec631408d0a8b0f50191cc22208da6bd5202e8bdf1
+merged system/product/etc/permissions/privapp-permissions-google-p.xml fb059266e9b1f96688eeb2ea48a9075e01757fd76921d0087226976154015d33
+11 system/system_ext/etc/permissions/privapp-permissions-google-se.xml 4e2161961b9750773d4b9239ec1b4c5197c8131f6f51a18496aef72389dbbd8c
+11 system/product/etc/sysconfig/google.xml 95616cfe00726b60759be00a6491e2b5186da02bb0e384e6682bef61428d2709
+11 system/product/etc/sysconfig/google_build.xml 724875dc95f7fb7eb950714f9a474a9a304e081626d9364647e02409e4bdae9c
+11 system/product/etc/sysconfig/google-hiddenapi-package-whitelist.xml 8be877d7f55f1ef7a650290e99f6bbeeab25ae2573c4604280c7f2b6d286d516
+"
+
+if [[ "${MICROOS_TEST:-}" == 1 ]]; then
+    MTG11_SIZE="${MICROOS_GAPPS_MTG11_SIZE:-${MTG11_SIZE}}"
+    MTG11_SHA="${MICROOS_GAPPS_MTG11_SHA:-${MTG11_SHA}}"
+    MTG14_SIZE="${MICROOS_GAPPS_MTG14_SIZE:-${MTG14_SIZE}}"
+    MTG14_SHA="${MICROOS_GAPPS_MTG14_SHA:-${MTG14_SHA}}"
+    DONOR_SHA="${MICROOS_GAPPS_DONOR_SHA:-${DONOR_SHA}}"
+    MERGED_SOURCE_SHA="${MICROOS_GAPPS_MERGED_SOURCE_SHA:-${MERGED_SOURCE_SHA}}"
+    FILES="${MICROOS_GAPPS_FILES:-${FILES}}"
+fi
+
+me="microos-android ${1:-}"
+say() { printf '%s: %s\n' "${me}" "$*"; }
+
+fail() {
+    printf '%s: %s\n' "${me}" "$*" >&2
+    exit 1
+}
+
+usage() {
+    echo "usage: microos-android gapps install | prune | reset --yes" >&2
+    exit 1
+}
+
+remove_tree() {
+    [[ -e "$1" || -L "$1" ]] || return 0
+    chmod -R u+w "$1" 2>/dev/null
+    rm -rf "$1"
+}
+
+complete() {
+    local stamp="${GAPPS}/${SET}/STAMP" source path sha
+    [[ -f "${stamp}" ]] || return 1
+    [[ "$(head -n 1 "${stamp}")" == "set=${SET}" ]] || return 1
+    while read -r source path sha; do
+        [[ -n "${path}" ]] || continue
+        grep -qx "${sha} [0-9]* ${path}" "${stamp}" || return 1
+        [[ -f "${GAPPS}/${SET}/${path}" ]] || return 1
+    done <<< "${FILES}"
+}
+
+fetch() {
+    local url=$1 size=$2 sha=$3 file=$4 rc=0
+    "${FETCH}" "${url}" "${size}" "${sha}" "${file}" || rc=$?
+    (( ! rc )) || exit 1
+}
+
+member() {
+    local zip=$1 path=$2 out=$3 sha=$4
+    mkdir -p "$(dirname "${out}")"
+    unzip -p "${zip}" "${path}" > "${out}" 2>/dev/null || fail "${path} missing in ${zip##*/}"
+    [[ "$(sha256sum "${out}" | cut -d' ' -f1)" == "${sha}" ]] || fail "${path} from ${zip##*/}: sha256 mismatch"
+}
+
+merge() {
+    python3 - "$1" "$2" "$3" <<'PY'
+import re
+import sys
+
+base, donor, out = sys.argv[1:4]
+block = re.compile(r'[ \t]*<privapp-permissions package="com\.android\.vending">.*?</privapp-permissions>[ \t]*\n', re.S)
+base_text = open(base).read()
+donor_text = open(donor).read()
+base_blocks, donor_blocks = block.findall(base_text), block.findall(donor_text)
+if len(base_blocks) != 1 or len(donor_blocks) != 1:
+    sys.exit("expected one vending block in each file, found %d and %d" % (len(base_blocks), len(donor_blocks)))
+open(out, "w").write(base_text.replace(base_blocks[0], donor_blocks[0]))
+PY
+}
+
+no_live() {
+    local unit rc container leptons
+    for unit in microos-android.service microos-lepton-prepare.service; do
+        case "$(systemctl --user show -P ActiveState "${unit}" 2>/dev/null)" in
+            inactive|failed|"") ;;
+            *) fail "${unit} is running, refusing" ;;
+        esac
+    done
+    rc=0
+    podman container exists lepton-android 2>/dev/null || rc=$?
+    case "${rc}" in
+        1) ;;
+        0) fail "container lepton-android exists, refusing" ;;
+        *) fail "podman container exists failed (rc=${rc}), refusing" ;;
+    esac
+    leptons=$(podman ps -a --filter label=lepton=true --format '{{.Names}}') || fail "podman ps failed, refusing"
+    [[ -z "${leptons}" ]] || fail "Lepton containers exist (${leptons//$'\n'/ }), ${GAPPS} is shared, refusing"
+}
+
+gapps_install() {
+    no_live
+    mkdir -p "${GAPPS}" "${CACHE}"
+    if complete; then
+        say "${SET} already installed"
+    else
+        remove_tree "${GAPPS}/${SET}.tmp"
+        remove_tree "${GAPPS}/${SET}"
+        fetch "${MTG11_URL}" "${MTG11_SIZE}" "${MTG11_SHA}" "${CACHE}/${MTG11_URL##*/}"
+        fetch "${MTG14_URL}" "${MTG14_SIZE}" "${MTG14_SHA}" "${CACHE}/${MTG14_URL##*/}"
+        tmp="${GAPPS}/${SET}.tmp"
+        mkdir -p "${tmp}"
+        while read -r source path sha; do
+            [[ -n "${path}" ]] || continue
+            case "${source}" in
+                11) member "${CACHE}/${MTG11_URL##*/}" "${path}" "${tmp}/${path}" "${sha}" ;;
+                14) member "${CACHE}/${MTG14_URL##*/}" "${path}" "${tmp}/${path}" "${sha}" ;;
+                merged)
+                    member "${CACHE}/${MTG11_URL##*/}" "${MERGED}" "${tmp}/.base.xml" "${MERGED_SOURCE_SHA}"
+                    member "${CACHE}/${MTG14_URL##*/}" "${DONOR}" "${tmp}/.donor.xml" "${DONOR_SHA}"
+                    mkdir -p "$(dirname "${tmp}/${path}")"
+                    merge "${tmp}/.base.xml" "${tmp}/.donor.xml" "${tmp}/${path}" || fail "cannot merge ${path}"
+                    rm -f "${tmp}/.base.xml" "${tmp}/.donor.xml"
+                    [[ "$(sha256sum "${tmp}/${path}" | cut -d' ' -f1)" == "${sha}" ]] || fail "merged ${path}: sha256 mismatch"
+                    ;;
+                *) fail "unknown source ${source} for ${path}" ;;
+            esac
+        done <<< "${FILES}"
+        {
+            echo "set=${SET}"
+            while read -r source path sha; do
+                [[ -n "${path}" ]] || continue
+                echo "${sha} $(stat -c %s "${tmp}/${path}") ${path}"
+            done <<< "${FILES}"
+        } > "${tmp}/STAMP.new"
+        mv "${tmp}/STAMP.new" "${tmp}/STAMP"
+        chmod -R a-w "${tmp}"
+        mv -T "${tmp}" "${GAPPS}/${SET}"
+        rm -f "${CACHE}/${MTG11_URL##*/}" "${CACHE}/${MTG14_URL##*/}"
+        say "${SET} installed in ${GAPPS}/${SET}"
+    fi
+    ln -sfn "${SET}" "${GAPPS}/current.new"
+    mv -T "${GAPPS}/current.new" "${GAPPS}/current"
+    say "the next Android start binds ${SET}"
+}
+
+prune() {
+    local data="${DATA}" states="${DATA}/sideload" queue="${DATA}/prune" stale=() state pkg
+    for state in "${states}"/*; do
+        [[ -f "${state}" ]] || continue
+        grep -qx stale "${state}" || continue
+        pkg=${state##*/}
+        if (( $# )) && ! printf '%s\n' "$@" | grep -qxF "${pkg}"; then
+            continue
+        fi
+        stale+=("${pkg}")
+        printf '%s %s\n' "${pkg}" "$(sed -n 's/^path=//p' "${state}")"
+    done
+    if (( ! ${#stale[@]} )); then
+        say "no stale package"
+        return 0
+    fi
+    mkdir -p "${data}"
+    touch "${queue}"
+    printf '%s\n' "${stale[@]}" | sort -u - "${queue}" > "${queue}.tmp"
+    mv "${queue}.tmp" "${queue}"
+    say "${#stale[@]} package(s) queued, uninstalled at the next Android start that installs an .apk"
+}
+
+reset() {
+    local rc users container leptons
+    [[ "${CONTEXT##*/}" == android ]] || fail "${CONTEXT} is not the android context, refusing"
+    [[ "${1:-}" == --yes ]] || fail "reset removes every installed app, refusing without --yes"
+    no_live
+    users=$(podman ps -a --format '{{.Names}} {{.Label "STEAM_COMPAT_DATA_PATH"}}') || fail "podman ps failed, refusing"
+    while read -r container path; do
+        if [[ -n "${path}" && "$(readlink -m "${path}")" == "$(readlink -m "${CONTEXT}")" ]]; then
+            fail "container ${container} uses ${CONTEXT}, refusing"
+        fi
+    done <<< "${users}"
+    if [[ -d "${CONTEXT}" ]]; then
+        podman unshare chmod -R u+rwX "${CONTEXT}" || fail "cannot chmod ${CONTEXT}"
+        podman unshare rm -rf "${CONTEXT}" || fail "cannot remove ${CONTEXT}"
+    fi
+    rm -rf "${DATA}/sideload" "${DATA}/prune"
+    say "the next Android start boots a fresh context and installs every .apk again"
+}
+
+case "${1:-}" in
+    gapps)
+        [[ "${2:-}" == install ]] || usage
+        me="microos-android gapps install"
+        shift 2
+        gapps_install "$@"
+        ;;
+    prune)
+        shift
+        prune "$@"
+        ;;
+    reset)
+        shift
+        reset "$@"
+        ;;
+    *) usage ;;
+esac

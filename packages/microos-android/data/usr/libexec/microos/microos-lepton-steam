@@ -1,0 +1,19 @@
+#!/usr/bin/bash
+set -u
+
+steam_root="${MICROOS_LEPTON_STEAM_ROOT:-${HOME}/.local/share/Steam}"
+libraries=("${steam_root}")
+vdf="${steam_root}/steamapps/libraryfolders.vdf"
+if [[ -f "${vdf}" ]]; then
+    while IFS= read -r library; do
+        libraries+=("${library}")
+    done < <(sed -n 's/^[[:space:]]*"path"[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "${vdf}")
+fi
+for library in "${libraries[@]}"; do
+    dir="${library}/steamapps/common/Lepton"
+    if [[ -x "${dir}/lepton" && -d "${dir}/images/rootfs" && -d "${dir}/sysbake" ]]; then
+        printf '%s\n' "${dir}"
+        exit 0
+    fi
+done
+exit 1

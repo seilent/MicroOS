@@ -1,0 +1,294 @@
+#!/usr/bin/bash
+set -eu
+
+LIBLEPTON="${MICROOS_LIBLEPTON:-/usr/libexec/microos/microos-liblepton.sh}"
+REVIEWED="${MICROOS_LEPTON_REVIEWED:-/usr/share/microos-lepton/reviewed}"
+STEAM_EMPTY="${MICROOS_STEAM_EMPTY:-/usr/share/microos-lepton/steam-empty}"
+DISCOVERY="${MICROOS_LEPTON_STEAM_DIR_CMD:-/usr/libexec/microos/microos-lepton-steam}"
+DATA="${MICROOS_ANDROID_DATA:-${HOME}/.local/share/microos-android}"
+VALVE_HOME="${MICROOS_LEPTON_HOME:-${DATA}/home}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+export XDG_STATE_HOME="${XDG_STATE_HOME:-${HOME}/.local/state}"
+SNAPSHOTS="${MICROOS_LEPTON_SNAPSHOTS:-${XDG_DATA_HOME}/microos-lepton/builds}"
+RUN="${MICROOS_RUNTIME_DIR:-${XDG_RUNTIME_DIR}/microos-lepton}"
+
+say() { printf 'microos-lepton: %s\n' "$*" >&2; }
+
+fail() {
+    say "$*"
+    exit 1
+}
+
+paths() {
+    find . -mindepth 1 \( -path ./images/rootfs -o -path ./sysbake -o -path ./LICENSES \
+        -o -path ./LICENSE.md -o -path ./README.md -o -path ./images/NOTICE.txt \) -prune \
+        -o \( -type f -o -type l \) -printf '%P\n'
+    printf '%s\n' images/rootfs/system/build.prop images/rootfs/system/etc/prop.default \
+        images/rootfs/vendor/odm/etc/build.prop sysbake/system/packages.xml
+}
+
+entry() {
+    local base=$1 path=$2 target
+    if [[ -L "${base}/${path}" ]]; then
+        target=$(readlink "${base}/${path}") || return 1
+        printf 'link  %s  %s\n' "${path}" "${target}"
+    elif [[ -f "${base}/${path}" ]]; then
+        printf '%s  %s\n' "$(sha256sum < "${base}/${path}" | cut -d' ' -f1)" "${path}"
+    else
+        printf 'missing  %s\n' "${path}"
+    fi
+}
+
+gate_error=
+
+gate() {
+    local runtime=$1 buildid=$2 block sums
+    gate_error=
+    block="${REVIEWED}/${buildid}"
+    if [[ -z "${buildid}" || ! -f "${block}" || -L "${block}" ]]; then
+        gate_error="Lepton build ${buildid} is not one MicroOS knows, refusing"
+        return 1
+    fi
+    if [[ ! -d "${runtime}/images/rootfs" || -L "${runtime}/images/rootfs" \
+        || ! -d "${runtime}/sysbake" || -L "${runtime}/sysbake" ]]; then
+        gate_error="Lepton in ${runtime} has no images/rootfs or sysbake directory, refusing"
+        return 1
+    fi
+    if [[ "$(sed -n 's/^ro\.build\.version\.sdk=//p' "${runtime}/images/rootfs/system/build.prop" 2>/dev/null)" != 30 ]]; then
+        gate_error="Lepton in ${runtime} is not Android SDK 30, refusing"
+        return 1
+    fi
+    sums=$(cd "${runtime}" && paths | LC_ALL=C sort | while IFS= read -r path; do entry "${runtime}" "${path}"; done) || :
+    if [[ "${sums}" != "$(cat "${block}")" ]]; then
+        gate_error="Lepton in ${runtime} is not the build in ${block}, refusing"
+        return 1
+    fi
+}
+
+reviewed_snapshots() {
+    local dir buildid
+    for dir in "${SNAPSHOTS}"/*; do
+        [[ -d "${dir}" && ! -L "${dir}" ]] || continue
+        buildid=${dir##*/}
+        [[ "${buildid}" =~ ^[0-9]+$ ]] || continue
+        [[ -f "${REVIEWED}/${buildid}" && ! -L "${REVIEWED}/${buildid}" ]] || continue
+        printf '%s\n' "${dir}"
+    done
+}
+
+prune_snapshots() {
+    local current=$1 dir previous=
+    for dir in $(reviewed_snapshots); do
+        [[ "${dir}" != "${current}" ]] || continue
+        if [[ -z "${previous}" || "${dir##*/}" -gt "${previous##*/}" ]]; then
+            previous=${dir}
+        fi
+    done
+    for dir in $(reviewed_snapshots); do
+        [[ "${dir}" != "${current}" && "${dir}" != "${previous}" ]] || continue
+        rm -rf "${dir:?}" || say "cannot remove the old snapshot ${dir}"
+    done
+}
+
+snapshot() {
+    local src=$1 buildid=$2 dest="${SNAPSHOTS}/${2}" dir fs
+    mkdir -p "${SNAPSHOTS}" || fail "cannot make ${SNAPSHOTS}"
+    for fs in "${src}" "${SNAPSHOTS}"; do
+        [[ -d "${fs}" && ! -L "${fs}" ]] || fail "${fs} is not a directory, refusing"
+    done
+    for fs in "${SNAPSHOTS}"/.take.*; do
+        [[ -e "${fs}" ]] || continue
+        rm -rf "${fs:?}" || say "cannot remove the leftover ${fs}"
+    done
+    dir="${SNAPSHOTS}/.take.$$"
+    rm -rf "${dir:?}" 2>/dev/null || :
+    if ! cp -a --reflink=auto "${src}" "${dir}"; then
+        rm -rf "${dir:?}"
+        fail "cannot copy ${src} into ${SNAPSHOTS}, refusing"
+    fi
+    [[ "$(stat -c %d "${src}")" == "$(stat -c %d "${SNAPSHOTS}")" ]] || say "${src} is on another filesystem, copied it in full"
+    for fs in "${dir}" "${dir}/sysbake" "${dir}/liblepton"; do
+        if ! { setfattr -n user.microos -v 1 "${fs}" && setfattr -x user.microos "${fs}"; } 2>/dev/null; then
+            rm -rf "${dir:?}"
+            fail "${SNAPSHOTS} keeps no xattrs, refusing"
+        fi
+    done
+    if ! gate "${dir}" "${buildid}"; then
+        rm -rf "${dir:?}"
+        fail "${gate_error}"
+    fi
+    sync
+    rm -rf "${dest:?}" 2>/dev/null || :
+    mv -T "${dir}" "${dest}" || { rm -rf "${dir:?}"; fail "cannot move the snapshot into ${dest}, refusing"; }
+    say "took the snapshot ${dest}"
+    prune_snapshots "${dest}"
+}
+
+manifest_value() {
+    sed -n "s/^[[:space:]]*\"$1\"[[:space:]]*\"\([0-9]*\)\".*/\1/p" "$2" 2>/dev/null
+}
+
+steam_dir=
+steam_buildid=
+steam_manifest=
+steam_error=
+
+steam_look() {
+    steam_dir=
+    steam_buildid=
+    steam_error=
+    steam_dir=$("${DISCOVERY}" 2>/dev/null) && [[ "${steam_dir}" == */steamapps/common/Lepton && -d "${steam_dir}" ]] \
+        || return 1
+    steam_manifest="${steam_dir%/common/Lepton}/appmanifest_3029110.acf"
+    [[ "$(manifest_value StateFlags "${steam_manifest}")" == 4 ]] || return 1
+    steam_buildid=$(manifest_value buildid "${steam_manifest}")
+    [[ -n "${steam_buildid}" ]] || return 1
+    if [[ ! -f "${REVIEWED}/${steam_buildid}" || -L "${REVIEWED}/${steam_buildid}" ]]; then
+        steam_error="Lepton build ${steam_buildid} is not one MicroOS knows, refusing"
+        return 2
+    fi
+    gate "${steam_dir}" "${steam_buildid}" || { steam_error=${gate_error}; return 2; }
+    [[ ! -e "${SNAPSHOTS}/${steam_buildid}" ]] || return 1
+    return 0
+}
+
+take_from_steam() {
+    local lock
+    mkdir -p "${SNAPSHOTS}" || fail "cannot make ${SNAPSHOTS}"
+    exec {lock}<>"${SNAPSHOTS}/.lock" || fail "cannot open ${SNAPSHOTS}/.lock"
+    flock -w 600 -x "${lock}" || fail "cannot lock ${SNAPSHOTS}/.lock"
+    steam_look || :
+    if [[ -n "${steam_buildid}" && ! -e "${SNAPSHOTS}/${steam_buildid}" ]] \
+        && steam_look && [[ -z "${steam_error}" ]]; then
+        snapshot "${steam_dir}" "${steam_buildid}"
+    fi
+    exec {lock}<&-
+}
+
+resolve() {
+    local dir buildid found="" rc=0
+    for dir in $(reviewed_snapshots); do
+        if ! gate "${dir}" "${dir##*/}"; then
+            say "${gate_error}"
+            rm -rf "${dir:?}" || say "cannot remove the bad snapshot ${dir}"
+            continue
+        fi
+        if [[ -z "${found}" || "${dir##*/}" -gt "${found##*/}" ]]; then
+            found=${dir}
+        fi
+    done
+    rc=0
+    steam_look || rc=$?
+    if [[ -n "${steam_buildid}" && ! -e "${SNAPSHOTS}/${steam_buildid}" && "${rc}" != 2 ]]; then
+        take_from_steam
+        if [[ -e "${SNAPSHOTS}/${steam_buildid}" ]]; then
+            found="${SNAPSHOTS}/${steam_buildid}"
+        fi
+    fi
+    [[ -n "${found}" ]] || fail "${steam_error:-Lepton is not installed. Install it in Steam.}"
+    printf '%s\n' "${found}"
+}
+
+case "${1:-}" in
+    runtime) ;;
+    start) ;;
+    *) fail "usage: microos-lepton runtime | start <context>" ;;
+esac
+
+[[ "${REVIEWED}" == /* && -d "${REVIEWED}" ]] || fail "no reviewed Lepton list in ${REVIEWED}"
+
+runtime=$(resolve)
+if [[ -v MICROOS_LEPTON_RUNTIME && "${MICROOS_LEPTON_RUNTIME}" != "${runtime}" ]]; then
+    fail "MICROOS_LEPTON_RUNTIME is ${MICROOS_LEPTON_RUNTIME}, not this start's runtime ${runtime}, refusing"
+fi
+
+if [[ "${1}" == runtime ]]; then
+    mkdir -p "${RUN}" || fail "cannot make ${RUN}"
+    tmp=$(mktemp "${RUN}/runtime.XXXXXX") || fail "cannot write ${RUN}/runtime"
+    printf '%s\n' "${runtime}" > "${tmp}" && mv -T "${tmp}" "${RUN}/runtime" || fail "cannot write ${RUN}/runtime"
+    prune_snapshots "${runtime}"
+    printf '%s\n' "${runtime}"
+    exit 0
+fi
+
+[[ $# -eq 2 ]] || fail "usage: microos-lepton runtime | start <context>"
+name=$2
+case "${name}" in
+    dev|sysbake|steamlaunch-*) fail "${name} is a context name Lepton treats specially, refusing" ;;
+esac
+[[ "${name}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || fail "bad context name ${name}"
+[[ -x "${runtime}/lepton" && -f "${runtime}/liblepton/liblepton.sh" ]] || fail "no Lepton runtime in ${runtime}"
+[[ -f "${LIBLEPTON}" ]] || fail "${LIBLEPTON} missing"
+[[ -d "${STEAM_EMPTY}" ]] && entries=$(find "${STEAM_EMPTY}" -mindepth 1 -print -quit) && [[ -z "${entries}" ]] \
+    || fail "${STEAM_EMPTY} is not an empty directory"
+
+context="${VALVE_HOME}/.local/share/lepton/contexts/${name}"
+if [[ -n "${STEAM_COMPAT_DATA_PATH:-}" ]]; then
+    [[ "${STEAM_COMPAT_DATA_PATH}" == "${context}" ]] || fail "STEAM_COMPAT_DATA_PATH is not ${context}, refusing"
+    [[ ! -L "${context}" ]] || fail "${context} is a link, refusing"
+    mkdir -p "${context}/internal" || fail "cannot make ${context}/internal"
+fi
+
+buildid=${runtime##*/}
+backup="${DATA}/backups/${context##*/}.pre-${buildid}.bak"
+rm -rf "${backup:?}.part" 2>/dev/null || :
+if [[ -d "${context}" && ! -L "${context}" && ! -e "${backup}" ]]; then
+    [[ ! -L "${DATA}/backups" ]] || fail "${DATA}/backups is a link, refusing"
+    mkdir -p "${DATA}/backups" || fail "cannot make ${DATA}/backups"
+    if ! podman unshare cp -a --reflink=auto "${context}" "${backup}.part"; then
+        rm -rf "${backup:?}.part" 2>/dev/null || :
+        fail "cannot snapshot ${context} into ${backup}, refusing"
+    fi
+    mv -T "${backup}.part" "${backup}" || fail "cannot move the backup into ${backup}, refusing"
+    for old in "${DATA}/backups/${context##*/}.pre-"*.bak; do
+        [[ "${old}" != "${backup}" ]] || continue
+        [[ "${old##*/}" =~ ^${context##*/}\.pre-[0-9]+\.bak$ ]] || continue
+        podman unshare rm -rf "${old:?}" || say "cannot remove the old backup ${old}"
+    done
+    say "kept ${backup}"
+fi
+
+pipe="${VALVE_HOME}/.steam/steam.pipe"
+mkdir -p "${VALVE_HOME}/.steam" "${RUN}" || fail "cannot make ${VALVE_HOME}/.steam or ${RUN}"
+[[ -p "${pipe}" && ! -L "${pipe}" ]] || mkfifo "${pipe}" || fail "cannot make the FIFO ${pipe}"
+
+exec {run_lock}<"${RUN}"
+flock -w 10 -x "${run_lock}" || fail "cannot lock ${RUN}"
+view=$(mktemp -d "${RUN}/tool.XXXXXXXX") || fail "cannot make a view in ${RUN}"
+exec {view_lock}<"${view}"
+flock -s "${view_lock}" || fail "cannot lock the view ${view}"
+if ! { mkdir "${view}/liblepton" && ln -s "${runtime}/lepton" "${view}/lepton" \
+    && ln -s "${LIBLEPTON}" "${view}/liblepton/liblepton.sh"; }; then
+    rm -rf "${view:?}"
+    fail "cannot set up the view ${view}"
+fi
+for old in "${RUN}"/tool.*; do
+    [[ "${old}" != "${view}" && -d "${old}" && ! -L "${old}" ]] || continue
+    if { flock -n -x 9; } 9<"${old}"; then
+        rm -rf "${old:?}" || say "cannot remove the old view ${old}"
+    fi
+done
+exec {run_lock}<&-
+
+vars=(
+    "HOME=${VALVE_HOME}"
+    "PATH=${PATH}"
+    "XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR}"
+    "XDG_CONFIG_HOME=${XDG_CONFIG_HOME}"
+    "XDG_DATA_HOME=${XDG_DATA_HOME}"
+    "XDG_STATE_HOME=${XDG_STATE_HOME}"
+    "DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+    TERM=dumb
+    "STEAM_COMPAT_CLIENT_INSTALL_PATH=${STEAM_EMPTY}"
+    LEPTON_NO_CLEANUP=true
+    LEPTON_KEEP_CONTEXT=1
+    "MICROOS_LEPTON_RUNTIME=${runtime}"
+    "MICROOS_LEPTON_REVIEWED=${REVIEWED}"
+)
+for var in APP_WANTS_FLATSCREEN GAMESCOPE_WAYLAND_DISPLAY CONTAINERS_CONF_OVERRIDE STEAM_COMPAT_DATA_PATH \
+    LEPTON_ADB_PORT LEPTON_GDB_PORT LEPTON_LLDB_PORT; do
+    [[ -v "${var}" ]] && vars+=("${var}=${!var}")
+done
+exec env -i "${vars[@]}" "${view}/lepton" start "${name}"

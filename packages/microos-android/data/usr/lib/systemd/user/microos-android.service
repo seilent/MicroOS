@@ -1,0 +1,14 @@
+[Unit]
+Description=Android session container
+StopPropagatedFrom=gamescope-session-plus@android.service
+
+[Service]
+Type=notify
+NotifyAccess=all
+ExecStartPre=/usr/bin/podman rm -fi lepton-android
+ExecStart=/usr/libexec/microos/microos-android-run
+ExecStop=/usr/libexec/microos/microos-android-stop
+ExecStopPost=/usr/libexec/microos/microos-android-stop --post
+TimeoutStartSec=120
+TimeoutStopSec=20
+SuccessExitStatus=143

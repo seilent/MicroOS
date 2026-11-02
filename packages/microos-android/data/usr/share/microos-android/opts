@@ -1,0 +1,13 @@
+set wifi-scan settings put global wifi_scan_always_enabled 0
+set ble-scan settings put global ble_scan_always_enabled 0
+set app-error settings put secure send_action_app_error 0
+set ota-update settings put global ota_disable_automatic_update 1
+set captive-portal settings put global captive_portal_mode 0
+set idle-alarms settings put global alarm_manager_constants allow_while_idle_short_time=10000,allow_while_idle_long_time=20000
+set adb-dialog package disable --user 0 com.android.systemui/.usb.UsbDebuggingActivity
+set adb-expiry settings put global adb_allowed_connection_time 0
+pkg printspooler com.android.printspooler
+pkg bips com.android.bips
+pkg phototable com.android.dreams.phototable
+pkg managedprovisioning com.android.managedprovisioning
+pkg stk com.android.stk

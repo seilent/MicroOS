@@ -1,0 +1,254 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+LEPTON="${MICROOS_LEPTON:-/usr/libexec/microos/microos-lepton}"
+DATA="${MICROOS_ANDROID_DATA:-${HOME}/.local/share/microos-android}"
+CONTEXT="${MICROOS_ANDROID_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/android}"
+[[ "${CONTEXT##*/}" == android ]] || { echo "microos-android-sideload: ${CONTEXT} is not the android context, refusing" >&2; exit 1; }
+CACHE="${MICROOS_ANDROID_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/microos-android/android}"
+ROMS="${MICROOS_ANDROID_ROM:-${HOME}/Android}"
+CONTAINER=lepton-android
+STATES="${DATA}/sideload"
+QUEUE="${DATA}/prune"
+PACKAGES_XML="${CONTEXT}/baked/data_overlay/system/packages.xml"
+
+say() {
+    logger -t microos-apk -- "$*" 2>/dev/null || true
+    printf 'microos-apk: %s\n' "$*" >&2
+}
+
+fail() {
+    say "$*"
+    exit 1
+}
+
+guest() { podman exec "${CONTAINER}" "$@"; }
+
+guest_i() { podman exec -i "${CONTAINER}" "$@"; }
+
+extractor() {
+    if [[ -n "${MICROOS_APK_INFO:-}" ]]; then
+        printf '%s\n' "${MICROOS_APK_INFO}"
+        return 0
+    fi
+    local dir
+    dir=$("${LEPTON}" runtime) || return 1
+    printf '%s\n' "${dir}/liblepton/apk_extractor/bin/apk-info-extractor"
+}
+
+apk_set() {
+    local apk=$1 dir name
+    dir=$(dirname "${apk}")
+    if [[ "$(basename "${apk}")" != base.apk || "$(readlink -m "${dir}")" == "$(readlink -m "${ROMS}")" ]]; then
+        printf '%s\n' "${apk}"
+        return 0
+    fi
+    {
+        printf '%s\n' "${apk}"
+        for name in "${dir}"/*.apk; do
+            [[ "${name}" != "${apk}" && -f "${name}" && "${name##*/}" != -* ]] || continue
+            printf '%s\n' "${name}"
+        done
+    } | LC_ALL=C sort
+}
+
+apk_info() {
+    local apk=$1 key line tool pkg version
+    key="${apk}	$(stat -c '%s	%Y' "${apk}" 2>/dev/null)" || return 1
+    mkdir -p "${CACHE}"
+    if [[ -f "${CACHE}/apkinfo" ]]; then
+        while IFS= read -r line; do
+            if [[ "${line%	*	*}" == "${key}" ]]; then
+                printf '%s\n' "${line#"${key}"	}"
+                return 0
+            fi
+        done < "${CACHE}/apkinfo"
+    fi
+    tool=$(extractor) || return 1
+    pkg=$("${tool}" --print-app-id "${apk}" 2>/dev/null) || return 1
+    version=$("${tool}" --print-app-version "${apk}" 2>/dev/null) || return 1
+    [[ "${pkg}" =~ ^[A-Za-z0-9_.]+$ && "${version}" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\t%s\t%s\n' "${key}" "${pkg}" "${version}" >> "${CACHE}/apkinfo"
+    printf '%s\t%s\n' "${pkg}" "${version}"
+}
+
+set_sha() { sha256sum "$@" | cut -d' ' -f1 | sha256sum | cut -d' ' -f1; }
+
+installed() {
+    python3 - "${PACKAGES_XML}" "$1" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+try:
+    root = ET.parse(sys.argv[1]).getroot()
+except (OSError, ET.ParseError):
+    sys.exit(0)
+for node in root.findall("package"):
+    if node.get("name") == sys.argv[2]:
+        print(node.get("version", ""), node.get("installer", ""))
+PY
+}
+
+state_get() { sed -n "s/^$2=//p" "${STATES}/$1" 2>/dev/null; }
+
+state_write() {
+    mkdir -p "${STATES}"
+    printf 'path=%s\nsha256=%s\nversion=%s\n' "$2" "$3" "$4" > "${STATES}/$1.tmp"
+    mv "${STATES}/$1.tmp" "${STATES}/$1"
+}
+
+entries() {
+    local file dir
+    while IFS= read -r file; do
+        dir=$(dirname "${file}")
+        if [[ "${file##*/}" != base.apk && -f "${dir}/base.apk" && "$(readlink -m "${dir}")" != "$(readlink -m "${ROMS}")" ]]; then
+            continue
+        fi
+        printf '%s\n' "${file}"
+    done < <(find -L "${ROMS}" -type f \( -name '*.apk' -o -name '*.APK' \) ! -name '-*' 2>/dev/null | sort)
+}
+
+reconcile() {
+    local list=() files=() file info pkg state path provider sha
+    [[ -d "${ROMS}" ]] || return 0
+    mapfile -t list < <(entries)
+    (( ${#list[@]} )) || return 0
+    [[ -d "${STATES}" ]] || return 0
+    declare -A providers=()
+    for file in "${list[@]}"; do
+        info=$(apk_info "${file}") || continue
+        providers[${info%%	*}]="${file}"
+    done
+    for state in "${STATES}"/*; do
+        [[ -f "${state}" ]] || continue
+        pkg=${state##*/}
+        path=$(state_get "${pkg}" path)
+        if [[ -f "${path}" ]]; then
+            sed -i '/^stale$/d' "${state}"
+            continue
+        fi
+        provider=${providers[${pkg}]:-}
+        if [[ -n "${provider}" ]]; then
+            mapfile -t files < <(apk_set "${provider}")
+            sha=$(set_sha "${files[@]}")
+            if [[ "${sha}" == "$(state_get "${pkg}" sha256)" ]]; then
+                state_write "${pkg}" "${provider}" "${sha}" "$(state_get "${pkg}" version)"
+            else
+                sed -i '/^stale$/d' "${state}"
+            fi
+            continue
+        fi
+        if ! grep -qx stale "${state}"; then
+            echo stale >> "${state}"
+            say "${pkg}: ${path} is gone, marked stale (microos-android prune removes it)"
+        fi
+    done
+}
+
+prune() {
+    local pkg out kept=()
+    [[ -s "${QUEUE}" ]] || return 0
+    while IFS= read -r pkg; do
+        [[ "${pkg}" =~ ^[A-Za-z0-9_.]+$ && -f "${STATES}/${pkg}" ]] || continue
+        grep -qx stale "${STATES}/${pkg}" || continue
+        out=$(guest /system/bin/cmd package uninstall "${pkg}" 2>&1)
+        if [[ "${out}" == *Success* ]]; then
+            say "${pkg}: uninstalled"
+            rm -f "${STATES}/${pkg}"
+        else
+            say "${pkg}: uninstall failed, kept queued: ${out}"
+            kept+=("${pkg}")
+        fi
+    done < "${QUEUE}"
+    if (( ${#kept[@]} )); then
+        printf '%s\n' "${kept[@]}" > "${QUEUE}"
+    else
+        rm -f "${QUEUE}"
+    fi
+}
+
+install_set() {
+    local out id file size
+    if (( $# == 1 )); then
+        size=$(stat -c %s "$1") || return 1
+        guest_i /system/bin/cmd package install -r -g -S "${size}" < "$1" 2>&1
+        return
+    fi
+    out=$(guest /system/bin/cmd package install-create -r -g 2>&1)
+    [[ "${out}" =~ \[([0-9]+)\] ]] || { printf '%s\n' "${out}"; return; }
+    id=${BASH_REMATCH[1]}
+    for file in "$@"; do
+        if ! size=$(stat -c %s "${file}"); then
+            printf '%s\n' "${file##*/}: cannot read its size"
+            guest /system/bin/cmd package install-abandon "${id}" >/dev/null 2>&1
+            return
+        fi
+        out=$(guest_i /system/bin/cmd package install-write -S "${size}" "${id}" "$(basename "${file}")" - < "${file}" 2>&1)
+        if [[ "${out}" != *Success* ]]; then
+            printf '%s\n' "${out}"
+            guest /system/bin/cmd package install-abandon "${id}" >/dev/null 2>&1
+            return
+        fi
+    done
+    guest /system/bin/cmd package install-commit "${id}" 2>&1
+}
+
+copy_obb() {
+    local pkg=$1 dir=$2 src dest
+    dest="${CONTEXT}/external/Android/obb/${pkg}"
+    for src in "${dir}"/obb/*.obb "${dir}"/*.obb; do
+        [[ -f "${src}" ]] || continue
+        mkdir -p "${dest}"
+        if [[ "$(stat -c '%s %Y' "${src}")" != "$(stat -c '%s %Y' "${dest}/${src##*/}" 2>/dev/null)" ]]; then
+            cp --reflink=auto -p "${src}" "${dest}/${src##*/}" || fail "${pkg}: cannot copy ${src##*/}"
+        fi
+    done
+}
+
+prepare() {
+    local apk=$1 info pkg
+    info=$(apk_info "${apk}") || fail "${apk}: cannot read the package name"
+    pkg=${info%%	*}
+    copy_obb "${pkg}" "$(dirname "${apk}")"
+    printf '%s\n' "${pkg}"
+}
+
+install() {
+    local apk=$1 files=() info pkg version current installed_version installer sha out
+    mapfile -t files < <(apk_set "${apk}")
+    info=$(apk_info "${apk}") || fail "${apk}: cannot read the package name"
+    pkg=${info%%	*}
+    version=${info##*	}
+    reconcile
+    prune
+    current=$(installed "${pkg}")
+    read -r installed_version installer <<<"${current}"
+    [[ -z "${installer:-}" ]] || fail "${pkg} is installed from Play, not replacing it"
+    if [[ -n "${installed_version:-}" ]] && (( version < installed_version )); then
+        fail "${pkg} ${version} is older than installed ${installed_version}, not installing"
+    fi
+    sha=$(set_sha "${files[@]}")
+    if [[ -n "${current}" && "${sha}" == "$(state_get "${pkg}" sha256)" ]]; then
+        state_write "${pkg}" "${apk}" "${sha}" "${version}"
+        printf '%s\n' "${pkg}"
+        return 0
+    fi
+    out=$(install_set "${files[@]}")
+    if [[ "${out}" == *INSTALL_FAILED_UPDATE_INCOMPATIBLE* ]]; then
+        fail "${pkg} is installed from Play, not replacing it"
+    fi
+    [[ "${out}" == *Success* ]] || fail "${pkg}: install failed: ${out}"
+    guest /system/bin/cmd appops set "${pkg}" MANAGE_EXTERNAL_STORAGE allow >/dev/null 2>&1 \
+        || say "${pkg}: appops failed"
+    guest /system/bin/cmd package compile -m speed "${pkg}" >/dev/null 2>&1 \
+        || say "${pkg}: compile failed"
+    state_write "${pkg}" "${apk}" "${sha}" "${version}"
+    say "${pkg} ${version} installed"
+    printf '%s\n' "${pkg}"
+}
+
+case "${1:-}" in
+    prepare) [[ -n "${2:-}" ]] || exit 1; prepare "$2" ;;
+    install) [[ -n "${2:-}" ]] || exit 1; install "$2" ;;
+    installed) [[ -n "${2:-}" ]] || exit 1; installed "$2" ;;
+    *) echo "usage: microos-android-sideload prepare|install <apk> | installed <pkg>" >&2; exit 1 ;;
+esac
