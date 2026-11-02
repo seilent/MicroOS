@@ -322,6 +322,7 @@ for d in nope ../steam recovery nodesk "" Bad; do
   [[ $(current) == steam && $(login) == gamescope-session-steam.desktop ]] || fail "default '$d' did not boot steam: $(cat "$run/session-current")"
   [[ $("$session" get-default) == steam ]] || fail "get-default for '$d'"
 done
+reset
 for d in '../steam' 'a;b' 'x y' '$(id)' Bad; do
   reset
   if "$session" set-default "$d" 2> /dev/null; then fail "set-default took '$d'"; fi
@@ -726,6 +727,145 @@ INVOCATION_ID=0123456789abcdef0123456789abcdef "$TRACK" stop steam 2> /dev/null
 cur microdap
 "$TRACK" stop steam 2> /dev/null
 [[ $(wc -l < "$run/user/track/steam") == 1 ]] || fail "a stop of a session that is not current was counted"
+
+reset
+echo microdap > "$FAKE/default"
+cur android
+s=$(cut -d' ' -f3 "$run/session-current")
+r=0
+"$TRACK" refuse android "$s" no-card 2> "$tmp/out" || r=$?
+[[ $r == 0 ]] || fail "refuse: exit $r"
+[[ $(< "$run/user/track/android.refused") =~ ^[0-9]+$ ]] || fail "refuse did not write the mark: $(cat "$run/user/track/android.refused" 2>&1)"
+[[ $(wc -l < "$run/user/track/android") == 3 ]] || fail "refuse counted $(wc -l < "$run/user/track/android") runs, not 3"
+[[ $(stat -c %a "$run/user/track/android.refused") == 600 ]] || fail "refused mark mode $(stat -c %a "$run/user/track/android.refused")"
+grep -qx "microos-session-track: android refused, no-card, 3 in 600 s" "$tmp/out" ||
+  fail "the refusal log: $(cat "$tmp/out")"
+grep -qx "microos-session-track: android refused 3 times in 600 s, switching to microdap" "$tmp/out" ||
+  fail "the refusal fallback log: $(cat "$tmp/out")"
+has "start --no-block microos-session-fallback@microdap.service" || fail "the refusal did not fall back: $(calls)"
+
+for n in 0 1 2 7; do
+  printf '#!/usr/bin/env bash\necho junk\nexit %s\n' "$n" > "$lb/chk$n"
+done
+chmod 755 "$lb"/chk*
+reset
+mkconf a1 CHECK=/usr/libexec/microos/chk1
+cur android
+s=$(cut -d' ' -f3 "$run/session-current")
+"$TRACK" refuse android "$s" no-card 2> "$tmp/out"
+has "start --no-block microos-session-fallback@steam.service" ||
+  fail "a refused previous with a failing CHECK did not fall through to the default: $(calls)"
+reset
+mkconf a7 CHECK=/usr/libexec/microos/chk0
+echo a7 > "$FAKE/default"
+install -d -m 0755 "$run/user/track"
+echo "$(( $(bt) ))" > "$run/user/track/a7.refused"
+[[ $("$session" get-default) == steam ]] || fail "get-default ignored a fresh refused mark"
+echo "$(( $(bt) - 601 ))" > "$run/user/track/a7.refused"
+[[ $("$session" get-default) == a7 ]] || fail "get-default honoured a stale refused mark"
+rm -f "$sd"/a1.conf "$sd"/a7.conf "$lb"/chk0 "$lb"/chk1 "$lb"/chk2 "$lb"/chk7
+reset
+cur android
+s=$(cut -d' ' -f3 "$run/session-current")
+r=0
+"$TRACK" refuse android "$s" 'No-Card' 2> "$tmp/out" || r=$?
+[[ $r == 2 ]] || fail "a bad reason: exit $r"
+install -m 0600 /dev/null "$MICROOS_SESSION_SHORT_TRACKER"
+touch "$run/switching"
+"$TRACK" refuse android "$s" no-card 2> /dev/null
+[[ -e $MICROOS_SESSION_SHORT_TRACKER ]] || fail "a refused guard removed the short tracker"
+rm -f "$run/switching" "$MICROOS_SESSION_SHORT_TRACKER"
+grep -q "^usage: microos-session-track stop <name> | refuse <name> <serial> <reason>$" "$tmp/out" ||
+  fail "a bad reason printed no usage: $(cat "$tmp/out")"
+[[ ! -e $run/user/track/android && ! -e $run/user/track/android.refused ]] || fail "a bad reason wrote to $run/user/track"
+r=0
+"$TRACK" refuse android "$s" '' 2> /dev/null || r=$?
+[[ $r == 2 ]] || fail "an empty reason: exit $r"
+r=0
+"$TRACK" refuse android "$s" 2> /dev/null || r=$?
+[[ $r == 2 ]] || fail "refuse without a reason: exit $r"
+r=0
+"$TRACK" refuse android "" no-card 2> /dev/null || r=$?
+[[ $r == 2 ]] || fail "refuse without a serial: exit $r"
+
+reset
+cur android
+s=$(cut -d' ' -f3 "$run/session-current")
+touch "$run/switching"
+"$TRACK" refuse android "$s" no-card 2> /dev/null
+[[ ! -e $run/user/track/android && ! -e $run/user/track/android.refused ]] || fail "a refusal while switching was counted"
+rm "$run/switching"
+echo stopping > "$FAKE/system-state"
+"$TRACK" refuse android "$s" no-card 2> /dev/null
+[[ ! -e $run/user/track/android && ! -e $run/user/track/android.refused ]] || fail "a refusal while the system is stopping was counted"
+rm "$FAKE/system-state"
+"$TRACK" refuse android $(( s + 1 )) no-card 2> /dev/null
+[[ ! -e $run/user/track/android && ! -e $run/user/track/android.refused ]] || fail "a refusal of another serial was counted"
+cur steam
+"$TRACK" refuse android "$s" no-card 2> /dev/null
+[[ ! -e $run/user/track/android && ! -e $run/user/track/android.refused ]] || fail "a refusal of a session that is not current was counted"
+! hasre 'microos-session-(switch|fallback)' || fail "a refused guard fell back: $(calls)"
+
+reset
+echo steam > "$FAKE/default"
+cur android
+s=$(cut -d' ' -f3 "$run/session-current")
+printf 'microdap gamescope-session-plus@microdap.service %s requested\n' "$s" > "$run/session-previous"
+"$TRACK" refuse android "$s" card-lost 2> "$tmp/out"
+has "start --no-block microos-session-fallback@microdap.service" ||
+  fail "a refusal did not take session-previous first: $(calls)"
+grep -qx "microos-session-track: android refused, card-lost, 3 in 600 s" "$tmp/out" ||
+  fail "the refusal reason did not reach the fallback: $(cat "$tmp/out")"
+grep -qx "microos-session-track: android refused 3 times in 600 s, switching to microdap" "$tmp/out" ||
+  fail "the refusal did not take session-previous first: $(cat "$tmp/out")"
+
+reset
+echo microdap > "$FAKE/default"
+cur android
+s=$(cut -d' ' -f3 "$run/session-current")
+printf 'microdap gamescope-session-plus@microdap.service %s requested\n' "$s" > "$run/session-previous"
+now=$(bt)
+mkdir -p "$run/user/track"
+echo "$now" > "$run/user/track/microdap.refused"
+"$TRACK" refuse android "$s" no-card 2> /dev/null
+! has "start --no-block microos-session-fallback@microdap.service" || fail "a candidate with a fresh refused mark was taken: $(calls)"
+has "start --no-block microos-session-fallback@steam.service" || fail "a refusal with a marked previous did not go to steam: $(calls)"
+
+reset
+echo microdap > "$FAKE/default"
+cur android
+s=$(cut -d' ' -f3 "$run/session-current")
+printf 'microdap gamescope-session-plus@microdap.service %s requested\n' "$s" > "$run/session-previous"
+now=$(bt)
+mkdir -p "$run/user/track"
+echo $(( now - 650 )) > "$run/user/track/microdap.refused"
+"$TRACK" refuse android "$s" no-card 2> /dev/null
+has "start --no-block microos-session-fallback@microdap.service" ||
+  fail "a stale refused mark was honoured: $(calls)"
+
+reset
+echo microdap > "$FAKE/default"
+cur android
+s=$(cut -d' ' -f3 "$run/session-current")
+printf 'microdap gamescope-session-plus@microdap.service %s requested\n' "$s" > "$run/session-previous"
+"$TRACK" stop android 2> /dev/null
+! has "start --no-block microos-session-fallback@steam.service" || fail "a stop took steam before the default: $(calls)"
+"$TRACK" stop android 2> /dev/null
+"$TRACK" stop android 2> /dev/null
+has "start --no-block microos-session-fallback@microdap.service" || fail "a stop ignored the default: $(calls)"
+[[ $(wc -l < "$run/user/track/android") == 3 ]] || fail "three stops counted $(wc -l < "$run/user/track/android") runs"
+
+reset
+cur microdap
+echo steam > "$FAKE/default"
+"$TRACK" stop microdap 2> /dev/null
+"$TRACK" stop microdap 2> /dev/null
+now=$(bt)
+mkdir -p "$run/user/track"
+echo "$now" > "$run/user/track/steam.refused"
+"$TRACK" stop microdap 2> /dev/null
+! has "start --no-block microos-session-fallback@steam.service" || fail "a stop took a candidate with a fresh refused mark: $(calls)"
+has "start --no-block microos-session-fallback@recovery.service" || fail "a stop with a marked default did not go to recovery: $(calls)"
 
 reset
 cur steam

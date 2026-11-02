@@ -702,6 +702,63 @@ kill "${holder}"
 wait "${holder}" 2>/dev/null || true
 unset holder
 
+cat > "${T}/track-default.py" <<'PY'
+import importlib.machinery
+import importlib.util
+import sys
+
+loader = importlib.machinery.SourceFileLoader("client", sys.argv[1])
+spec = importlib.util.spec_from_loader("client", loader)
+client = importlib.util.module_from_spec(spec)
+loader.exec_module(client)
+
+seen = []
+
+
+class Result:
+    returncode = 0
+    stderr = b""
+
+
+def run(argv, **kwargs):
+    seen.append(argv)
+    return Result()
+
+
+client.subprocess.run = run
+
+
+class Bus:
+    def call_sync(self, *args, **kwargs):
+        raise client.GLib.Error("org.freedesktop.DBus.Error.UnknownMethod", "no unit object")
+
+
+class Loop:
+    def quit(self):
+        pass
+
+
+handle = client.Client(bus=Bus(), loop=Loop())
+handle.refuse("no-card")
+print(client.TRACK)
+print(repr(seen[0] if seen else []))
+PY
+rc=0
+printf 'android gamescope-session-plus@android.service 4242 0\n' > "${MICROOS_RUNDIR}/session-current"
+out=$(env -u MICROOS_TRACK python3 -I "${T}/track-default.py" "${libexec}/microos-android-client" 2> "${T}/track-default-err") || rc=$?
+[[ "${rc}" == 0 ]] || fail "the default tracker path: exit ${rc}: $(cat "${T}/track-default-err")"
+mapfile -t lines <<< "${out}"
+[[ "${lines[0]}" == "/usr/libexec/microos/microos-session-track" ]] \
+    || fail "the default tracker path is not the image's absolute path: ${lines[0]}"
+[[ "${lines[1]}" == "['/usr/libexec/microos/microos-session-track', 'refuse', 'android', '4242', 'no-card']" ]] \
+    || fail "a refusal with no override did not reach the tracker path: ${lines[1]}"
+[[ -x "${repo}/data/usr/libexec/microos/microos-android-client" ]] || fail "the client is not executable"
+grep -qx 'ExecStopPost=/usr/libexec/microos/microos-session-track stop %i' \
+    "${repo}/../../system_files/usr/lib/systemd/user/gamescope-session-plus@.service.d/10-microos-track.conf" \
+    || fail "the tracker is not the path under /usr/libexec/microos"
+tracker="${repo}/../../system_files/usr/libexec/microos/microos-session-track"
+[[ -f "${tracker}" && -x "${tracker}" ]] || fail "the default tracker path has no program in the image"
+
 if [[ "${failures}" != 0 ]]; then
     echo "$(cat "${T}/out" 2>/dev/null | tail -20)" >&2
     exit 1

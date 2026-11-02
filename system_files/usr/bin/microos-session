@@ -24,6 +24,7 @@ padstate=${MICROOS_PAD_STATE:-}
 pad="AYANEO Controller"
 keys="aya-keys"
 sessions=$root/usr/lib/microos/sessions.d
+track=$rundir/user/track
 namere='^[a-z0-9][a-z0-9-]*$'
 
 log() { echo "$me: $*" >&2; }
@@ -252,11 +253,20 @@ install_action() {
 get_default() {
   local d
   d=$(timeout 5 microset get session.default 2> /dev/null) || d=""
-  if load "$d" && [[ $DEFAULT == yes ]]; then
+  if load "$d" && [[ $DEFAULT == yes ]] && ! refused "$d"; then
     echo "$d"
   else
     echo steam
   fi
+}
+
+refused() {
+  local f=$track/$1.refused t=0 n
+  [[ -f $f && ! -L $f ]] || return 1
+  read -r t < "$f" || return 1
+  [[ $t =~ ^[0-9]+$ ]] || return 1
+  n=$(( $(boottime_us) / 1000000 ))
+  (( 10#$t <= n && n - 10#$t < window ))
 }
 
 read_current() {

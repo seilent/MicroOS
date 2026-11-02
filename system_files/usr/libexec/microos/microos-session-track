@@ -7,12 +7,24 @@ short=${MICROOS_SESSION_SHORT_TRACKER:-/tmp/chimeraos-short-session-tracker}
 window=${MICROOS_SESSION_WINDOW:-600}
 track=$rundir/user/track
 limit=3
+wordre='^[a-z][a-z0-9-]{0,31}$'
 
-if [[ $# != 2 || $1 != stop || ! $2 =~ $namere ]]; then
-  echo "usage: $me stop <name>" >&2
+usage() {
+  echo "usage: $me stop <name> | refuse <name> <serial> <reason>" >&2
   exit 2
-fi
-name=$2
+}
+
+case ${1:-} in
+  stop)
+    (( $# == 2 )) && [[ $2 =~ $namere ]] || usage
+    name=$2 act=stopped serial="" check=""
+    ;;
+  refuse)
+    (( $# == 4 )) && [[ $2 =~ $namere && $3 =~ ^[0-9]+$ && $4 =~ $wordre ]] || usage
+    name=$2 serial=$3 reason=$4 act=refused check=1
+    ;;
+  *) usage ;;
+esac
 now=$(( $(boottime_us) / 1000000 ))
 
 runs() {
@@ -25,47 +37,92 @@ runs() {
   done < "$f"
 }
 
-rm -f "$short"
-if [[ -e $rundir/switching ]]; then
-  log "$name stopped by a switch"
-  exit 0
-fi
-if [[ $(systemctl is-system-running 2> /dev/null) == stopping ]]; then
-  exit 0
-fi
-read_current
-[[ $cur_name == "$name" ]] || exit 0
-if [[ -f $rundir/session-up && $(< "$rundir/session-up") == "$name $cur_serial ${INVOCATION_ID:-}" ]]; then
-  exit 0
-fi
+counted() {
+  local kept=() k=0 t
+  install -d -m 0755 "$track" || log "cannot create $track"
+  mapfile -t kept < <(runs "$name" $(( $1 / 1000000 )))
+  while (( k < $2 )); do
+    kept+=("$now")
+    k=$(( k + 1 ))
+  done
+  if ! t=$(mktemp "$track/.$name.XXXXXX") || ! printf '%s\n' "${kept[@]}" > "$t" || ! mv -fT "$t" "$track/$name"; then
+    log "cannot write $track/$name"
+  fi
+  echo "${#kept[@]}"
+}
 
-install -d -m 0755 "$track" || log "cannot create $track"
-mapfile -t kept < <(runs "$name" $(( cur_serial / 1000000 )))
-kept+=("$now")
-if ! t=$(mktemp "$track/.$name.XXXXXX") || ! printf '%s\n' "${kept[@]}" > "$t" || ! mv -fT "$t" "$track/$name"; then
-  log "cannot write $track/$name"
+mark() {
+  local t
+  install -d -m 0755 "$track" || log "cannot create $track"
+  if ! t=$(mktemp "$track/.$name.XXXXXX") || ! printf '%s\n' "$now" > "$t" || ! mv -fT "$t" "$track/$name.refused"; then
+    log "cannot write $track/$name.refused"
+  fi
+}
+
+previous() {
+  local p=""
+  [[ -f $rundir/session-previous ]] || return 0
+  read -r p _ < "$rundir/session-previous" || true
+  echo "$p"
+}
+
+guarded() {
+  local st
+  if [[ -e $rundir/switching ]]; then
+    log "$name $act by a switch"
+    return 1
+  fi
+  st=$(systemctl is-system-running 2> /dev/null) || st=""
+  [[ $st != stopping ]] || return 1
+  read_current
+  [[ $cur_name == "$name" ]] || return 1
+  [[ -z $serial || $cur_serial == "$serial" ]] || return 1
+}
+
+pick() {
+  local c
+  fallback=recovery
+  for c in "$@"; do
+    if [[ -z $c || $c == "$name" ]] || ! load "$c" || refused "$c"; then
+      continue
+    fi
+    if [[ -n $check && $(check_state "$c") != available ]]; then
+      continue
+    fi
+    if (( $(runs "$c" 0 | wc -l) < limit )); then
+      fallback=$c
+      return
+    fi
+  done
+}
+
+[[ $act != stopped ]] || rm -f "$short"
+guarded || exit 0
+if [[ $act == stopped && -f $rundir/session-up && $(< "$rundir/session-up") == "$name $cur_serial ${INVOCATION_ID:-}" ]]; then
+  exit 0
 fi
-n=${#kept[@]}
-log "$name stopped before it was up, $n in $window s"
+if [[ $act == stopped ]]; then
+  n=$(counted "$cur_serial" 1)
+  log "$name stopped before it was up, $n in $window s"
+else
+  mark
+  n=$(counted "$serial" "$limit")
+  log "$name refused, $reason, $n in $window s"
+fi
 (( n >= limit )) || exit 0
 
 if [[ $name == recovery ]]; then
-  log "recovery stopped $n times, giving up"
+  log "recovery $act $n times, giving up"
   systemctl start --no-block microos-session-fallback@recovery.service ||
     log "start of microos-session-fallback@recovery.service failed"
   exit 0
 fi
-fallback=recovery
-for c in "$(get_default)" steam; do
-  if [[ $c == "$name" ]] || ! load "$c"; then
-    continue
-  fi
-  if (( $(runs "$c" 0 | wc -l) < limit )); then
-    fallback=$c
-    break
-  fi
-done
-log "$name stopped $n times in $window s, switching to $fallback"
+if [[ $act == stopped ]]; then
+  pick "$(get_default)" steam
+else
+  pick "$(previous)" "$(get_default)" steam
+fi
+log "$name $act $n times in $window s, switching to $fallback"
 systemctl start --no-block "microos-session-fallback@$fallback.service" ||
   log "start of microos-session-fallback@$fallback.service failed"
 exit 0
