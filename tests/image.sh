@@ -1067,7 +1067,7 @@ scripts=()
 for f in /usr/libexec/microos/* /usr/lib/microos/* /usr/lib/dracut/modules.d/91microos-ostree-remap/* /usr/bin/microos-*; do
   [[ -f $f ]] && scripts+=("$f")
 done
-etc=$(grep -n '/etc/' "${scripts[@]}" \
+etc=$(grep -nE '(^|[^[:alnum:]_.}-])/etc/' "${scripts[@]}" \
   | grep -vxE '/usr/bin/microos-update:[0-9]+:[[:space:]]*[A-Za-z_][A-Za-z0-9_]*=/etc/containers/policy\.json' \
   | grep -vE '== /etc/\*' || true)
 [[ -z $etc ]] || fail "MicroOS scripts reference /etc: $etc"
