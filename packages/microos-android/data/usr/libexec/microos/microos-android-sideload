@@ -7,6 +7,12 @@ CONTEXT="${MICROOS_ANDROID_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/an
 [[ "${CONTEXT##*/}" == android ]] || { echo "microos-android-sideload: ${CONTEXT} is not the android context, refusing" >&2; exit 1; }
 CACHE="${MICROOS_ANDROID_CACHE:-${XDG_CACHE_HOME:-${HOME}/.cache}/microos-android/android}"
 ROMS="${MICROOS_ANDROID_ROM:-${HOME}/Android}"
+CONTENT="${MICROOS_CONTENT:-/run/microos/content}"
+CARD_BASE="${CONTENT}/Android"
+CARD_ROOT=
+if [[ -L "${CONTENT}" && -d "${CONTENT}" ]]; then
+    CARD_ROOT="${CARD_BASE}"
+fi
 CONTAINER=lepton-android
 STATES="${DATA}/sideload"
 QUEUE="${DATA}/prune"
@@ -36,17 +42,71 @@ extractor() {
     printf '%s\n' "${dir}/liblepton/apk_extractor/bin/apk-info-extractor"
 }
 
+roots() {
+    local root dir other
+    local -a seen=()
+    for root in "${ROMS}" ${CARD_ROOT:+"${CARD_ROOT}"}; do
+        [[ -d "${root}" ]] || continue
+        if [[ "${root}" == "${CARD_ROOT}" && -L "${root}" ]]; then
+            say "${root}: a link, not reading the card"
+            continue
+        fi
+        dir=$(readlink -m "${root}")
+        for other in ${seen[@]+"${seen[@]}"}; do
+            [[ "${other}" != "${dir}" ]] || continue 2
+        done
+        seen+=("${dir}")
+        printf '%s\n' "${root}"
+    done
+}
+
+literal() {
+    local path=$1 char
+    for char in \\ '*' '?' '[' ']'; do
+        path=${path//"${char}"/\\"${char}"}
+    done
+    printf '%s\n' "${path}"
+}
+
+is_root() {
+    local dir=$1 root
+    for root in "${ROMS}" ${CARD_ROOT:+"${CARD_ROOT}"}; do
+        [[ "$(readlink -m "${dir}")" == "$(readlink -m "${root}")" ]] && return 0
+    done
+    return 1
+}
+
+apk_entries() {
+    local start=$1
+    [[ ! -L "${start}" ]] || start="${start%/}/"
+    find -P "${start}" "${@:2}" ! -name '-*' \
+        \( -type f \( -name '*.apk' -o -name '*.APK' \) -o -type l -a \( -name '*.apk' -o -name '*.APK' -o -xtype d \) \) \
+        -print 2>/dev/null
+}
+
+walk() {
+    local root
+    for root in "$@"; do
+        if [[ "${root}" == "${CARD_ROOT}" ]]; then
+            apk_entries "${root}" \( -path "$(literal "${root}/data")" -o -path "$(literal "${root}/obb")" \
+                -o -path "$(literal "${root}/media")" \) -prune -o
+        else
+            apk_entries "${root}"
+        fi
+    done
+}
+
 apk_set() {
     local apk=$1 dir name
     dir=$(dirname "${apk}")
-    if [[ "$(basename "${apk}")" != base.apk || "$(readlink -m "${dir}")" == "$(readlink -m "${ROMS}")" ]]; then
+    if [[ "$(basename "${apk}")" != base.apk ]] || is_root "${dir}"; then
         printf '%s\n' "${apk}"
         return 0
     fi
     {
         printf '%s\n' "${apk}"
         for name in "${dir}"/*.apk; do
-            [[ "${name}" != "${apk}" && -f "${name}" && "${name##*/}" != -* ]] || continue
+            [[ "${name}" != "${apk}" && -f "${name}" && ! -L "${name}" && "${name##*/}" != -* ]] || continue
             printf '%s\n' "${name}"
         done
     } | LC_ALL=C sort
@@ -99,18 +159,24 @@ state_write() {
 entries() {
     local file dir
     while IFS= read -r file; do
+        if [[ -L "${file}" ]]; then
+            say "${file}: a link, skipped"
+            continue
+        fi
         dir=$(dirname "${file}")
-        if [[ "${file##*/}" != base.apk && -f "${dir}/base.apk" && "$(readlink -m "${dir}")" != "$(readlink -m "${ROMS}")" ]]; then
+        if [[ "${file##*/}" != base.apk && -f "${dir}/base.apk" && ! -L "${dir}/base.apk" ]] && ! is_root "${dir}"; then
             continue
         fi
         printf '%s\n' "${file}"
-    done < <(find -L "${ROMS}" -type f \( -name '*.apk' -o -name '*.APK' \) ! -name '-*' 2>/dev/null | sort)
+    done < <(walk "$@" | sort)
 }
 
 reconcile() {
-    local list=() files=() file info pkg state path provider sha
-    [[ -d "${ROMS}" ]] || return 0
-    mapfile -t list < <(entries)
+    local list=() files=() file info pkg state path provider sha root walked esc other
+    local -a walked_roots=()
+    mapfile -t walked_roots < <(roots)
+    (( ${#walked_roots[@]} )) || return 0
+    mapfile -t list < <(entries "${walked_roots[@]}")
     (( ${#list[@]} )) || return 0
     [[ -d "${STATES}" ]] || return 0
     declare -A providers=()
@@ -122,6 +188,17 @@ reconcile() {
         [[ -f "${state}" ]] || continue
         pkg=${state##*/}
         path=$(state_get "${pkg}" path)
+        walked=1
+        for root in "${ROMS}" "${CARD_BASE}"; do
+            esc=$(literal "${root}")
+            [[ "${path}" != ${esc}/* ]] && continue
+            walked=0
+            for other in "${walked_roots[@]}"; do
+                [[ "${other}" != "${root}" ]] || { walked=1; break; }
+            done
+            break
+        done
+        (( walked )) || continue
         if [[ -f "${path}" ]]; then
             sed -i '/^stale$/d' "${state}"
             continue
@@ -193,10 +270,28 @@ install_set() {
 }
 
 copy_obb() {
-    local pkg=$1 dir=$2 src dest
+    local pkg=$1 dir=$2 src dest component target checked=
+    local -a sources=()
     dest="${CONTEXT}/external/Android/obb/${pkg}"
-    for src in "${dir}"/obb/*.obb "${dir}"/*.obb; do
+    if [[ -L "${dir}/obb" ]]; then
+        say "${dir}/obb is a link, not copying its obb files"
+    elif [[ -d "${dir}/obb" ]]; then
+        sources+=("${dir}"/obb/*.obb)
+    fi
+    sources+=("${dir}"/*.obb)
+    for src in ${sources[@]+"${sources[@]}"}; do
+        if [[ -L "${src}" ]]; then
+            say "${src}: a link, skipped"
+            continue
+        fi
         [[ -f "${src}" ]] || continue
+        if [[ -z "${checked}" ]]; then
+            for component in Android "Android/obb" "Android/obb/${pkg}"; do
+                target="${CONTEXT}/external/${component}"
+                [[ ! -L "${target}" ]] || fail "${pkg}: ${target} is a link, not copying its obb files"
+            done
+            checked=1
+        fi
         mkdir -p "${dest}"
         if [[ "$(stat -c '%s %Y' "${src}")" != "$(stat -c '%s %Y' "${dest}/${src##*/}" 2>/dev/null)" ]]; then
             cp --reflink=auto -p "${src}" "${dest}/${src##*/}" || fail "${pkg}: cannot copy ${src##*/}"

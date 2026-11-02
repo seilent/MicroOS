@@ -17,7 +17,10 @@ export MICROOS_ANDROID_CONTEXT="${T}/contexts/android"
 export MICROOS_ANDROID_DATA="${T}/data"
 export MICROOS_ANDROID_CACHE="${T}/cache"
 export MICROOS_ANDROID_ROM="${T}/roms"
+export MICROOS_CONTENT="${T}/content"
 export MICROOS_APK_INFO="${T}/bin/apk-info-extractor"
+card="${T}/card"
+card_root="${MICROOS_CONTENT}/Android"
 xml="${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system/packages.xml"
 states="${MICROOS_ANDROID_DATA}/sideload"
 
@@ -91,8 +94,9 @@ packages() {
 }
 
 reset() {
-    rm -rf "${STATE}" "${MICROOS_ANDROID_CONTEXT}" "${MICROOS_ANDROID_DATA}" "${MICROOS_ANDROID_CACHE}" "${MICROOS_ANDROID_ROM}"
-    mkdir -p "${STATE}" "${MICROOS_ANDROID_ROM}"
+    rm -rf "${STATE}" "${MICROOS_ANDROID_CONTEXT}" "${MICROOS_ANDROID_DATA}" "${MICROOS_ANDROID_CACHE}" "${MICROOS_ANDROID_ROM}" "${MICROOS_CONTENT}" "${card}"
+    mkdir -p "${STATE}" "${MICROOS_ANDROID_ROM}" "${card}"
+    ln -sfn "${card}" "${MICROOS_CONTENT}"
     : > "${STATE}/guest"
     : > "${STATE}/log"
     : > "${STATE}/extractor"
@@ -108,6 +112,7 @@ run() {
 
 guest_count() { grep -c -- "$1" "${STATE}/guest" || true; }
 logged() { grep -qF -- "$1" "${STATE}/log" || fail "missing log: $1, got $(cat "${STATE}/log")"; }
+no_card() { rm -f "${MICROOS_CONTENT}"; }
 a2048="${MICROOS_ANDROID_ROM}/2048.apk"
 
 case_name="new apk"
@@ -354,6 +359,294 @@ for kind in missing empty dangling; do
     cmp -s "${states}/com.uberspot.a2048" "${T}/state.before" || fail "state touched: $(cat "${states}/com.uberspot.a2048")"
     rm -rf "${MICROOS_ANDROID_ROM}"
 done
+
+case_name="both roots read"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+run install "${a2048}"
+[[ "${rc}" == 0 && "${out}" == com.uberspot.a2048 ]] || fail "home root: exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+card_apk="${card_root}/tetris.apk"
+make_apk "${card_apk}" two com.example.tetris 3
+run install "${card_apk}"
+[[ "${rc}" == 0 && "${out}" == com.example.tetris ]] || fail "card root: exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+mkdir -p "${card_root}/games"
+mv "${card_apk}" "${card_root}/games/tetris.apk"
+mv "${card_apk}.meta" "${card_root}/games/tetris.apk.meta"
+run install "${a2048}"
+[[ "$(sed -n 's/^path=//p' "${states}/com.example.tetris")" == "${card_root}/games/tetris.apk" ]] \
+    || fail "the card root was not walked: $(cat "${states}/com.example.tetris")"
+mkdir -p "${card_root}/real"
+make_apk "${card_root}/real/base.apk" base com.example.split 4
+make_apk "${card_root}/real/split_config.en.apk" en com.example.split 4
+run install "${card_root}/real/base.apk"
+[[ "${rc}" == 0 ]] || fail "card walk: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(guest_count install-write)" == 2 ]] || fail "a card split set had $(guest_count install-write) writes: $(cat "${STATE}/guest")"
+
+case_name="card absent"
+reset
+no_card
+make_apk "${a2048}" one com.uberspot.a2048 25
+run install "${a2048}"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+
+case_name="content link dangling"
+reset
+rm -f "${MICROOS_CONTENT}"
+ln -s "${T}/nowhere" "${MICROOS_CONTENT}"
+make_apk "${a2048}" one com.uberspot.a2048 25
+run install "${a2048}"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+
+case_name="card Android missing"
+reset
+make_apk "${MICROOS_ANDROID_ROM}/home.apk" home com.example.home 1
+make_apk "${card_root}/tetris.apk" two com.example.tetris 3
+run install "${card_root}/tetris.apk"
+[[ "${rc}" == 0 ]] || fail "setup exit ${rc}: $(cat "${STATE}/stderr")"
+rm -rf "${card_root}"
+run install "${MICROOS_ANDROID_ROM}/home.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx stale "${states}/com.example.tetris" && fail "the card state was marked stale with no Android folder: $(cat "${states}/com.example.tetris")"
+"${android}" prune > "${STATE}/prune-out" 2>&1
+grep -q "no stale package" "${STATE}/prune-out" || fail "the card was queued with no Android folder: $(cat "${STATE}/prune-out")"
+
+for kind in dangling link; do
+    case_name="card out ${kind}"
+    reset
+    make_apk "${MICROOS_ANDROID_ROM}/home.apk" home com.example.home 1
+    make_apk "${card_root}/tetris.apk" two com.example.tetris 3
+    run install "${card_root}/tetris.apk"
+    [[ "${rc}" == 0 ]] || fail "setup exit ${rc}: $(cat "${STATE}/stderr")"
+    case "${kind}" in
+        dangling) rm -f "${MICROOS_CONTENT}"; ln -s "${T}/nowhere" "${MICROOS_CONTENT}" ;;
+        link)
+            rm -rf "${card_root}"
+            mkdir -p "${T}/loose"
+            ln -s "${T}/loose" "${card_root}"
+            ;;
+    esac
+    run install "${MICROOS_ANDROID_ROM}/home.apk"
+    [[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+    grep -qx stale "${states}/com.example.tetris" && fail "the card state was marked stale with the card ${kind}: $(cat "${states}/com.example.tetris")"
+    "${android}" prune > "${STATE}/prune-out" 2>&1
+    grep -q "no stale package" "${STATE}/prune-out" || fail "the card was queued with the card ${kind}: $(cat "${STATE}/prune-out")"
+    [[ "${kind}" != link ]] || logged "${card_root}: a link, not reading the card"
+done
+
+case_name="card back marks stale"
+reset
+make_apk "${MICROOS_ANDROID_ROM}/home.apk" home com.example.home 1
+make_apk "${card_root}/tetris.apk" two com.example.tetris 3
+run install "${card_root}/tetris.apk"
+[[ "${rc}" == 0 ]] || fail "setup exit ${rc}: $(cat "${STATE}/stderr")"
+mv "${card_root}" "${T}/card-away"
+run install "${MICROOS_ANDROID_ROM}/home.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx stale "${states}/com.example.tetris" && fail "the card state was marked stale with the card away"
+mv "${T}/card-away" "${card_root}"
+rm -f "${card_root}/tetris.apk" "${card_root}/tetris.apk.meta"
+run install "${MICROOS_ANDROID_ROM}/home.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx stale "${states}/com.example.tetris" || fail "a card package back without its file was not marked stale"
+logged "com.example.tetris: ${card_root}/tetris.apk is gone, marked stale"
+
+case_name="card root link refused"
+reset
+mkdir -p "${T}/loose"
+make_apk "${T}/loose/loose.apk" loose com.example.loose 1
+rm -rf "${card_root}"
+ln -s "${T}/loose" "${card_root}"
+make_apk "${MICROOS_ANDROID_ROM}/home.apk" home com.example.home 1
+run install "${MICROOS_ANDROID_ROM}/home.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+logged "${card_root}: a link, not reading the card"
+grep -q "com.example.loose" "${STATE}/guest" && fail "an apk behind the card root link was installed: $(cat "${STATE}/guest")"
+
+case_name="home root link walked once"
+reset
+rm -rf "${MICROOS_ANDROID_ROM}"
+ln -s "${card_root}" "${MICROOS_ANDROID_ROM}"
+make_apk "${card_root}/h.apk" h com.example.h 1
+make_apk "${card_root}/game.apk" game com.example.game 1
+ln -s "${card_root}/h.apk" "${card_root}/link.apk"
+run install "${card_root}/h.apk"
+[[ "${rc}" == 0 && "${out}" == com.example.h ]] || fail "exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+[[ "$(grep -cF -- 'link.apk: a link, skipped' "${STATE}/log")" == 1 ]] || fail "a root walked twice: $(cat "${STATE}/log")"
+[[ "$(guest_count 'install -r -g')" == 1 ]] || fail "installed twice: $(cat "${STATE}/guest")"
+
+case_name="linked base apk in a card folder"
+reset
+make_apk "${card_root}/x.apk" x com.example.x 1
+make_apk "${MICROOS_ANDROID_ROM}/elsewhere.apk" e com.example.e 1
+make_apk "${MICROOS_ANDROID_ROM}/anchor.apk" a com.example.anchor 1
+mkdir -p "${card_root}/folder"
+ln -s "${MICROOS_ANDROID_ROM}/elsewhere.apk" "${card_root}/folder/base.apk"
+run install "${card_root}/x.apk"
+[[ "${rc}" == 0 && "${out}" == com.example.x ]] || fail "exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+logged "${card_root}/folder/base.apk: a link, skipped"
+mv "${card_root}/x.apk" "${card_root}/folder/x.apk"
+mv "${card_root}/x.apk.meta" "${card_root}/folder/x.apk.meta"
+run install "${MICROOS_ANDROID_ROM}/anchor.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx stale "${states}/com.example.x" && fail "a linked base.apk hid x.apk: $(cat "${states}/com.example.x")"
+[[ "$(sed -n 's/^path=//p' "${states}/com.example.x")" == "${card_root}/folder/x.apk" ]] || fail "path not updated: $(cat "${states}/com.example.x")"
+
+case_name="card path with glob characters"
+reset
+globby="${T}/cont[1]"
+ln -sfn "${card}" "${globby}"
+export MICROOS_CONTENT="${globby}"
+make_apk "${MICROOS_ANDROID_ROM}/home.apk" home com.example.home 1
+make_apk "${globby}/Android/data/x.apk" skipped com.example.skipped 1
+make_apk "${globby}/Android/tetris.apk" two com.example.tetris 3
+run install "${globby}/Android/tetris.apk"
+[[ "${rc}" == 0 && "${out}" == com.example.tetris ]] || fail "exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+: > "${STATE}/extractor"
+run install "${MICROOS_ANDROID_ROM}/home.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qF -- "--print-app-id ${globby}/Android/data/x.apk" "${STATE}/extractor" && fail "the card data folder was walked: $(cat "${STATE}/extractor")"
+no_card
+run install "${MICROOS_ANDROID_ROM}/home.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx stale "${states}/com.example.tetris" && fail "a glob path card state was marked stale with the card out"
+ln -sfn "${card}" "${globby}"
+rm -f "${globby}/Android/tetris.apk" "${globby}/Android/tetris.apk.meta"
+run install "${MICROOS_ANDROID_ROM}/home.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx stale "${states}/com.example.tetris" || fail "a glob path card state was not marked stale with the card back"
+export MICROOS_CONTENT="${T}/content"
+
+case_name="card phone folders skipped"
+reset
+make_apk "${MICROOS_ANDROID_ROM}/other.apk" other com.example.other 1
+for name in data obb media; do
+    top="${card_root}/${name}/x.apk"
+    nested="${card_root}/foo/${name}/x.apk"
+    make_apk "${nested}" nested com.example.nested 1
+    run install "${nested}"
+    [[ "${rc}" == 0 ]] || fail "${name}: exit ${rc}: $(cat "${STATE}/stderr")"
+    mkdir -p "$(dirname "${top}")"
+    mv "${nested}" "${top}"
+    mv "${nested}.meta" "${top}.meta"
+    run install "${MICROOS_ANDROID_ROM}/other.apk"
+    grep -qx stale "${states}/com.example.nested" || fail "the card ${name} folder was read: $(cat "${states}/com.example.nested")"
+    rm -f "${top}" "${top}.meta" "${states}/com.example.nested"
+done
+
+case_name="symlink skipped"
+reset
+make_apk "${MICROOS_ANDROID_ROM}/real/one.apk" real com.example.real 1
+mkdir -p "${card_root}"
+ln -s "${MICROOS_ANDROID_ROM}/real/one.apk" "${card_root}/link.apk"
+mkdir -p "${card_root}/dir"
+make_apk "${card_root}/dir/two.apk" two com.example.two 2
+ln -s "${card_root}/dir" "${card_root}/linked-dir"
+make_apk "${MICROOS_ANDROID_ROM}/anchor.apk" anchor com.example.anchor 1
+run install "${MICROOS_ANDROID_ROM}/anchor.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+logged "${card_root}/link.apk: a link, skipped"
+logged "${card_root}/linked-dir: a link, skipped"
+[[ "$(cat "${STATE}/guest")" == "/system/bin/cmd package install -r -g -S $(stat -c %s "${MICROOS_ANDROID_ROM}/anchor.apk")
+/system/bin/cmd appops set com.example.anchor MANAGE_EXTERNAL_STORAGE allow
+/system/bin/cmd package compile -m speed com.example.anchor" ]] || fail "a link was installed: $(cat "${STATE}/guest")"
+"${android}" prune > "${STATE}/prune-out" 2>&1
+grep -q "no stale package" "${STATE}/prune-out" || fail "a link was queued: $(cat "${STATE}/prune-out")"
+
+case_name="card split set"
+reset
+make_apk "${card_root}/games/base.apk" base com.example.game 7
+printf 'cfg\n' > "${card_root}/games/split_config.arm64_v8a.apk"
+make_apk "${card_root}/games/split_config.en.apk" de com.example.game 7
+ln -s "${card_root}/games/split_config.en.apk" "${card_root}/games/zz-link.apk"
+run install "${card_root}/games/base.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(guest_count install-write)" == 3 ]] || fail "a card split set had $(guest_count install-write) writes: $(cat "${STATE}/guest")"
+logged "${card_root}/games/zz-link.apk: a link, skipped"
+
+case_name="card base at the top"
+reset
+make_apk "${card_root}/base.apk" one com.example.one 1
+make_apk "${card_root}/other.apk" two com.example.two 2
+run install "${card_root}/base.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(grep -c 'install -r -g' "${STATE}/guest")" == 1 ]] || fail "a base in the card root bundled its neighbours: $(cat "${STATE}/guest")"
+run install "${card_root}/other.apk"
+[[ "${rc}" == 0 && "$(grep -c 'install -r -g' "${STATE}/guest")" == 2 ]] || fail "a base in the card root hid its neighbours: $(cat "${STATE}/guest")"
+
+case_name="home base at the top"
+reset
+make_apk "${MICROOS_ANDROID_ROM}/base.apk" one com.example.one 1
+make_apk "${MICROOS_ANDROID_ROM}/other.apk" two com.example.two 2
+run install "${MICROOS_ANDROID_ROM}/base.apk"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(grep -c 'install -r -g' "${STATE}/guest")" == 1 ]] || fail "a base in the home root bundled its neighbours: $(cat "${STATE}/guest")"
+
+case_name="same names in both roots"
+reset
+make_apk "${MICROOS_ANDROID_ROM}/same.apk" home com.example.same.home 1
+make_apk "${card_root}/same.apk" card com.example.same.card 1
+run install "${MICROOS_ANDROID_ROM}/same.apk"
+[[ "${rc}" == 0 && "${out}" == com.example.same.home ]] || fail "home: exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+run install "${card_root}/same.apk"
+[[ "${rc}" == 0 && "${out}" == com.example.same.card ]] || fail "card: exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+[[ "$(sed -n 's/^path=//p' "${states}/com.example.same.home")" == "${MICROOS_ANDROID_ROM}/same.apk" ]] || fail "the home root entry took the card path"
+[[ "$(sed -n 's/^path=//p' "${states}/com.example.same.card")" == "${card_root}/same.apk" ]] || fail "the card root entry took the home path"
+
+for kind in Android obb pkg; do
+    case_name="obb link at ${kind}"
+    reset
+    make_apk "${a2048}" one com.uberspot.a2048 25
+    mkdir -p "${MICROOS_ANDROID_ROM}/obb"
+    echo data > "${MICROOS_ANDROID_ROM}/obb/main.25.com.uberspot.a2048.obb"
+    external="${MICROOS_ANDROID_CONTEXT}/external"
+    mkdir -p "${external}/Android/obb" "${T}/elsewhere"
+    case "${kind}" in
+        Android) rm -rf "${external}/Android"; ln -s "${T}/elsewhere" "${external}/Android" ;;
+        obb) rm -rf "${external}/Android/obb"; ln -s "${T}/elsewhere" "${external}/Android/obb" ;;
+        pkg) ln -s "${T}/elsewhere" "${external}/Android/obb/com.uberspot.a2048" ;;
+    esac
+    run prepare "${a2048}"
+    [[ "${rc}" == 1 ]] || fail "exit ${rc}, out ${out}"
+    logged "com.uberspot.a2048: ${external}/"
+    logged "is a link, not copying its obb files"
+    [[ -z "$(ls -A "${T}/elsewhere")" ]] || fail "obb written through the link at ${kind}: $(ls -A "${T}/elsewhere")"
+done
+
+case_name="obb link with no obb"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+external="${MICROOS_ANDROID_CONTEXT}/external"
+mkdir -p "${external}/Android/obb" "${T}/elsewhere"
+ln -s "${T}/elsewhere" "${external}/Android/obb/com.uberspot.a2048"
+run prepare "${a2048}"
+[[ "${rc}" == 0 && "${out}" == com.uberspot.a2048 ]] || fail "exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+[[ -z "$(ls -A "${T}/elsewhere")" ]] || fail "obb written through the link: $(ls -A "${T}/elsewhere")"
+
+case_name="obb source link skipped"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+mkdir -p "${MICROOS_ANDROID_ROM}/obb" "${T}/outside"
+echo secret > "${T}/outside/big.obb"
+echo data > "${MICROOS_ANDROID_ROM}/obb/main.25.com.uberspot.a2048.obb"
+ln -s "${T}/outside/big.obb" "${MICROOS_ANDROID_ROM}/obb/patch.25.com.uberspot.a2048.obb"
+run prepare "${a2048}"
+[[ "${rc}" == 0 && "${out}" == com.uberspot.a2048 ]] || fail "exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+dest="${MICROOS_ANDROID_CONTEXT}/external/Android/obb/com.uberspot.a2048"
+[[ ! -e "${dest}/patch.25.com.uberspot.a2048.obb" ]] || fail "a linked obb source was copied"
+[[ "$(cat "${dest}/main.25.com.uberspot.a2048.obb")" == data ]] || fail "the real obb was not copied"
+logged "${MICROOS_ANDROID_ROM}/obb/patch.25.com.uberspot.a2048.obb: a link, skipped"
+
+case_name="obb folder link skipped"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+mkdir -p "${T}/outside"
+echo secret > "${T}/outside/main.25.com.uberspot.a2048.obb"
+ln -s "${T}/outside" "${MICROOS_ANDROID_ROM}/obb"
+run prepare "${a2048}"
+[[ "${rc}" == 0 && "${out}" == com.uberspot.a2048 ]] || fail "exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+[[ ! -e "${MICROOS_ANDROID_CONTEXT}/external/Android/obb/com.uberspot.a2048/main.25.com.uberspot.a2048.obb" ]] \
+    || fail "an obb was copied through the linked obb folder"
+logged "${MICROOS_ANDROID_ROM}/obb is a link, not copying its obb files"
 
 case_name="extractor from the runtime"
 reset
