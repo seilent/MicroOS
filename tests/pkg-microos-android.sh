@@ -65,6 +65,7 @@ for f in \
   /usr/share/gamescope-session-plus/sessions.d/android \
   /usr/share/microos-android/display \
   /usr/share/microos-android/opts \
+  /usr/share/microos-android/cmd \
   /usr/share/microos-android/restrictions-stub.jar \
   /usr/share/microos-android/restrictions-stub.rc \
   /usr/share/microos-lepton/reviewed/25772114 \
@@ -115,6 +116,12 @@ for f in microos-liblepton.sh microos-lepton-lib.sh; do
 done
 if [[ $(stat -c %a "$root/usr/bin/microos-android" 2>/dev/null) != 755 ]]; then
   fail "/usr/bin/microos-android is not 755"
+fi
+if [[ $(stat -c %a "$root/usr/share/microos-android/cmd" 2>/dev/null) != 755 ]]; then
+  fail "/usr/share/microos-android/cmd is not 755"
+fi
+if [[ $(head -n 1 "$root/usr/share/microos-android/cmd" 2>/dev/null) != '#!/system/bin/sh' ]]; then
+  fail "/usr/share/microos-android/cmd has no /system/bin/sh shebang"
 fi
 for f in "$root"/usr/share/microos-lepton/reviewed/*; do
   [[ -f $f && ! -L $f ]] || fail "${f#"$root"} is not a regular file"

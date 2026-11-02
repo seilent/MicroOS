@@ -47,6 +47,7 @@ test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-liblepton.sh)" = 6
 test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-lepton-lib.sh)" = 644
 test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-lepton)" = 755
 test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-android-session-watch)" = 755
+test "$(stat -c %a %{buildroot}%{_datadir}/microos-android/cmd)" = 755
 test -z "$(find %{buildroot}%{_libexecdir}/microos %{buildroot}%{_bindir} -type f -perm /022)"
 test -f %{buildroot}%{_datadir}/microos-android/restrictions-stub.jar
 

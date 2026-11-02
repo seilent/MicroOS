@@ -1,0 +1,5 @@
+#!/system/bin/sh
+if [[ $# -eq 2 && "$1" = "lepton" && "$2" = "mount_vulkan_layers" ]]; then
+    exit 0
+fi
+exec /system/bin/cmd_real "$@"

@@ -19,7 +19,7 @@ mkdir -p "${STATE}/steamvr/runtime" "${STATE}/steamvr/logs" "${STATE}/steamvr/co
     "${T}/steam-empty" "${T}/outside"
 
 unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME DBUS_SESSION_BUS_ADDRESS MICROOS_RUNTIME_DIR MICROOS_LEPTON_HOME \
-    STEAM_COMPAT_DATA_PATH APP_WANTS_FLATSCREEN GAMESCOPE_WAYLAND_DISPLAY CONTAINERS_CONF_OVERRIDE \
+    STEAM_COMPAT_DATA_PATH APP_WANTS_FLATSCREEN GAMESCOPE_WAYLAND_DISPLAY CONTAINERS_CONF_OVERRIDE MICROOS_GUEST_CMD \
     LEPTON_ADB_PORT LEPTON_GDB_PORT LEPTON_LLDB_PORT LEPTON_NO_CLEANUP LEPTON_KEEP_CONTEXT IS_PARENT SteamAppId \
     STEAM_COMPAT_INSTALL_PATH STEAM_COMPAT_LIBRARY_PATHS STEAM_COMPAT_SHADER_PATH LEPTON_PREFIX MICROOS_LEPTON_REVIEWED
 for var in $(compgen -v LEPTON_ENV_ || true); do
@@ -27,9 +27,10 @@ for var in $(compgen -v LEPTON_ENV_ || true); do
 done
 real_setpgid=$(command -v setpgid)
 real_rm=$(command -v rm)
+cp "${repo}/data/usr/share/microos-android/cmd" "${T}/guest-cmd"
 export HOME="${T}/home" XDG_RUNTIME_DIR="${T}/xdg"
 export MICROOS_HOME="${T}/home"
-export MICROOS_LIBLEPTON="${override}" MICROOS_STEAM_EMPTY="${T}/steam-empty"
+export MICROOS_LIBLEPTON="${override}" MICROOS_STEAM_EMPTY="${T}/steam-empty" MICROOS_GUEST_CMD="${T}/guest-cmd"
 export PATH="${T}/bin:${PATH}"
 valve_home="${HOME}/.local/share/microos-android/home"
 contexts="${valve_home}/.local/share/lepton/contexts"
@@ -445,6 +446,9 @@ setup_mounts()
     fi
     PODMAN_CMDLINE+=(-v "$(get_baked_app_data_dir)/app_lowerdir:/data/steam_app:O,upperdir=$(app_datadir),workdir=$(app_workdir)")
     PODMAN_CMDLINE+=(--mount "type=bind,source=${HOME}/.steam/steam.pipe,destination=/lepton/steam.pipe,rw")
+    for n in $(seq "$(cat "${FAKE_STATE}/cmd-binds" 2>/dev/null || echo 1)"); do
+        PODMAN_CMDLINE+=(--mount "type=bind,source=${LEPTON_DIR}/../images/rootfs_overlay/system/bin/cmd,destination=/system/bin/cmd,ro")
+    done
 }
 
 setup_podman_mounts()
@@ -559,7 +563,8 @@ FAKE
 
 make_runtime() {
     mkdir -p "$1/liblepton" "$1/images/rootfs/system/etc" "$1/images/rootfs/vendor/odm/etc" \
-        "$1/images/rootfs_overlay/vendor/bin" "$1/sysbake/system" "$1/liblepton/apk_extractor/bin"
+        "$1/images/rootfs_overlay/vendor/bin" "$1/images/rootfs_overlay/system/bin" "$1/sysbake/system" \
+        "$1/liblepton/apk_extractor/bin"
     echo xml > "$1/sysbake/system/packages.xml"
     echo '# file: sysbake/system' > "$1/sysbake.xattrs"
     printf 'ro.build.version.release=11\nro.build.version.sdk=30\nro.system.build.fingerprint=lepton/lineage_lepton_arm64_only/lepton_arm64_only:11/RQ3A.211001.001/root09251955:userdebug/test-keys\n' \
@@ -568,6 +573,7 @@ make_runtime() {
     echo 'ro.adb.secure=0' > "$1/images/rootfs/system/etc/prop.default"
     echo 3.0.3 > "$1/images/version.txt"
     echo overlay > "$1/images/rootfs_overlay/vendor/bin/lepton_set_volumes.sh"
+    echo 'cmd_real "$@"' > "$1/images/rootfs_overlay/system/bin/cmd"
     echo fakedroid > "$1/liblepton/app_metadata.sh"
     { printf '#!/bin/bash\nFAKE_STATE=%q\n' "${STATE}"; cat "${T}/fake-lepton"; } > "$1/lepton"
     { printf '#!/bin/bash\nFAKE_STATE=%q\nFAKE_DROP=%q\n' "${STATE}" "${2:-}"; cat "${T}/fake-liblepton"; } > "$1/liblepton/liblepton.sh"
@@ -672,7 +678,7 @@ views() { compgen -G "${run_dir}/tool.*" || true; }
 
 direct() {
     env -i HOME="${valve_home}" PATH="${PATH}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" XDG_CONFIG_HOME="${HOME}/.config" \
-        STEAM_COMPAT_CLIENT_INSTALL_PATH="${T}/steam-empty" LEPTON_ADB_PORT=15655 \
+        STEAM_COMPAT_CLIENT_INSTALL_PATH="${T}/steam-empty" LEPTON_ADB_PORT=15655 MICROOS_GUEST_CMD="${T}/guest-cmd" \
         MICROOS_LEPTON_RUNTIME="${rt}" MICROOS_LEPTON_REVIEWED="${MICROOS_LEPTON_REVIEWED:-}" "$@"
 }
 
@@ -856,6 +862,7 @@ LEPTON_LLDB_PORT=15657
 LEPTON_NO_CLEANUP=true
 MICROOS_LEPTON_REVIEWED=${MICROOS_LEPTON_REVIEWED}
 MICROOS_LEPTON_RUNTIME=${rt}
+MICROOS_GUEST_CMD=${T}/guest-cmd
 PATH=${PATH}
 STEAM_COMPAT_CLIENT_INSTALL_PATH=${T}/steam-empty
 STEAM_COMPAT_DATA_PATH=${ctx}
@@ -1331,7 +1338,7 @@ seed "${control}"
 unseed_modes "${control}"
 cycle probe-lh-control env -i HOME="${valve_home}" PATH="${PATH}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
     STEAM_COMPAT_CLIENT_INSTALL_PATH="${T}/steam-empty" STEAM_COMPAT_DATA_PATH="${control}" LEPTON_ADB_PORT=15655 \
-    "${rt}/lepton" start probe-lh-control
+    MICROOS_GUEST_CMD="${T}/guest-cmd" "${rt}/lepton" start probe-lh-control
 [[ "${rc}" == 0 ]] || fail "control: exit ${rc}: $(out probe-lh-control)"
 [[ ! -e "${control}/baked" ]] || fail "control: the fake Valve teardown kept the baked data"
 grep -q '^--network=pasta:.*,--map-gw,-t,auto,-u,auto,' "${STATE}/run-lepton-probe-lh-control" || fail "control: Valve's network options"
@@ -1452,6 +1459,93 @@ cycle probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" "${launcher}" start pro
 [[ "${rc}" == 0 ]] || fail "media/0 link refused: $(out probe-lh-proto)"
 intact "${ctx}" "media/0 link"
 
+for count in 0 2; do
+    echo "${count}" > "${STATE}/cmd-binds"
+    refused probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" "${launcher}" start probe-lh-proto
+    grep -qxF "microos-liblepton: Lepton binds /system/bin/cmd ${count} times, not once, refusing" \
+        "${STATE}/out-probe-lh-proto" || fail "${count} cmd binds: $(out probe-lh-proto)"
+done
+rm "${STATE}/cmd-binds"
+cycle probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" MICROOS_GUEST_CMD="${T}/guest-cmd" \
+    "${launcher}" start probe-lh-proto
+[[ "${rc}" == 0 ]] || fail "the guest cmd swap: exit ${rc}: $(out probe-lh-proto)"
+[[ "$(grep -c ',destination=/system/bin/cmd,' "${STATE}/run-lepton-probe-lh-proto")" == 1 \
+    && "$(grep ',destination=/system/bin/cmd,' "${STATE}/run-lepton-probe-lh-proto")" \
+        == "type=bind,source=${T}/guest-cmd,destination=/system/bin/cmd,ro" ]] \
+    || fail "the guest cmd bind is $(grep -E 'source=|/system/bin/cmd' "${STATE}/run-lepton-probe-lh-proto" | tr '\n' ' ')"
+grep -qF "images/rootfs_overlay/system/bin/cmd" "${STATE}/run-lepton-probe-lh-proto" \
+    && fail "Valve's own cmd is still bound"
+refused probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" MICROOS_GUEST_CMD="${T}/absent" \
+    "${launcher}" start probe-lh-proto
+grep -qxF "microos-liblepton: the guest cmd ${T}/absent is not a regular file, refusing" \
+    "${STATE}/out-probe-lh-proto" || fail "a guest cmd that is not a file: $(out probe-lh-proto)"
+cat > "${T}/guest-cmd-swap" <<'SWAP'
+eval "$(sed -n '/^microos_cmd_mount()/,/^}/p;/^microos_guest_cmd()/,/^}/p' "$1")"
+microos_refuse() { printf 'microos-liblepton: %s\n' "$*" >&2; exit 1; }
+shift
+if [[ -n "${GUEST_CMD:-}" ]]; then
+    MICROOS_GUEST_CMD=${GUEST_CMD}
+else
+    unset MICROOS_GUEST_CMD
+fi
+PODMAN_CMDLINE=("$@")
+microos_guest_cmd
+printf '%s\n' "${PODMAN_CMDLINE[@]}"
+SWAP
+real_unshare=$(PATH=/usr/bin:/bin command -v unshare) || real_unshare=
+if [[ -n "${real_unshare}" ]] && "${real_unshare}" -rm true 2>/dev/null; then
+    guest_cmd_swap() {
+        rc=0
+        out=$(GUESTOS_CMD=$1 GUEST_CMD=$2 "${real_unshare}" -rm sh -c 'mount -t tmpfs none /usr/share || exit 1
+            printf "#!/system/bin/sh\n" > /usr/share/microos-android-cmd || exit 1
+            mkdir -p /usr/share/microos-android && mv /usr/share/microos-android-cmd /usr/share/microos-android/cmd || exit 1
+            if [ -n "${GUESTOS_CMD}" ]; then
+                mkdir -p "$(dirname "${GUESTOS_CMD}")" && : > "${GUESTOS_CMD}" || exit 1
+            fi
+            exec bash "$@"' sh "${T}/guest-cmd-swap" "${override}" "${@:3}" 2>&1) || rc=$?
+    }
+    guestos=/usr/share/guestos/android/system/bin/cmd
+    canonical="type=bind,source=/valve/images/rootfs_overlay/system/bin/cmd,destination=/system/bin/cmd,ro"
+    swapped_mount="type=bind,source=/usr/share/microos-android/cmd,destination=/system/bin/cmd,ro"
+    guest_cmd_swap "" "" --mount "${canonical}" --mount "type=bind,source=/x,destination=/y,ro"
+    [[ "${rc}" == 0 && "${out}" == $'--mount\n'"${swapped_mount}"$'\n--mount\ntype=bind,source=/x,destination=/y,ro' ]] \
+        || fail "the default guest cmd: exit ${rc}: ${out}"
+    guest_cmd_swap "${guestos}" "" --mount "${canonical}" --mount "type=bind,source=/x,destination=/y,ro"
+    [[ "${rc}" == 1 && "${out}" == "microos-liblepton: ${guestos} is a second guest cmd, refusing" ]] \
+        || fail "a guestos cmd: exit ${rc}: ${out}"
+    guest_cmd_swap "" /usr/share/microos-android/absent --mount "${canonical}"
+    [[ "${rc}" == 1 && "${out}" == "microos-liblepton: the guest cmd /usr/share/microos-android/absent is not a regular file, refusing" ]] \
+        || fail "a guest cmd that is not a file: exit ${rc}: ${out}"
+    guest_cmd_swap "" /usr/share/microos-android --mount "${canonical}"
+    [[ "${rc}" == 1 && "${out}" == "microos-liblepton: the guest cmd /usr/share/microos-android is not a regular file, refusing" ]] \
+        || fail "a guest cmd that is a directory: exit ${rc}: ${out}"
+    for form in "dst=/system/bin/cmd" "target=/system/bin/cmd"; do
+        guest_cmd_swap "" "" --mount "type=bind,source=/valve/x,${form},ro"
+        [[ "${rc}" == 1 && "${out}" == "microos-liblepton: Lepton binds /system/bin/cmd in a form MicroOS does not rewrite, refusing" ]] \
+            || fail "a cmd mount as ${form}: exit ${rc}: ${out}"
+    done
+    guest_cmd_swap "" "" "--mount=type=bind,source=/valve/x,destination=/system/bin/cmd,ro"
+    [[ "${rc}" == 1 && "${out}" == "microos-liblepton: Lepton binds /system/bin/cmd in a form MicroOS does not rewrite, refusing" ]] \
+        || fail "a --mount= cmd: exit ${rc}: ${out}"
+    guest_cmd_swap "" "" -v "/valve/y:/system/bin/cmd:ro"
+    [[ "${rc}" == 1 && "${out}" == "microos-liblepton: Lepton binds /system/bin/cmd in a form MicroOS does not rewrite, refusing" ]] \
+        || fail "a -v cmd: exit ${rc}: ${out}"
+    guest_cmd_swap "" "" --mount "type=bind,destination=/system/bin/cmd,ro"
+    [[ "${rc}" == 1 && "${out}" == "microos-liblepton: Lepton binds /system/bin/cmd with no source=, refusing" ]] \
+        || fail "a cmd mount with no source: exit ${rc}: ${out}"
+    guest_cmd_swap "" "" --mount "${canonical}" "--mount=type=bind,source=/valve/y,destination=/system/bin/cmd,ro"
+    [[ "${rc}" == 1 && "${out}" == "microos-liblepton: Lepton binds /system/bin/cmd 2 times, not once, refusing" ]] \
+        || fail "a --mount= cmd beside the canonical one: exit ${rc}: ${out}"
+    guest_cmd_swap "" "" --mount "${canonical}" -v "/valve/y:/system/bin/cmd:ro"
+    [[ "${rc}" == 1 && "${out}" == "microos-liblepton: Lepton binds /system/bin/cmd 2 times, not once, refusing" ]] \
+        || fail "a -v cmd beside the canonical one: exit ${rc}: ${out}"
+    guest_cmd_swap "" "" --mount "${canonical}" --volume "/valve/y:/system/bin/cmd"
+    [[ "${rc}" == 1 && "${out}" == "microos-liblepton: Lepton binds /system/bin/cmd 2 times, not once, refusing" ]] \
+        || fail "a --volume cmd beside the canonical one: exit ${rc}: ${out}"
+else
+    echo "skip: unshare -rm cannot run, the guest cmd forms are not tested"
+fi
+
 for fn in setup_mounts setup_props prepare_baked_data_for_removal clear_baked_app_data cleanup_container cleanup_all \
     kill_all wipe_baked_system_data podman_network_options get_baked_app_data_dir data_mount_path kill_container \
     podman_ip podman_subnet adb_port create_prefix setup_podman_mounts setup_podman_base onexit_path determine_app; do
@@ -1548,7 +1642,8 @@ grep -qxF "microos-liblepton: STEAM_COMPAT_CLIENT_INSTALL_PATH ${T}/client is no
     "${STATE}/out-probe-lh-a" || fail "view with a client dir: $(out probe-lh-a)"
 refused probe-lh-a env -i HOME="${valve_home}" PATH="${PATH}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
     XDG_CONFIG_HOME="${HOME}/.config" LEPTON_ADB_PORT=15655 MICROOS_LEPTON_RUNTIME="${rt}" \
-    MICROOS_LEPTON_REVIEWED="${MICROOS_LEPTON_REVIEWED}" STEAM_COMPAT_DATA_PATH="${ctxa}" "$(views)/lepton" start probe-lh-a
+    MICROOS_LEPTON_REVIEWED="${MICROOS_LEPTON_REVIEWED}" MICROOS_GUEST_CMD="${T}/guest-cmd" \
+    STEAM_COMPAT_DATA_PATH="${ctxa}" "$(views)/lepton" start probe-lh-a
 grep -qxF "microos-liblepton: STEAM_COMPAT_CLIENT_INSTALL_PATH ${valve_home}/.local/share/Steam is not an empty directory, refusing" \
     "${STATE}/out-probe-lh-a" || fail "view without a client dir: $(out probe-lh-a)"
 

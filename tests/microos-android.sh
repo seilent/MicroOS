@@ -61,6 +61,13 @@ for f in "$repo"/packages/microos-android/data/usr/libexec/microos/* "$repo"/pac
   if [[ $(stat -c %a "$f") != 755 ]]; then fail "${f#"$repo/"} is not 755"; fi
 done
 
+guest_cmd=$repo/packages/microos-android/data/usr/share/microos-android/cmd
+if ! out=$(shellcheck -s ksh "$guest_cmd" 2>&1); then
+  fail "cmd shellcheck: ${out//$'\n'/ }"
+fi
+if [[ $(head -n 1 "$guest_cmd") != '#!/system/bin/sh' ]]; then fail "cmd has no /system/bin/sh shebang"; fi
+if [[ $(stat -c %a "$guest_cmd") != 755 ]]; then fail "cmd is not 755"; fi
+
 hits=$(grep -rnE 'MICROEMU|microemu' "$repo/packages/microos-android/data" | grep -vE 'legacy_contexts|contexts/microemu-\$\{old\}|share/microemu/android/home' || true)
 [[ -z $hits ]] || fail "MicroEMU names in: ${hits//"$repo/"/}"
 

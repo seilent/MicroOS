@@ -242,6 +242,64 @@ microos_narrow_bind() {
     PODMAN_CMDLINE=("${cmdline[@]}")
 }
 
+microos_cmd_mount() {
+    [[ "$1" =~ (^|[=:])/system/bin/cmd([,:@]|$) ]]
+}
+
+microos_guest_cmd() {
+    local i part joined bind element guest="${MICROOS_GUEST_CMD:-/usr/share/microos-android/cmd}"
+    local found=0 is_cmd=0 swapped=0 mentions=0
+    local -a cmdline=() parts=()
+    if [[ ! -f "${guest}" ]]; then
+        microos_refuse "the guest cmd ${guest} is not a regular file, refusing"
+    fi
+    if [[ -e /usr/share/guestos/android/system/bin/cmd ]]; then
+        microos_refuse "/usr/share/guestos/android/system/bin/cmd is a second guest cmd, refusing"
+    fi
+    for (( i = 0; i < ${#PODMAN_CMDLINE[@]}; i++ )); do
+        if [[ "${PODMAN_CMDLINE[i]}" != --mount ]]; then
+            cmdline+=("${PODMAN_CMDLINE[i]}")
+            continue
+        fi
+        i=$((i + 1))
+        bind=${PODMAN_CMDLINE[i]:-}
+        parts=()
+        IFS=, read -ra parts <<< "${bind}"
+        is_cmd=0
+        swapped=0
+        joined=
+        for part in "${parts[@]}"; do
+            case "${part}" in
+                destination=/system/bin/cmd)
+                    is_cmd=1
+                    ;;
+                source=*)
+                    part="source=${guest}"
+                    swapped=1
+                    ;;
+            esac
+            joined+=${joined:+,}${part}
+        done
+        if (( is_cmd && ! swapped )); then
+            microos_refuse "Lepton binds /system/bin/cmd with no source=, refusing"
+        fi
+        if (( is_cmd )); then
+            found=$((found + 1))
+            cmdline+=(--mount "${joined}")
+        else
+            cmdline+=(--mount "${bind}")
+        fi
+    done
+    for element in "${cmdline[@]}"; do
+        if microos_cmd_mount "${element}"; then
+            mentions=$((mentions + 1))
+        fi
+    done
+    (( mentions == 1 )) || microos_refuse "Lepton binds /system/bin/cmd ${mentions} times, not once, refusing"
+    (( found == mentions )) || microos_refuse "Lepton binds /system/bin/cmd in a form MicroOS does not rewrite, refusing"
+    PODMAN_CMDLINE=("${cmdline[@]}")
+}
+
 microos_podman_mounts() {
     local i bind shm=0 runtime=0 logs=0
     local -a cmdline=()
@@ -398,6 +456,7 @@ setup_mounts() {
     fi
     microos_valve_setup_mounts "$@"
     microos_narrow_bind
+    microos_guest_cmd
 }
 
 eval "microos_valve_$(declare -f setup_podman_mounts)"

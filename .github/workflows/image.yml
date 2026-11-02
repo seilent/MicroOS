@@ -248,6 +248,12 @@ jobs:
         run: |
           podman run --rm -v "$PWD:/repo:ro" "$PYTHON313" python3 /repo/tests/proton-hook/hook.py
 
+      - name: Android guest cmd
+        if: steps.testcache.outputs.cache-hit != 'true'
+        run: |
+          podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
+            sh -c 'dnf -yq --setopt=install_weak_deps=False install mksh diffutils && /repo/tests/microos-android-cmd.sh --inner'
+
       - name: Repo tests
         if: steps.testcache.outputs.cache-hit != 'true'
         run: |

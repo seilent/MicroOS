@@ -631,6 +631,11 @@ fzlib=$(jq -r .layer.library_path /usr/share/vulkan/guestos-android/VkLayer_foss
 [[ $fzlib == "$guestos/vendor/vulkan_layers/libVkLayer_fossilize.so" && -f $fzlib ]] || fail "Fossilize layer JSON names $fzlib"
 [[ $(< "$guestos/vendor/etc/init/microos-noubwc.rc") == $'on early-init\n    setprop debug.mesa.tu.debug noubwc' ]] \
   || fail "microos-noubwc.rc content"
+[[ ! -e $guestos/system/bin/cmd ]] || fail "a second guest cmd under $guestos"
+guestcmd=/usr/share/microos-android/cmd
+[[ -f $guestcmd && ! -L $guestcmd && $(stat -c '%a %U %G' "$guestcmd") == '755 root root' ]] \
+  || fail "/usr/share/microos-android/cmd missing, mode or owner"
+[[ $(head -n 1 "$guestcmd") == '#!/system/bin/sh' ]] || fail "the guest cmd has no /system/bin/sh shebang"
 
 seedrpm=(/seed-rpm/microos-steam-seed-*.aarch64.rpm)
 [[ ${#seedrpm[@]} -eq 1 && -f ${seedrpm[0]} ]] || fail "expected one microos-steam-seed RPM in /seed-rpm"
