@@ -129,7 +129,8 @@ source "${MICROOS_LEPTON_RUNTIME}/liblepton/liblepton.sh"
 
 for microos_fn in setup_mounts setup_props prepare_baked_data_for_removal clear_baked_app_data cleanup_container \
     cleanup_all kill_all wipe_baked_system_data podman_network_options get_baked_app_data_dir data_mount_path \
-    kill_container podman_ip podman_subnet adb_port create_prefix setup_podman_mounts onexit_path; do
+    kill_container podman_ip podman_subnet adb_port create_prefix setup_podman_mounts setup_podman_base \
+    onexit_path determine_app; do
     if ! declare -F "${microos_fn}" >/dev/null; then
         microos_say "Lepton in ${MICROOS_LEPTON_RUNTIME} has no ${microos_fn}, refusing"
         exit 1
@@ -143,12 +144,26 @@ MDNS_PUBLISH_PATH=/bin/false
 STEAMVR_LOGS_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}/microos-lepton/steamvr-logs"
 mkdir -p "${STEAMVR_LOGS_DIR}" || microos_refuse "cannot make ${STEAMVR_LOGS_DIR}, refusing"
 microos_prefix=
+microos_run="${MICROOS_RUNTIME_DIR:-${XDG_RUNTIME_DIR}/microos-android}"
+microos_run="${microos_run%/}"
+
+microos_record_prefix() {
+    local tmp
+    mkdir -p "${microos_run}" || { microos_say "cannot make ${microos_run}, ${1} goes unrecorded"; return 0; }
+    tmp=$(mktemp "${microos_run}/lepton-prefix.XXXXXX") || { microos_say "cannot record ${1} in ${microos_run}"; return 0; }
+    if printf '%s\n' "$1" > "${tmp}" && mv -T "${tmp}" "${microos_run}/lepton-prefix"; then
+        return 0
+    fi
+    rm -f "${tmp}"
+    microos_say "cannot record ${1} in ${microos_run}"
+}
 
 eval "microos_valve_$(declare -f create_prefix)"
 create_prefix() {
     local had="${LEPTON_PREFIX:-}"
     microos_valve_create_prefix "$@"
     [[ -n "${had}" ]] || microos_prefix=${LEPTON_PREFIX:-}
+    [[ -z "${microos_prefix}" ]] || microos_record_prefix "${microos_prefix}"
 }
 
 microos_holds_files() {
@@ -287,7 +302,9 @@ microos_audit_mounts() {
     fi
     for arg in "${PODMAN_CMDLINE[@]}"; do
         case "${prev}" in
-            -v|--volume) sources+=("${arg%%:*}") ;;
+            -v|--volume)
+                sources+=("${arg%%:*}")
+                ;;
         esac
         case "${arg}" in
             -v=*|--volume=*)
@@ -305,8 +322,11 @@ microos_audit_mounts() {
     done
     if [[ -n "${CONTAINERS_CONF_OVERRIDE:-}" ]]; then
         conf=$(cat -- "${CONTAINERS_CONF_OVERRIDE}") || microos_refuse "cannot read ${CONTAINERS_CONF_OVERRIDE}, refusing"
-        if grep -qE '^[[:space:]]*volumes[[:space:]]*=' <<< "${conf}"; then
+        if grep -qE "^[[:space:]]*volumes[[:space:]]*=" <<< "${conf}"; then
             microos_refuse "${CONTAINERS_CONF_OVERRIDE} sets volumes, refusing"
+        fi
+        if grep -qE "['\\\\]" <<< "${conf}"; then
+            microos_refuse "${CONTAINERS_CONF_OVERRIDE} holds a quote or a backslash, refusing"
         fi
         mapfile -t -O "${#sources[@]}" sources < <(grep -oE '(source|src|upperdir|workdir)=[^,"]*' <<< "${conf}" \
             | sed 's/^[a-z]*=//')
@@ -314,6 +334,8 @@ microos_audit_mounts() {
     for source in "${sources[@]}"; do
         canonical=$(readlink -m "${source}") || continue
         [[ "${canonical}" == "${data}" || "${data}" == "${canonical%/}/"* || "${canonical}" == "${data}/"* ]] || continue
+        readlink -f "${source}" > /dev/null 2>&1 \
+            || microos_refuse "Lepton binds ${source}, at, above or under ${LEPTON_DATA_DIR} and cannot be resolved, refusing"
         ok=0
         for arg in "${allowed[@]}"; do
             [[ "${canonical}" != "${arg}" ]] || ok=1
@@ -334,6 +356,36 @@ microos_adb_keys() {
         sh "$1" "$2" "$3" "$4" "${home}${1#"${HOME}"}" < "${keys}"; then
         microos_refuse "cannot write $1/misc/adb/adb_keys, refusing"
     fi
+}
+
+microos_cgroup_parent() {
+    local i
+    local -a cmdline=()
+    for (( i = 0; i < ${#PODMAN_CMDLINE[@]}; i++ )); do
+        case "${PODMAN_CMDLINE[i]}" in
+            --cgroup-parent=*|-cgroup-parent=*)
+                cmdline+=("--cgroup-parent=game-android.slice")
+                ;;
+            --cgroup-parent)
+                cmdline+=("--cgroup-parent=game-android.slice")
+                (( i + 1 < ${#PODMAN_CMDLINE[@]} )) && i=$((i + 1))
+                ;;
+            *) cmdline+=("${PODMAN_CMDLINE[i]}") ;;
+        esac
+    done
+    PODMAN_CMDLINE=("${cmdline[@]}" --cgroup-parent=game-android.slice)
+}
+
+eval "microos_valve_$(declare -f setup_podman_base)"
+setup_podman_base() {
+    microos_valve_setup_podman_base "$@"
+    microos_cgroup_parent
+}
+
+eval "microos_valve_$(declare -f determine_app)"
+determine_app() {
+    microos_valve_determine_app "$@"
+    microos_same_start
 }
 
 eval "microos_valve_$(declare -f setup_mounts)"
@@ -363,7 +415,7 @@ setup_props() {
     microos_valve_setup_props "$@"
     microos_no_guest
     microos_audit_mounts
-    microos_adb_keys "$(data_mount_path)" 1000:2000 02750 0640
+    microos_adb_keys "$(data_mount_path)" 0:0 0755 0644
 }
 
 prepare_baked_data_for_removal() {

@@ -1,8 +1,8 @@
 [Unit]
-Description=Hand Steam the Lepton install request from MicroEMU
+Description=Hand Steam the Lepton install request from the Android session
 BindsTo=gamescope-session-plus@steam.service
 After=gamescope-session-plus@steam.service
-ConditionPathExists=%S/microemu/lepton-install-requested
+ConditionPathExists=%S/microos-lepton/lepton-install-requested
 
 [Service]
 Type=oneshot

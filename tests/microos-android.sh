@@ -15,41 +15,60 @@ scripts=(
   "$repo/packages/microos-android/build.sh"
   "$repo/packages/microos-android/build/stub.sh"
   "$repo/packages/microos-android/data/usr/bin/microos-android"
+  "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-check"
+  "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-install"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-keyboard"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-pad-nodes"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-run"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-sideload"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-stop"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-fetch"
+  "$repo/packages/microos-android/data/usr/libexec/microos/microos-gamescope-plain"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-lepton"
+  "$repo/packages/microos-android/data/usr/libexec/microos/microos-lepton-prepare"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-lepton-steam"
 )
+python=(
+  "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-client"
+  "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-session-watch"
+  "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-status"
+)
+for f in "${python[@]}"; do
+  if ! out=$(python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$f" 2>&1); then
+    fail "${f#"$repo/"} syntax: ${out//$'\n'/ }"
+  fi
+done
 for f in "${scripts[@]}"; do
-  if ! out=$(shellcheck -s bash -e SC2015,SC2016,SC2094 "$f" 2>&1); then
+  if ! out=$(shellcheck -s bash -e SC1090,SC1091,SC2015,SC2016,SC2094 "$f" 2>&1); then
     fail "${f#"$repo/"} shellcheck: ${out//$'\n'/ }"
   fi
 done
-if ! out=$(shellcheck -s bash -e SC1091,SC2034,SC2033,SC2154 "$repo/packages/microos-android/data/usr/libexec/microos/microos-liblepton.sh" 2>&1); then
-  fail "microos-liblepton.sh shellcheck: ${out//$'\n'/ }"
-fi
-if [[ $(head -c 2 "$repo/packages/microos-android/data/usr/libexec/microos/microos-liblepton.sh") == '#!' ]]; then
-  fail "microos-liblepton.sh is sourced and carries a shebang"
-fi
-if [[ $(stat -c %a "$repo/packages/microos-android/data/usr/libexec/microos/microos-liblepton.sh") != 644 ]]; then
-  fail "microos-liblepton.sh is not 644"
-fi
+for lib in microos-liblepton.sh microos-lepton-lib.sh; do
+  if ! out=$(shellcheck -s bash -e SC1090,SC1091,SC2033,SC2034,SC2154 \
+    "$repo/packages/microos-android/data/usr/libexec/microos/$lib" 2>&1); then
+    fail "$lib shellcheck: ${out//$'\n'/ }"
+  fi
+  if [[ $(head -c 2 "$repo/packages/microos-android/data/usr/libexec/microos/$lib") == '#!' ]]; then
+    fail "$lib is sourced and carries a shebang"
+  fi
+  if [[ $(stat -c %a "$repo/packages/microos-android/data/usr/libexec/microos/$lib") != 644 ]]; then
+    fail "$lib is not 644"
+  fi
+done
 for f in "$repo"/packages/microos-android/data/usr/libexec/microos/* "$repo"/packages/microos-android/data/usr/bin/*; do
   [[ -f $f ]] || continue
-  [[ $f == */microos-liblepton.sh ]] && continue
+  case $f in */microos-liblepton.sh|*/microos-lepton-lib.sh) continue ;; esac
   if [[ $(stat -c %a "$f") != 755 ]]; then fail "${f#"$repo/"} is not 755"; fi
 done
 
-hits=$(grep -rlE 'MICROEMU|microemu' "$repo/packages/microos-android/data" || true)
+hits=$(grep -rnE 'MICROEMU|microemu' "$repo/packages/microos-android/data" | grep -vE 'legacy_contexts|contexts/microemu-\$\{old\}|share/microemu/android/home' || true)
 [[ -z $hits ]] || fail "MicroEMU names in: ${hits//"$repo/"/}"
 
 out=$(mktemp)
 trap 'rm -f "${out:?}"' EXIT
-for t in stub-test keyboard-test sideload-test reset-test gapps-install-test play-unit-test run-test lepton-test; do
+for t in stub-test keyboard-test sideload-test reset-test gapps-install-test play-unit-test run-test lepton-test \
+  check-test prepare-test install-request-test status-test state-test client-test session-test cli-test \
+  session-watch-test; do
   if ! bash "${tests}/${t}.sh" > "$out" 2>&1; then
     fail "${t}.sh: $(tail -n 5 "$out" | tr '\n' ' ')"
   fi

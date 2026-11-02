@@ -1,10 +1,14 @@
 [Unit]
 Description=Android session container
+Requisite=gamescope-session-plus@android.service
+After=gamescope-session-plus@android.service microos-lepton-prepare.service
+Requires=microos-lepton-prepare.service
 StopPropagatedFrom=gamescope-session-plus@android.service
 
 [Service]
 Type=notify
 NotifyAccess=all
+EnvironmentFile=-%t/microos-android/session.env
 ExecStartPre=/usr/bin/podman rm -fi lepton-android
 ExecStart=/usr/libexec/microos/microos-android-run
 ExecStop=/usr/libexec/microos/microos-android-stop

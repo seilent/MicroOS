@@ -1,6 +1,11 @@
 #!/usr/bin/bash
 set -uo pipefail
 
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "${MICROOS_LEPTON_LIB:-${here}/../libexec/microos/microos-lepton-lib.sh}"
+microos_me=microos-android
+export microos_me
+
 DATA="${MICROOS_ANDROID_DATA:-${HOME}/.local/share/microos-android}"
 CONTEXT="${MICROOS_ANDROID_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/android}"
 GAPPS="${MICROOS_GAPPS:-${DATA}/gapps}"
@@ -48,9 +53,87 @@ fail() {
     exit 1
 }
 
+REVIEWED="${MICROOS_LEPTON_REVIEWED:-/usr/share/microos-lepton/reviewed}"
+
 usage() {
-    echo "usage: microos-android gapps install | prune | reset --yes" >&2
+    echo "usage: microos-android status | gapps install | gapps setup | gapps remove --yes | prune | reset --yes" >&2
     exit 1
+}
+
+stamp_set() {
+    local file=$1 value=$2 first=1 line found=0
+    local -a lines=()
+    [[ -f "${file}" && ! -L "${file}" ]] || fail "${file} is not a regular file, refusing"
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        if (( first )); then
+            first=0
+            if [[ "${line}" == *" gapps="* ]]; then
+                line=${line/ gapps=*/ gapps=${value}}
+                found=1
+            fi
+        fi
+        lines+=("${line}")
+    done < "${file}"
+    (( found )) || lines[0]+=" gapps=${value}"
+    printf '%s\n' "${lines[@]}" > "${file}.new" && mv -T "${file}.new" "${file}" || fail "cannot write ${file}"
+}
+
+status() {
+    local key value built
+    for key in lepton.build lepton.source last.result last.reason gapps.set gapps.gms gapps.play gapps.setup gsf_id keyboard; do
+        value=$(state_get "${key}" 2>/dev/null) || value=
+        printf '%s\t%s\n' "${key}" "${value}"
+    done
+    value=
+    if [[ -e "${GAPPS}/current" ]]; then
+        value=$(readlink "${GAPPS}/current" 2>/dev/null) || value=
+        value=${value##*/}
+    fi
+    printf 'gapps.current\t%s\n' "${value}"
+    built=
+    if [[ -n "$(state_get lepton.build 2>/dev/null)" ]] && [[ -f "${REVIEWED}/$(state_get lepton.build)" ]] 2>/dev/null; then
+        built=reviewed
+    elif [[ -n "$(state_get lepton.build 2>/dev/null)" ]]; then
+        built=not-reviewed
+    fi
+    printf 'lepton.reviewed\t%s\n' "${built}"
+}
+
+gapps_setup() {
+    local set dir version found running
+    set=$(readlink "${GAPPS}/current" 2>/dev/null) || set=
+    set=${set##*/}
+    [[ -n "${set}" ]] || fail "no Google apps set is installed"
+    dir="${GAPPS}/${set}"
+    [[ -d "${dir}" && -f "${dir}/STAMP" ]] || fail "${dir} is not a complete set"
+    running=$(systemctl --user show -P ActiveState microos-android.service 2>/dev/null) || running=
+    [[ "${running}" == active || "${running}" == activating ]] || fail "Android is not running, refusing"
+    state_write "gapps.setup=running" || fail "cannot write the state"
+    for _ in $(seq 1 120); do
+        version=$(podman exec lepton-android /system/bin/dumpsys package com.google.android.gms 2>/dev/null \
+            | sed -n 's/.*versionCode=\([0-9]*\).*/\1/p' | head -n 1) || version=
+        [[ -n "${version}" ]] || version=$(podman exec lepton-android /system/bin/cmd package list packages \
+            --show-versioncode 2>/dev/null | sed -n 's/^package:com\.google\.android\.gms versionCode:\([0-9]*\)$/\1/p') \
+            || version=
+        if [[ -n "${version}" ]]; then
+            found=${version}
+            break
+        fi
+        sleep 10
+    done
+    state_write "gapps.set=${set}" "gapps.gms=${found:-}" "gapps.play=$( [[ -d "${dir}/system/product/priv-app/Phonesky" ]] && printf on || printf off )" \
+        "gapps.setup=done" || fail "cannot write the state"
+    say "Google apps ${set} set up"
+}
+
+gapps_remove() {
+    [[ "${1:-}" == --yes ]] || fail "removing Google apps drops their data, refusing without --yes"
+    no_live
+    local stamp="${CONTEXT}/microos-android-stamp"
+    [[ -f "${stamp}" ]] || fail "${stamp} missing, refusing"
+    stamp_set "${stamp}" none
+    state_write "gapps.set=" "gapps.gms=" "gapps.play=" || say "cannot write the state"
+    say "the next Android start boots without the Google apps layer"
 }
 
 remove_tree() {
@@ -207,11 +290,29 @@ reset() {
 }
 
 case "${1:-}" in
+    status)
+        [[ $# == 1 ]] || usage
+        status
+        ;;
     gapps)
-        [[ "${2:-}" == install ]] || usage
-        me="microos-android gapps install"
-        shift 2
-        gapps_install "$@"
+        case "${2:-}" in
+            install)
+                me="microos-android gapps install"
+                shift 2
+                gapps_install "$@"
+                ;;
+            setup)
+                me="microos-android gapps setup"
+                shift 2
+                gapps_setup "$@"
+                ;;
+            remove)
+                me="microos-android gapps remove"
+                shift 2
+                gapps_remove "$@"
+                ;;
+            *) usage ;;
+        esac
         ;;
     prune)
         shift

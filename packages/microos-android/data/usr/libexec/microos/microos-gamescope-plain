@@ -1,0 +1,8 @@
+#!/usr/bin/bash
+set -eu
+
+args=()
+for arg in "$@"; do
+    [[ "${arg}" == --steam ]] || args+=("${arg}")
+done
+exec /usr/bin/gamescope "${args[@]}"

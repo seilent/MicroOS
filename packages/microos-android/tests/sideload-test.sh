@@ -372,7 +372,7 @@ rm -rf "${T}/runtime"
 
 case_name="steamapps common Lepton named twice"
 named=$(grep -rl 'steamapps/common/Lepton' "${repo}/data" "${repo}/build" | sort | tr '\n' ' ')
-[[ "${named}" == "${repo}/data/usr/libexec/microos/microos-lepton ${repo}/data/usr/libexec/microos/microos-lepton-steam " ]] \
+[[ "${named}" == "${repo}/data/usr/libexec/microos/microos-android-check ${repo}/data/usr/libexec/microos/microos-lepton-lib.sh ${repo}/data/usr/libexec/microos/microos-lepton-steam " ]] \
     || fail "steamapps/common/Lepton is named by: ${named}"
 
 case_name="no armada names"

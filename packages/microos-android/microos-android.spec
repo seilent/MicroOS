@@ -44,18 +44,31 @@ install -d %{buildroot}%{_datadir}/microos-lepton/steam-empty
 
 %check
 test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-liblepton.sh)" = 644
+test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-lepton-lib.sh)" = 644
 test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-lepton)" = 755
+test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-android-session-watch)" = 755
 test -z "$(find %{buildroot}%{_libexecdir}/microos %{buildroot}%{_bindir} -type f -perm /022)"
 test -f %{buildroot}%{_datadir}/microos-android/restrictions-stub.jar
 
 %files
 %{_libexecdir}/microos/microos-android-*
 %{_libexecdir}/microos/microos-fetch
+%{_libexecdir}/microos/microos-gamescope-plain
 %{_libexecdir}/microos/microos-lepton
+%{_libexecdir}/microos/microos-lepton-lib.sh
+%{_libexecdir}/microos/microos-lepton-prepare
 %{_libexecdir}/microos/microos-lepton-steam
 %{_libexecdir}/microos/microos-liblepton.sh
 %{_bindir}/microos-android
 %{_userunitdir}/microos-android.service
+%{_userunitdir}/microos-android-gapps-setup.service
+%{_userunitdir}/microos-android-pad.service
+%{_userunitdir}/microos-android-status.service
+%{_userunitdir}/microos-lepton-prepare.service
+%{_userunitdir}/gamescope-session-plus@android.service.d/20-microos-android-pad.conf
+%{_prefix}/lib/microos/sessions.d/android.conf
+%{_datadir}/wayland-sessions/microos-android.desktop
+%{_datadir}/gamescope-session-plus/sessions.d/android
 %{_datadir}/microos-android/
 %dir %{_datadir}/microos-lepton
 %dir %{_datadir}/microos-lepton/reviewed

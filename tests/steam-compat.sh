@@ -36,7 +36,7 @@ grep -qxF Wants=microos-steam-compat-refresh.path "$tree/usr/lib/systemd/user/ga
   || fail "the Steam session does not want microos-steam-compat-refresh.path"
 lepton=$tree/usr/lib/systemd/user/microos-lepton-install.service
 for line in BindsTo=gamescope-session-plus@steam.service After=gamescope-session-plus@steam.service \
-  ConditionPathExists=%S/microemu/lepton-install-requested Type=oneshot TimeoutStartSec=330 \
+  ConditionPathExists=%S/microos-lepton/lepton-install-requested Type=oneshot TimeoutStartSec=330 \
   'ExecStart=/usr/libexec/microos/microos-steam-compat lepton-install'; do
   grep -qxF "$line" "$lepton" || fail "microos-lepton-install.service lacks $line"
 done

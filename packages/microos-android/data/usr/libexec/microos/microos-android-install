@@ -1,0 +1,25 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "${here}/microos-lepton-lib.sh"
+SERVICE=microos-lepton-install.service
+STEAM=gamescope-session-plus@steam.service
+SYSTEMCTL="${MICROOS_SYSTEMCTL:-systemctl}"
+
+install_request_dir() {
+    printf '%s\n' "${MICROOS_LEPTON_REQUEST_DIR:-${XDG_STATE_HOME:-${LEPTON_HOME}/.local/state}/microos-lepton}"
+}
+
+main() {
+    local dir
+    dir=$(install_request_dir)
+    mkdir -p "${dir}" || fail "cannot make ${dir}"
+    : > "${dir}/lepton-install-requested" || fail "cannot write ${dir}/lepton-install-requested"
+    if "${SYSTEMCTL}" --user is-active --quiet "${STEAM}"; then
+        "${SYSTEMCTL}" --user start --no-block "${SERVICE}" || say "cannot start ${SERVICE}, the flag waits for Steam's next start"
+    fi
+    say "asked Steam for Lepton at its next start"
+}
+
+main "$@"

@@ -1,0 +1,118 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "${MICROOS_LEPTON_LIB:-${here}/microos-lepton-lib.sh}"
+microos_me=microos-android-check
+
+CONTEXT="${MICROOS_ANDROID_CONTEXT:-$(android_data)/home/.local/share/lepton/contexts/android}"
+MANIFEST=appmanifest_3029110.acf
+
+word() {
+    printf '%s\n' "$1"
+    exit 2
+}
+
+open() {
+    printf '%s: %s, can run\n' "${microos_me}" "$1" >&2
+    exit 3
+}
+
+readable() {
+    if [[ ! -e "$1" ]]; then
+        return 0
+    fi
+    if [[ -d "$1" ]]; then
+        [[ -r "$1" && -x "$1" ]]
+        return
+    fi
+    [[ -f "$1" && -r "$1" ]]
+}
+
+steam_now() {
+    local dir
+    readable "${MICROOS_LEPTON_STEAM_ROOT:-$(home)/.local/share/Steam}" || return 3
+    dir=$("${DISCOVERY}" 2>/dev/null) || return 1
+    [[ "${dir}" == */steamapps/common/Lepton && -d "${dir}" ]] || return 1
+    readable "${dir}" || return 3
+    printf '%s\n' "${dir}"
+}
+
+steam_manifest() {
+    printf '%s/%s\n' "${1%/common/Lepton}" "${MANIFEST}"
+}
+
+reviewed_build() {
+    [[ -f "${REVIEWED}/$1" && ! -L "${REVIEWED}/$1" ]]
+}
+
+best_snapshot() {
+    local dir found=
+    for dir in $(reviewed_snapshots); do
+        confirmed "${dir}" || continue
+        if [[ -z "${found}" || "${dir##*/}" -gt "${found##*/}" ]]; then
+            found=${dir}
+        fi
+    done
+    [[ -n "${found}" ]] || return 1
+    printf '%s\n' "${found}"
+}
+
+old_context() {
+    local path
+    [[ ! -d "${CONTEXT}" ]] || return 1
+    while IFS= read -r path; do
+        [[ -d "${path}" ]] || continue
+        printf '%s\n' "${path}"
+        return 0
+    done < <(legacy_contexts)
+    return 1
+}
+
+steam_identity() {
+    local steam build rc=0
+    steam=$(steam_now) || rc=$?
+    (( rc == 3 )) && return 3
+    (( rc == 0 )) || return 1
+    build=$(manifest_value buildid "$(steam_manifest "${steam}")") || build=
+    [[ -n "${build}" ]] || return 1
+    reviewed_build "${build}" || return 1
+    rootfs_identity "${steam}"
+}
+
+snapshot_identity() {
+    local snapshot
+    snapshot=$(best_snapshot) || return 1
+    reviewed_build "${snapshot##*/}" || return 1
+    rootfs_identity "${snapshot}"
+}
+
+main() {
+    local steam="" build="" snapshot="" identity="" stamp="" rc=0
+    readable "${REVIEWED}" || open "cannot read ${REVIEWED}"
+    readable "$(android_data)" || open "cannot read $(android_data)"
+    readable "${SNAPSHOTS}" || open "cannot read ${SNAPSHOTS}"
+    old_context > /dev/null && word old-path
+    steam=$(steam_now) || rc=$?
+    (( rc == 3 )) && open "cannot read Steam's library"
+    (( rc == 0 )) || steam=""
+    snapshot=$(best_snapshot) || snapshot=
+    if [[ -z "${steam}" && -z "${snapshot}" ]]; then
+        exit 1
+    fi
+    if [[ -n "${steam}" ]]; then
+        build=$(manifest_value buildid "$(steam_manifest "${steam}")") || build=
+        if [[ -z "${build}" ]] || ! reviewed_build "${build}"; then
+            [[ -n "${snapshot}" ]] || word not-reviewed
+        fi
+    fi
+    identity=$(steam_identity 2>/dev/null) || identity=
+    [[ -n "${identity}" ]] || identity=$(snapshot_identity 2>/dev/null) || identity=
+    stamp=$(stamp_identity "${CONTEXT}/microos-android-stamp") || stamp=
+    if [[ -n "${identity}" && -n "${stamp}" ]] && identity_older "${stamp}" "${identity}"; then
+        word downgrade
+    fi
+    exit 0
+}
+
+main

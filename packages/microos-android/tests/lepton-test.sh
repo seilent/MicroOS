@@ -6,6 +6,7 @@ repo=$(dirname "${here}")
 libexec="${repo}/data/usr/libexec/microos"
 launcher="${libexec}/microos-lepton"
 override="${libexec}/microos-liblepton.sh"
+lib="${libexec}/microos-lepton-lib.sh"
 opts="${repo}/data/usr/share/microos-android/opts"
 reviewed="${repo}/data/usr/share/microos-lepton/reviewed"
 unit="${repo}/data/usr/lib/systemd/user/microos-android.service"
@@ -27,11 +28,13 @@ done
 real_setpgid=$(command -v setpgid)
 real_rm=$(command -v rm)
 export HOME="${T}/home" XDG_RUNTIME_DIR="${T}/xdg"
+export MICROOS_HOME="${T}/home"
 export MICROOS_LIBLEPTON="${override}" MICROOS_STEAM_EMPTY="${T}/steam-empty"
 export PATH="${T}/bin:${PATH}"
 valve_home="${HOME}/.local/share/microos-android/home"
 contexts="${valve_home}/.local/share/lepton/contexts"
 run_dir="${XDG_RUNTIME_DIR}/microos-lepton"
+android_run_dir="${XDG_RUNTIME_DIR}/microos-android"
 
 { printf '#!/usr/bin/bash\nstate=%q\nreal_rm=%q\n' "${STATE}" "${real_rm}"; cat; } > "${T}/bin/podman" <<'STUB'
 printf 'podman %s\n' "$*" >> "${state}/podman"
@@ -383,6 +386,11 @@ podman_network_options()
 
 props_file() { print "${LEPTON_PREFIX}/lepton.prop"; }
 
+setup_podman_base()
+{
+    PODMAN_CMDLINE+=(--pid=private --ipc=private --uts=private --cgroupns=private)
+}
+
 setup_props()
 {
     local props="ro.lepton.devmode=false"
@@ -505,6 +513,7 @@ remove_context() { podman rm -fi "lepton-${1:-${LEPTON_CONTEXT}}" || true; }
 setup_container()
 {
     cleanup_container
+    setup_podman_base
     setup_mounts
     setup_podman_mounts
     export LEPTON_ADB_PORT="${LEPTON_ADB_PORT:-5555}"
@@ -553,9 +562,11 @@ make_runtime() {
         "$1/images/rootfs_overlay/vendor/bin" "$1/sysbake/system" "$1/liblepton/apk_extractor/bin"
     echo xml > "$1/sysbake/system/packages.xml"
     echo '# file: sysbake/system' > "$1/sysbake.xattrs"
-    printf 'ro.build.version.release=11\nro.build.version.sdk=30\n' > "$1/images/rootfs/system/build.prop"
+    printf 'ro.build.version.release=11\nro.build.version.sdk=30\nro.system.build.fingerprint=lepton/lineage_lepton_arm64_only/lepton_arm64_only:11/RQ3A.211001.001/root09251955:userdebug/test-keys\n' \
+        > "$1/images/rootfs/system/build.prop"
     echo 'ro.odm.build.id=RQ3A' > "$1/images/rootfs/vendor/odm/etc/build.prop"
     echo 'ro.adb.secure=0' > "$1/images/rootfs/system/etc/prop.default"
+    echo 3.0.3 > "$1/images/version.txt"
     echo overlay > "$1/images/rootfs_overlay/vendor/bin/lepton_set_volumes.sh"
     echo fakedroid > "$1/liblepton/app_metadata.sh"
     { printf '#!/bin/bash\nFAKE_STATE=%q\n' "${STATE}"; cat "${T}/fake-lepton"; } > "$1/lepton"
@@ -565,9 +576,15 @@ make_runtime() {
     launcher_block "$1" > "$1.reviewed"
 }
 
+marker() {
+    local dir=$1
+    printf 'rootfs=%s\n' "$(cat "${dir}/images/version.txt") $(sed -n 's/^ro\.system\.build\.fingerprint=//p' "${dir}/images/rootfs/system/build.prop" | head -n 1)" \
+        > "$(dirname "${dir}")/.verified.${dir##*/}"
+}
+
 launcher_block() {
     (
-        eval "$(sed -n '/^paths()/,/^}/p;/^entry()/,/^}/p' "${launcher}")"
+        eval "$(sed -n '/^paths()/,/^}/p;/^entry()/,/^}/p' "${lib}")"
         cd "$1"
         paths | LC_ALL=C sort | while IFS= read -r path; do entry "$1" "${path}"; done
     )
@@ -690,6 +707,7 @@ printf '%s\n' "${T}/steam/steamapps/common/Lepton"
 STUB
 chmod 0755 "${MICROOS_LEPTON_STEAM_DIR_CMD}"
 cp -a "${T}/steam/steamapps/common/Lepton" "${MICROOS_LEPTON_SNAPSHOTS}/25772114"
+marker "${MICROOS_LEPTON_SNAPSHOTS}/25772114"
 rt="${MICROOS_LEPTON_SNAPSHOTS}/25772114"
 mkdir -p "${HOME}/.config/microos-android"
 printf 'QAAAAkey1 micro@pm2\nQAAAAkey2 seilent@sepc\n' > "${HOME}/.config/microos-android/adb_keys"
@@ -759,12 +777,14 @@ MICROOS_LEPTON_SNAPSHOTS="${T}/empty-snaps" MICROOS_LEPTON_REVIEWED="${T}/review
     || fail "no tree from discovery: exit ${rc}: $(cat "${STATE}/out")"
 rc=0
 MICROOS_LEPTON_STEAM_DIR_CMD=/bin/false timeout -k 2 20 "${launcher}" runtime > "${STATE}/out" 2>&1 || rc=$?
-[[ "${rc}" == 0 && "$(cat "${STATE}/out")" == "${rt}" ]] || fail "discovery down, snapshot present: exit ${rc}: $(cat "${STATE}/out")"
+[[ "${rc}" == 0 && "$(grep -x "${rt}" "${STATE}/out")" == "${rt}" ]] \
+    || fail "discovery down, snapshot present: exit ${rc}: $(cat "${STATE}/out")"
 rm -rf "${T}/empty-review" "${T}/empty-steam" "${T}/empty-snaps"
 for change in byte lepton extra xattrs sdk; do
     rm -rf "${T}/snaps-bad"
     mkdir -p "${T}/snaps-bad"
     cp -a "${rt}" "${T}/snaps-bad/25772114"
+marker "${T}/snaps-bad/25772114"
     want="microos-lepton: Lepton in ${T}/snaps-bad/25772114 is not the build in ${MICROOS_LEPTON_REVIEWED}/25772114, refusing"
     case "${change}" in
         byte) sed -i '$ s/FAKE_DROP/FAKE_DROQ/' "${T}/snaps-bad/25772114/liblepton/liblepton.sh" ;;
@@ -867,14 +887,16 @@ grep -qx "service.adb.tcp.port=15655" "${STATE}/props-probe-lh-proto" || fail "V
 adb="${ctx}/baked/data_overlay/misc/adb"
 printf 'QAAAAkey1 micro@pm2\nQAAAAkey2 seilent@sepc\n' > "${HOME}/.config/microos-android/adb_keys"
 cmp -s "${HOME}/.config/microos-android/adb_keys" "${adb}/adb_keys" || fail "adb_keys not the key file: $(cat "${adb}/adb_keys")"
-[[ "$(stat -c %a "${adb}")" == 2750 && "$(stat -c %a "${adb}/adb_keys")" == 640 ]] \
+[[ "$(stat -c %a "${adb}")" == 755 && "$(stat -c %a "${adb}/adb_keys")" == 644 ]] \
     || fail "adb modes: $(stat -c %a "${adb}") $(stat -c %a "${adb}/adb_keys")"
-grep -qx "chown -h 1000:2000 . in ${adb}" "${STATE}/chown" && grep -qx "chown -h 1000:2000 adb_keys.new in ${adb}" "${STATE}/chown" \
+grep -qx "chown -h 0:0 . in ${adb}" "${STATE}/chown" && grep -qx "chown -h 0:0 adb_keys.new in ${adb}" "${STATE}/chown" \
     || fail "adb owner: $(cat "${STATE}/chown")"
 grep -q "^podman unshare sh -c " "${STATE}/podman" \
-    && grep -qF " sh ${ctx}/baked/data_overlay 1000:2000 02750 0640 ${ctx}/baked/data_overlay" "${STATE}/podman" \
+    && grep -qF " sh ${ctx}/baked/data_overlay 0:0 0755 0644 ${ctx}/baked/data_overlay" "${STATE}/podman" \
     || fail "adb_keys not written through podman unshare"
 run_args="${STATE}/run-lepton-probe-lh-proto"
+[[ "$(grep -c '^--cgroup-parent=game-android.slice$' "${run_args}")" == 1 ]] \
+    || fail "the guest is not placed under game-android.slice: $(grep -n cgroup "${run_args}")"
 grep -qxF "type=bind,source=${ctx}/external,destination=${ctx}/external,rw" "${run_args}" \
     || fail "external/ not bound at its own path: $(cat "${run_args}")"
 grep -qF "${contexts}," "${run_args}" && fail "the contexts dir is bound into the guest"
@@ -892,6 +914,10 @@ intact "${ctx}" "first stop"
 grep -q "kept the baked app data, asked to clear it for non steamlaunch container" "${STATE}/out-probe-lh-proto" \
     || fail "clear_baked_app_data did not log: $(out probe-lh-proto)"
 [[ "$(grep -c teardown "${STATE}/events-probe-lh-proto")" == 1 ]] || fail "teardown did not finish once"
+[[ -f "${android_run_dir}/lepton-prefix" ]] || fail "the run did not record Valve's prefix: $(ls -A "${android_run_dir}" 2>/dev/null)"
+[[ "$(cat "${android_run_dir}/lepton-prefix")" =~ ^${STATE}/lepton-context\.[A-Za-z0-9]+$ ]] \
+    || fail "the record names $(cat "${android_run_dir}/lepton-prefix"), not the prefix Valve made in ${STATE}"
+[[ -z "$(find "${android_run_dir}" -name 'lepton-prefix.*')" ]] || fail "the record left a temp file: $(ls -A "${android_run_dir}")"
 
 for n in 2 3 4; do
     printf 'stale\n' > "${adb}/adb_keys"
@@ -1164,6 +1190,16 @@ for conf in "mounts = [\"type=bind,source=${contexts}/probe-lh-a,destination=/x,
     grep -qxF "microos-liblepton: Lepton binds ${conf##*|}, at, above or under ${contexts}, refusing" "${STATE}/out-probe-lh-proto" \
         || fail "CONTAINERS_CONF_OVERRIDE ${conf}: $(out probe-lh-proto)"
 done
+printf "[containers]\nmounts = [\"type=bind,source=%s:/x'y\"]\n" "${T}/odm.prop" > "${T}/bad.conf"
+refused probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" CONTAINERS_CONF_OVERRIDE="${T}/bad.conf" \
+    "${launcher}" start probe-lh-proto
+grep -qxF "microos-liblepton: ${T}/bad.conf holds a quote or a backslash, refusing" "${STATE}/out-probe-lh-proto" \
+    || fail "CONTAINERS_CONF_OVERRIDE with a quote: $(out probe-lh-proto)"
+printf '[containers]\nmounts = ["type=bind,source=%s/baked/absent:/x"]\n' "${ctx}" > "${T}/bad.conf"
+refused probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" CONTAINERS_CONF_OVERRIDE="${T}/bad.conf" \
+    "${launcher}" start probe-lh-proto
+grep -q "and cannot be resolved, refusing" "${STATE}/out-probe-lh-proto" \
+    || fail "CONTAINERS_CONF_OVERRIDE with an unresolvable source: $(out probe-lh-proto)"
 printf '[containers]\nvolumes = ["%s:/x"]\n' "${T}/odm.prop" > "${T}/bad.conf"
 refused probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" CONTAINERS_CONF_OVERRIDE="${T}/bad.conf" \
     "${launcher}" start probe-lh-proto
@@ -1418,10 +1454,11 @@ intact "${ctx}" "media/0 link"
 
 for fn in setup_mounts setup_props prepare_baked_data_for_removal clear_baked_app_data cleanup_container cleanup_all \
     kill_all wipe_baked_system_data podman_network_options get_baked_app_data_dir data_mount_path kill_container \
-    podman_ip podman_subnet adb_port create_prefix setup_podman_mounts onexit_path; do
+    podman_ip podman_subnet adb_port create_prefix setup_podman_mounts setup_podman_base onexit_path determine_app; do
     rm -rf "${T:?}/snap-guard"
     mkdir -p "${T}/snap-guard"
     make_runtime "${T}/snap-guard/25772114" "${fn}"
+    marker "${T}/snap-guard/25772114"
     mkdir -p "${T}/reviewed-guard"
     cp "${T}/snap-guard/25772114.reviewed" "${T}/reviewed-guard/25772114"
     refused probe-lh-guard env MICROOS_LEPTON_SNAPSHOTS="${T}/snap-guard" MICROOS_LEPTON_REVIEWED="${T}/reviewed-guard" \
@@ -1572,6 +1609,7 @@ wait "${pida}" || rc=$?
 rt2="${T}/snaps2"
 mkdir -p "${T}/snaps2" "${T}/reviewed2"
 make_runtime "${rt2}/99999998"
+marker "${rt2}/99999998"
 cp "${rt2}/99999998.reviewed" "${T}/reviewed2/99999998"
 STEAM_COMPAT_DATA_PATH="${ctxa}" MICROOS_LEPTON_SNAPSHOTS="${T}/snaps" "${launcher}" start probe-lh-a > "${STATE}/out-probe-lh-a" 2>&1 &
 pida=$!
@@ -1657,14 +1695,20 @@ snapshot_run "${T}/stars" "${T}/reviewed-stars" /bin/false
 [[ "$(snapshot "${T}/stars")" == "${before_stars}" ]] || fail "snapshot only: the snapshot changed: $(snapshot "${T}/stars")"
 
 cp -a "${rt}" "${T}/stars/25772113"
+marker "${T}/stars/25772113"
 cp "${T}/steam/steamapps/common/Lepton.reviewed" "${T}/reviewed-stars/25772113"
 snapshot_run "${T}/stars" "${T}/reviewed-stars" /bin/false
 [[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/stars/25772114" ]] || fail "two snapshots: exit ${rc}: $(cat "${STATE}/out")"
 [[ -d "${T}/stars/25772113" ]] || fail "two snapshots: the older one was removed before a new one was taken"
 cp -a "${rt}" "${T}/stars/25772112"
+marker "${T}/stars/25772112"
 cp "${T}/steam/steamapps/common/Lepton.reviewed" "${T}/reviewed-stars/25772112"
+cp -a "${rt}" "${T}/stars/25772111"
+marker "${T}/stars/25772111"
+cp "${T}/steam/steamapps/common/Lepton.reviewed" "${T}/reviewed-stars/25772111"
 snapshot_run "${T}/stars" "${T}/reviewed-stars" /bin/false
-[[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/stars/25772114" ]] || fail "three snapshots: exit ${rc}: $(cat "${STATE}/out")"
+[[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/stars/25772114" ]] || fail "four snapshots: exit ${rc}: $(cat "${STATE}/out")"
+[[ -e "${T}/stars/25772111" ]] || fail "four snapshots: an older build was pruned on a failed deployment list"
 rm -rf "${T}/stars/25772114"
 sed -i 's/buildid"\t\t"25772114/buildid"\t\t"25772113/' "${T}/lib-tree/steamapps/appmanifest_3029110.acf"
 printf '"AppState"\n{\n\t"appid"\t\t"3029110"\n\t"buildid"\t\t"25772113"\n\t"StateFlags"\t\t"4"\n}\n' \
@@ -1672,11 +1716,12 @@ printf '"AppState"\n{\n\t"appid"\t\t"3029110"\n\t"buildid"\t\t"25772113"\n\t"Sta
 snapshot_run "${T}/stars" "${T}/reviewed-stars" "${T}/bin/lepton-dir-tree"
 [[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/stars/25772113" ]] || fail "new build: exit ${rc}: $(cat "${STATE}/out")"
 [[ -d "${T}/stars/25772113" ]] || fail "new build: no snapshot for it"
-[[ ! -e "${T}/stars/25772112" ]] || fail "new build: an old snapshot was kept: $(ls -A "${T}/stars")"
+[[ -d "${T}/stars/25772112" ]] || fail "new build: the next lower build was pruned: $(ls -A "${T}/stars")"
 
 rm -rf "${T}/stars-up"
 mkdir -p "${T}/stars-up"
 cp -a "${rt}" "${T}/stars-up/25772113"
+marker "${T}/stars-up/25772113"
 echo broken >> "${T}/lib-tree/steamapps/common/Lepton/liblepton/utils.sh"
 snapshot_run "${T}/stars-up" "${T}/reviewed-stars" "${T}/bin/lepton-dir-tree"
 [[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/stars-up/25772113" && ! -e "${T}/stars-up/25772114" ]] \
@@ -1686,6 +1731,145 @@ snapshot_run "${T}/stars-up" "${T}/reviewed-stars" "${T}/bin/lepton-dir-tree"
 [[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/stars-up/25772114" && -d "${T}/stars-up/25772113" ]] \
     || fail "newer reviewed build in Steam: exit ${rc}: $(cat "${STATE}/out")"
 rm -rf "${T}/stars-up"
+rm -rf "${T}/stars-readonly"
+rc=0
+MICROOS_LEPTON_READ_ONLY=1 MICROOS_LEPTON_SNAPSHOTS="${T}/stars-readonly" MICROOS_LEPTON_REVIEWED="${T}/reviewed-stars" \
+    MICROOS_LEPTON_STEAM_DIR_CMD="${T}/bin/lepton-dir-tree" "${launcher}" runtime > "${STATE}/out" 2>&1 || rc=$?
+[[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/lib-tree/steamapps/common/Lepton" ]] \
+    || fail "a read only runtime: exit ${rc}: $(cat "${STATE}/out")"
+[[ ! -e "${T}/stars-readonly/25772114" ]] || fail "a read only runtime took a snapshot: $(ls -A "${T}/stars-readonly")"
+rm -rf "${T}/stars-readonly"
+
+rm -rf "${T}/stars-ro-bad"
+mkdir -p "${T}/stars-ro-bad"
+cp -a "${rt}/." "${T}/stars-ro-bad/25772113/"
+printf 'rootfs=3.0.3 lepton/lineage_lepton_arm64_only/lepton_arm64_only:11/RQ3A.211001.001/root09251955:userdebug/test-keys\n' > "${T}/stars-ro-bad/.verified.25772112"
+cp "${T}/steam/steamapps/common/Lepton.reviewed" "${T}/reviewed-stars/25772113"
+mkdir -p "${T}/stars-ro-bad/25772112"
+cp -a "${rt}/." "${T}/stars-ro-bad/25772112/"
+printf 'extra\n' > "${T}/stars-ro-bad/25772112/stale"
+cp "${T}/steam/steamapps/common/Lepton.reviewed" "${T}/reviewed-stars/25772112"
+rc=0
+MICROOS_LEPTON_READ_ONLY=1 MICROOS_LEPTON_SNAPSHOTS="${T}/stars-ro-bad" MICROOS_LEPTON_REVIEWED="${T}/reviewed-stars" \
+    MICROOS_LEPTON_STEAM_DIR_CMD=/bin/false "${launcher}" runtime > "${STATE}/out" 2>&1 || rc=$?
+[[ "${rc}" == 0 ]] || fail "a read only runtime with a bad snapshot: exit ${rc}: $(cat "${STATE}/out")"
+[[ -d "${T}/stars-ro-bad/25772112" ]] || fail "a read only runtime removed a bad snapshot: $(ls -A "${T}/stars-ro-bad")"
+[[ -f "${T}/stars-ro-bad/.verified.25772112" ]] || fail "a read only runtime removed a stale marker: $(ls -A "${T}/stars-ro-bad")"
+grep -q "a read only run leaves the bad snapshot ${T}/stars-ro-bad/25772112" "${STATE}/out" \
+    || fail "a read only runtime: the bad snapshot was not logged: $(cat "${STATE}/out")"
+[[ ! -e "${T}/stars-ro-bad/.verified.25772113" ]] \
+    || fail "a read only runtime wrote a missing marker: $(ls -A "${T}/stars-ro-bad")"
+grep -q "has no verified marker, a read only run leaves it" "${STATE}/out" \
+    || fail "a read only runtime: the missing marker was not logged: $(cat "${STATE}/out")"
+[[ -d "${T}/stars-ro-bad/25772113" ]] || fail "a read only runtime removed the good snapshot: $(ls -A "${T}/stars-ro-bad")"
+rm -rf "${T}/stars-ro-bad"
+
+rm -rf "${T}/stars-ro-prune"
+mkdir -p "${T}/stars-ro-prune" "${T}/bin-ostree-null"
+for b in 25772114 25772113 25772112; do
+    mkdir -p "${T}/stars-ro-prune/${b}"
+    cp -a "${rt}/." "${T}/stars-ro-prune/${b}/"
+    printf 'rootfs=3.0.3 lepton/lineage_lepton_arm64_only/lepton_arm64_only:11/RQ3A.211001.001/root09251955:userdebug/test-keys\n' > "${T}/stars-ro-prune/.verified.${b}"
+    cp "${T}/steam/steamapps/common/Lepton.reviewed" "${T}/reviewed-stars/${b}"
+done
+cat > "${T}/bin-ostree-null/ostree" <<'STUB'
+#!/usr/bin/bash
+case "$1 $2" in
+    "admin status") printf '{"deployments": [{"checksum": "%s"}]}\n' "$(printf 'b%.0s' {1..64})"; exit 0 ;;
+    "ls "*) exit 0 ;;
+esac
+exit 1
+STUB
+chmod 0755 "${T}/bin-ostree-null/ostree"
+rc=0
+PATH="${T}/bin-ostree-null:${PATH}" MICROOS_LEPTON_READ_ONLY=1 MICROOS_LEPTON_SNAPSHOTS="${T}/stars-ro-prune" \
+    MICROOS_LEPTON_REVIEWED="${T}/reviewed-stars" MICROOS_LEPTON_STEAM_DIR_CMD="${T}/bin/lepton-dir-tree" \
+    "${launcher}" runtime > "${STATE}/out" 2>&1 || rc=$?
+[[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/stars-ro-prune/25772114" ]] \
+    || fail "a read only runtime with three snapshots: exit ${rc}: $(cat "${STATE}/out")"
+[[ -d "${T}/stars-ro-prune/25772112" ]] || fail "a read only runtime pruned a snapshot: $(ls -A "${T}/stars-ro-prune")"
+rc=0
+PATH="${T}/bin-ostree-null:${PATH}" MICROOS_LEPTON_SNAPSHOTS="${T}/stars-ro-prune" \
+    MICROOS_LEPTON_REVIEWED="${T}/reviewed-stars" MICROOS_LEPTON_STEAM_DIR_CMD="${T}/bin/lepton-dir-tree" \
+    "${launcher}" runtime > "${STATE}/out" 2>&1 || rc=$?
+[[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/stars-ro-prune/25772114" ]] \
+    || fail "a writable runtime with three snapshots: exit ${rc}: $(cat "${STATE}/out")"
+[[ ! -e "${T}/stars-ro-prune/25772112" ]] || fail "a writable runtime kept the oldest snapshot: $(ls -A "${T}/stars-ro-prune")"
+[[ -d "${T}/stars-ro-prune/25772113" ]] || fail "a writable runtime pruned the next lower snapshot: $(ls -A "${T}/stars-ro-prune")"
+rm -rf "${T}/bin-ostree-null" "${T}/stars-ro-prune"
+
+rm -rf "${T}/stars-ostree-fail" "${T}/bin-ostree-fail"
+mkdir -p "${T}/stars-ostree-fail" "${T}/bin-ostree-fail"
+for b in 25772114 25772113 25772112; do
+    mkdir -p "${T}/stars-ostree-fail/${b}"
+    cp -a "${rt}/." "${T}/stars-ostree-fail/${b}/"
+    printf 'rootfs=3.0.3 lepton/lineage_lepton_arm64_only/lepton_arm64_only:11/RQ3A.211001.001/root09251955:userdebug/test-keys\n' > "${T}/stars-ostree-fail/.verified.${b}"
+    cp "${T}/steam/steamapps/common/Lepton.reviewed" "${T}/reviewed-stars/${b}"
+done
+cat > "${T}/bin-ostree-fail/ostree" <<'STUB'
+#!/usr/bin/bash
+case "$1 $2" in
+    "admin status") printf '{"deployments": [{"checksum": "%s"}]}\n' "$(printf 'b%.0s' {1..64})"; exit 0 ;;
+    "ls "*) exit 1 ;;
+esac
+exit 1
+STUB
+chmod 0755 "${T}/bin-ostree-fail/ostree"
+rc=0
+PATH="${T}/bin-ostree-fail:${PATH}" MICROOS_LEPTON_SNAPSHOTS="${T}/stars-ostree-fail" \
+    MICROOS_LEPTON_REVIEWED="${T}/reviewed-stars" MICROOS_LEPTON_STEAM_DIR_CMD="${T}/bin/lepton-dir-tree" \
+    "${launcher}" runtime > "${STATE}/out" 2>&1 || rc=$?
+[[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/stars-ostree-fail/25772114" ]] \
+    || fail "an unreadable deployment list: exit ${rc}: $(cat "${STATE}/out")"
+grep -qx "microos-lepton: cannot list $(printf 'b%.0s' {1..64}), judging snapshots by the booted one" "${STATE}/out" \
+    || fail "an unreadable deployment list: not logged: $(cat "${STATE}/out")"
+[[ -d "${T}/stars-ostree-fail/25772112" ]] \
+    || fail "an unreadable deployment list pruned a snapshot: $(ls -A "${T}/stars-ostree-fail")"
+rm -rf "${T}/bin-ostree-fail" "${T}/stars-ostree-fail"
+
+rm -rf "${T}/stars-legacy"
+mkdir -p "${T}/stars-legacy"
+cp -a "${rt}" "${T}/stars-legacy/25772114"
+printf 'garbage\n' > "${T}/stars-legacy/.verified.25772114"
+snapshot_run "${T}/stars-legacy" "${T}/reviewed-stars" /bin/false
+[[ "${rc}" == 1 ]] || fail "a marker for another rootfs: exit ${rc}: $(cat "${STATE}/out")"
+grep -q "is not the snapshot its verified marker names, refusing it" "${STATE}/out" \
+    || fail "a marker for another rootfs: no reason: $(cat "${STATE}/out")"
+rm -f "${T}/stars-legacy/.verified.25772114"
+snapshot_run "${T}/stars-legacy" "${T}/reviewed-stars" /bin/false
+[[ "${rc}" == 0 && "$(grep -x "${T}/stars-legacy/25772114" "${STATE}/out")" == "${T}/stars-legacy/25772114" ]] \
+    || fail "a snapshot with no marker: exit ${rc}: $(cat "${STATE}/out")"
+grep -q "has no verified marker yet, writing it" "${STATE}/out" \
+    || fail "a snapshot with no marker: not adopted: $(cat "${STATE}/out")"
+grep -qx 'rootfs=3.0.3 lepton/lineage_lepton_arm64_only/lepton_arm64_only:11/RQ3A.211001.001/root09251955:userdebug/test-keys' "${T}/stars-legacy/.verified.25772114" \
+    || fail "a snapshot with no marker: the marker: $(cat "${T}/stars-legacy/.verified.25772114" 2>/dev/null)"
+printf 'rootfs=3.0.3 lepton/lepton:11/RQ3A/1:user/release-keys\n' > "${T}/stars-legacy/.verified.25772114"
+snapshot_run "${T}/stars-legacy" "${T}/reviewed-stars" /bin/false
+[[ "${rc}" == 1 ]] || fail "a marker for another non-empty rootfs: exit ${rc}: $(cat "${STATE}/out")"
+grep -q "is not the snapshot its verified marker names, refusing it" "${STATE}/out" \
+    || fail "a marker for another non-empty rootfs: no reason: $(cat "${STATE}/out")"
+grep -qx 'rootfs=3.0.3 lepton/lepton:11/RQ3A/1:user/release-keys' "${T}/stars-legacy/.verified.25772114" \
+    || fail "a marker for another non-empty rootfs: the marker was rewritten"
+printf 'rootfs=\n' > "${T}/stars-legacy/.verified.25772114"
+snapshot_run "${T}/stars-legacy" "${T}/reviewed-stars" /bin/false
+[[ "${rc}" == 0 && "$(grep -x "${T}/stars-legacy/25772114" "${STATE}/out")" == "${T}/stars-legacy/25772114" ]] \
+    || fail "a legacy empty marker: exit ${rc}: $(cat "${STATE}/out")"
+grep -q "has a verified marker with no rootfs identity, writing it" "${STATE}/out" \
+    || fail "a legacy empty marker: not rewritten: $(cat "${STATE}/out")"
+grep -qx 'rootfs=3.0.3 lepton/lineage_lepton_arm64_only/lepton_arm64_only:11/RQ3A.211001.001/root09251955:userdebug/test-keys' "${T}/stars-legacy/.verified.25772114" \
+    || fail "a legacy empty marker: the marker: $(cat "${T}/stars-legacy/.verified.25772114" 2>/dev/null)"
+printf 'rootfs=\n' > "${T}/stars-legacy/.verified.25772114"
+rc=0
+MICROOS_LEPTON_READ_ONLY=1 MICROOS_LEPTON_SNAPSHOTS="${T}/stars-legacy" MICROOS_LEPTON_REVIEWED="${T}/reviewed-stars" \
+    MICROOS_LEPTON_STEAM_DIR_CMD=/bin/false "${launcher}" runtime > "${STATE}/out" 2>&1 || rc=$?
+[[ "${rc}" == 0 && "$(tail -n 1 "${STATE}/out")" == "${T}/stars-legacy/25772114" ]] \
+    || fail "a legacy empty marker in read only: exit ${rc}: $(cat "${STATE}/out")"
+grep -q "has a verified marker with no rootfs identity, a read only run leaves it" "${STATE}/out" \
+    || fail "a legacy empty marker in read only: not logged: $(cat "${STATE}/out")"
+grep -qx 'rootfs=' "${T}/stars-legacy/.verified.25772114" \
+    || fail "a legacy empty marker in read only: the marker was rewritten"
+rm -rf "${T}/stars-legacy"
+
 rm -rf "${T}/stars-noxattr"
 mkdir -p "${T}/stars-noxattr" "${T}/bin-noxattr"
 cat > "${T}/bin-noxattr/setfattr" <<STUB
@@ -1700,6 +1884,7 @@ PATH="${T}/bin-noxattr:${PATH}" MICROOS_LEPTON_SNAPSHOTS="${T}/stars-noxattr" \
 [[ "${rc}" == 1 && "$(tail -n 1 "${STATE}/out")" == "microos-lepton: ${T}/stars-noxattr keeps no xattrs, refusing" ]] \
     || fail "no xattrs: exit ${rc}: $(cat "${STATE}/out")"
 [[ "$(ls -A "${T}/stars-noxattr")" == .lock ]] || fail "no xattrs: the half made snapshot was kept: $(ls -A "${T}/stars-noxattr")"
+
 rm -rf "${T}/stars-noxattr" "${T}/bin-noxattr"
 
 rm -rf /dev/shm/microos-otherfs-$$
@@ -1736,6 +1921,7 @@ echo mine > "${backups}/probe-lh-bk.pre-by-hand.bak/keep"
 rm -rf "${T}/snaps-old" "${T}/reviewed-old"
 mkdir -p "${T}/snaps-old" "${T}/reviewed-old"
 cp -a "${rt}" "${T}/snaps-old/25772113"
+marker "${T}/snaps-old/25772113"
 cp "${T}/steam/steamapps/common/Lepton.reviewed" "${T}/reviewed-old/25772113"
 cycle probe-lh-bk env MICROOS_LEPTON_SNAPSHOTS="${T}/snaps-old" MICROOS_LEPTON_REVIEWED="${T}/reviewed-old" \
     STEAM_COMPAT_DATA_PATH="${bkctx}" "${launcher}" start probe-lh-bk
@@ -1795,6 +1981,7 @@ rm -rf "${T}/library-two" "${T}/snaps-two" "${T}/reviewed-two"
 rm -rf "${T}/snaps-keep"
 mkdir -p "${T}/snaps-keep" "${T}/snaps-keep/not-a-build" "${T}/snaps-keep/25772100"
 cp -a "${rt}" "${T}/snaps-keep/25772114"
+marker "${T}/snaps-keep/25772114"
 cp "${T}/steam/steamapps/common/Lepton.reviewed" "${T}/reviewed-stars/25772114"
 echo keep > "${T}/snaps-keep/not-a-build/file"
 echo keep > "${T}/snaps-keep/25772100/file"
@@ -1860,6 +2047,7 @@ echo kept > "${backup}/kept"
 rm -rf "${T}/snaps-new" "${T}/reviewed-new"
 mkdir -p "${T}/snaps-new" "${T}/reviewed-new"
 cp -a "${rt}" "${T}/snaps-new/25772113"
+marker "${T}/snaps-new/25772113"
 cp "${T}/steam/steamapps/common/Lepton.reviewed" "${T}/reviewed-new/25772113"
 rm -rf "${backups}/probe-lh-bk.pre-25772113.bak"
 cycle probe-lh-bk env MICROOS_LEPTON_SNAPSHOTS="${T}/snaps-new" MICROOS_LEPTON_REVIEWED="${T}/reviewed-new" \
@@ -1872,6 +2060,7 @@ rm -rf "${T}/snaps-new" "${T}/reviewed-new"
 rm -rf "${T}/snaps-links"
 mkdir -p "${T}/snaps-links" "${T}/outside-rootfs" "${T}/outside-sysbake"
 cp -a "${rt}" "${T}/snaps-links/25772114"
+marker "${T}/snaps-links/25772114"
 for dir in images/rootfs sysbake; do
     rm -rf "${T}/snaps-links/25772114/${dir}"
     if [[ "${dir}" == images/rootfs ]]; then
@@ -1890,6 +2079,7 @@ for dir in images/rootfs sysbake; do
     rm -rf "${T}/snaps-links"
     mkdir -p "${T}/snaps-links"
     cp -a "${rt}" "${T}/snaps-links/25772114"
+marker "${T}/snaps-links/25772114"
 done
 rm -rf "${T}/snaps-links" "${T}/outside-rootfs" "${T}/outside-sysbake"
 
@@ -1912,7 +2102,7 @@ printf 'on boot\n    keycodes 114 115 116\n' > "${rt}/images/rootfs/system/etc/i
 python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${XDG_RUNTIME_DIR}/play-gamescope-0"
 rc=0
 XDG_STATE_HOME="${T}/play-state" MICROOS_ANDROID_DATA="${play_data}" MICROOS_POLL_S=0.05 \
-    GAMESCOPE_WAYLAND_DISPLAY="${XDG_RUNTIME_DIR}/play-gamescope-0" \
+    GAMESCOPE_WAYLAND_DISPLAY=play-gamescope-0 \
     MICROOS_DISPLAY_FILE="${repo}/data/usr/share/microos-android/display" \
     MICROOS_GAPPS="${T}/play-gapps" MICROOS_STUB_DIR="${T}/play-stub" \
     MICROOS_OPTS="${repo}/data/usr/share/microos-android/opts" \

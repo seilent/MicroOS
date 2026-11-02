@@ -794,7 +794,7 @@ systemctl --global cat gamescope-session-plus@steam.service | grep -qxF Wants=mi
   || fail "gamescope-session-plus@steam.service does not want microos-steam-compat-refresh.path"
 lepton=/usr/lib/systemd/user/microos-lepton-install.service
 for line in BindsTo=gamescope-session-plus@steam.service After=gamescope-session-plus@steam.service \
-  ConditionPathExists=%S/microemu/lepton-install-requested Type=oneshot TimeoutStartSec=330 \
+  ConditionPathExists=%S/microos-lepton/lepton-install-requested Type=oneshot TimeoutStartSec=330 \
   'ExecStart=/usr/libexec/microos/microos-steam-compat lepton-install'; do
   grep -qxF "$line" "$lepton" || fail "microos-lepton-install.service lacks $line"
 done
@@ -904,6 +904,10 @@ python3 -c 'import json, sys; s = json.load(open(sys.argv[1])); assert s["owned"
   "$tmp/lsfg-home/.local/state/microos-lsfg/state.json" || fail "$lsfg detect on an empty home: $(cat "$tmp/lsfg-err")"
 grep -qxF CPUWeight=100 /usr/lib/systemd/user/game.slice || fail "game.slice lacks CPUWeight=100"
 [[ $(systemctl --global is-enabled game.slice) == enabled ]] || fail "user game.slice is not enabled"
+[[ $(systemctl --global is-enabled microos-android-status.service) == enabled ]] \
+  || fail "microos-android-status.service is not enabled through the user preset"
+[[ -L /etc/systemd/user/default.target.wants/microos-android-status.service ]] \
+  || fail "microos-android-status.service has no default.target.wants link"
 [[ $(< /usr/lib/systemd/user/app-steam-.scope.d/50-microos-game-slice.conf) == $'[Scope]\nSlice=game.slice' ]] \
   || fail "Steam game scope drop-in"
 [[ $(< /usr/lib/systemd/user/gamescope-session-plus@.service.d/20-microos-hotkeyd.conf) == $'[Unit]\nWants=microos-hotkeyd@%i.service' ]] \

@@ -1,0 +1,104 @@
+#!/usr/bin/python3
+import os
+import subprocess
+import sys
+import time
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-android-session-watch"
+SESSION = os.environ.get("MICROOS_SESSION_UNIT") or "gamescope-session-plus@android.service"
+UNIT = os.environ.get("MICROOS_ANDROID_UNIT") or "microos-android.service"
+MANAGER = ("org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager")
+PROPS = "org.freedesktop.DBus.Properties"
+POLL_S = float(os.environ.get("MICROOS_WATCH_POLL_S") or 1)
+LIVE = ("active", "activating", "reloading")
+
+
+def log(message):
+    print(f"{ME}: {message}", file=sys.stderr, flush=True)
+
+
+def unit_path(unit):
+    return "/org/freedesktop/systemd1/unit/" + unit.replace("-", "_2d").replace("@", "_40").replace(".", "_2e")
+
+
+def state(bus, unit):
+    try:
+        reply = bus.call_sync(MANAGER[0], unit_path(unit), PROPS, "Get",
+                              GLib.Variant("(ss)", ("org.freedesktop.systemd1.Unit", "ActiveState")),
+                              None, Gio.DBusCallFlags.NONE, 2000, None)
+    except GLib.Error:
+        return ""
+    return reply.unpack()[0]
+
+
+def system_stopping():
+    for arguments in (["systemctl", "--user", "is-system-running"], ["systemctl", "is-system-running"]):
+        try:
+            result = subprocess.run(arguments, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.stdout.decode(errors="replace").strip() == "stopping":
+            return True
+    return False
+
+
+def stop_container(bus):
+    current = state(bus, UNIT)
+    if current in ("", "inactive", "failed", "deactivating"):
+        return
+    if system_stopping():
+        log("the system is stopping, no stop request")
+        return
+    log("the session left active, stopping the container")
+    try:
+        bus.call_sync(MANAGER[0], MANAGER[1], MANAGER[2], "StopUnit", GLib.Variant("(ss)", (UNIT, "replace")),
+                      None, Gio.DBusCallFlags.NONE, 5000, None)
+    except GLib.Error as error:
+        log(f"StopUnit failed: {error.message}")
+
+
+def main():
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    except GLib.Error as error:
+        log(f"no session bus, no watch: {error.message}")
+        return 0
+    loop = GLib.MainLoop()
+    ended = {"value": False}
+
+    def changed(conn, sender, path, interface, signal, params):
+        props = params.unpack()[1]
+        if "ActiveState" in props and props["ActiveState"] not in LIVE:
+            ended["value"] = True
+            loop.quit()
+
+    subscribed = False
+    try:
+        bus.call_sync(MANAGER[0], MANAGER[1], MANAGER[2], "Subscribe", None, None,
+                      Gio.DBusCallFlags.NONE, 2000, None)
+        bus.signal_subscribe(MANAGER[0], PROPS, "PropertiesChanged", unit_path(SESSION), None,
+                             Gio.DBusSignalFlags.NONE, changed)
+        subscribed = True
+    except GLib.Error as error:
+        log(f"systemd Subscribe failed, polling instead: {error.message}")
+    if state(bus, SESSION) not in LIVE:
+        stop_container(bus)
+        return 0
+    if subscribed:
+        loop.run()
+    else:
+        while state(bus, SESSION) in LIVE:
+            time.sleep(POLL_S)
+        ended["value"] = True
+    if ended["value"]:
+        stop_container(bus)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

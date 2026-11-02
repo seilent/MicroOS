@@ -1,14 +1,15 @@
 #!/usr/bin/bash
 set -uo pipefail
 
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+export MICROOS_RUNTIME_DIR="${MICROOS_RUNTIME_DIR:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microos-android}"
+microos_me=microos-android-run
+. "${MICROOS_LEPTON_LIB:-${here}/microos-lepton-lib.sh}"
+
 LEPTON="${MICROOS_LEPTON:-/usr/libexec/microos/microos-lepton}"
 PAD_NODES="${MICROOS_PAD_NODES:-/usr/libexec/microos/microos-android-pad-nodes}"
-KEYBOARD_INSTALL="${MICROOS_KEYBOARD_INSTALL:-/usr/libexec/microos/microos-android-keyboard}"
-export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
-RUN="${MICROOS_RUNTIME_DIR:-${XDG_RUNTIME_DIR}/microos-android}"
-DATA="${MICROOS_ANDROID_DATA:-${HOME}/.local/share/microos-android}"
-STATE_DIR="${XDG_STATE_HOME:-${HOME}/.local/state}"
-EXTEND_USEC="${MICROOS_EXTEND_USEC:-120000000}"
+SESSION_WATCH="${MICROOS_SESSION_WATCH:-/usr/libexec/microos/microos-android-session-watch}"
+RUN="${MICROOS_RUNTIME_DIR}"
 POLL_S="${MICROOS_POLL_S:-0.5}"
 STEAM_PIPE="${MICROOS_STEAM_PIPE:-${DATA}/home/.steam/steam.pipe}"
 GAPPS="${MICROOS_GAPPS:-${DATA}/gapps}"
@@ -16,28 +17,73 @@ STUB_DIR="${MICROOS_STUB_DIR:-/usr/share/microos-android}"
 DISPLAY_FILE="${MICROOS_DISPLAY_FILE:-/usr/share/microos-android/display}"
 OPTS="${MICROOS_OPTS:-/usr/share/microos-android/opts}"
 OPTS_TIMEOUT_S="${MICROOS_OPTS_TIMEOUT_S:-30}"
+EXTEND_USEC="${MICROOS_EXTEND_USEC:-120000000}"
 GMS_GRANTS="android.permission.ACCESS_FINE_LOCATION android.permission.ACCESS_COARSE_LOCATION android.permission.ACCESS_BACKGROUND_LOCATION android.permission.READ_CONTACTS android.permission.WRITE_CONTACTS"
 LEPTON_NOT_INSTALLED="Lepton is not installed. Install it in Steam."
 NAME=android
 CONTEXT="${MICROOS_ANDROID_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/${NAME}}"
+[[ "${CONTEXT%/}" == "${CONTEXT}" ]] || CONTEXT=${CONTEXT%/}
 [[ "${CONTEXT##*/}" == "${NAME}" ]] || { echo "microos-android-run: ${CONTEXT} is not a ${NAME} context, refusing" >&2; exit 1; }
 CONTAINER="lepton-${NAME}"
 
-say() { printf 'microos-android-run: %s\n' "$*" >&2; }
+say() { printf '%s: %s\n' "${microos_me}" "$*" >&2; }
 
 fail() {
     say "$*"
-    mkdir -p "${RUN}" && printf '%s\n' "$*" > "${RUN}/start-failed"
+    mkdir -p "${RUN}" && printf 'microos-android-run: %s\n' "$*" > "${RUN}/start-failed"
     exit 1
 }
 
+check_fail() {
+    say "$*"
+    exit 1
+}
+
+check_reason() {
+    word_ok "${1:-}" || check_fail "$2"
+    printf '%s\n' "$1"
+    exit 2
+}
+
+legacy_context() {
+    local old=play path
+    for path in "$(home)/.local/share/lepton/contexts/microemu-${old}" \
+        "$(home)/.local/share/microemu/android/home/.local/share/lepton/contexts/microemu-${old}"; do
+        [[ -d "${path}" ]] || continue
+        printf '%s\n' "${path}"
+        return 0
+    done
+    return 1
+}
+
+stamp_word() {
+    local file="${CONTEXT}/microos-android-stamp" key=$1
+    [[ -f "${file}" ]] || return 1
+    sed -n "s/^${key}=//p" "${file}" 2>/dev/null | head -n 1
+}
+
+check() {
+    local runtime="" identity="" stamp=""
+    if [[ ! -d "${CONTEXT}" ]] && legacy_context > /dev/null; then
+        check_reason old-path "the context is at an older path, refusing"
+    fi
+    runtime=$(MICROOS_LEPTON_READ_ONLY=1 "${LEPTON}" runtime 2>/dev/null) || check_fail "no Lepton runtime, refusing"
+    identity=$(rootfs_identity "${runtime}" 2>/dev/null) || identity=
+    stamp=$(stamp_word rootfs 2>/dev/null) || stamp=
+    if [[ -n "${identity}" && -n "${stamp}" ]] && identity_older "${stamp}" "${identity}"; then
+        check_reason downgrade "the runtime is older than the context last booted, refusing"
+    fi
+    exit 0
+}
+
 reason() {
-    mkdir -p "${RUN}" && printf '%s\n' "$1" > "${RUN}/end-reason.new" && mv -T "${RUN}/end-reason.new" "${RUN}/end-reason"
+    word_ok "${1:-}" || fail "${2:-refusal}"
+    write_reason "${RUN}" "$1" || fail "$2"
     fail "$2"
 }
 
 request_install() {
-    mkdir -p "${STATE_DIR}/microos-lepton" && : > "${STATE_DIR}/microos-lepton/lepton-install-requested"
+    mkdir -p "${XDG_STATE_HOME}/microos-lepton" && : > "${XDG_STATE_HOME}/microos-lepton/lepton-install-requested"
 }
 
 container_running() {
@@ -177,6 +223,18 @@ gapps_check() {
     done < "${dir}/STAMP"
 }
 
+guest_gms() {
+    local packages="${CONTEXT}/baked/data_overlay/system/packages.xml"
+    [[ -f "${packages}" ]] || return 1
+    awk '/<package /{ if ($0 ~ /name="com\.google\.android\.gms"/ \
+        && $0 ~ /codePath="\/system\/priv-app\//) found = 1 } END { exit !found }' "${packages}"
+}
+
+write_stamp() {
+    printf '%s\n' "${stamp}" > "${CONTEXT}/microos-android-stamp.new" \
+        && mv -T "${CONTEXT}/microos-android-stamp.new" "${CONTEXT}/microos-android-stamp"
+}
+
 first_gapps_boot() {
     local perm ok=1
     for perm in ${GMS_GRANTS}; do
@@ -189,7 +247,7 @@ first_gapps_boot() {
         say "first boot with ${gapps_set}: a grant failed, the stamp stays unchanged and the next start retries"
         return 0
     fi
-    printf '%s\n' "${stamp}" > "${CONTEXT}/microos-android-stamp"
+    write_stamp
     say "first boot with ${gapps_set}: grants done"
 }
 
@@ -244,16 +302,30 @@ p() { if /system/bin/cmd package list packages "$2" 2>/dev/null | /system/bin/gr
     say "guest settings: ${applied} applied, ${failed} failed"
 }
 
-stop_boot_log() {
-    pkill -TERM -P "${boot_log_pid}" 2>/dev/null
-    kill "${boot_log_pid}" 2>/dev/null
+boot_log_pid=
+steam_pipe_pid=
+session_watch_pid=
+
+stop_child() {
+    local pid=$1 i
+    [[ -n "${pid}" ]] || return 0
+    pkill -TERM -P "${pid}" 2>/dev/null
+    kill "${pid}" 2>/dev/null
+    for (( i = 0; i < 20; i++ )); do
+        kill -0 "${pid}" 2>/dev/null || return 0
+        sleep 0.05
+    done
+    kill -KILL "${pid}" 2>/dev/null
 }
 
-stop_steam_pipe() {
-    [[ -n "${steam_pipe_pid}" ]] || return 0
-    pkill -TERM -P "${steam_pipe_pid}" 2>/dev/null
-    kill "${steam_pipe_pid}" 2>/dev/null
+stop_session_watch() {
+    stop_child "${session_watch_pid}"
+    session_watch_pid=
 }
+
+if [[ "${1:-}" == --check ]]; then
+    check
+fi
 
 rm -f "${RUN}/start-failed"
 rc=0
@@ -264,7 +336,7 @@ case "${rc}" in
     *) fail "podman container exists failed (rc=${rc}), refusing" ;;
 esac
 display=${GAMESCOPE_WAYLAND_DISPLAY:-}
-if [[ "${display}" != "${XDG_RUNTIME_DIR}/"* || "${display}" == *..* || ! -S "${display}" ]]; then
+if [[ -z "${display}" || "${display}" == /* || "${display}" == *..* || ! -S "${XDG_RUNTIME_DIR}/${display}" ]]; then
     fail "no gamescope display at ${display:-unset}"
 fi
 density=$(sed -n 's/^density=//p' "${DISPLAY_FILE}" 2>/dev/null | head -n 1)
@@ -309,8 +381,14 @@ mounts+=("\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\"")
 
 gapps_set=
 old_stamp=$(cat "${CONTEXT}/microos-android-stamp" 2>/dev/null)
-if [[ -e "${GAPPS}/current" || ( "${old_stamp}" == *" gapps="* && "${old_stamp}" != *" gapps=none" ) ]]; then
-    gapps_list=$(gapps_check) && [[ -n "${gapps_list}" ]] || fail "gapps tree incomplete, run microos-android gapps install"
+old_gapps=$(sed -n 's/^.* gapps=//p' <<< "${old_stamp}" | head -n 1)
+gapps_list=$(gapps_check 2>/dev/null) || gapps_list=
+if [[ -z "${gapps_list}" ]] && { [[ ! -f "${CONTEXT}/microos-android-stamp" ]] \
+    || { [[ -n "${old_gapps}" && "${old_gapps}" != none ]]; }; } && guest_gms; then
+    reason gapps-missing "the context was booted with Google apps and no set is installed, run microos-android gapps install"
+fi
+if [[ -e "${GAPPS}/current" || ( -n "${old_gapps}" && "${old_gapps}" != none ) ]]; then
+    [[ -n "${gapps_list}" ]] || fail "gapps tree incomplete, run microos-android gapps install"
     mapfile -t gapps_files <<<"${gapps_list}"
     gapps_dir=$(readlink -f "${GAPPS}/current")
     gapps_set=${gapps_dir##*/}
@@ -328,6 +406,10 @@ fi
 } > "${RUN}/containers.conf"
 
 stamp="$(cat "${lepton_runtime}/version.txt" 2>/dev/null) $(cat "${lepton_runtime}/images/version.txt" 2>/dev/null) gapps=${gapps_set:-none}"
+identity=$(rootfs_identity "${lepton_runtime}" 2>/dev/null) || identity=
+if [[ -n "${identity}" ]]; then
+    stamp+=$'\n'"rootfs=${identity}"
+fi
 stamp_changed=0
 if [[ "${old_stamp}" != "${stamp}" ]]; then
     stamp_changed=1
@@ -345,7 +427,6 @@ mkfifo "${RUN}/lepton.out"
 : > "${DATA}/boot.log"
 boot_log &
 boot_log_pid=$!
-steam_pipe_pid=
 if [[ -z "${MICROOS_STEAM_PIPE:-}" ]]; then
     mkdir -p "${STEAM_PIPE%/*}" && { [[ -e "${STEAM_PIPE}" || -L "${STEAM_PIPE}" ]] || mkfifo "${STEAM_PIPE}"; }
 fi
@@ -355,10 +436,12 @@ if [[ -p "${STEAM_PIPE}" ]]; then
 else
     say "no ${STEAM_PIPE}, Steam links from Android are not read"
 fi
-"${LEPTON}" start "${NAME}" > "${RUN}/lepton.out" 2>&1 &
-lepton_pid=$!
-exec 3< "${RUN}/lepton.out"
-rm -f "${RUN}/lepton.out"
+if [[ -x "${SESSION_WATCH}" ]]; then
+    "${SESSION_WATCH}" &
+    session_watch_pid=$!
+else
+    say "${SESSION_WATCH} missing, no session watch"
+fi
 
 handle() {
     local line=$1
@@ -371,14 +454,15 @@ handle() {
     if container_running && boot_completed; then
         ready=1
         apply_opts
-        systemd-notify --ready
         if (( stamp_changed )) && [[ -n "${gapps_set}" ]]; then
+            printf 'gapps\n' > "${RUN}/first-boot.new" || say "cannot write ${RUN}/first-boot"
+            mv -T "${RUN}/first-boot.new" "${RUN}/first-boot" 2>/dev/null || say "cannot write ${RUN}/first-boot"
             first_gapps_boot &
         else
-            printf '%s\n' "${stamp}" > "${CONTEXT}/microos-android-stamp"
+            write_stamp
         fi
-        "${KEYBOARD_INSTALL}" "${CONTAINER}" &
-        stop_boot_log
+        systemd-notify --ready
+        stop_child "${boot_log_pid}"
         say "android ready"
     else
         say "lepton printed Boot complete! but the container is not running or not booted"
@@ -391,6 +475,11 @@ partial=
 stopping=0
 trap 'stopping=1; say "stop requested, waiting for lepton start"' TERM
 trap 'stopping=1; say "stop requested, waiting for lepton start"' INT
+"${LEPTON}" start "${NAME}" > "${RUN}/lepton.out" 2>&1 &
+lepton_pid=$!
+exec 3< "${RUN}/lepton.out"
+rm -f "${RUN}/lepton.out"
+
 while :; do
     read_rc=0
     IFS= read -r -t 1 line <&3 || read_rc=$?
@@ -421,8 +510,9 @@ while :; do
     wait "${lepton_pid}" || rc=$?
     kill -0 "${lepton_pid}" 2>/dev/null || break
 done
-stop_boot_log
-stop_steam_pipe
+stop_child "${boot_log_pid}"
+stop_child "${steam_pipe_pid}"
+stop_session_watch
 say "lepton start exited with ${rc}"
 printf 'microos-android-run: lepton start exited with %s\n' "${rc}" >> "${DATA}/lepton.log"
 if (( stopping )); then

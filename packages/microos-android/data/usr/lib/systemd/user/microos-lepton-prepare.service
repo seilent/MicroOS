@@ -1,0 +1,10 @@
+[Unit]
+Description=Prepare the Lepton runtime and the Android context
+Requisite=gamescope-session-plus@android.service
+After=gamescope-session-plus@android.service
+StopPropagatedFrom=gamescope-session-plus@android.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30min
+ExecStart=/usr/libexec/microos/microos-lepton-prepare

@@ -35,7 +35,7 @@ LEPTON_WAIT_ENV = "MICROOS_LEPTON_INSTALL_WAIT"
 STEAM = os.environ.get("MICROOS_STEAM", "/usr/bin/steam")
 STEAM_TIMEOUT = 10
 URL = "steam://install/3029110"
-FLAG = "microemu/lepton-install-requested"
+FLAG = "microos-lepton/lepton-install-requested"
 MAPPINGS = b"STEAM_COMPAT_TOOL_MAPPINGS="
 CLIENT = b"Client version:"
 MAPPED = re.compile(rb'Mapping AppID ([0-9]+) to tool "([^"\n]*)" with priority 250\r?$', re.M)

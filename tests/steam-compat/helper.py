@@ -812,7 +812,7 @@ def case_first():
 
 def case_lepton_install():
     h = Home()
-    flag = os.path.join(h.home, ".local/state/microemu/lepton-install-requested")
+    flag = os.path.join(h.home, ".local/state/microos-lepton/lepton-install-requested")
     steam = os.path.join(h.dir, "steam")
     log = os.path.join(h.dir, "steam.log")
     pipe = f"{h.home}/.steam/steam.pipe"

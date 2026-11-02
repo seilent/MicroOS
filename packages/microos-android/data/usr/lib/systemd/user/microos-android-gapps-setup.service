@@ -1,0 +1,10 @@
+[Unit]
+Description=Log the first boot with the Google apps set
+Requisite=gamescope-session-plus@android.service
+After=gamescope-session-plus@android.service
+StopPropagatedFrom=gamescope-session-plus@android.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=20min
+ExecStart=/usr/bin/microos-android gapps setup

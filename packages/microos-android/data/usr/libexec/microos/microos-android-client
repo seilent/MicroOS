@@ -1,0 +1,530 @@
+#!/usr/bin/python3
+import fcntl
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-android-client"
+UNIT = "microos-android.service"
+SESSION = "gamescope-session-plus@android.service"
+SETUP = "microos-android-gapps-setup.service"
+TRACK = os.environ.get("MICROOS_TRACK") or "microos-session-track"
+CONTAINER = "lepton-android"
+MANAGER = ("org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager")
+PROPS = "org.freedesktop.DBus.Properties"
+REFUSE_WAIT = float(os.environ.get("MICROOS_REFUSE_WAIT") or 30)
+CHECK_TIMEOUT = float(os.environ.get("MICROOS_CHECK_TIMEOUT") or 60)
+LOCK_WAIT = float(os.environ.get("MICROOS_STATE_LOCK_WAIT") or 10)
+CARD_POLLS = 20
+CARD_STEP = 0.5
+TICK_MS = 250
+MARKERS = ("ready", "start-done", "end-reason", "start-failed", "first-boot")
+WORD = re.compile(r"[a-z][a-z0-9-]{0,31}")
+
+
+def log(message):
+    print(f"{ME}: {message}", file=sys.stderr, flush=True)
+
+
+def env(name, fallback=""):
+    return os.environ.get(name) or fallback
+
+
+def home():
+    return env("HOME", os.path.expanduser("~"))
+
+
+def runtime_dir():
+    return env("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+
+
+def run_dir():
+    return env("MICROOS_RUNTIME_DIR", os.path.join(runtime_dir(), "microos-android"))
+
+
+def data_dir():
+    return env("MICROOS_ANDROID_DATA", os.path.join(home(), ".local/share/microos-android"))
+
+
+def state_dir():
+    return env("MICROOS_ANDROID_STATE", os.path.join(home(), ".local/state/microos-android"))
+
+
+def gapps_dir():
+    return env("MICROOS_GAPPS", os.path.join(data_dir(), "gapps"))
+
+
+def write_atomic(path, text, mode=0o644):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+    temp = f"{path}.{os.getpid()}.new"
+    with open(temp, "w") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temp, mode)
+    os.replace(temp, path)
+
+
+def read_text(path):
+    try:
+        with open(path) as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def word_ok(word):
+    return bool(WORD.fullmatch(word))
+
+
+def boottime_ms():
+    try:
+        with open("/proc/uptime") as handle:
+            return int(float(handle.read().split()[0]) * 1000)
+    except (OSError, ValueError, IndexError):
+        return 0
+
+
+def lock_state():
+    path = os.path.join(state_dir(), "state.json.lock")
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as error:
+        log(f"cannot open {path}: {error}")
+        return None
+    deadline = time.monotonic() + LOCK_WAIT
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if time.monotonic() >= deadline:
+                log(f"{path} is held, writing anyway")
+                return fd
+            time.sleep(0.05)
+
+
+def unlock_state(fd):
+    if fd is None:
+        return
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    os.close(fd)
+
+
+def update_state(fields):
+    path = os.path.join(state_dir(), "state.json")
+    fd = lock_state()
+    try:
+        data = {}
+        try:
+            with open(path) as handle:
+                loaded = json.load(handle)
+            if isinstance(loaded, dict):
+                data = loaded
+        except (OSError, ValueError):
+            data = {}
+        for key, value in fields.items():
+            parts = key.split(".")
+            node = data
+            for part in parts[:-1]:
+                child = node.get(part)
+                if not isinstance(child, dict):
+                    child = {}
+                    node[part] = child
+                node = child
+            node[parts[-1]] = value
+        try:
+            write_atomic(path, json.dumps(data, sort_keys=True) + "\n", 0o600)
+        except OSError as error:
+            log(f"cannot write {path}: {error}")
+    finally:
+        unlock_state(fd)
+
+
+def unit_path(unit):
+    return "/org/freedesktop/systemd1/unit/" + unit.replace("-", "_2d").replace("@", "_40").replace(".", "_2e")
+
+
+def unit_state(bus, unit):
+    try:
+        reply = bus.call_sync(MANAGER[0], unit_path(unit), PROPS, "Get",
+                              GLib.Variant("(ss)", ("org.freedesktop.systemd1.Unit", "ActiveState")),
+                              None, Gio.DBusCallFlags.NONE, 2000, None)
+    except GLib.Error:
+        return ""
+    return reply.unpack()[0]
+
+
+def session_serial():
+    fields = read_text(os.path.join(env("MICROOS_RUNDIR", "/run/microos"), "session-current")).split()
+    return fields[2] if len(fields) >= 3 and fields[2].isdigit() else ""
+
+
+def pending_mounts():
+    try:
+        result = subprocess.run(["systemctl", "list-jobs", "--no-legend", "microos-automount@*"],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def card_wait():
+    decided = env("MICROOS_SYSTEM_CARD", "/run/microos/system-card")
+    for _ in range(CARD_POLLS):
+        if not pending_mounts() and os.path.exists(decided):
+            return
+        time.sleep(CARD_STEP)
+
+
+def start_check():
+    path = env("MICROOS_ANDROID_RUN", "/usr/libexec/microos/microos-android-run")
+    try:
+        proc = subprocess.Popen([path, "--check"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=True)
+    except OSError as error:
+        log(f"{path} --check did not run: {error}")
+        return 0, ""
+    try:
+        out, err = proc.communicate(timeout=CHECK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            proc.kill()
+        try:
+            out, err = proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            out, err = b"", b""
+        log(f"{path} --check is past {CHECK_TIMEOUT:g} s, killed it, taking it as can run")
+        return 0, ""
+    for line in err.decode(errors="replace").splitlines():
+        if line:
+            log(line)
+    lines = [line for line in out.decode(errors="replace").splitlines() if line]
+    return proc.returncode, (lines[-1] if lines and word_ok(lines[-1]) else "")
+
+
+class Window:
+    def __init__(self):
+        import gi as _gi
+
+        _gi.require_version("Gtk", "3.0")
+        from gi.repository import Gtk
+
+        self.gtk = Gtk
+        self.window = None
+
+    def show(self):
+        gtk = self.gtk
+        if not gtk.init_check([])[0]:
+            raise RuntimeError("no display")
+        self.window = gtk.Window(type=gtk.WindowType.TOPLEVEL)
+        self.window.set_decorated(False)
+        self.window.set_skip_taskbar_hint(True)
+        self.window.set_skip_pager_hint(True)
+        self.window.fullscreen()
+        self.window.connect("delete-event", lambda *args: True)
+        self.window.show_all()
+
+    def hide(self):
+        if self.window is not None:
+            self.window.hide()
+
+
+class Client:
+    def __init__(self, bus=None, loop=None):
+        self.bus = bus or Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        self.loop = loop or GLib.MainLoop()
+        self.job = None
+        self.started = False
+        self.ready = False
+        self.stopping = False
+        self.restarting = False
+        self.refused = False
+        self.failed_activation = ""
+        self.exit_code = 0
+        self.subscriptions = []
+        self.window = None
+
+    def subscribe(self):
+        self.subscriptions.append(self.bus.signal_subscribe(
+            MANAGER[0], MANAGER[2], "JobRemoved", MANAGER[1], None, Gio.DBusSignalFlags.NONE, self.job_removed))
+
+    def unsubscribe(self):
+        for subscription in self.subscriptions:
+            self.bus.signal_unsubscribe(subscription)
+        self.subscriptions = []
+
+    def job_removed(self, conn, sender, path, interface, signal, params):
+        job_id, job_path, unit, result = params.unpack()[:4]
+        if self.job is None or str(job_path) != self.job or unit != UNIT:
+            return
+        self.job = None
+        if result == "done":
+            self.started = True
+            self.mark_ready()
+            return
+        if result == "canceled":
+            reason = self.end_reason()
+            if reason:
+                self.refuse(reason)
+                return
+            log(f"{UNIT} was canceled before it started, no refusal")
+            self.exit_code = 0
+            self.loop.quit()
+            return
+        self.refuse(self.end_reason() or (result if word_ok(result) else "start-failed"))
+
+    def end_reason(self):
+        reason = read_text(os.path.join(run_dir(), "end-reason"))
+        return reason if word_ok(reason) else ""
+
+    def start_unit(self):
+        try:
+            reply = self.bus.call_sync(MANAGER[0], MANAGER[1], MANAGER[2], "StartUnit",
+                                       GLib.Variant("(ss)", (UNIT, "replace")), None, Gio.DBusCallFlags.NONE,
+                                       -1, None)
+        except GLib.Error as error:
+            log(f"StartUnit failed: {error.message}")
+            self.refuse("start-failed")
+            return
+        path = reply.unpack()[0]
+        self.job = str(path) if path else None
+
+    def stop_unit(self):
+        try:
+            self.bus.call_sync(MANAGER[0], MANAGER[1], MANAGER[2], "StopUnit",
+                               GLib.Variant("(ss)", (UNIT, "replace")), None, Gio.DBusCallFlags.NONE, 5000, None)
+        except GLib.Error as error:
+            log(f"StopUnit failed: {error.message}")
+            return False
+        return True
+
+    def refuse(self, reason):
+        if self.refused:
+            return
+        self.refused = True
+        log(f"refusing: {reason}")
+        update_state({"last.result": "refused", "last.reason": reason, "last.boottime": boottime_ms()})
+        self.record_refusal(reason)
+        deadline = time.monotonic() + REFUSE_WAIT
+        while unit_state(self.bus, SESSION) in ("active", "activating", "reloading"):
+            if time.monotonic() >= deadline:
+                log("the session is still active after the refusal")
+                break
+            time.sleep(0.25)
+        self.exit_code = 1
+        self.loop.quit()
+
+    def record_refusal(self, reason):
+        serial = session_serial()
+        if not serial:
+            log("no session serial, the refusal is not recorded")
+            return
+        try:
+            result = subprocess.run([TRACK, "refuse", "android", serial, reason], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE, timeout=10)
+        except (OSError, subprocess.SubprocessError) as error:
+            log(f"{TRACK} refuse failed: {error}")
+            return
+        for line in result.stderr.decode(errors="replace").splitlines():
+            if line:
+                log(line)
+
+    def activation_request(self):
+        wanted = read_text(os.path.join(state_dir(), "activate"))
+        if not wanted:
+            return ""
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", wanted):
+            log(f"the activation request names {wanted}, which is not a set name")
+            return ""
+        if not os.path.isdir(os.path.join(gapps_dir(), wanted)):
+            log(f"the activation request names {wanted}, which is not staged")
+            return ""
+        if wanted == self.failed_activation:
+            return ""
+        return wanted
+
+    def activate(self, wanted):
+        link = os.path.join(gapps_dir(), "current.new")
+        try:
+            if os.path.lexists(link):
+                os.unlink(link)
+            os.symlink(wanted, link)
+            os.replace(link, os.path.join(gapps_dir(), "current"))
+            os.unlink(os.path.join(state_dir(), "activate"))
+        except OSError as error:
+            log(f"cannot activate {wanted}: {error}")
+            self.failed_activation = wanted
+            return False
+        update_state({"gapps.set": wanted})
+        log(f"activated the GApps set {wanted}")
+        return True
+
+    def clear_markers(self):
+        directory = run_dir()
+        for name in MARKERS:
+            try:
+                os.unlink(os.path.join(directory, name))
+            except OSError:
+                pass
+
+    def write_session_env(self):
+        write_atomic(os.path.join(run_dir(), "session.env"),
+                     f"DISPLAY={env('DISPLAY')}\nGAMESCOPE_WAYLAND_DISPLAY={env('GAMESCOPE_WAYLAND_DISPLAY')}\n")
+
+    def mark_ready(self):
+        self.ready = True
+        write_atomic(os.path.join(run_dir(), "ready"), "\n")
+        update_state({"last.result": "ready", "last.reason": "", "last.boottime": boottime_ms()})
+        self.hide_boot_screen()
+        log("android ready")
+        self.run_start_tasks()
+
+    def run_start_tasks(self):
+        keyboard = env("MICROOS_KEYBOARD_INSTALL", "/usr/libexec/microos/microos-android-keyboard")
+        try:
+            pid = GLib.spawn_async([keyboard, CONTAINER], flags=GLib.SpawnFlags.DO_NOT_REAP_CHILD,
+                                   standard_output=None, standard_error=None)[0]
+        except GLib.Error as error:
+            log(f"cannot run {keyboard}: {error.message}")
+            self.finish_start_tasks()
+            return
+        GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, self.keyboard_done)
+
+    def keyboard_done(self, pid, status):
+        code = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else status
+        if code:
+            log(f"the keyboard install exited {code}")
+        GLib.spawn_close_pid(pid)
+        self.finish_start_tasks()
+
+    def finish_start_tasks(self):
+        write_atomic(os.path.join(run_dir(), "start-done"), "\n")
+        log("start tasks done")
+        if read_text(os.path.join(run_dir(), "first-boot")) == "gapps":
+            self.start_unit_named(SETUP)
+
+    def start_unit_named(self, unit):
+        try:
+            self.bus.call_sync(MANAGER[0], MANAGER[1], MANAGER[2], "StartUnit",
+                               GLib.Variant("(ss)", (unit, "replace")), None, Gio.DBusCallFlags.NONE, 5000, None)
+        except GLib.Error as error:
+            log(f"StartUnit {unit} failed: {error.message}")
+
+    def show_boot_screen(self):
+        if env("MICROOS_ANDROID_NO_UI") == "1":
+            return
+        try:
+            self.window = Window()
+            self.window.show()
+        except (ImportError, RuntimeError, ValueError) as error:
+            log(f"no boot screen: {error}")
+            self.window = None
+
+    def hide_boot_screen(self):
+        if self.window is not None:
+            self.window.hide()
+
+    def restart_for_gapps(self, wanted):
+        log(f"restarting Android for the GApps set {wanted}")
+        self.restarting = True
+        if not self.stop_unit():
+            self.restarting = False
+            self.failed_activation = wanted
+            log(f"cannot stop {UNIT} for {wanted}, Android keeps running")
+            return
+        self.ready = False
+        self.stopping = False
+
+    def resume_restart(self):
+        if unit_state(self.bus, UNIT) not in ("inactive", "failed", ""):
+            return True
+        self.restarting = False
+        wanted = self.activation_request()
+        if wanted and not self.activate(wanted):
+            log(f"cannot activate {wanted}, starting Android as it is")
+        self.started = False
+        self.job = None
+        self.write_session_env()
+        self.start_unit()
+        return True
+
+    def tick(self):
+        if self.stopping:
+            if unit_state(self.bus, UNIT) in ("inactive", "failed", ""):
+                self.loop.quit()
+                return False
+            return True
+        if self.restarting:
+            return self.resume_restart()
+        reason = self.end_reason()
+        if reason and not self.ready:
+            self.refuse(reason)
+            return False
+        if not self.started:
+            failed = read_text(os.path.join(run_dir(), "start-failed"))
+            if failed:
+                log(failed)
+                self.refuse(failed if word_ok(failed) else "start-failed")
+                return False
+        if self.ready:
+            wanted = self.activation_request()
+            if wanted:
+                self.restart_for_gapps(wanted)
+        return True
+
+    def finish(self):
+        self.unsubscribe()
+        return self.exit_code
+
+    def run(self):
+        self.clear_markers()
+        self.write_session_env()
+        self.show_boot_screen()
+        wanted = self.activation_request()
+        if wanted:
+            self.activate(wanted)
+        card_wait()
+        code, word = start_check()
+        if code == 2:
+            self.refuse(word or "check-refused")
+            return self.exit_code
+        if code != 0:
+            log(f"the start check exited {code}, taking it as can run")
+        self.subscribe()
+        signal.signal(signal.SIGTERM, lambda *args: self.request_stop())
+        signal.signal(signal.SIGINT, lambda *args: self.request_stop())
+        self.start_unit()
+        GLib.timeout_add(TICK_MS, self.tick)
+        self.loop.run()
+        return self.finish()
+
+    def request_stop(self):
+        if self.stopping or self.restarting:
+            return
+        self.stopping = True
+        self.stop_unit()
+
+
+def main():
+    return Client().run()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

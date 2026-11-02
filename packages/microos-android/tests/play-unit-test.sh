@@ -31,9 +31,10 @@ printf 'on boot\n    bugreport\n    keycodes 114 115 116\non post-fs-data\n' > "
 export XDG_RUNTIME_DIR="${T}/xdg"
 mkdir -p "${XDG_RUNTIME_DIR}"
 python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${XDG_RUNTIME_DIR}/gamescope-0"
-export GAMESCOPE_WAYLAND_DISPLAY="${XDG_RUNTIME_DIR}/gamescope-0"
+export GAMESCOPE_WAYLAND_DISPLAY=gamescope-0
 echo 3.0.5 > "${T}/lepton/version.txt"
 echo 3.0.3 > "${T}/lepton/images/version.txt"
+printf 'ro.build.version.sdk=30\nro.system.build.fingerprint=fingerprint-play\n' > "${T}/lepton/images/rootfs/system/build.prop"
 conf="${MICROOS_RUNTIME_DIR}/containers.conf"
 odm="${MICROOS_RUNTIME_DIR}/odm-build.prop"
 rc_override="${MICROOS_RUNTIME_DIR}/lineage-system.rc"
@@ -89,6 +90,8 @@ case "$*" in
     "exec lepton-android /system/bin/logcat -b main -b system -b crash -v threadtime") cat "${STATE}/logcat" ;;
     "exec lepton-android /system/bin/pm grant "*) [[ ! -e "${STATE}/grant_fail" ]] ;;
     "exec lepton-android /system/bin/cmd_real package compile "*) ;;
+    "exec lepton-android /system/bin/dumpsys activity activities") cat "${STATE}/activities" ;;
+    "exec lepton-android /system/bin/am start -W "*) ;;
     "exec lepton-android /system/bin/sh -c "*)
         echo opts >> "${STATE}/events"
         n=$(( $(ls "${STATE}" | grep -c '^opts-script') + 1 ))
@@ -139,6 +142,8 @@ reset() {
     echo 1 > "${STATE}/booted"
     printf 'I ActivityManager: start\n' > "${STATE}/logcat"
     printf '/dev/input/event10\n/dev/input/event12\n' > "${STATE}/nodes"
+    printf '  mResumedActivity: ActivityRecord{f00 u0 com.example.app/.Main t7}\n  wm_on_stop_called=true\n' \
+        > "${STATE}/activities"
     printf '%s\n' "$1" | tr ';' '\n' > "${STATE}/script"
     : > "${STATE}/keyboard"
     rm -f "${MICROOS_STEAM_PIPE}" "${STATE}/keyboard-hold"
@@ -155,7 +160,7 @@ events() { cat "${STATE}/events"; }
 reset "starting;Boot complete!;sleep 0.5;logcat after boot;exit 3"
 run
 [[ "${rc}" == 3 ]] || fail "exit code ${rc}, expected lepton's 3: $(cat "${STATE}/stderr")"
-for var in TERM=dumb APP_WANTS_FLATSCREEN=true "GAMESCOPE_WAYLAND_DISPLAY=${XDG_RUNTIME_DIR}/gamescope-0" \
+for var in TERM=dumb APP_WANTS_FLATSCREEN=true GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 \
     "STEAM_COMPAT_DATA_PATH=${MICROOS_ANDROID_CONTEXT}" LEPTON_NO_CLEANUP=true LEPTON_KEEP_CONTEXT=1 \
     "CONTAINERS_CONF_OVERRIDE=${conf}" "MICROOS_LEPTON_RUNTIME=${T}/lepton"; do
     grep -qx "${var}" "${STATE}/env" || fail "environment lacks ${var}"
@@ -181,12 +186,14 @@ out logcat after boot"
 grep -qx "starting" "${STATE}/stderr" || fail "boot output not in the journal"
 grep -q "logcat after boot" "${STATE}/stderr" && fail "post boot output reached the journal"
 [[ "$(cat "${MICROOS_ANDROID_DATA}/lepton.log")" == $'logcat after boot\nmicroos-android-run: lepton start exited with 3' ]] || fail "lepton.log: $(cat "${MICROOS_ANDROID_DATA}/lepton.log")"
-[[ "$(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")" == "3.0.5 3.0.3 gapps=none" ]] || fail "stamp not written"
+grep -qx "3.0.5 3.0.3 gapps=none" "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp" || fail "stamp not written"
+grep -q '^rootfs=' "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp" || fail "the stamp carries no rootfs identity"
+grep -qxF 'rootfs=3.0.3 fingerprint-play' "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp" \
+    || fail "the stamp's rootfs identity: $(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")"
 [[ "$(wc -l < "${STATE}/runtime-cmd")" == 1 ]] || fail "microos-lepton runtime ran $(wc -l < "${STATE}/runtime-cmd") times, not once"
 [[ "$(cat "${MICROOS_ANDROID_DATA}/boot.log")" == "I ActivityManager: start" ]] || fail "boot log: $(cat "${MICROOS_ANDROID_DATA}/boot.log" 2>/dev/null)"
 grep -q "lepton start exited with 3" "${STATE}/stderr" || fail "exit not logged"
-for _ in $(seq 1 40); do [[ -s "${STATE}/keyboard" ]] && break; sleep 0.05; done
-[[ "$(cat "${STATE}/keyboard")" == "lepton-android" ]] || fail "keyboard install not started as lepton-android: $(cat "${STATE}/keyboard" 2>/dev/null)"
+[[ ! -s "${STATE}/keyboard" ]] || fail "the run starts the keyboard, the client does: $(cat "${STATE}/keyboard")"
 opts="${MICROOS_ANDROID_CONTEXT}/microos-android-opts"
 script="${STATE}/opts-script-1"
 for line in "s 'wifi-scan' 'settings' 'put' 'global' 'wifi_scan_always_enabled' '0'" \
@@ -253,9 +260,9 @@ grep -q "absent-opts missing, no guest settings applied" "${STATE}/stderr" || fa
 grep -q "android ready" "${STATE}/stderr" || fail "opts missing: not ready"
 
 glob=$(sed -n 's/^GAMESCOPE_WAYLAND_DISPLAY=//p' "${STATE}/env")
-[[ "${glob}" == "${XDG_RUNTIME_DIR}/gamescope-0" ]] || fail "display: $(cat "${STATE}/stderr")"
+[[ "${glob}" == gamescope-0 ]] || fail "display: $(cat "${STATE}/stderr")"
 
-for display in "" relative/gamescope-0 "${T}/gone-0"; do
+for display in "" relative/gamescope-0 "${T}/gone-0" "${XDG_RUNTIME_DIR}/gamescope-0" "../xdg/gamescope-0"; do
     reset "exit 0"
     rc=0
     XDG_STATE_HOME="${STATE_HOME}" GAMESCOPE_WAYLAND_DISPLAY="${display}" "${run_script}" 2> "${STATE}/stderr" || rc=$?
@@ -301,8 +308,18 @@ run
 grep -qx "lepton start android" "${STATE}/events" || fail "android context: lepton not run as start android: $(events)"
 grep -qx "podman container exists lepton-android" "${STATE}/podman" || fail "android context: container not checked"
 reset "exit 0"
-"${stop_script}"
-[[ "$(cat "${STATE}/podman")" == "podman stop -t 1 lepton-android" ]] || fail "stop: $(cat "${STATE}/podman")"
+"${stop_script}" 2> "${STATE}/stderr"
+head -n 2 "${STATE}/podman" | sed 's/^podman //' | tr '\n' '|' \
+    | grep -qxF "exec lepton-android /system/bin/dumpsys activity activities|exec lepton-android /system/bin/am start -W -a android.intent.action.MAIN -c android.intent.category.HOME|" \
+    || fail "stop: $(cat "${STATE}/podman")"
+[[ "$(tail -n 1 "${STATE}/podman")" == "podman stop -t 1 lepton-android" ]] || fail "stop: $(cat "${STATE}/podman")"
+grep -q "did not report com.example.app/.Main stopped" "${STATE}/stderr" \
+    || fail "a resumed activity that stays resumed: no log: $(cat "${STATE}/stderr")"
+reset "exit 0"
+"${stop_script}" 2> "${STATE}/stderr"
+grep -q "am start -W -a android.intent.action.MAIN" "${STATE}/podman" \
+    || fail "stop with no resumed activity: the HOME intent did not run: $(cat "${STATE}/podman")"
+grep -q "am start -W -n " "${STATE}/podman" && fail "stop with no resumed activity: a named activity was started: $(cat "${STATE}/podman")"
 reset "exit 0"
 : > "${STATE}/prefix"
 "${stop_script}" --post 2> "${STATE}/stderr"
@@ -364,7 +381,7 @@ mv "${MICROOS_LEPTON}" "${MICROOS_LEPTON}.off"
 run
 mv "${MICROOS_LEPTON}.off" "${MICROOS_LEPTON}"
 [[ "${rc}" == 1 ]] || fail "microos-lepton missing exit ${rc}"
-[[ "$(cat "${MICROOS_RUNTIME_DIR}/start-failed")" == "${MICROOS_LEPTON} missing" ]] || fail "refusal reason not written"
+grep -qx "microos-android-run: ${MICROOS_LEPTON} missing" "${MICROOS_RUNTIME_DIR}/start-failed" || fail "refusal reason not written"
 reset "Boot complete!;exit 0"
 mkdir -p "${MICROOS_RUNTIME_DIR}"
 echo old > "${MICROOS_RUNTIME_DIR}/start-failed"
@@ -372,7 +389,8 @@ run
 [[ ! -e "${MICROOS_RUNTIME_DIR}/start-failed" ]] || fail "refusal reason kept after a start"
 reset "exit 0"
 run
-[[ "$(cat "${MICROOS_RUNTIME_DIR}/start-failed")" == "android exited during boot, see ${MICROOS_ANDROID_DATA}/boot.log" ]] || fail "early exit reason not written"
+grep -qx "microos-android-run: android exited during boot, see ${MICROOS_ANDROID_DATA}/boot.log" "${MICROOS_RUNTIME_DIR}/start-failed" \
+    || fail "early exit reason not written"
 [[ ! -e "${STATE_HOME}/microos-lepton/lepton-install-requested" ]] || fail "a boot failure asked for a Lepton install"
 reset "exit 0"
 : > "${STATE}/no-lepton-dir"
@@ -381,7 +399,7 @@ run
     || fail "no Lepton install: exit ${rc}: $(cat "${STATE}/stderr")"
 [[ -f "${STATE_HOME}/microos-lepton/lepton-install-requested" ]] || fail "no Lepton install: the install request not written"
 [[ ! -s "${STATE_HOME}/microos-lepton/lepton-install-requested" ]] || fail "no Lepton install: the install request holds content"
-[[ "$(cat "${MICROOS_RUNTIME_DIR}/start-failed")" == "Lepton is not installed. Install it in Steam." ]] \
+[[ "$(cat "${MICROOS_RUNTIME_DIR}/start-failed")" == "microos-android-run: Lepton is not installed. Install it in Steam." ]] \
     || fail "no Lepton install: the refusal text not written for ES-DE: $(cat "${MICROOS_RUNTIME_DIR}/start-failed")"
 [[ "$(grep -c '^runtime$' "${STATE}/runtime-cmd")" == 1 ]] || fail "no Lepton install: runtime not called once: $(cat "${STATE}/runtime-cmd")"
 reset "exit 0"
@@ -521,7 +539,7 @@ prefix_dir=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
 reset "exit 0"
 echo "${prefix_dir}" > "${STATE}/prefix"
 "${stop_script}" --post 2> "${STATE}/stderr"
-[[ "$(sed 's/^podman //' "${STATE}/podman")" == $'inspect -f {{ index .Config.Labels "PREFIX" }} lepton-android\nstop -t 1 lepton-android\nrm -fi lepton-android' ]] \
+[[ "$(sed 's/^podman //' "${STATE}/podman")" == $'inspect -f {{ index .Config.Labels "PREFIX" }} lepton-android\nstop -t 1 lepton-android\nrm -fi lepton-android\ncontainer exists lepton-android' ]] \
     || fail "post calls: $(cat "${STATE}/podman")"
 [[ ! -e "${prefix_dir}" ]] || fail "post: lepton prefix left"
 reset "exit 0"

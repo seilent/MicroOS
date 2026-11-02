@@ -15,6 +15,7 @@ export STATE="${T}/state"
 export MICROOS_LEPTON="${T}/bin/lepton"
 export MICROOS_PAD_NODES="${T}/bin/pad-nodes"
 export MICROOS_KEYBOARD_INSTALL="${T}/bin/keyboard-install"
+export MICROOS_SESSION_WATCH="${T}/bin/session-watch"
 export MICROOS_ANDROID_CONTEXT="${T}/contexts/android"
 export MICROOS_RUNTIME_DIR="${T}/run/microos-android"
 export MICROOS_ANDROID_DATA="${T}/data/android"
@@ -27,11 +28,14 @@ export XDG_STATE_HOME="${T}/xdg-state"
 export XDG_RUNTIME_DIR="${T}/xdg"
 mkdir -p "${XDG_RUNTIME_DIR}"
 python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${XDG_RUNTIME_DIR}/gamescope-0"
-export GAMESCOPE_WAYLAND_DISPLAY="${XDG_RUNTIME_DIR}/gamescope-0"
+export GAMESCOPE_WAYLAND_DISPLAY=gamescope-0
 
 printf 'ro.odm.build.id=RQ3A\n' > "${T}/lepton/images/rootfs/vendor/odm/etc/build.prop"
 echo 3.0.5 > "${T}/lepton/version.txt"
 echo 3.0.3 > "${T}/lepton/images/version.txt"
+real_fingerprint="lepton/lineage_lepton_arm64_only/lepton_arm64_only:11/RQ3A.211001.001/root09251955:userdebug/test-keys"
+printf 'ro.build.version.sdk=30\nro.system.build.fingerprint=%s\n' "${real_fingerprint}" \
+    > "${T}/lepton/images/rootfs/system/build.prop"
 rc_file="${T}/lepton/images/rootfs/system/etc/init/lineage-system.rc"
 derived="${MICROOS_RUNTIME_DIR}/lineage-system.rc"
 conf="${MICROOS_RUNTIME_DIR}/containers.conf"
@@ -60,16 +64,35 @@ cat > "${T}/bin/podman" <<'STUB'
 #!/usr/bin/bash
 echo "podman $*" >> "${STATE}/podman"
 case "$*" in
-    "container exists "*) exit 1 ;;
+    "container exists "*)
+        [[ ! -e "${STATE}/exists" ]] || exit 0
+        exit 1
+        ;;
     "container inspect -f {{.State.Running}} lepton-android") echo true ;;
     "exec lepton-android /system/bin/getprop sys.boot_completed") echo 1 ;;
     "exec lepton-android /system/bin/pidof logd") echo 123 ;;
     "exec lepton-android /system/bin/logcat "*) cat "${STATE}/logcat" ;;
     "exec lepton-android /system/bin/pm grant "*) ;;
+    "exec lepton-android /system/bin/dumpsys activity activities")
+        if [[ -e "${STATE}/activities-after" ]]; then
+            n=$(( $(cat "${STATE}/reads" 2>/dev/null || echo 0) + 1 ))
+            printf '%s\n' "${n}" > "${STATE}/reads"
+            (( n > 1 )) && { cat "${STATE}/activities-after"; exit 0; }
+        fi
+        cat "${STATE}/activities" 2>/dev/null
+        ;;
+    "exec lepton-android /system/bin/am start -W "*) ;;
     "inspect -f {{ index .Config.Labels \"PREFIX\" }} lepton-android") cat "${STATE}/prefix" 2>/dev/null || true ;;
     "stop -t 1 lepton-android"|"rm -fi lepton-android") ;;
     *) exit 99 ;;
 esac
+STUB
+cat > "${T}/bin/stat" <<'STUB'
+#!/usr/bin/bash
+if [[ " $* " == *" -c %u "* ]]; then
+    [[ ! -e "${STATE}/other-owner" ]] || { echo 4242; exit 0; }
+fi
+exec /usr/bin/stat "$@"
 STUB
 cat > "${T}/bin/pgrep" <<'STUB'
 #!/usr/bin/bash
@@ -79,6 +102,12 @@ STUB
 cat > "${T}/bin/systemd-notify" <<'STUB'
 #!/usr/bin/bash
 echo "notify $*" >> "${STATE}/events"
+STUB
+cat > "${T}/bin/session-watch" <<STUB
+#!/usr/bin/bash
+echo "watch start" >> "\${STATE}/watch"
+trap 'echo "watch stop" >> "\${STATE}/watch"; exit 0' TERM INT
+while :; do sleep 0.05; done
 STUB
 chmod 0755 "${T}/bin/"*
 export PATH="${T}/bin:${PATH}"
@@ -94,11 +123,16 @@ reset() {
     rm -rf "${T}/lepton/images/rootfs_overlay"
     mkdir -p "${T}/lepton/images/rootfs_overlay"
     : > "${STATE}/events"
+    : > "${STATE}/watch"
     : > "${STATE}/podman"
     printf 'I ActivityManager: start\n' > "${STATE}/logcat"
     printf '/dev/input/event10\n' > "${STATE}/nodes"
+    printf '  mResumedActivity: ActivityRecord{f00 u0 com.example.app/.Main t7}\n    state=RESUMED\n' \
+        > "${STATE}/activities"
+    rm -f "${STATE}/activities-after" "${STATE}/reads"
     printf 'on boot\n    bugreport\n    keycodes 114 115 116\non post-fs-data\n    exec -- /bin/true\n' > "${rc_file}"
     rm -f "${MICROOS_STEAM_PIPE}"
+    printf 'starting\nBoot complete!\nsleep 0.2\nexit 0\n' > "${STATE}/script"
 }
 
 run() {
@@ -123,6 +157,8 @@ mounted | grep -qF "type=bind,source=${derived},destination=/system/etc/init/lin
     || fail "the override is not mounted: $(mounted)"
 mounted | grep -qF "type=bind,source=/dev/input/event10,destination=/dev/input/event10,rw" || fail "the pad node is not mounted: $(mounted)"
 [[ ! -s "${MICROOS_RUNTIME_DIR}/end-reason" ]] || fail "an end reason was written on a clean start"
+[[ "$(grep -c '^watch start$' "${STATE}/watch")" == 1 ]] || fail "the run did not start the session watch: $(cat "${STATE}/watch")"
+[[ "$(grep -c '^watch stop$' "${STATE}/watch")" == 1 ]] || fail "the run did not stop the session watch: $(cat "${STATE}/watch")"
 
 case_name="whitespace tolerated"
 reset
@@ -262,12 +298,70 @@ reset
 run
 [[ "${rc}" == 0 ]] || fail "exit ${rc}"
 stamp=$(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")
-[[ "${stamp}" == "3.0.5 3.0.3 gapps=none" ]] || fail "the first boot wrote no stamp: ${stamp}"
+[[ "$(head -n 1 <<< "${stamp}")" == "3.0.5 3.0.3 gapps=none" ]] || fail "the first boot wrote no stamp: ${stamp}"
+grep -qxF "rootfs=3.0.3 ${real_fingerprint}" <<< "${stamp}" || fail "the first boot wrote no rootfs identity from the real key: ${stamp}"
+stamp_sha=$(sha256sum <<< "${stamp}")
+rc=0
+"${run_script}" --check > "${STATE}/check-out" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 0 ]] || fail "the check after the first boot exited ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(sha256sum <<< "$(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")")" == "${stamp_sha}" ]] \
+    || fail "the check rewrote the stamp: $(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")"
+printf '3.0.2\n' > "${T}/lepton/images/version.txt"
+rc=0
+"${run_script}" --check > "${STATE}/check-out" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 2 && "$(cat "${STATE}/check-out")" == downgrade ]] \
+    || fail "an older runtime after that start: exit ${rc} out $(cat "${STATE}/check-out"): $(cat "${STATE}/stderr")"
+printf '3.0.3\n' > "${T}/lepton/images/version.txt"
 : > "${STATE}/events"
 run
 [[ "${rc}" == 0 ]] || fail "second start exit ${rc}: $(cat "${STATE}/stderr")"
 [[ "$(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")" == "${stamp}" ]] || fail "the second start rewrote the stamp"
 grep -q "boot bound extended" "${STATE}/stderr" && fail "the second start extended the boot bound"
+
+case_name="rootfs identity, the fallback key"
+reset
+printf 'ro.build.version.sdk=30\nro.build.fingerprint=fingerprint-fallback\n' > "${T}/lepton/images/rootfs/system/build.prop"
+run
+[[ "${rc}" == 0 ]] || fail "a runtime with only the fallback key: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qxF 'rootfs=3.0.3 fingerprint-fallback' "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp" \
+    || fail "the fallback key gave no identity: $(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")"
+printf 'ro.build.version.sdk=30\nro.system.build.fingerprint=fingerprint-system\nro.build.fingerprint=fingerprint-fallback\n' \
+    > "${T}/lepton/images/rootfs/system/build.prop"
+run
+grep -qxF 'rootfs=3.0.3 fingerprint-system' "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp" \
+    || fail "the system key did not win over the fallback: $(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")"
+printf 'ro.build.version.sdk=30\nro.system.build.fingerprint=%s\n' "${real_fingerprint}" \
+    > "${T}/lepton/images/rootfs/system/build.prop"
+
+case_name="display name"
+display_case() {
+    local name=$1 socket=$2 expect=$3
+    reset
+    rm -f "${XDG_RUNTIME_DIR}/gamescope-0"
+    mkdir -p "${XDG_RUNTIME_DIR}/dir"
+    [[ -z "${socket}" ]] \
+        || python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${socket}"
+    rc=0
+    GAMESCOPE_WAYLAND_DISPLAY="${name}" "${run_script}" 2> "${STATE}/stderr" || rc=$?
+    rm -f "${XDG_RUNTIME_DIR}/gamescope-0" "${XDG_RUNTIME_DIR}/dir/gamescope-0"
+    if [[ "${expect}" == accepted ]]; then
+        [[ "${rc}" == 0 ]] || fail "display '${name}': the run refused it: exit ${rc}: $(cat "${STATE}/stderr")"
+        grep -q "no gamescope display" "${STATE}/stderr" && fail "display '${name}': refused: $(cat "${STATE}/stderr")"
+        grep -qx "GAMESCOPE_WAYLAND_DISPLAY=${name}" "${STATE}/env" || fail "display '${name}': not passed unchanged: $(cat "${STATE}/env")"
+        grep -qx "lepton start android" "${STATE}/events" || fail "display '${name}': lepton did not start: $(cat "${STATE}/events")"
+    else
+        [[ "${rc}" == 1 ]] || fail "display '${name}': exit ${rc}"
+        grep -q "no gamescope display at ${name}" "${STATE}/stderr" || fail "display '${name}': no reason: $(cat "${STATE}/stderr")"
+        [[ ! -s "${STATE}/events" ]] || fail "display '${name}': lepton started: $(cat "${STATE}/events")"
+    fi
+}
+display_case gamescope-0 "${XDG_RUNTIME_DIR}/gamescope-0" accepted
+display_case dir/gamescope-0 "${XDG_RUNTIME_DIR}/dir/gamescope-0" accepted
+display_case "${XDG_RUNTIME_DIR}/dir/gamescope-0" "${XDG_RUNTIME_DIR}/dir/gamescope-0" refused
+display_case dir/../dir/gamescope-0 "${XDG_RUNTIME_DIR}/dir/gamescope-0" refused
+display_case gone/gamescope-0 "" refused
+rmdir "${XDG_RUNTIME_DIR}/dir"
+python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${XDG_RUNTIME_DIR}/gamescope-0"
 
 case_name="pad wait"
 reset
@@ -279,8 +373,250 @@ mounted | grep -qF "/dev/input/" && fail "a pad node was mounted with none prese
 case_name="stop"
 reset
 : > "${STATE}/podman"
-"${stop_script}"
-[[ "$(sed 's/^podman //' "${STATE}/podman")" == "stop -t 1 lepton-android" ]] || fail "stop calls: $(cat "${STATE}/podman")"
+rc=0
+timeout 5 "${stop_script}" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 0 ]] || fail "a resumed activity that stays resumed: exit ${rc}: $(cat "${STATE}/stderr")"
+reads=$(grep -c 'dumpsys activity activities' "${STATE}/podman")
+(( reads >= 9 && reads <= 12 )) || fail "a resumed activity that stays resumed: ${reads} reads: $(cat "${STATE}/podman")"
+[[ "$(tail -n 1 "${STATE}/podman")" == "podman stop -t 1 lepton-android" ]] \
+    || fail "a resumed activity that stays resumed: no stop: $(cat "${STATE}/podman")"
+grep -q "did not report com.example.app/.Main stopped" "${STATE}/stderr" \
+    || fail "a resumed activity that stays resumed: no log: $(cat "${STATE}/stderr")"
+
+reset
+printf '  mResumedActivity: ActivityRecord{f00 u0 com.example.app/.Main t7}\n    state=RESUMED\n' \
+    > "${STATE}/activities"
+printf '  mResumedActivity: ActivityRecord{f00 u0 com.android.launcher3/.uioverrides.QuickstepLauncher t7}\n    state=RESUMED\n' \
+    > "${STATE}/activities-after"
+: > "${STATE}/podman"
+"${stop_script}" 2> "${STATE}/stderr"
+[[ "$(grep -c 'dumpsys activity activities' "${STATE}/podman")" == 2 ]] \
+    || fail "a stopped activity: the second read did not settle it: $(cat "${STATE}/podman")"
+grep -q "did not report" "${STATE}/stderr" && fail "a stopped activity: a false complaint: $(cat "${STATE}/stderr")"
+
+reset
+printf '  mResumedActivity: ActivityRecord{f00 u0 com.example.app/.Main t7}\n    state=RESUMED\n' \
+    > "${STATE}/activities"
+printf '  mResumedActivity: ActivityRecord{f00 u0 com.example.app/.Main t7}\n    state=RESUMED\n  ActivityRecord{f00 u0 com.example.app/.Main t7}\n    state=STOPPED\n' \
+    > "${STATE}/activities-after"
+: > "${STATE}/podman"
+"${stop_script}" 2> "${STATE}/stderr"
+[[ "$(grep -c 'dumpsys activity activities' "${STATE}/podman")" == 2 ]] \
+    || fail "a record that reads STOPPED: $(cat "${STATE}/podman")"
+grep -q "did not report" "${STATE}/stderr" && fail "a record that reads STOPPED: a false complaint: $(cat "${STATE}/stderr")"
+
+reset
+printf '  mResumedActivity: ActivityRecord{f00 u0 com.example.app/Main$Inner t7}\n    state=RESUMED\n' \
+    > "${STATE}/activities"
+printf '  mResumedActivity: ActivityRecord{f00 u0 com.example.app/Main$Inner t7}\n    state=RESUMED\n  ActivityRecord{f00 u0 com.example.app/Main$Inner t7}\n    state=STOPPED\n' \
+    > "${STATE}/activities-after"
+: > "${STATE}/podman"
+"${stop_script}" 2> "${STATE}/stderr"
+[[ "$(grep -c 'dumpsys activity activities' "${STATE}/podman")" == 2 ]] \
+    || fail "an activity name with a regex character: $(cat "${STATE}/podman")"
+grep -q "did not report com.example.app/Main\$Inner stopped" "${STATE}/stderr" \
+    && fail "an activity name with a regex character: the name was read as a regex: $(cat "${STATE}/stderr")"
+
+reset
+printf '  mResumedActivity: ActivityRecord{f00 u0 com.android.launcher3/.uioverrides.QuickstepLauncher t7}\n    state=RESUMED\n' \
+    > "${STATE}/activities"
+: > "${STATE}/podman"
+"${stop_script}" 2> "${STATE}/stderr"
+[[ "$(grep -c 'dumpsys activity activities' "${STATE}/podman")" == 1 ]] \
+    || fail "the launcher resumed: the stop waited: $(cat "${STATE}/podman")"
+[[ "$(tail -n 1 "${STATE}/podman")" == "podman stop -t 1 lepton-android" ]] \
+    || fail "the launcher resumed: no stop: $(cat "${STATE}/podman")"
+grep -q "did not report" "${STATE}/stderr" && fail "the launcher resumed: a complaint: $(cat "${STATE}/stderr")"
+
+reset
+printf '  mResumedActivity: ActivityRecord{f00 u0 com.example.app/.Main t7}\n    state=RESUMED\n' \
+    > "${STATE}/activities"
+printf '  mResumedActivity: ActivityRecord{f00 u0 com.example.app/.Main t7}\n    state=RESUMED\n' \
+    > "${STATE}/activities-after"
+: > "${STATE}/podman"
+rc=0
+MICROOS_STOP_S=0.5 timeout 5 "${stop_script}" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 0 ]] || fail "a slow guest: exit ${rc} after the 1 s deadline: $(cat "${STATE}/stderr")"
+reads=$(grep -c 'dumpsys activity activities' "${STATE}/podman")
+(( reads >= 2 && reads <= 4 )) || fail "a slow guest: ${reads} reads: $(cat "${STATE}/podman")"
+[[ "$(tail -n 1 "${STATE}/podman")" == "podman stop -t 1 lepton-android" ]] \
+    || fail "a slow guest: no stop after the wait: $(cat "${STATE}/podman")"
+grep -q "did not report com.example.app/.Main stopped" "${STATE}/stderr" \
+    || fail "a slow guest: no log: $(cat "${STATE}/stderr")"
+
+reset
+: > "${STATE}/activities"
+: > "${STATE}/podman"
+"${stop_script}" 2> "${STATE}/stderr"
+grep -q "am start -W -a android.intent.action.MAIN" "${STATE}/podman" \
+    || fail "stop with no resumed activity: the HOME intent did not run: $(cat "${STATE}/podman")"
+grep -q "did not report" "${STATE}/stderr" && fail "stop with no resumed activity: a false complaint: $(cat "${STATE}/stderr")"
+
+reset
+: > "${STATE}/podman"
+"${stop_script}" --post 2> "${STATE}/stderr"
+[[ "$(sed 's/^podman //' "${STATE}/podman")" == $'inspect -f {{ index .Config.Labels "PREFIX" }} lepton-android\nstop -t 1 lepton-android\nrm -fi lepton-android' ]] \
+    || fail "post calls: $(cat "${STATE}/podman")"
+mkdir -p "${MICROOS_RUNTIME_DIR}"
+for marker in ready start-done start-failed session.env first-boot; do
+    printf 'x\n' > "${MICROOS_RUNTIME_DIR}/${marker}"
+done
+printf 'card-lost\n' > "${MICROOS_RUNTIME_DIR}/end-reason"
+"${stop_script}" --post 2> "${STATE}/stderr"
+for marker in ready start-done start-failed session.env first-boot; do
+    [[ ! -e "${MICROOS_RUNTIME_DIR}/${marker}" ]] || fail "post kept the marker ${marker}: $(ls -A "${MICROOS_RUNTIME_DIR}")"
+done
+[[ -f "${MICROOS_RUNTIME_DIR}/end-reason" ]] || fail "post removed the end reason: $(ls -A "${MICROOS_RUNTIME_DIR}")"
+recorded=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
+printf '%s\n' "${recorded}" > "${MICROOS_RUNTIME_DIR}/lepton-prefix"
+: > "${STATE}/podman"
+"${stop_script}" --post 2> "${STATE}/stderr"
+[[ ! -e "${recorded}" ]] || fail "post kept the prefix the run recorded: ${recorded}"
+[[ ! -e "${MICROOS_RUNTIME_DIR}/lepton-prefix" ]] || fail "post kept the prefix record: $(ls -A "${MICROOS_RUNTIME_DIR}")"
+grep -qF "removed the leftover ${recorded}" "${STATE}/stderr" || fail "post did not log the recorded prefix: $(cat "${STATE}/stderr")"
+kept=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
+printf '%s\n' "${kept}" > "${MICROOS_RUNTIME_DIR}/lepton-prefix"
+: > "${STATE}/exists"
+"${stop_script}" --post 2> "${STATE}/stderr"
+rm -f "${STATE}/exists"
+[[ -d "${kept}" ]] || fail "post removed a prefix while the container exists"
+[[ -f "${MICROOS_RUNTIME_DIR}/lepton-prefix" ]] || fail "post dropped the record while the container exists"
+grep -qF "lepton-android exists, kept ${kept}" "${STATE}/stderr" || fail "post did not log the kept prefix: $(cat "${STATE}/stderr")"
+rm -rf "${kept:?}"
+outside=$(mktemp -d "${T}/lepton-context.XXXXXXXX")
+printf '%s\n' "${outside}" > "${MICROOS_RUNTIME_DIR}/lepton-prefix"
+: > "${STATE}/podman"
+"${stop_script}" --post 2> "${STATE}/stderr"
+[[ -d "${outside}" ]] || fail "post removed a path outside /tmp/lepton-context.*"
+grep -q "removed the leftover" "${STATE}/stderr" && fail "post logged a removal it did not do"
+[[ -f "${MICROOS_RUNTIME_DIR}/lepton-prefix" ]] || fail "post dropped a record it did not remove"
+rm -rf "${outside:?}"
+mismatch=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
+held=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
+printf '%s\n' "${held}" > "${STATE}/prefix"
+printf '%s\n' "${mismatch}" > "${MICROOS_RUNTIME_DIR}/lepton-prefix"
+: > "${STATE}/podman"
+"${stop_script}" --post 2> "${STATE}/stderr"
+[[ -d "${mismatch}" ]] || fail "post removed the recorded prefix while the label named another"
+[[ -d "${held}" ]] || fail "post removed the labelled prefix when the record disagreed"
+[[ -f "${MICROOS_RUNTIME_DIR}/lepton-prefix" ]] || fail "post dropped a record it did not remove"
+grep -qF "the run recorded ${mismatch}, the container holds ${held}, removing neither" "${STATE}/stderr" \
+    || fail "post did not log the mismatch: $(cat "${STATE}/stderr")"
+rm -rf "${mismatch:?}" "${held:?}" "${STATE}/prefix"
+symlinked=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
+rmdir "${symlinked}"
+ln -s "${T}/outside" "${symlinked}"
+mkdir -p "${T}/outside"
+printf 'kept\n' > "${T}/outside/file"
+printf '%s\n' "${symlinked}" > "${MICROOS_RUNTIME_DIR}/lepton-prefix"
+: > "${STATE}/podman"
+"${stop_script}" --post 2> "${STATE}/stderr"
+[[ "$(cat "${T}/outside/file" 2>/dev/null)" == kept ]] || fail "post followed the prefix link"
+[[ -L "${symlinked}" ]] || fail "post removed the prefix link"
+[[ -f "${MICROOS_RUNTIME_DIR}/lepton-prefix" ]] || fail "post dropped the record of a prefix link it kept"
+rm -rf "${symlinked:?}" "${T}/outside"
+owned=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
+printf '%s\n' "${owned}" > "${MICROOS_RUNTIME_DIR}/lepton-prefix"
+printf 'root\n' > "${STATE}/other-owner"
+: > "${STATE}/podman"
+"${stop_script}" --post 2> "${STATE}/stderr"
+rm -f "${STATE}/other-owner"
+[[ -d "${owned}" ]] || fail "post removed a prefix owned by another uid"
+[[ -f "${MICROOS_RUNTIME_DIR}/lepton-prefix" ]] || fail "post dropped the record of a prefix it kept"
+rm -rf "${owned:?}"
+gone=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
+printf '%s\n' "${gone}" > "${MICROOS_RUNTIME_DIR}/lepton-prefix"
+rmdir "${gone}"
+: > "${STATE}/podman"
+"${stop_script}" --post 2> "${STATE}/stderr"
+[[ ! -e "${MICROOS_RUNTIME_DIR}/lepton-prefix" ]] || fail "post kept the record of a gone prefix: $(cat "${MICROOS_RUNTIME_DIR}/lepton-prefix")"
+grep -qF "removed the record of the gone ${gone}" "${STATE}/stderr" || fail "post did not log the gone prefix: $(cat "${STATE}/stderr")"
+race=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
+late=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
+printf '%s\n' "${race}" > "${MICROOS_RUNTIME_DIR}/lepton-prefix"
+printf '%s\n' "${late}" > "${STATE}/late"
+: > "${STATE}/replace-record"
+cat > "${T}/bin/podman" <<'STUB'
+#!/usr/bin/bash
+echo "podman $*" >> "${STATE}/podman"
+case "$*" in
+    "container exists "*)
+        if [[ -e "${STATE}/replace-record" ]]; then
+            rm -f "${STATE}/replace-record"
+            cat "${STATE}/late" > "${MICROOS_RUNTIME_DIR}/lepton-prefix"
+        fi
+        [[ ! -e "${STATE}/exists" ]] || exit 0
+        exit 1
+        ;;
+    "container inspect -f {{.State.Running}} lepton-android") echo true ;;
+    "exec lepton-android /system/bin/getprop sys.boot_completed") echo 1 ;;
+    "exec lepton-android /system/bin/pidof logd") echo 123 ;;
+    "exec lepton-android /system/bin/logcat "*) cat "${STATE}/logcat" ;;
+    "exec lepton-android /system/bin/pm grant "*) ;;
+    "exec lepton-android /system/bin/dumpsys activity activities")
+        if [[ -e "${STATE}/activities-after" ]]; then
+            n=$(( $(cat "${STATE}/reads" 2>/dev/null || echo 0) + 1 ))
+            printf '%s\n' "${n}" > "${STATE}/reads"
+            (( n > 1 )) && { cat "${STATE}/activities-after"; exit 0; }
+        fi
+        cat "${STATE}/activities" 2>/dev/null
+        ;;
+    "exec lepton-android /system/bin/am start -W "*) ;;
+    "inspect -f {{ index .Config.Labels \"PREFIX\" }} lepton-android") cat "${STATE}/prefix" 2>/dev/null || true ;;
+    "stop -t 1 lepton-android"|"rm -fi lepton-android") ;;
+    *) exit 99 ;;
+esac
+STUB
+chmod 0755 "${T}/bin/podman"
+: > "${STATE}/podman"
+"${stop_script}" --post 2> "${STATE}/stderr"
+[[ -f "${MICROOS_RUNTIME_DIR}/lepton-prefix" ]] || fail "post removed a record a start replaced meanwhile"
+[[ "$(cat "${MICROOS_RUNTIME_DIR}/lepton-prefix")" == "${late}" ]] \
+    || fail "post left $(cat "${MICROOS_RUNTIME_DIR}/lepton-prefix") in the record"
+[[ -d "${late}" ]] || fail "post removed the prefix a start recorded meanwhile"
+[[ ! -d "${race}" ]] || fail "post kept the prefix its own read named"
+grep -qF "removed the leftover ${race}" "${STATE}/stderr" || fail "post did not remove the prefix it read: $(cat "${STATE}/stderr")"
+grep -qF "kept the record ${MICROOS_RUNTIME_DIR}/lepton-prefix, it names another prefix now" "${STATE}/stderr" \
+    || fail "post did not log the record it kept: $(cat "${STATE}/stderr")"
+rm -rf "${race:?}" "${late:?}"
+rm -f "${STATE}/late" "${STATE}/replace-record"
+cat > "${T}/bin/podman" <<'STUB'
+#!/usr/bin/bash
+echo "podman $*" >> "${STATE}/podman"
+case "$*" in
+    "container exists "*)
+        [[ ! -e "${STATE}/exists" ]] || exit 0
+        exit 1
+        ;;
+    "container inspect -f {{.State.Running}} lepton-android") echo true ;;
+    "exec lepton-android /system/bin/getprop sys.boot_completed") echo 1 ;;
+    "exec lepton-android /system/bin/pidof logd") echo 123 ;;
+    "exec lepton-android /system/bin/logcat "*) cat "${STATE}/logcat" ;;
+    "exec lepton-android /system/bin/pm grant "*) ;;
+    "exec lepton-android /system/bin/dumpsys activity activities")
+        if [[ -e "${STATE}/activities-after" ]]; then
+            n=$(( $(cat "${STATE}/reads" 2>/dev/null || echo 0) + 1 ))
+            printf '%s\n' "${n}" > "${STATE}/reads"
+            (( n > 1 )) && { cat "${STATE}/activities-after"; exit 0; }
+        fi
+        cat "${STATE}/activities" 2>/dev/null
+        ;;
+    "exec lepton-android /system/bin/am start -W "*) ;;
+    "inspect -f {{ index .Config.Labels \"PREFIX\" }} lepton-android") cat "${STATE}/prefix" 2>/dev/null || true ;;
+    "stop -t 1 lepton-android"|"rm -fi lepton-android") ;;
+    *) exit 99 ;;
+esac
+STUB
+chmod 0755 "${T}/bin/podman"
+named=$(mktemp -d /tmp/lepton-context.XXXXXXXX)
+printf '%s\n' "${named}" > "${STATE}/prefix"
+unset MICROOS_RUNTIME_DIR XDG_RUNTIME_DIR
+"${stop_script}" --post 2> "${STATE}/stderr"
+export MICROOS_RUNTIME_DIR="${T}/run/microos-android" XDG_RUNTIME_DIR="${T}/xdg"
+[[ ! -e "${named}" ]] || fail "post with no runtime dir kept the label prefix"
+grep -qF "removed the leftover ${named}" "${STATE}/stderr" \
+    || fail "post with no runtime dir did not clean the label prefix: $(cat "${STATE}/stderr")"
+rm -f "${STATE}/prefix"
 reset
 : > "${STATE}/podman"
 "${stop_script}" --post 2> "${STATE}/stderr"
@@ -343,6 +679,125 @@ grep -qE '^SuccessExitStatus=.*\b137\b' "${unit}" && fail "the unit hides a 137:
 grep -qx TimeoutStopSec=20 "${unit}" || fail "the stop bound is not 20 s"
 grep -qx 'ExecStop=/usr/libexec/microos/microos-android-stop' "${unit}" || fail "the unit has no single stop owner"
 grep -qx 'ExecStopPost=/usr/libexec/microos/microos-android-stop --post' "${unit}" || fail "the unit has no post stop"
+
+case_name="check, no Lepton"
+reset
+mv "${T}/bin/lepton" "${T}/bin/lepton.off"
+rc=0
+"${run_script}" --check > "${STATE}/check-out" 2> "${STATE}/stderr" || rc=$?
+mv "${T}/bin/lepton.off" "${T}/bin/lepton"
+[[ "${rc}" == 1 ]] || fail "an absent Lepton exited ${rc}, not 1"
+[[ -z "$(cat "${STATE}/check-out")" ]] || fail "an absent Lepton printed $(cat "${STATE}/check-out")"
+
+case_name="check, the old context path"
+reset
+mkdir -p "${HOME}/.local/share/lepton/contexts/microemu-play"
+rc=0
+"${run_script}" --check > "${STATE}/check-out" 2> "${STATE}/stderr" || rc=$?
+rm -rf "${HOME}/.local/share/lepton/contexts/microemu-play"
+[[ "${rc}" == 2 ]] || fail "the old context path exited ${rc}, not 2: $(cat "${STATE}/stderr")"
+[[ "$(cat "${STATE}/check-out")" == old-path ]] || fail "the old context path printed $(cat "${STATE}/check-out")"
+
+case_name="check, a downgrade"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}"
+printf 'tool 3.0.9 gapps=none\nrootfs=3.0.9 fingerprint-old\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp"
+printf 'ro.system.build.fingerprint=fingerprint-new\nro.build.version.sdk=30\n' > "${T}/lepton/images/rootfs/system/build.prop"
+printf '3.0.3\n' > "${T}/lepton/images/version.txt"
+rc=0
+"${run_script}" --check > "${STATE}/check-out" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 2 ]] || fail "an older runtime exited ${rc}, not 2: $(cat "${STATE}/stderr")"
+[[ "$(cat "${STATE}/check-out")" == downgrade ]] || fail "an older runtime printed $(cat "${STATE}/check-out")"
+
+case_name="check, no snapshot taken"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}"
+printf 'tool 3.0.3 gapps=none\nrootfs=3.0.3 fingerprint-base\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp"
+mkdir -p "${T}/snaps-check"
+export MICROOS_LEPTON_SNAPSHOTS="${T}/snaps-check"
+cp "${T}/bin/lepton" "${T}/lepton.saved"
+cat > "${T}/bin/lepton" <<STUB
+#!/usr/bin/bash
+if [[ "\${1:-}" == runtime ]]; then
+    printf '%s\n' "${T}/lepton"
+    printf 'runtime\n' >> "\${STATE}/lepton-calls"
+    exit 0
+fi
+exit 1
+STUB
+chmod 0755 "${T}/bin/lepton"
+rc=0
+"${run_script}" --check > "${STATE}/check-out" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 0 ]] || fail "a read only check exited ${rc}: $(cat "${STATE}/stderr")"
+[[ -z "$(find "${MICROOS_LEPTON_SNAPSHOTS}" -mindepth 1 2>/dev/null)" ]] \
+    || fail "the check wrote to the snapshot dir: $(ls -A "${MICROOS_LEPTON_SNAPSHOTS}")"
+mv -f "${T}/lepton.saved" "${T}/bin/lepton"
+chmod 0755 "${T}/bin/lepton"
+unset MICROOS_LEPTON_SNAPSHOTS
+
+case_name="check, a matching stamp"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}"
+printf 'tool 3.0.3 gapps=none\nrootfs=3.0.3 fingerprint-new\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp"
+printf 'ro.system.build.fingerprint=fingerprint-new\nro.build.version.sdk=30\n' > "${T}/lepton/images/rootfs/system/build.prop"
+printf '3.0.3\n' > "${T}/lepton/images/version.txt"
+rc=0
+"${run_script}" --check > "${STATE}/check-out" 2> "${STATE}/stderr" || rc=$?
+[[ "${rc}" == 0 ]] || fail "a matching stamp exited ${rc}: $(cat "${STATE}/stderr")"
+[[ ! -e "${MICROOS_RUNTIME_DIR}/start-failed" ]] || fail "the check wrote a refusal marker"
+
+private_gms() {
+    mkdir -p "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system"
+    printf '<packages>\n<package name="com.google.android.gms" codePath="/system/priv-app/PrebuiltGmsCore" version="231234567" userId="10123">\n</package>\n</packages>\n' \
+        > "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system/packages.xml"
+}
+
+case_name="GMS guard"
+reset
+private_gms
+printf 'tool 3.0.3 gapps=mtg11\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp"
+run
+[[ "${rc}" == 1 ]] || fail "the GMS guard exited ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(reason_of)" == gapps-missing ]] || fail "the GMS guard wrote $(reason_of)"
+grep -q "gapps install" "${STATE}/stderr" || fail "the GMS guard: no message: $(cat "${STATE}/stderr")"
+
+case_name="GMS guard, no stamp"
+reset
+private_gms
+run
+[[ "${rc}" == 1 ]] || fail "the GMS guard with no stamp exited ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(reason_of)" == gapps-missing ]] || fail "the GMS guard with no stamp wrote $(reason_of)"
+
+case_name="GMS guard, a removed set boots"
+reset
+private_gms
+printf 'tool 3.0.3 gapps=none\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp"
+run
+[[ "${rc}" == 0 ]] || fail "gapps=none exited ${rc}: $(cat "${STATE}/stderr")"
+[[ ! -e "${MICROOS_RUNTIME_DIR}/end-reason" ]] || fail "gapps=none wrote $(reason_of)"
+
+case_name="GMS guard, GMS outside priv-app boots"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system"
+printf '<packages>\n<package name="com.google.android.gms" codePath="/data/app/com.google.android.gms" version="1">\n</package>\n</packages>\n' \
+    > "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system/packages.xml"
+printf 'tool 3.0.3 gapps=mtg11\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp"
+run
+[[ "${rc}" == 1 ]] || fail "an updated GMS outside priv-app exited ${rc}: $(cat "${STATE}/stderr")"
+[[ -z "$(reason_of)" ]] || fail "an updated GMS outside priv-app wrote the GMS reason $(reason_of)"
+grep -q "gapps tree incomplete" "${STATE}/stderr" || fail "an updated GMS outside priv-app: $(cat "${STATE}/stderr")"
+
+case_name="GMS guard, a multi-line stamp keeps its set"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system" "${T}/gapps/mtg11"
+printf 'packages\n' > "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system/packages.xml"
+printf 'ro.build.version.sdk=30\nro.system.build.fingerprint=fingerprint-base\n' > "${T}/lepton/images/rootfs/system/build.prop"
+printf '3.0.5 3.0.3 gapps=none\nrootfs=3.0.3 fingerprint-base\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp"
+run
+[[ "${rc}" == 0 ]] || fail "a multi-line stamp with gapps=none exited ${rc}: $(cat "${STATE}/stderr")"
+mounted | grep -q "gapps" && fail "a multi-line stamp with gapps=none bound a GApps set: $(mounted)"
+grep -qx 'rootfs=3.0.3 fingerprint-base' "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp" \
+    || fail "the rootfs line was lost: $(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")"
 
 if (( failures )); then
     echo "run-test: ${failures} failure(s), ${skipped} skipped" >&2

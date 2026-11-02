@@ -1,0 +1,254 @@
+#!/usr/bin/python3
+import json
+import os
+import signal
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-android-status"
+NAME = "net.seilent.MicroOs.Android1"
+ROOT = "/net/seilent/MicroOs/Android"
+XML = f"""
+<node>
+  <interface name="{NAME}">
+    <property name="Lepton" type="s" access="read"/>
+    <property name="LeptonBuild" type="s" access="read"/>
+    <property name="GooglePlay" type="s" access="read"/>
+    <property name="GsfId" type="s" access="read"/>
+    <property name="LastResult" type="s" access="read"/>
+    <property name="LastReason" type="s" access="read"/>
+  </interface>
+</node>
+"""
+REVIEWED = os.environ.get("MICROOS_LEPTON_REVIEWED") or "/usr/share/microos-lepton/reviewed"
+POLL_MS = int(os.environ.get("MICROOS_STATUS_POLL_MS") or 1000)
+SETTLE_MS = int(os.environ.get("MICROOS_STATUS_SETTLE_MS") or 50)
+FIELDS = ("Lepton", "LeptonBuild", "GooglePlay", "GsfId", "LastResult", "LastReason")
+
+
+def log(message):
+    print(f"{ME}: {message}", file=sys.stderr, flush=True)
+
+
+def home():
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
+def state_dir():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(home(), ".local/state")
+    return os.environ.get("MICROOS_ANDROID_STATE") or os.path.join(base, "microos-android")
+
+
+def data_dir():
+    return os.environ.get("MICROOS_ANDROID_DATA") or os.path.join(home(), ".local/share/microos-android")
+
+
+def gapps_dir():
+    return os.path.join(data_dir(), "gapps")
+
+
+def builds_dir():
+    base = os.environ.get("XDG_DATA_HOME") or os.path.join(home(), ".local/share")
+    return os.environ.get("MICROOS_LEPTON_SNAPSHOTS") or os.path.join(base, "microos-lepton", "builds")
+
+
+def read_state():
+    try:
+        with open(os.path.join(state_dir(), "state.json")) as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def text(data, *path):
+    node = data
+    for part in path:
+        if not isinstance(node, dict):
+            return ""
+        node = node.get(part)
+    if node is None or isinstance(node, bool):
+        return ""
+    return str(node)
+
+
+def names(directory):
+    try:
+        return {name for name in os.listdir(directory) if name.isdigit()}
+    except OSError:
+        return set()
+
+
+def gapps_set():
+    try:
+        return os.path.basename(os.readlink(os.path.join(gapps_dir(), "current")))
+    except OSError:
+        return ""
+
+
+def lepton_values(data):
+    build = text(data, "lepton", "build")
+    if not build:
+        return "not-installed", ""
+    if build not in names(REVIEWED):
+        return ("not-installed" if text(data, "lepton", "source") == "snapshot"
+                and build not in names(builds_dir()) else "not-reviewed"), build
+    return "ready", build
+
+
+def google_play(data):
+    if text(data, "gapps", "setup") == "running":
+        return "updating"
+    current = gapps_set()
+    if not current:
+        return "off"
+    if text(data, "gapps", "set") != current:
+        return "updating"
+    return "on"
+
+
+def directory_stamp(directory):
+    try:
+        status = os.stat(directory)
+    except OSError:
+        return (0, 0)
+    return (status.st_mtime_ns, status.st_ino)
+
+
+def link_stamp(path):
+    try:
+        status = os.lstat(path)
+    except OSError:
+        return (0, 0, "")
+    try:
+        target = os.readlink(path)
+    except OSError:
+        target = ""
+    return (status.st_mtime_ns, status.st_ino, target)
+
+
+class Status:
+    def __init__(self, bus):
+        self.bus = bus
+        self.node = Gio.DBusNodeInfo.new_for_xml(XML)
+        self.registration = bus.register_object(ROOT, self.node.interfaces[0], self.method, self.property, None)
+        self.monitors = []
+        self.armed = set()
+        self.last = {}
+        self.stamp = None
+        self.pending = 0
+
+    def values(self):
+        data = read_state()
+        word, build = lepton_values(data)
+        return {
+            "Lepton": word,
+            "LeptonBuild": build,
+            "GooglePlay": google_play(data),
+            "GsfId": text(data, "gsf_id"),
+            "LastResult": text(data, "last", "result"),
+            "LastReason": text(data, "last", "reason"),
+        }
+
+    def method(self, conn, sender, path, interface, name, params, invocation):
+        invocation.return_dbus_error(NAME + ".UnknownMethod", f"{name} is not a method")
+
+    def property(self, conn, sender, path, interface, name):
+        return GLib.Variant("s", self.values().get(name, ""))
+
+    def sample(self):
+        return (directory_stamp(state_dir()), directory_stamp(gapps_dir()), link_stamp(os.path.join(gapps_dir(),
+                                                                                                    "current")))
+
+    def emit(self):
+        values = self.values()
+        if values == self.last:
+            return
+        self.last = values
+        self.bus.emit_signal(
+            None, ROOT, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+            GLib.Variant("(sa{sv}as)", (NAME, {key: GLib.Variant("s", values[key]) for key in FIELDS}, [])))
+
+    def flush(self):
+        self.pending = 0
+        self.emit()
+        return False
+
+    def arm(self):
+        for directory in (state_dir(), data_dir(), gapps_dir()):
+            if directory in self.armed:
+                continue
+            if self.watch(directory):
+                self.armed.add(directory)
+
+    def poll(self):
+        self.arm()
+        sample = self.sample()
+        if sample != self.stamp:
+            self.stamp = sample
+            if not self.pending:
+                self.pending = GLib.timeout_add(SETTLE_MS, self.flush)
+        return True
+
+    def watch(self, directory):
+        if not os.path.isdir(directory):
+            return False
+        try:
+            monitor = Gio.File.new_for_path(directory).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
+        except GLib.Error as error:
+            log(f"cannot watch {directory}: {error.message}")
+            return False
+        monitor.connect("changed", self.notify)
+        self.monitors.append(monitor)
+        return True
+
+    def notify(self, monitor, one, two, event):
+        if event not in (Gio.FileMonitorEvent.CHANGED, Gio.FileMonitorEvent.CREATED,
+                         Gio.FileMonitorEvent.MOVED, Gio.FileMonitorEvent.DELETED,
+                         Gio.FileMonitorEvent.RENAMED, Gio.FileMonitorEvent.MOVED_IN,
+                         Gio.FileMonitorEvent.MOVED_OUT):
+            return
+        if one is not None and os.path.basename(one.get_path() or "").startswith(".state."):
+            return
+        if not self.pending:
+            self.pending = GLib.timeout_add(SETTLE_MS, self.flush)
+
+
+def main():
+    bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    status = Status(bus)
+    loop = GLib.MainLoop()
+    owned = {"name": False}
+
+    def acquired(conn, name):
+        owned["name"] = True
+        log(f"owns {NAME}")
+        status.last = {}
+        status.stamp = status.sample()
+        status.emit()
+
+    def lost(conn, name):
+        if owned["name"]:
+            log(f"lost {NAME}")
+            loop.quit()
+        else:
+            log(f"{NAME} is taken by another process, exiting")
+            loop.quit()
+
+    Gio.bus_own_name_on_connection(bus, NAME, Gio.BusNameOwnerFlags.DO_NOT_QUEUE, acquired, lost)
+
+    signal.signal(signal.SIGTERM, lambda *args: loop.quit())
+    signal.signal(signal.SIGINT, lambda *args: loop.quit())
+    status.arm()
+    status.stamp = status.sample()
+    GLib.timeout_add(POLL_MS, status.poll)
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

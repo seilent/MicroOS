@@ -1,0 +1,2 @@
+export GAMESCOPE_BIN=/usr/libexec/microos/microos-gamescope-plain
+export CLIENTCMD=/usr/libexec/microos/microos-android-client

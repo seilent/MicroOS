@@ -1,0 +1,11 @@
+[Unit]
+Description=Android session status on the session bus
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/microos/microos-android-status
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

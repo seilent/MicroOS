@@ -3,22 +3,140 @@ set -u
 
 CONTAINER=lepton-android
 verb=${1:-}
+GUEST_TIMEOUT="${MICROOS_GUEST_TIMEOUT:-1}"
+STOP_S="${MICROOS_STOP_S:-0.1}"
+STOP_WAIT_MS="${MICROOS_STOP_WAIT_MS:-1000}"
 
 say() { printf 'microos-android-stop: %s\n' "$*" >&2; }
 
+guest() { timeout "${GUEST_TIMEOUT}" podman exec "${CONTAINER}" "$@" 2>/dev/null; }
+
+activities() { guest /system/bin/dumpsys activity activities; }
+
+resumed() {
+    local line activity
+    line=$(activities) || return 1
+    [[ -n "${line}" ]] || return 1
+    activity=$(sed -n 's/.*mResumedActivity: .* \([A-Za-z0-9_.]*\/[A-Za-z0-9_.$]*\).*/\1/p' <<< "${line}" | head -n 1)
+    [[ -n "${activity}" ]] || return 1
+    printf '%s\n' "${activity}"
+}
+
+home_intent() {
+    guest /system/bin/am start -W -a android.intent.action.MAIN -c android.intent.category.HOME > /dev/null
+}
+
+now_ms() {
+    local up
+    read -r up _ < /proc/uptime 2>/dev/null || return 1
+    [[ "${up}" =~ ^[0-9]+\.[0-9]+$ ]] || return 1
+    printf '%s\n' "$(( 10#${up%.*} * 1000 + 10#${up#*.} * 10 ))"
+}
+
+launcher() {
+    [[ "${1}" == com.android.launcher3/* ]]
+}
+
+stopped() {
+    local activity=$1 line current
+    line=$(activities) || return 1
+    [[ -n "${line}" ]] || return 1
+    current=$(sed -n 's/.*mResumedActivity: .* \([A-Za-z0-9_.]*\/[A-Za-z0-9_.$]*\).*/\1/p' <<< "${line}" | head -n 1)
+    [[ "${current}" == "${activity}" ]] || return 0
+    awk -v want="${activity}" '
+        $0 ~ /ActivityRecord\{/ { inside = index(" " $0 " ", " " want " ") > 0; next }
+        inside && /state=(STOPPED|DESTROYED|FINISHED)/ { found = 1 }
+        END { exit !found }' <<< "${line}"
+}
+
+wait_home() {
+    local activity=$1 deadline now
+    deadline=$(now_ms) || return 1
+    deadline=$(( deadline + STOP_WAIT_MS ))
+    while :; do
+        stopped "${activity}" && return 0
+        now=$(now_ms) || return 1
+        (( now < deadline )) || return 1
+        sleep "${STOP_S}"
+    done
+}
+
+stop() {
+    podman stop -t 1 "${CONTAINER}" > /dev/null 2>&1
+}
+
+run=
+recorded=
+stamp=
+
+owned_prefix() {
+    [[ -n "${1:-}" && "${1}" =~ ^/tmp/lepton-context\.[A-Za-z0-9]+$ && -d "${1}" && ! -L "${1}" \
+        && "$(stat -c %u "${1}" 2>/dev/null)" == "$(id -u)" ]]
+}
+
+drop_record() {
+    local file="${run}/lepton-prefix" now current
+    [[ -n "${run}" && -n "${recorded}" && -n "${stamp}" ]] || return 1
+    now=$(stat -c '%i %s' -- "${file}" 2>/dev/null) || return 1
+    [[ "${now}" == "${stamp}" ]] || return 1
+    current=$(cat -- "${file}" 2>/dev/null) || current=
+    [[ "${current}" == "${recorded}" ]] || return 1
+    rm -f -- "${file}"
+}
+
 case "${verb}" in
     "")
-        podman stop -t 1 "${CONTAINER}" >/dev/null 2>&1
+        activity=$(resumed) || activity=
+        home_intent || say "the guest did not take the HOME intent"
+        if [[ -n "${activity}" ]] && ! launcher "${activity}"; then
+            wait_home "${activity}" || say "the guest did not report ${activity} stopped"
+        fi
+        stop
         ;;
     --post)
         prefix=$(podman inspect -f '{{ index .Config.Labels "PREFIX" }}' "${CONTAINER}" 2>/dev/null)
-        podman stop -t 1 "${CONTAINER}" >/dev/null 2>&1
-        podman rm -fi "${CONTAINER}" >/dev/null 2>&1
-        if [[ "${prefix}" =~ ^/tmp/lepton-context\.[A-Za-z0-9]+$ && -d "${prefix}" ]]; then
-            if rm -rf "${prefix}" 2>/dev/null || podman unshare rm -rf "${prefix}"; then
-                say "removed the leftover ${prefix}"
-            else
-                say "cannot remove ${prefix}"
+        podman stop -t 1 "${CONTAINER}" > /dev/null 2>&1
+        podman rm -fi "${CONTAINER}" > /dev/null 2>&1
+        if [[ -n "${MICROOS_RUNTIME_DIR:-}" ]]; then
+            run="${MICROOS_RUNTIME_DIR}"
+        elif [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+            run="${XDG_RUNTIME_DIR}/microos-android"
+        fi
+        if [[ -n "${run}" ]]; then
+            if [[ -f "${run}/lepton-prefix" && ! -L "${run}/lepton-prefix" ]]; then
+                stamp=$(stat -c '%i %s' -- "${run}/lepton-prefix" 2>/dev/null) || stamp=
+                read -r recorded < "${run}/lepton-prefix" 2>/dev/null || recorded=
+            fi
+            if [[ -z "${prefix}" ]]; then
+                prefix=${recorded}
+            elif [[ -n "${recorded}" && "${recorded}" != "${prefix}" ]]; then
+                say "the run recorded ${recorded}, the container holds ${prefix}, removing neither"
+                prefix=
+                recorded=
+            fi
+            for marker in ready start-done start-failed session.env first-boot; do
+                rm -f -- "${run}/${marker}"
+            done
+        fi
+        if [[ -n "${prefix}" && "${prefix}" =~ ^/tmp/lepton-context\.[A-Za-z0-9]+$ ]]; then
+            if owned_prefix "${prefix}"; then
+                if podman container exists "${CONTAINER}" > /dev/null 2>&1; then
+                    say "${CONTAINER} exists, kept ${prefix}"
+                elif rm -rf "${prefix:?}" 2>/dev/null || podman unshare rm -rf "${prefix:?}"; then
+                    say "removed the leftover ${prefix}"
+                    if [[ -n "${run}" && -n "${recorded}" && "${recorded}" == "${prefix}" ]]; then
+                        drop_record || say "kept the record ${run}/lepton-prefix, it names another prefix now"
+                    fi
+                else
+                    say "cannot remove ${prefix}"
+                fi
+            elif [[ -n "${run}" && -n "${recorded}" && "${recorded}" == "${prefix}" ]] \
+                && [[ ! -e "${prefix}" && ! -L "${prefix}" ]]; then
+                if drop_record; then
+                    say "removed the record of the gone ${prefix}"
+                else
+                    say "kept the record ${run}/lepton-prefix, it names another prefix now"
+                fi
             fi
         fi
         ;;

@@ -1,0 +1,55 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+microos_me=microos-lepton-prepare
+export microos_me
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "${MICROOS_LEPTON_LIB:-${here}/microos-lepton-lib.sh}"
+
+PODMAN="${MICROOS_PODMAN:-podman}"
+CONTEXT="${MICROOS_ANDROID_CONTEXT:-$(android_data)/home/.local/share/lepton/contexts/android}"
+
+live_container() {
+    local status
+    status=$(${PODMAN} inspect --type container -f '{{.State.Status}}' lepton-android 2>/dev/null) || status=
+    case "${status}" in
+        running|paused|stopping) return 0 ;;
+    esac
+    return 1
+}
+
+drop_exited() {
+    local status
+    status=$(${PODMAN} inspect --type container -f '{{.State.Status}}' lepton-android 2>/dev/null) || return 0
+    [[ "${status}" == exited ]] || return 0
+    ${PODMAN} rm -fi lepton-android > /dev/null 2>&1 || fail "cannot remove the exited lepton-android, refusing"
+    say "removed the exited lepton-android"
+}
+
+from_steam() {
+    (
+        steam_look
+    ) > /dev/null 2>&1
+}
+
+main() {
+    local runtime buildid source
+    state_init || say "cannot write $(state_file)"
+    clean_temps
+    if live_container; then
+        fail "lepton-android runs, refusing"
+    fi
+    drop_exited
+    source=snapshot
+    from_steam && source=steam
+    runtime=$(resolve) || fail "no Lepton runtime, refusing"
+    buildid=${runtime##*/}
+    state_write "lepton.build=${buildid}" "lepton.source=${source}" \
+        || say "cannot write $(state_file)"
+    if [[ -d "${CONTEXT}" && ! -L "${CONTEXT}" ]]; then
+        context_backup "${runtime}" "${CONTEXT}"
+    fi
+    say "prepared ${runtime}"
+}
+
+main "$@"

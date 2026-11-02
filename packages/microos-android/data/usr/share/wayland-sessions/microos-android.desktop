@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Android
+Exec=gamescope-session-plus android
+Type=Application
+DesktopNames=android
+NoDisplay=true

@@ -1,0 +1,9 @@
+[Unit]
+Description=Android session pad target
+BindsTo=gamescope-session-plus@android.service
+After=gamescope-session-plus@android.service steamos-manager.service
+
+[Service]
+ExecStart=/usr/libexec/microos/microos-pad-target xb360 keyboard
+Restart=on-failure
+RestartSec=2
