@@ -1,4 +1,5 @@
 %global debug_package %{nil}
+%global __requires_exclude ^/system/bin/sh$
 
 Name:           microos-android
 Version:        1
