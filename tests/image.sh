@@ -514,6 +514,29 @@ command -v mangoapp >/dev/null || fail "mangoapp is not on PATH"
 [[ -f /usr/share/vulkan/implicit_layer.d/VkLayer_LSFGVK_frame_generation.aarch64.json ]] || fail "lsfg-vk layer manifest missing"
 [[ -f /usr/lib64/liblsfg-vk-layer.so ]] || fail "lsfg-vk layer library missing"
 ! rpm -q lsfg-vk-tests >/dev/null 2>&1 || fail "lsfg-vk-tests is installed"
+[[ $(rpm -q --qf '%{VENDOR}' rocknix-abl) == MicroOS ]] || fail "rocknix-abl is not the MicroOS build"
+abl=/usr/lib/microos/abl
+for f in abl_signed-SM8250.elf abl_signed-SM8250.elf.sha256 manifest releases.tsv \
+  esp/README esp/backup_abl.sh esp/flash_abl.sh esp/restore_backup_abl.sh; do
+  [[ -f $abl/$f ]] || fail "rocknix-abl ships no $f"
+done
+[[ $(wc -l < "$abl/manifest") -eq 6 ]] || fail "rocknix-abl manifest is not six lines"
+bad=$(grep -vE '^MICROOS_ABL_(FORMAT|VERSION|SOC|LENGTH|SHA256|ADMITTED)=[0-9A-Za-z.]+$' "$abl/manifest")
+[[ -z $bad ]] || fail "rocknix-abl manifest lines: $bad"
+ablkey() { sed -n "s/^$1=//p" "$abl/manifest"; }
+[[ $(ablkey MICROOS_ABL_FORMAT) == 1 ]] || fail "rocknix-abl manifest format is not 1"
+[[ $(ablkey MICROOS_ABL_SOC) == SM8250 ]] || fail "rocknix-abl manifest soc is not SM8250"
+ablsum=$(sha256sum < "$abl/abl_signed-SM8250.elf" | cut -d' ' -f1)
+[[ $(ablkey MICROOS_ABL_SHA256) == "$ablsum" ]] || fail "rocknix-abl elf and manifest differ"
+[[ $(ablkey MICROOS_ABL_ADMITTED) == "$ablsum" ]] || fail "rocknix-abl admitted hash is not the payload"
+(cd "$abl" && sha256sum -c abl_signed-SM8250.elf.sha256 > /dev/null) || fail "rocknix-abl elf fails its .sha256"
+[[ $(head -n 1 "$abl/releases.tsv") == "$(printf 'order\tversion\tsoc\tlength\tsha256')" ]] \
+  || fail "rocknix-abl releases.tsv header"
+ablrows=$(awk -F'\t' -v v="$(ablkey MICROOS_ABL_VERSION)" -v l="$(ablkey MICROOS_ABL_LENGTH)" -v s="$ablsum" \
+  '$2 == v && $3 == "SM8250" && $4 == l && $5 == s' "$abl/releases.tsv")
+[[ $(grep -c . <<<"$ablrows") -eq 1 ]] || fail "rocknix-abl releases.tsv rows for the payload: $ablrows"
+abltop=$(awk -F'\t' 'NR > 1 && $1 + 0 >= m { m = $1 + 0; v = $2 } END { print v }' "$abl/releases.tsv")
+[[ $(ablkey MICROOS_ABL_VERSION) == "$abltop" ]] || fail "rocknix-abl manifest version is not the highest order row"
 for p in gamescope gamescope-session gamescope-session-steam; do
   [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
 done

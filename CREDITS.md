@@ -48,6 +48,7 @@ Projects MicroOS builds, with their authors and license.
 | `lsfg-vk` ARM64 descriptor fallbacks | [FrankBarretta/lsfg-vk-android](https://github.com/FrankBarretta/lsfg-vk-android) `a9edb2f515`, `48bf76348a`, ported to v2 in [xXJSONDeruloXx/lsfg-vk-arm64](https://github.com/xXJSONDeruloXx/lsfg-vk-arm64) `337788901e` | FrankBarretta, xXJSONDeruloXx | MIT, GPL-3.0-or-later |
 | `lsfg-vk` glibc layer build | xXJSONDeruloXx/lsfg-vk-arm64 `d2498550e7` | xXJSONDeruloXx | GPL-3.0-or-later |
 | toml++ in `lsfg-vk` | [marzer/tomlplusplus](https://github.com/marzer/tomlplusplus) `v3.4.0` | Mark Gillard | MIT |
+| `rocknix-abl` SM8250 elf | [ROCKNIX/abl](https://github.com/ROCKNIX/abl) `v1.2` `0e755e15`, built from [ROCKNIX/LinuxLoader](https://github.com/ROCKNIX/LinuxLoader) `e9d37131` (not public) | ROCKNIX contributors | not stated (no LICENSE in ROCKNIX/abl) |
 
 `gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
 carries Fedora's packaging patches, five of mine and an OGC patch backported by me (`0003` to `0008`, `0006` from
