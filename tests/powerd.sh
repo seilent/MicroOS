@@ -639,6 +639,7 @@ cgdir() {
   mkdir -p "$1"
   echo 0.00 > "$1/cpu.uclamp.min"
   echo max > "$1/cpu.uclamp.max"
+  printf 'populated 0\nfrozen 0\n' > "$1/cgroup.events"
   : > "$1/cgroup.procs"
   echo "cpu memory pids" > "$1/cgroup.subtree_control"
 }
@@ -649,14 +650,22 @@ utree() {
   done
 }
 gslice() { cgdir "$(mgr "$1")/game.slice"; }
+playing() {
+  rm -rf "$(mgr "$1")/game.slice/app-steam-app9000-1.scope"
+  printf 'populated %s\nfrozen 0\n' "$2" > "$(mgr "$1")/game.slice/cgroup.events"
+  (( $2 == 0 )) || cgdir "$(mgr "$1")/game.slice/app-steam-app9000-1.scope"
+}
+games() { ls -l /proc/"$pd"/fd 2> /dev/null | grep -c 'game.slice/cgroup.events' || true; }
 chain() { echo "$users" "$users/user-$1.slice" "$(mgr "$1")" "$(mgr "$1")/game.slice"; }
+val() { local t; t=$(v "$1"); [[ $t == max ]] && t=100; echo "${t%.00}"; }
+floor_at() { [[ $(val "$1") == "$2" ]] || fail "$3: ${1#"$sys"} is $(v "$1"), expected $2"; }
 floors() {
   local d _
   for _ in $(seq 100); do
-    for d in $(chain "$1"); do [[ $(v "$d/cpu.uclamp.min") == "$2" ]] || { sleep 0.05; continue 2; }; done
+    for d in $(chain "$1"); do [[ $(val "$d/cpu.uclamp.min") == "$2" ]] || { sleep 0.05; continue 2; }; done
     break
   done
-  for d in $(chain "$1"); do want "$d/cpu.uclamp.min" "$2" "$3"; done
+  for d in $(chain "$1"); do floor_at "$d/cpu.uclamp.min" "$2" "$3"; done
 }
 stamps() { find "$cg" -name cpu.uclamp.min -printf '%p %T@\n' 2> /dev/null | sort; }
 writes() { grep -c "^floor $1 on" "$tmp/log" || true; }
@@ -703,14 +712,15 @@ s0=$(stamps)
 start
 [[ $(get $P1 GameCpuFloor) == 0 ]] || fail "GameCpuFloor at start: $(get $P1 GameCpuFloor)"
 [[ $(root "$cli" get | grep game-floor) == "game-floor 0" ]] || fail "cli get: $(root "$cli" get)"
-grep -q "^applied .* floor=0 " "$tmp/log" || fail "no floor in the applied line"
+grep -q "^applied .* game-floor=0 " "$tmp/log" || fail "no game-floor in the applied line"
 [[ $(stamps) == "$s0" ]] || fail "floor 0 from start wrote a cpu.uclamp.min"
+[[ $(games) == 1 ]] || fail "$(games) game watches at start"
 set_ $P1 GameCpuFloor u 68
-floors 1000 68 "set 68"
-want "$(mgr 1000)/app.slice/cpu.uclamp.min" 0.00 "app.slice at 68"
-want "$(mgr 1000)/app.slice/app-steam-app1-1.scope/cpu.uclamp.min" 0.00 "scope at 68"
+floors 1000 0 "set 68 with no game"
+want "$(mgr 1000)/app.slice/cpu.uclamp.min" 0.00 "app.slice with no game"
+want "$(mgr 1000)/app.slice/app-steam-app1-1.scope/cpu.uclamp.min" 0.00 "scope with no game"
 want "$(mgr 1000)/game.slice/cpu.uclamp.max" max "cpu.uclamp.max at 68"
-(( $(writes 68) == 4 )) || fail "set 68 wrote $(writes 68) times"
+(( $(writes 68) == 0 )) || fail "set 68 with no game wrote $(writes 68) times"
 s1=$(stamps)
 set_ $P1 GameCpuFloor u 68
 set_ $P1 CpuGovernor s performance
@@ -719,9 +729,75 @@ set_ $P1 Profile s balanced
 set_ $P1 CpuGovernor s schedutil
 set_ $S.TdpLimit1 TdpLimit u 5
 set_ $S.TdpLimit1 TdpLimit u 9
-floors 1000 68 "governor, profile and TDP sets"
-[[ $(stamps) == "$s1" ]] || fail "an identical apply wrote a cpu.uclamp.min"
-(( $(writes 68) == 4 )) || fail "identical applies wrote $(( $(writes 68) - 4 )) times"
+floors 1000 0 "governor, profile and TDP sets with no game"
+[[ $(stamps) == "$s1" ]] || fail "an apply with no game wrote a cpu.uclamp.min"
+(( $(writes 68) == 0 )) || fail "applies with no game wrote $(writes 68) times"
+
+playing 1000 1
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+floors 1000 68 "game start"
+(( $(writes 68) == 4 )) || fail "game start wrote $(writes 68) times"
+want "$(mgr 1000)/app.slice/cpu.uclamp.min" 0.00 "app.slice with a game"
+want "$(mgr 1000)/app.slice/app-steam-app1-1.scope/cpu.uclamp.min" 0.00 "scope with a game"
+t0=$(awk '{print $14 + $15}' /proc/"$pd"/stat)
+sleep 3
+t1=$(awk '{print $14 + $15}' /proc/"$pd"/stat)
+(( t1 - t0 < 20 )) || fail "powerd burned $(( t1 - t0 )) ticks in 3 s with a game running"
+w0=$(writes 0)
+playing 1000 0
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+floors 1000 0 "game end"
+(( $(writes 0) == w0 + 4 )) || fail "game end wrote $(( $(writes 0) - w0 )) times"
+playing 1000 1
+snap=$(snapshot)
+python3 "$bus" sleep false || fail "stub logind"
+floors 1000 68 "resume with a game running"
+playing 1000 0
+snap=$(snapshot)
+python3 "$bus" sleep false || fail "stub logind"
+floors 1000 0 "resume with no game"
+
+utree 1001
+gslice 1001
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+floors 1001 0 "a second uid with no game"
+[[ $(games) == 2 ]] || fail "$(games) game watches with two uids"
+floor_at "$users/cpu.uclamp.min" 0 "user.slice with both uids idle"
+playing 1000 1
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+floors 1000 68 "one of two uids plays"
+floor_at "$users/user-1001.slice/cpu.uclamp.min" 68 "user-1001.slice carries the maximum"
+floor_at "$(mgr 1001)/cpu.uclamp.min" 68 "user@1001.service carries the maximum"
+floor_at "$(mgr 1001)/game.slice/cpu.uclamp.min" 0 "the idle uid's game.slice"
+playing 1001 1
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+floors 1001 68 "the other uid plays"
+playing 1000 0
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+for d in "$users" "$users/user-1000.slice" "$(mgr 1000)"; do
+  floor_at "$d/cpu.uclamp.min" 68 "one uid stops while the other plays"
+done
+floor_at "$(mgr 1000)/game.slice/cpu.uclamp.min" 0 "the stopped game's game.slice"
+floors 1001 68 "the uid that still plays"
+playing 1001 0
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+floors 1000 0 "both uids stopped"
+rm -rf "$users/user-1001.slice"
+for _ in $(seq 100); do (( $(games) == 1 )) && break; sleep 0.05; done
+(( $(games) == 1 )) || fail "$(games) game watches after a second uid went"
+snap=$(snapshot)
+
+playing 1000 1
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+floors 1000 68 "game start again"
 for f in 84 100 4294967295; do
   set_ $P1 GameCpuFloor u "$f"
   [[ $(get $P1 GameCpuFloor) == 83 ]] || fail "GameCpuFloor $f published as $(get $P1 GameCpuFloor)"
@@ -747,15 +823,26 @@ rm -rf "$(mgr 1000)/game.slice"
 mkdir -p "$tmp/stage"
 cgdir "$tmp/stage/game.slice"
 mv "$tmp/stage/game.slice" "$(mgr 1000)/"
-floors 1000 49 "game.slice made after arm"
+snap=$(snapshot)
+floors 1000 0 "game.slice made after arm"
+playing 1000 1
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+floors 1000 49 "game.slice made after arm, game on"
 rm -rf "$(mgr 1000)/game.slice"
 mkdir "$(mgr 1000)/game.slice"
 sleep 0.3
 gslice 1000
+snap=$(snapshot)
+playing 1000 1
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+[[ $(games) == 1 ]] || fail "$(games) game watches after cgroup.events came later"
 floors 1000 49 "cpu.uclamp.min added after game.slice"
 echo 0.00 > "$tmp/target"
 rm "$(mgr 1000)/game.slice/cpu.uclamp.min"
 ln -s "$tmp/target" "$(mgr 1000)/game.slice/cpu.uclamp.min"
+snap=$(snapshot)
 set_ $P1 GameCpuFloor u 28
 want "$tmp/target" 0.00 "symlink in place of cpu.uclamp.min"
 [[ -L $(mgr 1000)/game.slice/cpu.uclamp.min ]] || fail "symlink replaced"
@@ -777,7 +864,73 @@ rm "$(mgr 1000)/game.slice/cpu.uclamp.min"
 set_ $P1 GameCpuFloor u 0
 sleep 6
 (( $(grep -c "missing after" "$tmp/log") == 1 )) || fail "floor 0 polled a missing file: $(grep "missing after" "$tmp/log")"
+playing 1000 0
+snap=$(snapshot)
+set_ $P1 GameCpuFloor u 68
+set_ $P1 CpuGovernor s schedutil
+sleep 6
+(( $(grep -c "missing after" "$tmp/log") == 1 )) || fail "a missing file polled with no game: $(grep "missing after" "$tmp/log")"
 stop
+
+MICROOS_SYSFS=$sys python3 - "$powerd" > "$tmp/events" 2>&1 <<'PY'
+import importlib.machinery
+import importlib.util
+import os
+import sys
+
+from gi.repository import GLib
+
+loader = importlib.machinery.SourceFileLoader("powerd", sys.argv[1])
+powerd = importlib.util.module_from_spec(importlib.util.spec_from_loader("powerd", loader))
+loader.exec_module(powerd)
+m = powerd.manager(1000)
+events = m + "/game.slice/cgroup.events"
+for rel in powerd.levels(1000):
+    path = powerd.SYSFS + rel
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("0.00\n")
+print("before", powerd.populated(events))
+p = powerd.Power()
+p.watches[1000] = None
+p.state["game_floor"] = 68
+p.open_game(1000)
+with open(powerd.SYSFS + events, "w") as f:
+    f.write("populated 1\nfrozen 0\n")
+print("after", powerd.populated(events))
+p.on_game(None, GLib.IOCondition.PRI | GLib.IOCondition.ERR, 1000)
+print("game", [powerd.read(rel) for rel in powerd.levels(1000)])
+print("kept", 1000 in p.games)
+with open(powerd.SYSFS + events, "w") as f:
+    f.write("populated 0\nfrozen 0\n")
+p.on_game(None, GLib.IOCondition.PRI | GLib.IOCondition.ERR, 1000)
+print("end", [powerd.read(rel) for rel in powerd.levels(1000)])
+print("keptend", 1000 in p.games)
+os.unlink(powerd.SYSFS + events)
+os.makedirs(powerd.SYSFS + events)
+p.close_game(1000)
+p.open_game(1000)
+fd = p.games[1000][0]
+p.on_game(None, GLib.IOCondition.PRI | GLib.IOCondition.ERR, 1000)
+print("dropped", 1000 in p.games)
+try:
+    os.fstat(fd)
+    closed = False
+except OSError:
+    closed = True
+print("closed", closed)
+os.rmdir(powerd.SYSFS + events)
+with open(powerd.SYSFS + events, "w") as f:
+    f.write("populated 0\nfrozen 0\n")
+PY
+grep -qx "before False" "$tmp/events" || fail "populated on an empty game.slice: $(cat "$tmp/events")"
+grep -qx "after True" "$tmp/events" || fail "populated on a running game.slice: $(cat "$tmp/events")"
+grep -qx "game \['68', '68', '68', '68'\]" "$tmp/events" || fail "a PRI|ERR event did not apply the floor: $(cat "$tmp/events")"
+grep -qx "kept True" "$tmp/events" || fail "a PRI|ERR event dropped the game watch: $(cat "$tmp/events")"
+grep -qx "end \['0', '0', '0', '0'\]" "$tmp/events" || fail "an empty game.slice did not clear the floor: $(cat "$tmp/events")"
+grep -qx "keptend True" "$tmp/events" || fail "an empty game.slice dropped the game watch: $(cat "$tmp/events")"
+grep -qx "dropped False" "$tmp/events" || fail "a failed read kept the game watch: $(cat "$tmp/events")"
+grep -qx "closed True" "$tmp/events" || fail "a failed read kept the fd: $(cat "$tmp/events")"
 
 MICROOS_SYSFS=$sys python3 - "$powerd" > "$tmp/refused" 2>&1 <<'PY'
 import importlib.machinery
@@ -820,10 +973,12 @@ subscribed "systemd after powerd"
 set_ $P1 GameCpuFloor u 68
 utree 1000
 gslice 1000
+playing 1000 1
 snap=$(snapshot)
 sdsend "job user@1000.service done"
-floors 1000 68 "JobRemoved done, active"
+floors 1000 68 "JobRemoved done, active with a game running"
 (( $(watches) == 1 )) || fail "$(watches) inotify watches after one arm"
+(( $(games) == 1 )) || fail "$(games) game watches after one arm"
 utree 1001
 mkdir "$(mgr 1001)/game.slice"
 snap=$(snapshot)
@@ -837,6 +992,7 @@ for d in "$users/user-1001.slice" "$(mgr 1001)" "$(mgr 1001)/game.slice"; do wan
 rm -rf "$users/user-1001.slice"
 utree 1003
 gslice 1003
+playing 1003 1
 snap=$(snapshot)
 sdsend "job user@1003.service failed"
 sleep 0.3
@@ -847,6 +1003,8 @@ floors 1003 68 "apply arms a tree without a watch"
 rm -rf "$users/user-1003.slice" "$users/user-1000.slice"
 for _ in $(seq 100); do (( $(watches) == 0 )) && break; sleep 0.05; done
 (( $(watches) == 0 )) || fail "$(watches) inotify watches after the tree went"
+for _ in $(seq 100); do (( $(games) == 0 )) && break; sleep 0.05; done
+(( $(games) == 0 )) || fail "$(games) game watches after the tree went"
 set_ $P1 CpuGovernor s schedutil
 sleep 6
 grep -q "missing after" "$tmp/log" && fail "a removed tree polled: $(grep "missing after" "$tmp/log")"
@@ -854,11 +1012,19 @@ utree 1000
 gslice 1000
 snap=$(snapshot)
 sdsend "job user@1000.service done"
-floors 1000 68 "relogin"
+floors 1000 0 "relogin with no game"
 (( $(watches) == 1 )) || fail "$(watches) inotify watches after relogin"
+playing 1000 1
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+floors 1000 68 "relogin, game on"
 rm -rf "$(mgr 1000)/game.slice"
 gslice 1000
-floors 1000 68 "game.slice made after relogin"
+sleep 0.3
+snap=$(snapshot)
+set_ $P1 CpuGovernor s schedutil
+floors 1000 0 "game.slice made after relogin"
+(( $(games) == 1 )) || fail "$(games) game watches after game.slice came back"
 n=$(grep -c "systemd Subscribe:" "$tmp/log" || true)
 sdstop
 sleep 0.5
@@ -867,6 +1033,7 @@ sdstart
 subscribed "systemd restarted"
 utree 1002
 gslice 1002
+playing 1002 1
 snap=$(snapshot)
 sdsend "job user@1002.service done"
 floors 1002 68 "JobRemoved after a systemd restart"
@@ -876,17 +1043,19 @@ sdstop
 mktree
 utree 1000
 gslice 1000
+playing 1000 1
 sdstart
 start
 subscribed "systemd before powerd"
 set_ $P1 GameCpuFloor u 68
-floors 1000 68 "scan at start"
+floors 1000 68 "scan at start with a game running"
 stop
 sdstop
 
 mktree
 utree 1000
 gslice 1000
+playing 1000 1
 gf=$(mgr 1000)/game.slice/cpu.uclamp.min
 chown 1000 "$gf"
 chmod 644 "$gf"
