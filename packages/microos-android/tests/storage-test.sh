@@ -785,7 +785,7 @@ reset
 make_manifest_tree
 record_manifest "${T}/manifest-plain"
 [[ -s "${T}/manifest-plain" ]] || fail "the plain manifest is empty"
-[[ "$(head -n 1 "${T}/manifest-plain")" == "microos-manifest 2" ]] \
+[[ "$(head -n 1 "${T}/manifest-plain")" == "microos-manifest 3" ]] \
     || fail "the header: $(head -n 1 "${T}/manifest-plain")"
 mkdir -p "${manifest_stub}"
 cat > "${manifest_stub}/find" <<'STUB'
@@ -820,6 +820,87 @@ ln -sfn file "${manifest_tree}/link"
 touch -d '2001-02-03 04:05:06' "${manifest_tree}/dir/sub"
 record_manifest "${T}/manifest-mtime"
 cmp -s "${T}/manifest-plain" "${T}/manifest-mtime" && fail "a subdirectory mtime change was not seen"
+
+manifest_pair="${T}/manifest-pair"
+make_manifest_pair() {
+    chmod -R u+w "${manifest_pair}" 2>/dev/null
+    rm -rf "${manifest_pair}"
+    mkdir -p "${manifest_pair}/alpha" "${manifest_pair}/beta"
+    touch -d '2001-02-03 04:05:06' "${manifest_pair}/alpha" "${manifest_pair}/beta"
+}
+manifest_of() {
+    local out=$1
+    podman unshare bash -c '. "$1"; shift; storage_manifest "$@"' _ "${lib}" "${manifest_pair}" 2>/dev/null > "${out}"
+}
+
+case_name="manifest keeps its order when a directory size changes"
+make_manifest_pair
+mkdir -p "${manifest_stub}"
+cat > "${manifest_stub}/find" <<'STUB'
+#!/usr/bin/bash
+read -r small big < "${STATE}/manifest-swap"
+/usr/bin/find "$@" | while IFS='|' read -r type owner mode mtime size target path; do
+    case "${type}|${path}" in
+        "d|${small}") size=0 ;;
+        "d|${big}") size=4096 ;;
+    esac
+    printf '%s|%s|%s|%s|%s|%s|%s\n' "${type}" "${owner}" "${mode}" "${mtime}" "${size}" "${target}" "${path}"
+done
+STUB
+chmod 0755 "${manifest_stub}/find"
+old_path=${PATH}
+PATH="${manifest_stub}:${PATH}"
+printf 'alpha beta\n' > "${STATE}/manifest-swap"
+manifest_of "${T}/manifest-swap-one"
+printf 'beta alpha\n' > "${STATE}/manifest-swap"
+manifest_of "${T}/manifest-swap-two"
+PATH=${old_path}
+rm -rf "${manifest_stub}"
+cmp -s "${T}/manifest-swap-one" "${T}/manifest-swap-two" \
+    || fail "a directory size reordered the manifest: $(diff "${T}/manifest-swap-one" "${T}/manifest-swap-two")"
+
+case_name="manifest ignores the order find emits"
+make_manifest_pair
+mkdir -p "${manifest_stub}"
+cat > "${manifest_stub}/find" <<'STUB'
+#!/usr/bin/bash
+/usr/bin/find "$@"
+STUB
+chmod 0755 "${manifest_stub}/find"
+old_path=${PATH}
+PATH="${manifest_stub}:${PATH}"
+manifest_of "${T}/manifest-emit-one"
+cat > "${manifest_stub}/find" <<'STUB'
+#!/usr/bin/bash
+/usr/bin/find "$@" | tac
+STUB
+chmod 0755 "${manifest_stub}/find"
+manifest_of "${T}/manifest-emit-two"
+PATH=${old_path}
+rm -rf "${manifest_stub}"
+cmp -s "${T}/manifest-emit-one" "${T}/manifest-emit-two" \
+    || fail "the emission order changed the manifest: $(diff "${T}/manifest-emit-one" "${T}/manifest-emit-two")"
+[[ "$(sed -n '2p' "${T}/manifest-emit-two" | cut -f8)" == alpha ]] \
+    || fail "the manifest is not ordered by path: $(cut -f8 "${T}/manifest-emit-two")"
+
+case_name="manifest is ordered by path"
+make_manifest_pair
+mkdir -p "${manifest_stub}"
+cat > "${manifest_stub}/find" <<'STUB'
+#!/usr/bin/bash
+printf 'd|0|755|1000000000|4096||zeta\n'
+printf 'd|0|755|1000000000|4096||alpha\n'
+STUB
+chmod 0755 "${manifest_stub}/find"
+old_path=${PATH}
+PATH="${manifest_stub}:${PATH}"
+manifest_of "${T}/manifest-path"
+PATH=${old_path}
+rm -rf "${manifest_stub}"
+[[ "$(sed -n '2p' "${T}/manifest-path" | cut -f8)" == alpha ]] \
+    || fail "the manifest is not ordered by path: $(cut -f8 "${T}/manifest-path")"
+[[ "$(sed -n '3p' "${T}/manifest-path" | cut -f8)" == zeta ]] \
+    || fail "the manifest is not ordered by path: $(cut -f8 "${T}/manifest-path")"
 
 case_name="move card, an old header at the tie records the source again"
 reset

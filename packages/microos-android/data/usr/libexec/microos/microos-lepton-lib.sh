@@ -22,7 +22,7 @@ STORAGE_CONTEXT="${STORAGE_CONTEXT%/}"
 STORAGE_LOCK="${STATE_DIR}/storage.lock"
 STORAGE_STEP="${STATE_DIR}/storage-move"
 STORAGE_MANIFEST="${STATE_DIR}/storage-move.manifest"
-STORAGE_MANIFEST_HEADER="microos-manifest 2"
+STORAGE_MANIFEST_HEADER="microos-manifest 3"
 STORAGE_MARGIN="${MICROOS_STORAGE_MARGIN:-1073741824}"
 
 say() { printf '%s: %s\n' "${microos_me}" "$*" >&2; }
@@ -302,7 +302,7 @@ storage_manifest() {
     podman unshare bash -c '
         set -uo pipefail
         cd "$1" || exit 1
-        find -P . -mindepth 1 -printf "%y|%U|%m|%T@|%s|%l|%P\n" | LC_ALL=C sort | while IFS="|" read -r type owner mode mtime size target path; do
+        find -P . -mindepth 1 -printf "%y|%U|%m|%T@|%s|%l|%P\n" | LC_ALL=C sort -t"|" -k7 -s | while IFS="|" read -r type owner mode mtime size target path; do
             sha=-
             case "${type}" in
                 f) sha=$(dd if="${path}" iflag=direct bs=1M status=none | sha256sum | cut -d" " -f1) || exit 1 ;;

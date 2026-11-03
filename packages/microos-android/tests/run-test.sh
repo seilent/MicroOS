@@ -994,20 +994,26 @@ echo none > "${MICROOS_SYSTEM_CARD}"
 mkdir -p "${MICROOS_CONTENT}/MicroOS/Android/0123456789abcdef" "${MICROOS_ANDROID_CONTEXT}/external"
 printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
 chmod 0555 "${MICROOS_ANDROID_CONTEXT}/external"
-rm -f "${STATE}/probe-go" "${STATE}/child-lock-"*
+probe_go="${STATE}/probe-go.$$"
+export probe_go
+rm -f "${probe_go}" "${probe_go}.2" "${STATE}/child-lock-"*
 cat > "${T}/bin/spawn-probe" <<STUB
 #!/usr/bin/bash
 name=\$1
 rm -f "\${STATE}/child-lock-\${name}"
 setsid bash -c '
-    go=\$1 lock=\$2 out=\$3
-    while [[ ! -e "\${go}" ]]; do sleep 0.05; done
+    name=\$1 go=\$2 next=\$3 lock=\$4 out=\$5
+    gate=\${go}
+    [[ "\${name}" == podman ]] && gate="\${next}"
+    for _ in \$(seq 1 400); do [[ -e "\${gate}" ]] && break; sleep 0.05; done
+    [[ -e "\${gate}" ]] || exit 0
     if flock -n -x "\${lock}" -c true 2>/dev/null; then
         echo free > "\${out}"
     else
         echo held > "\${out}"
-    fi' _ "\${STATE}/probe-go" "\${XDG_STATE_HOME}/microos-android/storage.lock" "\${STATE}/child-lock-\${name}" \
-    > /dev/null 2>&1 &
+    fi
+    : > "\${next}"' _ "\${name}" "\${probe_go}" "\${probe_go}.2" "\${XDG_STATE_HOME}/microos-android/storage.lock" \
+    "\${STATE}/child-lock-\${name}" > /dev/null 2>&1 &
 STUB
 chmod 0755 "${T}/bin/spawn-probe"
 cat > "${T}/bin/lepton-probe" <<STUB
@@ -1035,7 +1041,7 @@ chmod 0755 "${T}/bin/lepton-probe" "${T}/bin/podman"
 MICROOS_LEPTON="${T}/bin/lepton-probe" run
 mv -f "${T}/bin/podman-real" "${T}/bin/podman"
 [[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
-: > "${STATE}/probe-go"
+: > "${probe_go}"
 for _ in $(seq 1 100); do
     [[ -e "${STATE}/child-lock-lepton" && -e "${STATE}/child-lock-podman" ]] && break
     sleep 0.05
