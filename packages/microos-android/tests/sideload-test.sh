@@ -294,6 +294,33 @@ run prepare "${a2048}"
 [[ "${rc}" == 1 ]] || fail "exit ${rc}, out ${out}"
 logged "com.uberspot.a2048: shared storage reads other-card"
 [[ -z "$(ls -A "${MICROOS_ANDROID_CONTEXT}/external")" ]] || fail "obb copied on other-card"
+rm -f "${MICROOS_ANDROID_ROM}/obb/main.25.com.uberspot.a2048.obb"
+
+case_name="obb on another word, no obb"
+rm -f "${MICROOS_ANDROID_ROM}"/obb/*.obb "${MICROOS_ANDROID_ROM}"/*.obb
+run prepare "${a2048}"
+[[ "${rc}" == 0 && "${out}" == com.uberspot.a2048 ]] || fail "a plain apk on other-card: exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+
+case_name="obb on the system card"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+mkdir -p "${MICROOS_ANDROID_ROM}/obb"
+echo data > "${MICROOS_ANDROID_ROM}/obb/main.25.com.uberspot.a2048.obb"
+echo mmcblk0 > "${MICROOS_SYSTEM_CARD}"
+run prepare "${a2048}"
+[[ "${rc}" == 0 && "${out}" == com.uberspot.a2048 ]] || fail "exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+dest="${MICROOS_ANDROID_CONTEXT}/external/Android/obb/com.uberspot.a2048"
+[[ "$(cat "${dest}/main.25.com.uberspot.a2048.obb")" == data ]] || fail "obb not copied: $(ls -A "${dest}" 2>/dev/null)"
+
+case_name="no obb on the system card"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+echo mmcblk0 > "${MICROOS_SYSTEM_CARD}"
+run prepare "${a2048}"
+[[ "${rc}" == 0 && "${out}" == com.uberspot.a2048 ]] || fail "prepare exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+run install "${a2048}"
+[[ "${rc}" == 0 && "${out}" == com.uberspot.a2048 ]] || fail "install exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+[[ -z "$(find "${MICROOS_ANDROID_CONTEXT}/external" -mindepth 1 2>/dev/null)" ]] || fail "a stub was written: $(ls -A "${MICROOS_ANDROID_CONTEXT}/external" 2>/dev/null)"
 
 case_name="deleted apk"
 reset

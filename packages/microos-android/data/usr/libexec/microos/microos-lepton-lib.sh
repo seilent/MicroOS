@@ -83,11 +83,17 @@ storage_id_ok() {
 }
 
 storage_du() {
-    local path=$1 size
+    local path=$1 apparent="" blocks="" size=0
     [[ -e "${path}" || -L "${path}" ]] || return 1
-    size=$(podman unshare du -sb "${path}" 2>/dev/null | cut -f1) || size=
-    [[ "${size}" =~ ^[0-9]+$ ]] || size=$(du -sb "${path}" 2>/dev/null | cut -f1) || size=
-    [[ "${size}" =~ ^[0-9]+$ ]] || return 1
+    apparent=$(podman unshare du -sb "${path}" 2>/dev/null | cut -f1) || apparent=
+    [[ "${apparent}" =~ ^[0-9]+$ ]] || apparent=$(du -sb "${path}" 2>/dev/null | cut -f1) || apparent=
+    blocks=$(podman unshare du -s --block-size=1 "${path}" 2>/dev/null | cut -f1) || blocks=
+    [[ "${blocks}" =~ ^[0-9]+$ ]] || blocks=$(du -s --block-size=1 "${path}" 2>/dev/null | cut -f1) || blocks=
+    [[ "${apparent}" =~ ^[0-9]+$ || "${blocks}" =~ ^[0-9]+$ ]] || return 1
+    [[ ! "${apparent}" =~ ^[0-9]+$ ]] || size=${apparent}
+    if [[ "${blocks}" =~ ^[0-9]+$ ]] && (( blocks > size )); then
+        size=${blocks}
+    fi
     printf '%s\n' "${size}"
 }
 

@@ -143,12 +143,17 @@ run --yes
 [[ -d "${MICROOS_ANDROID_CONTEXT}" ]] || fail "podman error: context removed"
 
 reset inactive
+printf 'verb=move-card\nid=0123456789abcdef\ncard=CARD1-0000\nkeep-card=0\nstep=emptying\nmanifest=%s\n' \
+    "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
+printf 'x\n' > "${MICROOS_ANDROID_STATE}/storage-move.manifest"
 run --yes
 [[ "${rc}" == 0 ]] || fail "reset exit ${rc}: $(cat "${STATE}/out")"
 [[ ! -e "${MICROOS_ANDROID_CONTEXT}" ]] || fail "context left"
 [[ -d "${T}/contexts" ]] || fail "contexts directory removed"
 [[ ! -e "${MICROOS_ANDROID_DATA}/sideload" && ! -e "${MICROOS_ANDROID_DATA}/prune" ]] || fail "sideload state left"
 [[ -f "${MICROOS_ANDROID_DATA}/boot.log" ]] || fail "boot log removed"
+[[ ! -e "${MICROOS_ANDROID_STATE}/storage-move" && ! -e "${MICROOS_ANDROID_STATE}/storage-move.manifest" ]] \
+    || fail "the step file is left"
 [[ -e "${MICROOS_GAPPS}/current" && -f "${MICROOS_GAPPS}/set/system/Phonesky.apk" ]] || fail "reset touched the gapps tree"
 
 [[ "$(grep -n 'unshare chmod -R 700' "${STATE}/calls" | cut -d: -f1)" -lt "$(grep -n 'unshare rm -rf' "${STATE}/calls" | cut -d: -f1)" ]] \

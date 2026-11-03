@@ -273,18 +273,8 @@ install_set() {
 }
 
 copy_obb() {
-    local pkg=$1 dir=$2 src dest component target checked="" folder="${CONTEXT}/external" storage_word storage_folder
-    local -a sources=()
-    storage_read || :
-    case "${storage_word}" in
-        card)
-            [[ -n "${storage_folder}" ]] || fail "${pkg}: the card folder is missing, not copying its obb files"
-            folder=${storage_folder}
-            ;;
-        on-internal) ;;
-        *) fail "${pkg}: shared storage reads ${storage_word}, not copying its obb files" ;;
-    esac
-    dest="${folder}/Android/obb/${pkg}"
+    local pkg=$1 dir=$2 src dest component target checked="" folder storage_word storage_folder
+    local -a sources=() copy=()
     if [[ -L "${dir}/obb" ]]; then
         say "${dir}/obb is a link, not copying its obb files"
     elif [[ -d "${dir}/obb" ]]; then
@@ -297,6 +287,20 @@ copy_obb() {
             continue
         fi
         [[ -f "${src}" ]] || continue
+        copy+=("${src}")
+    done
+    (( ${#copy[@]} )) || return 0
+    storage_read || :
+    case "${storage_word}" in
+        card)
+            [[ -n "${storage_folder}" ]] || fail "${pkg}: the card folder is missing, not copying its obb files"
+            folder=${storage_folder}
+            ;;
+        on-internal|on-os-card) folder="${CONTEXT}/external" ;;
+        *) fail "${pkg}: shared storage reads ${storage_word}, not copying its obb files" ;;
+    esac
+    dest="${folder}/Android/obb/${pkg}"
+    for src in "${copy[@]}"; do
         if [[ -z "${checked}" ]]; then
             for component in Android "Android/obb" "Android/obb/${pkg}"; do
                 target="${folder}/${component}"

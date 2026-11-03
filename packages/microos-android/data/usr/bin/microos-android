@@ -319,6 +319,7 @@ reset() {
     esac
     storage_remove_tree "${CONTEXT}" || fail "cannot remove ${CONTEXT}"
     rm -rf "${DATA}/sideload" "${DATA}/prune"
+    rm -f "${STORAGE_STEP}" "${STORAGE_MANIFEST}"
     say "the next Android start boots a fresh context and installs every .apk again"
 }
 
@@ -374,12 +375,17 @@ storage_move_card() {
     [[ -d "${ext}" && ! -L "${ext}" ]] || fail "${ext} is not a directory, refusing"
     id=$(storage_tie storage) || id=
     [[ -z "${id}" ]] || storage_id_ok "${id}" || fail "the tie's id ${id} is not 16 lowercase hex digits, refusing"
-    [[ -n "${id}" ]] || id=$(storage_new_id)
     content=$(storage_content) || fail "no content card, refusing"
     row=$(storage_mount_row "${content}") || fail "cannot read the mount table of ${content}, refusing"
     IFS='|' read -r type uuid options <<< "${row}"
     [[ "${type}" == ext4 ]] || fail "${content} is ${type}, not ext4, refusing"
     ! storage_read_only "${options}" || fail "${content} is read only, refusing"
+    if [[ -z "${id}" && "$(storage_step_get verb)" == move-card \
+        && "$(storage_step_get card)" == "${uuid}" ]]; then
+        id=$(storage_step_get id) || id=
+        storage_id_ok "${id}" || id=
+    fi
+    [[ -n "${id}" ]] || id=$(storage_new_id)
     folder="${content}/MicroOS/Android/${id}"
     tmp="${folder}.tmp"
     step=$(storage_step_get step) || step=
@@ -390,6 +396,7 @@ storage_move_card() {
     if (( fresh )); then
         [[ -n "$(ls -A "${ext}" 2>/dev/null)" ]] || fail "${ext} is empty, nothing to move; storage new --yes makes an empty shared storage"
     fi
+    [[ "$(storage_tie card)" == "${uuid}" && "$(storage_tie storage)" == "${id}" ]] && naming=1
     if (( fresh )); then
         step=copy
         [[ "${state}" == on-internal ]] || fail "storage reads ${state}, move card needs on-internal, refusing"
@@ -399,10 +406,14 @@ storage_move_card() {
         storage_make_folder "${content}" "" || fail "cannot make ${content}/MicroOS/Android, refusing"
     else
         storage_component_ok "${folder}" || fail "${folder} is missing or fails its check, refusing"
-        storage_manifest_equal "${STORAGE_MANIFEST}" "${folder}" \
-            || fail "${folder} is not the recorded source, refusing"
+        if ! storage_manifest_equal "${STORAGE_MANIFEST}" "${folder}"; then
+            [[ "${step}" == tie ]] && (( ! naming )) \
+                || fail "${folder} changed after the tie was written: storage move internal brings it back to internal, then storage move card moves it again, refusing"
+            storage_step_write move-card "${id}" "${uuid}" 0 copy || fail "cannot write ${STORAGE_STEP}"
+            storage_make_folder "${content}" "" || fail "cannot make ${content}/MicroOS/Android, refusing"
+            step=copy
+        fi
     fi
-    [[ "$(storage_tie card)" == "${uuid}" && "$(storage_tie storage)" == "${id}" ]] && naming=1
     while :; do
         case "${step}" in
             copy)
@@ -521,8 +532,6 @@ storage_move_internal() {
         (( need < 2 )) || [[ -d "${folder}" && ! -L "${folder}" ]] || fail "${folder} is not a directory, refusing"
     fi
     if (( fresh )); then
-        storage_manifest "${folder}" > "${STORAGE_MANIFEST}" || fail "cannot record the manifest of ${folder}, refusing"
-        sync "${STORAGE_MANIFEST}" || fail "cannot sync ${STORAGE_MANIFEST}, refusing"
         storage_step_write move-internal "${id}" "${card}" "${keep}" manifest || fail "cannot write ${STORAGE_STEP}"
         step=manifest
     fi

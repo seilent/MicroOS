@@ -978,6 +978,74 @@ grep -q '^storage=[0-9a-f]\{16\}$' "${MICROOS_ANDROID_CONTEXT}/microos-android-s
 grep -q '^card=' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" && fail "the SD tie holds a card line"
 [[ "$(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external")" == 770 ]] || fail "the SD external is $(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external" 2>/dev/null)"
 
+case_name="context creation, a stale id that is not hex"
+reset
+echo none > "${MICROOS_SYSTEM_CARD}"
+rm -rf "${MICROOS_ANDROID_CONTEXT}"
+mkdir -p "${MICROOS_CONTENT}/victim" "${MICROOS_ANDROID_CONTEXT}.tmp"
+printf 'card=CARD1-0000\nstorage=../../victim\n' > "${MICROOS_ANDROID_CONTEXT}.tmp/microos-android-storage"
+run
+[[ "${rc}" == 0 ]] || fail "the creation: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ -d "${MICROOS_CONTENT}/victim" ]] || fail "the stale id removed ${MICROOS_CONTENT}/victim"
+
+case_name="storage, the lock is closed for every child"
+reset
+echo none > "${MICROOS_SYSTEM_CARD}"
+mkdir -p "${MICROOS_CONTENT}/MicroOS/Android/0123456789abcdef" "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+chmod 0555 "${MICROOS_ANDROID_CONTEXT}/external"
+rm -f "${STATE}/probe-go" "${STATE}/child-lock-"*
+cat > "${T}/bin/spawn-probe" <<STUB
+#!/usr/bin/bash
+name=\$1
+rm -f "\${STATE}/child-lock-\${name}"
+setsid bash -c '
+    go=\$1 lock=\$2 out=\$3
+    while [[ ! -e "\${go}" ]]; do sleep 0.05; done
+    if flock -n -x "\${lock}" -c true 2>/dev/null; then
+        echo free > "\${out}"
+    else
+        echo held > "\${out}"
+    fi' _ "\${STATE}/probe-go" "\${XDG_STATE_HOME}/microos-android/storage.lock" "\${STATE}/child-lock-\${name}" \
+    > /dev/null 2>&1 &
+STUB
+chmod 0755 "${T}/bin/spawn-probe"
+cat > "${T}/bin/lepton-probe" <<STUB
+#!/usr/bin/bash
+if [[ "\${1:-}" == runtime ]]; then
+    printf '%s\n' "${T}/lepton"
+    exit 0
+fi
+echo "lepton \$*" >> "\${STATE}/events"
+"${T}/bin/spawn-probe" lepton
+echo "Boot complete!"
+sleep 0.2
+exit 0
+STUB
+mv "${T}/bin/podman" "${T}/bin/podman-real"
+cat > "${T}/bin/podman" <<STUB
+#!/usr/bin/bash
+if [[ ! -e "\${STATE}/probe-podman" ]]; then
+    : > "\${STATE}/probe-podman"
+    "${T}/bin/spawn-probe" podman
+fi
+exec "${T}/bin/podman-real" "\$@"
+STUB
+chmod 0755 "${T}/bin/lepton-probe" "${T}/bin/podman"
+MICROOS_LEPTON="${T}/bin/lepton-probe" run
+mv -f "${T}/bin/podman-real" "${T}/bin/podman"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+: > "${STATE}/probe-go"
+for _ in $(seq 1 100); do
+    [[ -e "${STATE}/child-lock-lepton" && -e "${STATE}/child-lock-podman" ]] && break
+    sleep 0.05
+done
+[[ "$(cat "${STATE}/child-lock-lepton" 2>/dev/null)" == free ]] \
+    || fail "lepton start kept the lock fd: $(cat "${STATE}/child-lock-lepton" 2>/dev/null)"
+[[ "$(cat "${STATE}/child-lock-podman" 2>/dev/null)" == free ]] \
+    || fail "a podman child kept the lock fd: $(cat "${STATE}/child-lock-podman" 2>/dev/null)"
+lock_free || fail "the lock was not released"
+
 if (( failures )); then
     echo "run-test: ${failures} failure(s), ${skipped} skipped" >&2
     exit 1

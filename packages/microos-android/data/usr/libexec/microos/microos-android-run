@@ -151,7 +151,8 @@ context_create() {
         stale=$(storage_content) || stale=
         stale_row=$(storage_mount_row "${stale}" 2>/dev/null) || stale_row=
         IFS='|' read -r _ stale_uuid _ <<< "${stale_row}"
-        if [[ -n "${stale_card}" && -n "${stale_id}" && "${stale_uuid}" == "${stale_card}" ]]; then
+        if [[ -n "${stale_card}" && -n "${stale_id}" && "${stale_uuid}" == "${stale_card}" ]] \
+            && storage_id_ok "${stale_id}"; then
             rmdir "${stale}/MicroOS/Android/${stale_id}" 2>/dev/null || :
         fi
         rm -rf "${tmp:?}" || fail "cannot remove the stale ${tmp}, refusing"
@@ -196,6 +197,7 @@ context_create() {
     say "made the context ${CONTEXT}"
     return 0
 }
+
 reason() {
     word_ok "${1:-}" || fail "${2:-refusal}"
     write_reason "${RUN}" "$1" || fail "$2"

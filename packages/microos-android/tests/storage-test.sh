@@ -75,6 +75,7 @@ cat > "${T}/bin/podman" <<'STUB'
 printf 'podman %s\n' "$*" >> "${STATE}/podman"
 case "${1:-}" in
     unshare)
+        [[ "${2:-}" != bash ]] || printf '%s\n' "${!#}" >> "${STATE}/manifests"
         shift
         exec "$@"
         ;;
@@ -785,6 +786,17 @@ new_id=$(sed -n 's/^storage=//p' "${MICROOS_ANDROID_CONTEXT}/microos-android-sto
 [[ ! -e "${MICROOS_ANDROID_CONTEXT}.tmp" ]] || fail "the temp dir is left"
 [[ ! -e "${T}/content/MicroOS/Android/0123456789abcdef" ]] || fail "the stale card folder is left"
 
+case_name="context creation, a stale id that is not hex"
+reset
+rm -rf "${MICROOS_ANDROID_CONTEXT}"
+card_folder
+mkdir -p "${T}/content/victim" "${MICROOS_ANDROID_CONTEXT}.tmp"
+printf 'card=CARD1-0000\nstorage=../../victim\n' > "${MICROOS_ANDROID_CONTEXT}.tmp/microos-android-storage"
+run_create
+[[ "${rc}" == 0 ]] || fail "the creation: exit ${rc}: ${err}"
+[[ -d "${T}/content/victim" ]] || fail "the stale id removed ${T}/content/victim"
+[[ ! -e "${MICROOS_ANDROID_CONTEXT}.tmp" ]] || fail "the temp dir is left"
+
 case_name="move card, the step file holds the failed step"
 reset
 on_internal
@@ -1037,6 +1049,131 @@ cli storage move card
 [[ "${rc}" == 0 ]] || fail "exit ${rc}: ${err}"
 [[ -f "${folder}/a" && ! -e "${folder}/other" ]] || fail "the copy: $(ls -A "${folder}")"
 [[ -z "$(ls -A "${MICROOS_ANDROID_CONTEXT}/external")" ]] || fail "the stub is not emptied"
+
+case_name="move card, a tie-less rerun at tie reuses the step id"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}"
+seed_stub
+folder="${T}/content/MicroOS/Android/0123456789abcdef"
+mkdir -p "${folder}"
+printf 'kept\n' > "${folder}/kept"
+podman unshare bash -c '. "$1"; shift; storage_manifest "$@"' _ "${lib}" "${folder}" \
+    > "${MICROOS_ANDROID_STATE}/storage-move.manifest"
+printf 'verb=move-card\nid=0123456789abcdef\ncard=CARD1-0000\nstep=tie\nmanifest=%s\n' \
+    "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
+cli storage move card
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: ${err}"
+[[ "$(tie)" == $'card=CARD1-0000\nstorage=0123456789abcdef' ]] || fail "the tie: $(tie)"
+[[ "$(ls -A "${T}/content/MicroOS/Android")" == 0123456789abcdef ]] \
+    || fail "the folders: $(ls -A "${T}/content/MicroOS/Android")"
+[[ "$(find "${folder}" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)" == kept ]] \
+    || fail "the copy: $(ls -A "${folder}")"
+[[ -z "$(ls -A "${MICROOS_ANDROID_CONTEXT}/external")" ]] || fail "the stub is not emptied"
+
+case_name="move card, a tie-less cut at tie with the folder changed"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}"
+seed_stub
+folder="${T}/content/MicroOS/Android/0123456789abcdef"
+podman unshare bash -c '. "$1"; shift; storage_manifest "$@"' _ "${lib}" \
+    "${MICROOS_ANDROID_CONTEXT}/external" > "${MICROOS_ANDROID_STATE}/storage-move.manifest"
+mkdir -p "${folder}"
+printf 'added later\n' > "${folder}/added"
+printf 'verb=move-card\nid=0123456789abcdef\ncard=CARD1-0000\nstep=tie\nmanifest=%s\n' \
+    "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
+cli storage move card
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: ${err}"
+[[ -f "${folder}/a" && ! -e "${folder}/added" ]] || fail "the copy: $(ls -A "${folder}")"
+[[ "$(ls -A "${T}/content/MicroOS/Android")" == 0123456789abcdef ]] \
+    || fail "the folders: $(ls -A "${T}/content/MicroOS/Android")"
+[[ -z "$(ls -A "${MICROOS_ANDROID_CONTEXT}/external")" ]] || fail "the stub is not emptied"
+
+case_name="move card, the folder changed after the tie names it"
+reset
+on_internal
+seed_stub
+folder="${T}/content/MicroOS/Android/0123456789abcdef"
+mkdir -p "${folder}"
+printf 'kept\n' > "${folder}/kept"
+podman unshare bash -c '. "$1"; shift; storage_manifest "$@"' _ "${lib}" "${folder}" \
+    > "${MICROOS_ANDROID_STATE}/storage-move.manifest"
+printf 'added later\n' > "${folder}/added"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+printf 'verb=move-card\nid=0123456789abcdef\ncard=CARD1-0000\nstep=tie\nmanifest=%s\n' \
+    "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
+cli storage move card
+[[ "${rc}" == 1 ]] || fail "exit ${rc}: ${err}"
+grep -q "changed after the tie was written" "${STATE}/stderr" || fail "no refusal: ${err}"
+grep -q "storage move internal" "${STATE}/stderr" || fail "no way out named: ${err}"
+[[ -f "${folder}/added" ]] || fail "the folder was removed"
+[[ "$(sed -n 's/^step=//p' "${MICROOS_ANDROID_STATE}/storage-move")" == tie ]] || fail "the step was cleared"
+[[ -n "$(ls -A "${MICROOS_ANDROID_CONTEXT}/external")" ]] || fail "the stub was emptied"
+cli storage move internal
+[[ "${rc}" == 0 ]] || fail "move internal: exit ${rc}: ${err}"
+cli storage move card
+[[ "${rc}" == 0 ]] || fail "move card: exit ${rc}: ${err}"
+[[ -f "${folder}/added" ]] || fail "the added file was lost: $(ls -A "${folder}")"
+
+case_name="move card, a move-internal step file"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}"
+seed_stub
+printf 'verb=move-internal\nid=0123456789abcdef\ncard=CARD1-0000\nkeep-card=0\nstep=manifest\nmanifest=%s\n' \
+    "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
+cli storage move card
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: ${err}"
+[[ "$(sed -n 's/^storage=//p' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage")" != 0123456789abcdef ]] \
+    || fail "the move internal step file's id was taken"
+
+case_name="move card, a step file id that is not hex"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}"
+seed_stub
+printf 'verb=move-card\nid=../../etc\ncard=CARD1-0000\nstep=tie\nmanifest=%s\n' \
+    "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
+cli storage move card
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: ${err}"
+new_id=$(sed -n 's/^storage=//p' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage")
+[[ "${new_id}" =~ ^[0-9a-f]{16}$ ]] || fail "the id: ${new_id}"
+[[ "$(ls -A "${T}/content/MicroOS/Android")" == "${new_id}" ]] \
+    || fail "the folders: $(ls -A "${T}/content/MicroOS/Android")"
+
+case_name="move card, a stale card in the step file"
+reset
+on_internal
+seed_stub
+mkdir -p "${T}/content/MicroOS/Android/deadbeefdeadbeef"
+printf 'verb=move-card\nid=deadbeefdeadbeef\ncard=CARD2-0000\nstep=tie\nmanifest=%s\n' \
+    "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
+cli storage move card
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: ${err}"
+new_id=$(sed -n 's/^storage=//p' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage")
+[[ "${new_id}" =~ ^[0-9a-f]{16}$ ]] || fail "the id: ${new_id}"
+[[ "${new_id}" != deadbeefdeadbeef ]] || fail "the step file's id was taken on another card"
+[[ -d "${T}/content/MicroOS/Android/${new_id}" ]] || fail "the new folder: $(ls -A "${T}/content/MicroOS/Android")"
+[[ -d "${T}/content/MicroOS/Android/deadbeefdeadbeef" ]] || fail "the other folder was removed"
+
+case_name="move internal, a fresh start records the manifest once"
+reset
+card_folder
+context
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'inner\n' > "${T}/content/MicroOS/Android/0123456789abcdef/inner"
+: > "${STATE}/manifests"
+cli storage move internal
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: ${err}"
+[[ "$(grep -cxF "${T}/content/MicroOS/Android/0123456789abcdef" "${STATE}/manifests")" == 1 ]] \
+    || fail "the card folder's manifest: $(cat "${STATE}/manifests")"
+[[ -f "${MICROOS_ANDROID_CONTEXT}/external/inner" ]] || fail "the copy: $(ls -A "${MICROOS_ANDROID_CONTEXT}/external")"
+
+case_name="the space check counts blocks"
+reset
+on_internal
+seed_stub
+out=$(bash -c '. "$1"; shift; storage_du "$@"' _ "${lib}" "${MICROOS_ANDROID_CONTEXT}/external" 2> "${STATE}/stderr") || out=
+[[ "${out}" =~ ^[0-9]+$ ]] || fail "storage_du read ${out}: $(cat "${STATE}/stderr")"
+[[ "${out}" -ge "$(du -s --block-size=1 "${MICROOS_ANDROID_CONTEXT}/external" | cut -f1)" ]] \
+    || fail "storage_du read ${out} for $(du -s --block-size=1 "${MICROOS_ANDROID_CONTEXT}/external" | cut -f1) blocks"
 
 case_name="new, without --yes"
 reset
