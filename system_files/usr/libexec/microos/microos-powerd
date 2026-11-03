@@ -159,6 +159,13 @@ def read_int(rel):
         return None
 
 
+def populated(rel):
+    for line in (read(rel) or "").splitlines():
+        if line.split() == ["populated", "1"]:
+            return True
+    return False
+
+
 def write(rel, value):
     if not WRITABLE.fullmatch(rel):
         log(f"refused write {rel}")
@@ -371,6 +378,7 @@ class Power:
         self.holds = {}
         self.state = {}
         self.watches = {}
+        self.games = {}
         self.polls = {}
         self.undervolt = "unset"
         self.request = None
@@ -506,28 +514,34 @@ class Power:
             write(f"{DEVFREQ}/min_freq", floor)
             caps.append(f"gpu={gpu_max}")
         self.scan()
-        for uid in list(self.watches):
-            self.floor(uid)
         tdp = f" tdp={self.tdp_watts()}" if self.tdp else ""
         hold = f" hold={held[0]}" if held else ""
         log(f"applied profile={self.state['profile']} governor={self.state['governor']}{tdp}{hold} "
-            f"floor={self.state['game_floor']} {' '.join(caps)}")
+            f"game-floor={self.state['game_floor']} {' '.join(caps)}")
+
+    def refresh(self):
+        for uid in list(self.watches):
+            self.floor(uid)
+
+    def want(self, uid):
+        return self.state["game_floor"] if populated(f"{manager(uid)}/game.slice/cgroup.events") else 0
 
     def write_floor(self, uid):
-        floor = self.state["game_floor"]
+        values = {u: self.want(u) for u in set(self.watches) | {uid}}
+        top = max(values.values(), default=0)
         missing = None
-        for rel in levels(uid):
+        for rel, value in zip(levels(uid), (top, top, top, values[uid])):
             text = read(rel)
             if text is None:
                 missing = missing or rel
                 continue
             try:
-                same = Decimal(text) == floor
+                same = Decimal(100 if text == "max" else text) == value
             except InvalidOperation:
                 same = False
-            if not same and write_cgroup(rel, floor):
-                log(f"floor {floor} on {rel}")
-        return missing if floor else None
+            if not same and write_cgroup(rel, value):
+                log(f"floor {value} on {rel}")
+        return missing if top else None
 
     def floor(self, uid):
         if self.write_floor(uid) is None:
@@ -566,7 +580,44 @@ class Power:
             return
         monitor.connect("changed", self.on_tree, uid)
         self.watches[uid] = monitor
+        self.open_game(uid)
         self.floor(uid)
+
+    def open_game(self, uid):
+        rel = f"{manager(uid)}/game.slice/cgroup.events"
+        self.close_game(uid)
+        try:
+            fd = os.open(SYSFS + rel, os.O_RDONLY | os.O_CLOEXEC)
+        except FileNotFoundError:
+            return
+        except OSError as e:
+            log(f"watch {rel}: {e.strerror}")
+            return
+        source = GLib.io_add_watch(fd, GLib.PRIORITY_DEFAULT,
+                                   GLib.IOCondition.PRI | GLib.IOCondition.ERR | GLib.IOCondition.HUP,
+                                   self.on_game, uid)
+        self.games[uid] = (fd, source)
+
+    def close_game(self, uid):
+        game = self.games.pop(uid, None)
+        if game:
+            GLib.source_remove(game[1])
+            os.close(game[0])
+
+    def on_game(self, source, condition, uid):
+        game = self.games.get(uid)
+        if game is None:
+            return False
+        try:
+            os.lseek(game[0], 0, os.SEEK_SET)
+            os.read(game[0], 128)
+        except OSError as e:
+            log(f"read {manager(uid)}/game.slice/cgroup.events: {e.strerror}")
+            del self.games[uid]
+            os.close(game[0])
+            return False
+        self.refresh()
+        return True
 
     def on_tree(self, monitor, file, other, event, uid):
         if self.watches.get(uid) is not monitor:
@@ -575,7 +626,13 @@ class Power:
             monitor.cancel()
             del self.watches[uid]
             self.stop_poll(uid)
+            self.close_game(uid)
+            self.refresh()
+        elif event == Gio.FileMonitorEvent.DELETED and file.get_basename() == "game.slice":
+            self.close_game(uid)
+            self.refresh()
         elif event == Gio.FileMonitorEvent.CREATED and file.get_basename() == "game.slice":
+            self.open_game(uid)
             self.floor(uid)
 
     def scan(self):
@@ -585,8 +642,15 @@ class Power:
             return
         for name in sorted(slices):
             m = USER_SLICE.fullmatch(name)
-            if m and int(m.group(1)) not in self.watches:
-                self.arm(int(m.group(1)))
+            if not m:
+                continue
+            uid = int(m.group(1))
+            if uid not in self.watches:
+                self.arm(uid)
+                continue
+            if uid not in self.games:
+                self.open_game(uid)
+            self.floor(uid)
 
     def systemd(self, path, iface, method, args, reply):
         return self.conn.call_sync(SYSTEMD, path, iface, method, args, GLib.VariantType(reply) if reply else None,
