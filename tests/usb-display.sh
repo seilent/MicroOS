@@ -185,7 +185,7 @@ arm_wait
 (( r == 0 )) && no_flag && [[ ! -s $stub/hold.log ]] || fail "1.5 s left: exit $r, hold $(cat "$stub/hold.log")"
 arm_logged "not armed: under 2 s left in the window" || fail "1.5 s left: $(cat "$tmp/arm.err")"
 
-for code in 1 3; do
+for code in 1 3 4; do
   arm_reset
   arm_start
   hold_started || fail "pad-hold exit $code: not started"
