@@ -40,6 +40,7 @@ Patch0013:      0013-mangoapp-skip-the-window-resize-until-the-size-is-known.pat
 Patch0014:      0014-notify-proper-cleanup.patch
 Patch0015:      0015-gpu_fdinfo-wake-the-paused-thread-on-stop.patch
 Patch0016:      0016-params-drop-the-vram-row-from-preset-2.patch
+Patch0017:      0017-params-name-preset-2-first-column-fps.patch
 
 Vendor:         MicroOS
 BuildRequires:  vulkan-headers

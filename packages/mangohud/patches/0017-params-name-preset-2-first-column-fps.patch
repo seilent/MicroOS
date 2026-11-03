@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Tue, 3 Nov 2026 13:40:00 +0900
+Subject: [PATCH] params: name preset 2's first column FPS
+
+The horizontal bar only ever runs under gamescope, so the engine label
+says the same word every time. hide_engine_names names the column FPS
+and drops the small FPS superscript after the number.
+---
+ src/overlay_params.cpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/overlay_params.cpp b/src/overlay_params.cpp
+index c05f7a1..9d2b41a 100644
+--- a/src/overlay_params.cpp
++++ b/src/overlay_params.cpp
+@@ -1315,6 +1315,7 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
+          add_to_options(params, "horizontal", "1");
+          add_to_options(params, "legacy_layout", "0");
+          add_to_options(params, "fps", "1");
++         add_to_options(params, "hide_engine_names", "1");
+          add_to_options(params, "table_columns", "20");
+          add_to_options(params, "frame_timing", "0");
+          add_to_options(params, "frametime", "0");

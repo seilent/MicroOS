@@ -26,6 +26,7 @@ and no `%changelog`.
 | `0014-notify-proper-cleanup.patch` | MangoHud `0c16392297ff` | flightlessmango |
 | `0015-gpu_fdinfo-wake-the-paused-thread-on-stop.patch` | mine | seilent |
 | `0016-params-drop-the-vram-row-from-preset-2.patch` | mine | seilent |
+| `0017-params-name-preset-2-first-column-fps.patch` | mine | seilent |
 
 `0001`, `0002`, `0004`, `0007` and `0014` are the upstream commits as is; `0001` and `0002` keep PR 2073's order.
 PR 2073 was closed unmerged; the other commits are on master after `v0.8.4`.
@@ -61,3 +62,6 @@ Mine:
 - `0016`: preset 2 drops the vram row. On msm_dpu it shows the game's `drm-resident-memory` through `0009`, not a
   device wide VRAM figure, so it says nothing a game session needs; the horizontal bar also ran past the screen with
   it in.
+
+- `0017`: preset 2's first column said `GAMESCOPE`, the same word in every game because the bar only runs under
+  gamescope. `hide_engine_names` names the column `FPS` and drops the small `FPS` after the number.
