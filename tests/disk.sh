@@ -75,6 +75,38 @@ link=${link#ostree=}
 [[ -n $link ]] || fail "no ostree= in the BLS options"
 deploy=$(realpath -e "$root$link") || fail "$link does not resolve on p3"
 [[ $deploy == "$root"/ostree/deploy/*/deploy/* ]] || fail "$link does not resolve to a deployment"
+
+abl=$deploy/usr/lib/microos/abl
+staged=$esp/rocknix_abl
+[[ -f $abl/manifest && -f $abl/abl_signed-SM8250.elf.sha256 ]] \
+  || fail "the deployment has no ABL manifest or .sha256"
+abl_sha=$(sed -n 's/^MICROOS_ABL_SHA256=//p' "$abl/manifest")
+[[ $abl_sha =~ ^[0-9a-f]{64}$ ]] || fail "the deployment ABL manifest has no MICROOS_ABL_SHA256"
+[[ $(cut -d' ' -f1 "$abl/abl_signed-SM8250.elf.sha256") == "$abl_sha" ]] \
+  || fail "the deployment ABL .sha256 differs from the manifest"
+[[ $(sha256sum "$abl/abl_signed-SM8250.elf" | cut -d' ' -f1) == "$abl_sha" ]] \
+  || fail "the deployment ABL elf differs from the manifest"
+for f in esp/README releases.tsv abl_signed-SM8250.elf abl_signed-SM8250.elf.sha256; do
+  [[ $(stat -c %a "$abl/$f") == 644 ]] || fail "the deployment ABL $f is mode $(stat -c %a "$abl/$f")"
+done
+for f in backup_abl.sh flash_abl.sh restore_backup_abl.sh; do
+  [[ $(stat -c %a "$abl/esp/$f") == 755 ]] || fail "the deployment ABL esp/$f is mode $(stat -c %a "$abl/esp/$f")"
+done
+for f in README SM8250/abl_signed-SM8250.elf SM8250/abl_signed-SM8250.elf.sha256 SM8250/releases.tsv \
+  SM8250/manifest SM8250/backup_abl.sh SM8250/flash_abl.sh SM8250/restore_backup_abl.sh; do
+  [[ -f $staged/$f ]] || fail "no rocknix_abl/$f on p1"
+done
+[[ $(sha256sum "$staged/SM8250/abl_signed-SM8250.elf" | cut -d' ' -f1) == "$abl_sha" ]] \
+  || fail "the staged ABL elf differs from the deployment manifest"
+for f in backup_abl.sh flash_abl.sh restore_backup_abl.sh; do
+  cmp -s "$staged/SM8250/$f" "$abl/esp/$f" || fail "rocknix_abl/SM8250/$f differs from the deployment's esp/$f"
+done
+for f in abl_signed-SM8250.elf.sha256 releases.tsv manifest; do
+  cmp -s "$staged/SM8250/$f" "$abl/$f" || fail "rocknix_abl/SM8250/$f differs from the deployment"
+done
+cmp -s "$staged/README" "$abl/esp/README" || fail "rocknix_abl/README differs from the deployment's esp/README"
+[[ ! -e $staged/SM8250/microos-backup ]] || fail "microos-backup in the staged tree"
+
 dtb=$(sed -n 's/^MICROOS_DTB=//p' "$deploy/usr/lib/microos/bootimg.conf") || fail "the deployment has no bootimg.conf"
 version=$(sed -n 's/^IMAGE_VERSION=//p' "$deploy/usr/lib/microos/version") || fail "the deployment has no version file"
 [[ $version =~ ^([0-9]{4})([0-9]{2})[0-9]{2}\. ]] || fail "IMAGE_VERSION $version"
