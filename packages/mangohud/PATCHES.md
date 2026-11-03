@@ -25,6 +25,7 @@ and no `%changelog`.
 | `0013-mangoapp-skip-the-window-resize-until-the-size-is-known.patch` | mine | seilent |
 | `0014-notify-proper-cleanup.patch` | MangoHud `0c16392297ff` | flightlessmango |
 | `0015-gpu_fdinfo-wake-the-paused-thread-on-stop.patch` | mine | seilent |
+| `0016-params-drop-the-vram-row-from-preset-2.patch` | mine | seilent |
 
 `0001`, `0002`, `0004`, `0007` and `0014` are the upstream commits as is; `0001` and `0002` keep PR 2073's order.
 PR 2073 was closed unmerged; the other commits are on master after `v0.8.4`.
@@ -56,3 +57,7 @@ Mine:
 - `0015`: the GPU thread paused while mangoapp is hidden never woke at exit, so the join hung. The destructor, pause
   and resume set their flag under the lock before the notify, the thread holds the lock only for its waits, and the
   wait between samples is a timed wait that a stop ends at once.
+
+- `0016`: preset 2 drops the vram row. On msm_dpu it shows the game's `drm-resident-memory` through `0009`, not a
+  device wide VRAM figure, so it says nothing a game session needs; the horizontal bar also ran past the screen with
+  it in.

@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Tue, 3 Nov 2026 12:30:00 +0900
+Subject: [PATCH] params: drop the vram row from preset 2
+
+msm_dpu has no device wide GPU memory counter, so the vram row reads the
+game's drm-resident-memory through 0009 and says nothing a game session
+needs. The horizontal bar also runs past the Pocket MICRO 2 screen with
+it in.
+---
+ src/overlay_params.cpp | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/overlay_params.cpp b/src/overlay_params.cpp
+index 4dd813d..c05f7a1 100644
+--- a/src/overlay_params.cpp
++++ b/src/overlay_params.cpp
+@@ -1317,7 +1317,7 @@ void presets(int preset, struct overlay_params *params, bool inherit) {
+          add_to_options(params, "cpu_stats", "1");
+          add_to_options(params, "gpu_stats", "1");
+          add_to_options(params, "ram", "1");
+-         add_to_options(params, "vram", "1");
++         add_to_options(params, "vram", "0");
+          add_to_options(params, "battery", "1");
+          add_to_options(params, "hud_no_margin", "1");
+          add_to_options(params, "gpu_power", "1");

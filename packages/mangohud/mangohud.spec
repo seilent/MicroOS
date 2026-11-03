@@ -39,6 +39,7 @@ Patch0012:      0012-params-hide-more-msm_dpu-rows-without-a-source.patch
 Patch0013:      0013-mangoapp-skip-the-window-resize-until-the-size-is-known.patch
 Patch0014:      0014-notify-proper-cleanup.patch
 Patch0015:      0015-gpu_fdinfo-wake-the-paused-thread-on-stop.patch
+Patch0016:      0016-params-drop-the-vram-row-from-preset-2.patch
 
 Vendor:         MicroOS
 BuildRequires:  vulkan-headers
