@@ -760,6 +760,115 @@ grep -q "is not the recorded source" <<< "${out}" || fail "no refusal: ${out}"
 folder="${T}/content/MicroOS/Android/0123456789abcdef"
 [[ ! -e "${folder}" ]] || fail "the folder was renamed in"
 [[ -f "${MICROOS_ANDROID_CONTEXT}/external/a" ]] || fail "the stub lost its files"
+[[ -s "${MICROOS_ANDROID_STATE}/storage-manifest.diff" ]] || fail "the refusal left no diff to read"
+grep -q "changed" "${MICROOS_ANDROID_STATE}/storage-manifest.diff" || fail "the diff does not name the change"
+cli storage move card
+[[ ! -e "${MICROOS_ANDROID_STATE}/storage-manifest.diff" ]] || fail "a cleared diff came back"
+
+manifest_tree="${T}/manifest-tree"
+manifest_stub="${T}/manifest-stub"
+make_manifest_tree() {
+    chmod -R u+w "${manifest_tree}" 2>/dev/null
+    rm -rf "${manifest_tree}"
+    mkdir -p "${manifest_tree}/dir/sub"
+    printf 'file\n' > "${manifest_tree}/file"
+    printf 'nested\n' > "${manifest_tree}/dir/sub/nested"
+    ln -s file "${manifest_tree}/link"
+}
+record_manifest() {
+    local out=$1
+    podman unshare bash -c '. "$1"; shift; storage_manifest "$@"' _ "${lib}" "${manifest_tree}" 2>/dev/null > "${out}"
+}
+
+case_name="manifest ignores directory size"
+reset
+make_manifest_tree
+record_manifest "${T}/manifest-plain"
+[[ -s "${T}/manifest-plain" ]] || fail "the plain manifest is empty"
+[[ "$(head -n 1 "${T}/manifest-plain")" == "microos-manifest 2" ]] \
+    || fail "the header: $(head -n 1 "${T}/manifest-plain")"
+mkdir -p "${manifest_stub}"
+cat > "${manifest_stub}/find" <<'STUB'
+#!/usr/bin/bash
+/usr/bin/find "$@" | while IFS='|' read -r type rest; do
+    if [[ "${type}" == d ]]; then
+        printf 'd|%s|65535|%s\n' "$(cut -d'|' -f1-3 <<< "${rest}")" "$(cut -d'|' -f5- <<< "${rest}")"
+    else
+        printf '%s|%s\n' "${type}" "${rest}"
+    fi
+done
+STUB
+chmod 0755 "${manifest_stub}/find"
+old_path=${PATH}
+PATH="${manifest_stub}:${PATH}"
+record_manifest "${T}/manifest-rewritten"
+PATH=${old_path}
+rm -rf "${manifest_stub}"
+cmp -s "${T}/manifest-plain" "${T}/manifest-rewritten" \
+    || fail "a directory size changed the manifest: $(diff "${T}/manifest-plain" "${T}/manifest-rewritten")"
+
+chmod 0700 "${manifest_tree}/dir/sub"
+record_manifest "${T}/manifest-mode"
+cmp -s "${T}/manifest-plain" "${T}/manifest-mode" && fail "a subdirectory mode change was not seen"
+chmod 0755 "${manifest_tree}/dir/sub"
+
+ln -sfn dir "${manifest_tree}/link"
+record_manifest "${T}/manifest-target"
+cmp -s "${T}/manifest-plain" "${T}/manifest-target" && fail "a retargeted symlink was not seen"
+ln -sfn file "${manifest_tree}/link"
+
+touch -d '2001-02-03 04:05:06' "${manifest_tree}/dir/sub"
+record_manifest "${T}/manifest-mtime"
+cmp -s "${T}/manifest-plain" "${T}/manifest-mtime" && fail "a subdirectory mtime change was not seen"
+
+case_name="move card, an old header at the tie records the source again"
+reset
+on_internal
+seed_stub
+folder="${T}/content/MicroOS/Android/0123456789abcdef"
+mkdir -p "${folder}"
+podman unshare cp -a "${MICROOS_ANDROID_CONTEXT}/external/." "${folder}/"
+podman unshare bash -c '. "$1"; shift; storage_manifest "$@"' _ "${lib}" "${folder}" \
+    | tail -n +2 > "${MICROOS_ANDROID_STATE}/storage-move.manifest"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+printf 'verb=move-card\nid=0123456789abcdef\ncard=CARD1-0000\nstep=tie\nmanifest=%s\n' \
+    "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
+cli storage move card
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: ${err}"
+[[ -f "${folder}/a" && -L "${folder}/link" ]] || fail "the copy: $(ls -A "${folder}")"
+[[ -z "$(ls -A "${MICROOS_ANDROID_CONTEXT}/external")" ]] || fail "the stub is not emptied"
+
+case_name="move card, an old header at tie copies again"
+reset
+on_internal
+seed_stub
+folder="${T}/content/MicroOS/Android/0123456789abcdef"
+mkdir -p "${folder}"
+printf 'kept\n' > "${folder}/kept"
+printf 'verb=move-card\nid=0123456789abcdef\ncard=CARD1-0000\nstep=tie\nmanifest=%s\n' \
+    "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
+cli storage move card
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: ${err}"
+[[ -f "${folder}/a" && ! -e "${folder}/kept" ]] || fail "the copy: $(ls -A "${folder}")"
+
+case_name="move internal, an old header records the manifest again"
+reset
+card_folder
+context
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/external" "${MICROOS_ANDROID_CONTEXT}/external.tmp"
+printf 'inner\n' > "${T}/content/MicroOS/Android/0123456789abcdef/inner"
+printf 'junk\n' > "${MICROOS_ANDROID_CONTEXT}/external.tmp/junk"
+printf 'stale\t1\t755\t1\t-\t-\t-\t.\n' > "${MICROOS_ANDROID_STATE}/storage-move.manifest"
+printf 'verb=move-internal\nid=0123456789abcdef\ncard=CARD1-0000\nkeep-card=0\nstep=copy\nmanifest=%s\n' \
+    "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
+: > "${STATE}/manifests"
+cli storage move internal
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: ${err}"
+[[ "$(grep -cxF "${T}/content/MicroOS/Android/0123456789abcdef" "${STATE}/manifests")" == 1 ]] \
+    || fail "the card folder's manifest: $(cat "${STATE}/manifests")"
+[[ -f "${MICROOS_ANDROID_CONTEXT}/external/inner" ]] \
+    || fail "the copy: $(ls -A "${MICROOS_ANDROID_CONTEXT}/external")"
+[[ ! -e "${MICROOS_ANDROID_CONTEXT}/external/junk" ]] || fail "the junk was kept"
 
 case_name="context creation, the tie names the folder"
 reset

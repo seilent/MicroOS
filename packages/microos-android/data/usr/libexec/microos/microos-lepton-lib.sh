@@ -22,6 +22,7 @@ STORAGE_CONTEXT="${STORAGE_CONTEXT%/}"
 STORAGE_LOCK="${STATE_DIR}/storage.lock"
 STORAGE_STEP="${STATE_DIR}/storage-move"
 STORAGE_MANIFEST="${STATE_DIR}/storage-move.manifest"
+STORAGE_MANIFEST_HEADER="microos-manifest 2"
 STORAGE_MARGIN="${MICROOS_STORAGE_MARGIN:-1073741824}"
 
 say() { printf '%s: %s\n' "${microos_me}" "$*" >&2; }
@@ -285,11 +286,19 @@ storage_step_get() {
 }
 
 storage_step_forget() {
-    rm -f "${STORAGE_STEP}" "${STORAGE_MANIFEST}"
+    rm -f "${STORAGE_STEP}" "${STORAGE_MANIFEST}" "${STATE_DIR}/storage-manifest.diff"
+}
+
+storage_manifest_current() {
+    local file=$1 first=
+    [[ -f "${file}" && ! -L "${file}" ]] || return 1
+    read -r first < "${file}" || first=
+    [[ "${first}" == "${STORAGE_MANIFEST_HEADER}" ]]
 }
 
 storage_manifest() {
     local dir=$1
+    printf '%s\n' "${STORAGE_MANIFEST_HEADER}"
     podman unshare bash -c '
         set -uo pipefail
         cd "$1" || exit 1
@@ -297,7 +306,8 @@ storage_manifest() {
             sha=-
             case "${type}" in
                 f) sha=$(dd if="${path}" iflag=direct bs=1M status=none | sha256sum | cut -d" " -f1) || exit 1 ;;
-                d|l) ;;
+                d) size=- ;;
+                l) ;;
                 *) printf "%s\n" "${path}" >&2; exit 2 ;;
             esac
             printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "${type}" "${owner}" "${mode}" "${mtime%%.*}" "${size}" "${target}" "${sha}" "${path}"

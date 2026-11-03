@@ -319,12 +319,13 @@ reset() {
     esac
     storage_remove_tree "${CONTEXT}" || fail "cannot remove ${CONTEXT}"
     rm -rf "${DATA}/sideload" "${DATA}/prune"
-    rm -f "${STORAGE_STEP}" "${STORAGE_MANIFEST}"
+    rm -f "${STORAGE_STEP}" "${STORAGE_MANIFEST}" "${STATE_DIR}/storage-manifest.diff"
     say "the next Android start boots a fresh context and installs every .apk again"
 }
 
 storage_lock() {
     local uid status
+    rm -f "${STATE_DIR}/storage-manifest.diff"
     uid=$(storage_owner) || fail "no micro user on this system, refusing"
     [[ "$(id -u)" == "${uid}" ]] || fail "storage verbs run as micro only, refusing"
     case "$(systemctl --user show -P ActiveState microos-lepton-prepare.service 2>/dev/null)" in
@@ -356,13 +357,16 @@ storage_space() {
 }
 
 storage_manifest_equal() {
-    local want=$1 dir=$2 got
+    local want=$1 dir=$2 got diff_file
+    diff_file="${STATE_DIR}/storage-manifest.diff"
+    rm -f "${diff_file}"
+    storage_manifest_current "${want}" || { say "${want} is not a ${STORAGE_MANIFEST_HEADER} manifest, refusing"; return 1; }
     got=$(storage_manifest "${dir}") || { say "cannot read the manifest of ${dir}"; return 1; }
-    diff -u "${want}" <(printf '%s\n' "${got}") > "${STATE_DIR}/storage-manifest.diff" || {
-        say "the copy in ${dir} is not the recorded source, see ${STATE_DIR}/storage-manifest.diff"
+    diff -u "${want}" <(printf '%s\n' "${got}") > "${diff_file}" || {
+        say "the copy in ${dir} is not the recorded source, see ${diff_file}, refusing"
         return 1
     }
-    rm -f "${STATE_DIR}/storage-manifest.diff"
+    rm -f "${diff_file}"
     return 0
 }
 
@@ -406,6 +410,12 @@ storage_move_card() {
         storage_make_folder "${content}" "" || fail "cannot make ${content}/MicroOS/Android, refusing"
     else
         storage_component_ok "${folder}" || fail "${folder} is missing or fails its check, refusing"
+        if ! storage_manifest_current "${STORAGE_MANIFEST}"; then
+            [[ "${step}" != emptying && -n "$(ls -A "${ext}" 2>/dev/null)" ]] \
+                || fail "${STORAGE_MANIFEST} is not a ${STORAGE_MANIFEST_HEADER} manifest and cannot be recorded again: storage move internal brings ${folder} back to internal, then storage move card moves it again, refusing"
+            storage_manifest "${ext}" > "${STORAGE_MANIFEST}" || fail "cannot record the manifest of ${ext}, refusing"
+            sync "${STORAGE_MANIFEST}" || fail "cannot sync ${STORAGE_MANIFEST}, refusing"
+        fi
         if ! storage_manifest_equal "${STORAGE_MANIFEST}" "${folder}"; then
             [[ "${step}" == tie ]] && (( ! naming )) \
                 || fail "${folder} changed after the tie was written: storage move internal brings it back to internal, then storage move card moves it again, refusing"
@@ -442,6 +452,7 @@ storage_move_card() {
                 fi
                 if [[ ! -e "${tmp}" && ! -L "${tmp}" ]]; then
                     if [[ -d "${folder}" && ! -L "${folder}" ]] \
+                        && storage_manifest_current "${STORAGE_MANIFEST}" \
                         && storage_manifest_equal "${STORAGE_MANIFEST}" "${folder}"; then
                         sync -f "${content}" || fail "cannot sync ${content}, refusing"
                         storage_step_write move-card "${id}" "${uuid}" 0 tie || fail "cannot write ${STORAGE_STEP}"
@@ -547,6 +558,12 @@ storage_move_internal() {
                 step=copy
                 ;;
             copy)
+                if ! storage_manifest_current "${STORAGE_MANIFEST}"; then
+                    storage_step_write move-internal "${id}" "${card}" "${keep}" manifest \
+                        || fail "cannot write ${STORAGE_STEP}"
+                    step=manifest
+                    continue
+                fi
                 podman unshare rm -rf "${target:?}/external.tmp" 2>/dev/null || :
                 storage_space "${target}" "${folder}"
                 mkdir "${target}/external.tmp" || fail "cannot make ${target}/external.tmp, refusing"
