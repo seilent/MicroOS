@@ -45,6 +45,10 @@ export MICROOS_HOME="${T}/home"
 export XDG_STATE_HOME="${T}/home/.local/state"
 export MICROOS_ANDROID_STATE="${T}/home/.local/state/microos-android"
 export MICROOS_ANDROID_DATA="${T}/home/.local/share/microos-android"
+export MICROOS_CONTENT="${T}/content"
+export MICROOS_SYSTEM_CARD="${T}/system-card"
+export MICROOS_ANDROID_CONTEXT="${T}/contexts/android"
+mkdir -p "${MICROOS_ANDROID_CONTEXT}"
 export MICROOS_LEPTON_REVIEWED="${T}/reviewed"
 export MICROOS_LEPTON_SNAPSHOTS="${T}/snaps"
 mkdir -p "${MICROOS_ANDROID_STATE}" "${MICROOS_ANDROID_DATA}" "${MICROOS_LEPTON_REVIEWED}" "${MICROOS_LEPTON_SNAPSHOTS}"
@@ -120,6 +124,11 @@ set_state "last.result=refused" "last.reason=no-card"
 sleep 0.3
 [[ "$(prop LastResult)" == refused ]] || fail "LastResult: $(prop LastResult)"
 [[ "$(prop LastReason)" == no-card ]] || fail "LastReason: $(prop LastReason)"
+[[ "$(prop Storage)" == on-internal ]] || fail "Storage with no card: $(prop Storage)"
+[[ "$(prop StorageCard)" == "" ]] || fail "StorageCard: $(prop StorageCard)"
+echo mmcblk0 > "${MICROOS_SYSTEM_CARD}"
+sleep 0.5
+[[ "$(prop Storage)" == on-os-card ]] || fail "Storage on an SD install: $(prop Storage)"
 
 if ! gdbus introspect --session --dest net.seilent.MicroOs.Android1 --object-path /net/seilent/MicroOs/Android \
     | grep -q "interface net.seilent.MicroOs.Android1"; then

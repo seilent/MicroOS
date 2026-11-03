@@ -24,6 +24,13 @@ export MICROOS_STEAM_PIPE="${T}/steam.pipe"
 export MICROOS_GAPPS="${T}/gapps"
 export MICROOS_STUB_DIR="${T}/stub"
 export MICROOS_OPTS="${repo}/data/usr/share/microos-android/opts"
+export MICROOS_SYSTEM_CARD="${T}/system-card"
+export MICROOS_CONTENT="${T}/content"
+export MICROOS_TEST=1
+export MICROOS_ANDROID_UID="$(id -u)"
+export HOME="${T}/home"
+export MICROOS_HOME="${T}/home"
+mkdir -p "${HOME}"
 export STATE_HOME="${T}/xdg-state"
 printf 'ro.odm.build.id=RQ3A\nro.product.odm.model=lepton\n' > "${T}/lepton/images/rootfs/vendor/odm/etc/build.prop"
 mkdir -p "${T}/lepton/images/rootfs/system/etc/init" "${T}/lepton/images/rootfs_overlay"
@@ -148,6 +155,9 @@ reset() {
     : > "${STATE}/keyboard"
     rm -f "${MICROOS_STEAM_PIPE}" "${STATE}/keyboard-hold"
     mkfifo "${MICROOS_STEAM_PIPE}"
+    echo mmcblk0 > "${MICROOS_SYSTEM_CARD}"
+    mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+    printf 'storage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
 }
 
 run() {

@@ -17,6 +17,10 @@ export MICROOS_PAD_NODES="${T}/bin/pad-nodes"
 export MICROOS_KEYBOARD_INSTALL="${T}/bin/keyboard-install"
 export MICROOS_SESSION_WATCH="${T}/bin/session-watch"
 export MICROOS_ANDROID_CONTEXT="${T}/contexts/android"
+export MICROOS_CONTENT="${T}/content"
+export MICROOS_SYSTEM_CARD="${T}/system-card"
+export MICROOS_TEST=1
+export MICROOS_ANDROID_UID="$(id -u)"
 export MICROOS_RUNTIME_DIR="${T}/run/microos-android"
 export MICROOS_ANDROID_DATA="${T}/data/android"
 export MICROOS_POLL_S=0.05
@@ -84,6 +88,7 @@ case "$*" in
     "exec lepton-android /system/bin/am start -W "*) ;;
     "inspect -f {{ index .Config.Labels \"PREFIX\" }} lepton-android") cat "${STATE}/prefix" 2>/dev/null || true ;;
     "stop -t 1 lepton-android"|"rm -fi lepton-android") ;;
+    unshare*) shift; exec "$@" ;;
     *) exit 99 ;;
 esac
 STUB
@@ -98,6 +103,17 @@ cat > "${T}/bin/pgrep" <<'STUB'
 #!/usr/bin/bash
 [[ "$*" == "-x steam" ]] && exit 1
 exit 99
+STUB
+cat > "${T}/bin/findmnt" <<STUB
+#!/usr/bin/bash
+printf '%s\n' "\$*" >> "\${STATE}/findmnt"
+last=\${!#}
+[[ "\${last}" == "${T}/content" || "\${last}" == "${T}/content/"* ]] || exit 1
+row=\$(cat "\${STATE}/mount-row" 2>/dev/null) || row=
+case "\$*" in
+    *--mountpoint*) echo "\${row:-ext4 CARD1-0000 rw}" ;;
+    *) echo "CARD1-0000 ext4 rw" ;;
+esac
 STUB
 cat > "${T}/bin/systemd-notify" <<'STUB'
 #!/usr/bin/bash
@@ -133,6 +149,7 @@ reset() {
     printf 'on boot\n    bugreport\n    keycodes 114 115 116\non post-fs-data\n    exec -- /bin/true\n' > "${rc_file}"
     rm -f "${MICROOS_STEAM_PIPE}"
     printf 'starting\nBoot complete!\nsleep 0.2\nexit 0\n' > "${STATE}/script"
+    echo mmcblk0 > "${MICROOS_SYSTEM_CARD}"
 }
 
 run() {
@@ -141,6 +158,17 @@ run() {
 }
 
 reason_of() { sed -n 's/^\([a-z-]*\)$/\1/p' "${MICROOS_RUNTIME_DIR}/end-reason" 2>/dev/null; }
+
+lock_free() {
+    local lock="${XDG_STATE_HOME}/microos-android/storage.lock" n=0 fd
+    [[ -e "${lock}" ]] || return 0
+    until exec {fd}>>"${lock}" && flock -n -x "${fd}"; do
+        exec {fd}>&-
+        (( ++n < 100 )) || return 1
+        sleep 0.05
+    done
+    exec {fd}>&-
+}
 mounted() { sed -n 's/^mounts = \[\(.*\)\]$/\1/p' "${conf}" 2>/dev/null; }
 
 case_name="keycodes derived"
@@ -564,6 +592,7 @@ case "$*" in
     "exec lepton-android /system/bin/am start -W "*) ;;
     "inspect -f {{ index .Config.Labels \"PREFIX\" }} lepton-android") cat "${STATE}/prefix" 2>/dev/null || true ;;
     "stop -t 1 lepton-android"|"rm -fi lepton-android") ;;
+    unshare*) shift; exec "$@" ;;
     *) exit 99 ;;
 esac
 STUB
@@ -747,7 +776,8 @@ rc=0
 [[ ! -e "${MICROOS_RUNTIME_DIR}/start-failed" ]] || fail "the check wrote a refusal marker"
 
 private_gms() {
-    mkdir -p "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system"
+    mkdir -p "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system" "${MICROOS_ANDROID_CONTEXT}/external"
+    printf 'storage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
     printf '<packages>\n<package name="com.google.android.gms" codePath="/system/priv-app/PrebuiltGmsCore" version="231234567" userId="10123">\n</package>\n</packages>\n' \
         > "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system/packages.xml"
 }
@@ -778,6 +808,8 @@ run
 
 case_name="GMS guard, GMS outside priv-app boots"
 reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'storage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
 mkdir -p "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system"
 printf '<packages>\n<package name="com.google.android.gms" codePath="/data/app/com.google.android.gms" version="1">\n</package>\n</packages>\n' \
     > "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system/packages.xml"
@@ -789,6 +821,8 @@ grep -q "gapps tree incomplete" "${STATE}/stderr" || fail "an updated GMS outsid
 
 case_name="GMS guard, a multi-line stamp keeps its set"
 reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'storage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
 mkdir -p "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system" "${T}/gapps/mtg11"
 printf 'packages\n' > "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system/packages.xml"
 printf 'ro.build.version.sdk=30\nro.system.build.fingerprint=fingerprint-base\n' > "${T}/lepton/images/rootfs/system/build.prop"
@@ -798,6 +832,151 @@ run
 mounted | grep -q "gapps" && fail "a multi-line stamp with gapps=none bound a GApps set: $(mounted)"
 grep -qx 'rootfs=3.0.3 fingerprint-base' "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp" \
     || fail "the rootfs line was lost: $(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")"
+
+case_name="storage, a card stub not empty"
+reset
+echo none > "${MICROOS_SYSTEM_CARD}"
+mkdir -p "${MICROOS_CONTENT}/MicroOS/Android/0123456789abcdef" "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+printf 'x\n' > "${MICROOS_ANDROID_CONTEXT}/external/x"
+run
+[[ "${rc}" == 1 ]] || fail "a filled stub exited ${rc}: $(cat "${STATE}/stderr")"
+grep -q "is not empty, refusing" "${STATE}/stderr" || fail "a filled stub: no log: $(cat "${STATE}/stderr")"
+
+case_name="storage, a card stub at another mode"
+reset
+echo none > "${MICROOS_SYSTEM_CARD}"
+mkdir -p "${MICROOS_CONTENT}/MicroOS/Android/0123456789abcdef" "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+chmod 0770 "${MICROOS_ANDROID_CONTEXT}/external"
+run
+[[ "${rc}" == 1 ]] || fail "a 0770 stub exited ${rc}: $(cat "${STATE}/stderr")"
+grep -q "not 0555, refusing" "${STATE}/stderr" || fail "a 0770 stub: no log: $(cat "${STATE}/stderr")"
+
+case_name="storage, the private HOME holds Documents"
+reset
+mkdir -p "${MICROOS_ANDROID_DATA}/home/Documents"
+run
+rm -rf "${MICROOS_ANDROID_DATA}/home/Documents"
+[[ "${rc}" == 1 ]] || fail "Documents in the private HOME exited ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(reason_of)" == folder-unusable ]] || fail "Documents in the private HOME wrote $(reason_of)"
+grep -q "Documents is in the private HOME" "${STATE}/stderr" || fail "Documents: no log: $(cat "${STATE}/stderr")"
+
+case_name="storage, the source from the card"
+reset
+echo none > "${MICROOS_SYSTEM_CARD}"
+mkdir -p "${MICROOS_CONTENT}/MicroOS/Android/0123456789abcdef" "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+chmod 0555 "${MICROOS_ANDROID_CONTEXT}/external"
+run
+grep -qx "MICROOS_ANDROID_EXTERNAL=${T}/content/MicroOS/Android/0123456789abcdef" "${STATE}/env" \
+    || fail "the card folder is not the override: $(grep MICROOS_ANDROID_EXTERNAL "${STATE}/env" 2>/dev/null)"
+
+case_name="storage, every word but card and on-os-card"
+for word in on-internal no-card not-ext4 read-only other-card folder-missing folder-unusable; do
+    reset
+    rm -rf "${MICROOS_ANDROID_CONTEXT}"
+    echo none > "${MICROOS_SYSTEM_CARD}"
+    mkdir -p "${MICROOS_CONTENT}" "${MICROOS_ANDROID_CONTEXT}/external"
+    printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+    case "${word}" in
+        on-internal) printf 'storage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" ;;
+        no-card) rm -rf "${MICROOS_CONTENT:?}" ;;
+        not-ext4) printf 'vfat CARD1-0000 rw\n' > "${STATE}/mount-row" ;;
+        read-only) printf 'ext4 CARD1-0000 ro\n' > "${STATE}/mount-row" ;;
+        other-card) printf 'ext4 CARD2-0000 rw\n' > "${STATE}/mount-row" ;;
+        folder-missing) mkdir -p "${MICROOS_CONTENT}/MicroOS/Android" ;;
+        folder-unusable)
+            mkdir -p "${MICROOS_CONTENT}/MicroOS/Android"
+            ln -s "${T}/elsewhere" "${MICROOS_CONTENT}/MicroOS/Android/0123456789abcdef"
+            ;;
+    esac
+    run
+    rm -f "${STATE}/mount-row"
+    [[ "${rc}" == 1 ]] || fail "${word} exited ${rc}: $(cat "${STATE}/stderr")"
+    [[ "$(cat "${MICROOS_RUNTIME_DIR}/end-reason" 2>/dev/null)" == "${word}" ]] \
+        || fail "${word} wrote $(cat "${MICROOS_RUNTIME_DIR}/end-reason" 2>/dev/null): $(cat "${STATE}/stderr")"
+    grep -q "shared storage reads ${word}" "${STATE}/stderr" || fail "${word}: no log: $(cat "${STATE}/stderr")"
+    [[ ! -s "${STATE}/events" ]] || fail "${word}: lepton started: $(cat "${STATE}/events")"
+    rm -rf "${MICROOS_CONTENT:?}"
+done
+
+case_name="storage, an empty stub at emptying"
+reset
+echo none > "${MICROOS_SYSTEM_CARD}"
+mkdir -p "${MICROOS_CONTENT}/MicroOS/Android/0123456789abcdef" "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+rmdir "${MICROOS_ANDROID_CONTEXT}/external"
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+chmod 0770 "${MICROOS_ANDROID_CONTEXT}/external"
+mkdir -p "${XDG_STATE_HOME}/microos-android"
+printf 'verb=move-card\nid=0123456789abcdef\ncard=CARD1-0000\nkeep-card=0\nstep=emptying\nmanifest=%s\n' \
+    "${XDG_STATE_HOME}/microos-android/storage-move.manifest" > "${XDG_STATE_HOME}/microos-android/storage-move"
+run
+[[ "${rc}" == 0 ]] || fail "an empty stub at emptying exited ${rc}: $(cat "${STATE}/stderr")"
+grep -q "not 0555" "${STATE}/stderr" && fail "an empty stub at emptying was refused: $(cat "${STATE}/stderr")"
+rm -f "${XDG_STATE_HOME}/microos-android/storage-move"
+
+case_name="storage, the write probe reads the C locale"
+reset
+echo none > "${MICROOS_SYSTEM_CARD}"
+mkdir -p "${MICROOS_CONTENT}/MicroOS/Android/0123456789abcdef" "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+chmod 0555 "${MICROOS_ANDROID_CONTEXT}/external"
+cat > "${T}/bin/mktemp" <<'STUB'
+#!/usr/bin/bash
+[[ "${1:-}" == -p ]] || exec /usr/bin/mktemp "$@"
+if [[ "${LC_ALL:-}" == C ]]; then
+    echo "mktemp: failed to create file via template: Read-only file system" >&2
+else
+    echo "mktemp: Vorlage konnte nicht angelegt werden: Dateisystem ist schreibgeschützt" >&2
+fi
+exit 1
+STUB
+chmod 0755 "${T}/bin/mktemp"
+run
+rm -f "${T}/bin/mktemp"
+[[ "${rc}" == 1 ]] || fail "a read only probe exited ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(reason_of)" == read-only ]] || fail "a read only probe wrote $(reason_of)"
+grep -q "is read only, refusing" "${STATE}/stderr" || fail "a read only probe: no log: $(cat "${STATE}/stderr")"
+
+case_name="storage, the run holds the lock"
+reset
+holder="${STATE}/held"
+bash -c 'exec 9>>"$1"; flock -x 9 && : > "$2"; while :; do sleep 0.05; done' \
+    _ "${XDG_STATE_HOME}/microos-android/storage.lock" "${holder}" &
+locker=$!
+for _ in $(seq 1 100); do [[ -e "${holder}" ]] && break; sleep 0.02; done
+run
+kill "${locker}" 2>/dev/null
+wait "${locker}" 2>/dev/null || :
+lock_free || fail "the lock was not released"
+[[ "${rc}" == 1 ]] || fail "a held lock exited ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(reason_of)" == moving ]] || fail "a held lock wrote $(reason_of)"
+
+case_name="context creation on a card"
+reset
+echo none > "${MICROOS_SYSTEM_CARD}"
+rm -rf "${MICROOS_ANDROID_CONTEXT}"
+mkdir -p "${T}/content/MicroOS/Android" "${T}/content/MicroOS/Android/0123456789abcdef"
+mkdir -p "${MICROOS_ANDROID_CONTEXT}.tmp"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}.tmp/microos-android-storage"
+run
+new_id=$(sed -n 's/^storage=//p' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" 2>/dev/null || :)
+[[ "${new_id}" =~ ^[0-9a-f]{16}$ ]] || fail "the creation: no id, exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx 'card=CARD1-0000' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" || fail "the creation: no card line"
+[[ "$(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external")" == 555 ]] || fail "the creation: the stub is $(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external" 2>/dev/null)"
+[[ "$(stat -c %a "${T}/content/MicroOS/Android/${new_id}")" == 770 ]] || fail "the creation: the card folder is $(stat -c %a "${T}/content/MicroOS/Android/${new_id}" 2>/dev/null)"
+[[ ! -e "${MICROOS_ANDROID_CONTEXT}.tmp" ]] || fail "the creation: the temp dir is left"
+[[ ! -e "${T}/content/MicroOS/Android/0123456789abcdef" ]] || fail "the creation: the stale card folder is left"
+
+case_name="context creation on the system card"
+reset
+rm -rf "${MICROOS_ANDROID_CONTEXT}"
+run
+grep -q '^storage=[0-9a-f]\{16\}$' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" || fail "the SD tie: $(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" 2>/dev/null)"
+grep -q '^card=' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" && fail "the SD tie holds a card line"
+[[ "$(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external")" == 770 ]] || fail "the SD external is $(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external" 2>/dev/null)"
 
 if (( failures )); then
     echo "run-test: ${failures} failure(s), ${skipped} skipped" >&2

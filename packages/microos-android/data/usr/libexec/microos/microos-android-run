@@ -63,7 +63,7 @@ stamp_word() {
 }
 
 check() {
-    local runtime="" identity="" stamp=""
+    local runtime="" identity="" stamp="" storage_word storage_folder
     if [[ ! -d "${CONTEXT}" ]] && legacy_context > /dev/null; then
         check_reason old-path "the context is at an older path, refusing"
     fi
@@ -73,9 +73,129 @@ check() {
     if [[ -n "${identity}" && -n "${stamp}" ]] && identity_older "${stamp}" "${identity}"; then
         check_reason downgrade "the runtime is older than the context last booted, refusing"
     fi
+    storage_read || :
+    case "${storage_word}" in
+        card|on-os-card) ;;
+        *) check_reason "${storage_word}" "shared storage reads ${storage_word}" ;;
+    esac
     exit 0
 }
 
+storage_lock_run() {
+    mkdir -p "${STATE_DIR}" || fail "cannot make ${STATE_DIR}"
+    [[ ! -L "${STORAGE_LOCK}" ]] || fail "${STORAGE_LOCK} is a link, refusing"
+    exec {storage_fd}>>"${STORAGE_LOCK}" || return 1
+    flock -n -s "${storage_fd}" || return 1
+    return 0
+}
+
+private_home_dirs() {
+    local dir
+    for dir in Documents Downloads Videos; do
+        [[ ! -d "${VALVE_HOME}/${dir}" ]] || { printf '%s\n' "${dir}"; return 0; }
+    done
+    return 0
+}
+
+storage_external() {
+    local word folder dir file
+    storage_read --locked || return 1
+    word=${storage_word}
+    folder=${storage_folder}
+    case "${word}" in
+        card|on-os-card) ;;
+        *) reason "${word}" "shared storage reads ${word}" ;;
+    esac
+    for dir in $(private_home_dirs); do
+        reason folder-unusable "${dir} is in the private HOME and Valve would link it into the shared storage, refusing"
+    done
+    if [[ -z "${folder}" ]]; then
+        folder="${CONTEXT}/external"
+        if [[ ! -d "${folder}" || -L "${folder}" ]]; then
+            reason folder-unusable "${folder} is not a directory, refusing"
+        fi
+    fi
+    find "${folder}" -maxdepth 1 -name '.microos-write.*' -delete 2>/dev/null || :
+    file=$(LC_ALL=C mktemp -p "${folder}" .microos-write.XXXXXX 2>&1) || {
+        case "${file}" in
+            *"Read-only file system"*) reason read-only "${folder} is read only, refusing" ;;
+            *) reason folder-unusable "cannot write in ${folder}: ${file}" ;;
+        esac
+    }
+    rm -f "${file}" || reason folder-unusable "cannot remove ${file}, refusing"
+    [[ "${word}" != on-os-card ]] || [[ "${folder}" == "${CONTEXT}/external" ]] \
+        || reason folder-unusable "${folder} is not ${CONTEXT}/external on an SD install, refusing"
+    printf '%s\n' "${folder}"
+}
+
+check_stub() {
+    local ext="${CONTEXT}/external" entries mode
+    [[ -d "${ext}" && ! -L "${ext}" ]] || fail "${ext} is not a directory, refusing"
+    entries=$(ls -A -- "${ext}" 2>/dev/null) || fail "cannot read ${ext}, refusing"
+    [[ -z "${entries}" ]] || fail "${ext} is not empty, refusing"
+    mode=$(stat -c %a "${ext}") || fail "cannot read ${ext}, refusing"
+    [[ "${mode}" == 555 ]] || emptying_step || fail "${ext} is ${mode}, not 0555, refusing"
+}
+
+emptying_step() {
+    [[ "$(storage_step_get verb)" == move-card && "$(storage_step_get step)" == emptying \
+        && "$(storage_step_get id)" == "$(storage_tie storage)" ]]
+}
+
+context_create() {
+    local tmp="${CONTEXT}.tmp" card="" id="" kind content="" row="" stale_row="" stale_uuid=""
+    local stale="" stale_card="" stale_id="" storage_word storage_folder
+    if [[ -e "${tmp}" || -L "${tmp}" ]]; then
+        stale_card=$(sed -n 's/^card=//p' "${tmp}/microos-android-storage" 2>/dev/null | head -n 1) || stale_card=
+        stale_id=$(sed -n 's/^storage=//p' "${tmp}/microos-android-storage" 2>/dev/null | head -n 1) || stale_id=
+        stale=$(storage_content) || stale=
+        stale_row=$(storage_mount_row "${stale}" 2>/dev/null) || stale_row=
+        IFS='|' read -r _ stale_uuid _ <<< "${stale_row}"
+        if [[ -n "${stale_card}" && -n "${stale_id}" && "${stale_uuid}" == "${stale_card}" ]]; then
+            rmdir "${stale}/MicroOS/Android/${stale_id}" 2>/dev/null || :
+        fi
+        rm -rf "${tmp:?}" || fail "cannot remove the stale ${tmp}, refusing"
+    fi
+    storage_read --locked || reason moving "cannot read the shared storage, refusing"
+    kind=${storage_word}
+    case "${kind}" in
+        card)
+            content=$(storage_content) || reason no-card "no content card, refusing"
+            row=$(storage_mount_row "${content}") || reason no-card "cannot read the mount table of ${content}, refusing"
+            IFS='|' read -r _ card _ <<< "${row}"
+            ;;
+        on-os-card) ;;
+        *)
+            reason "${kind}" "shared storage reads ${kind}, refusing"
+            ;;
+    esac
+    id=$(storage_new_id)
+    mkdir -p "$(dirname "${CONTEXT}")" || fail "cannot make $(dirname "${CONTEXT}"), refusing"
+    mkdir "${tmp}" || fail "cannot make ${tmp}, refusing"
+    {
+        [[ -z "${card}" ]] || printf 'card=%s\n' "${card}"
+        printf 'storage=%s\n' "${id}"
+    } | storage_write "${tmp}/microos-android-storage" || { rm -rf "${tmp:?}"; fail "cannot write the tie, refusing"; }
+    if [[ "${kind}" == card ]]; then
+        if ! mkdir "${tmp}/external" || ! chmod 0555 "${tmp}/external"; then
+            rm -rf "${tmp:?}"
+            fail "cannot make ${tmp}/external, refusing"
+        fi
+        if ! storage_make_folder "${content}" "${id}"; then
+            rmdir "${content}/MicroOS/Android/${id}" 2>/dev/null || :
+            rm -rf "${tmp:?}"
+            fail "cannot make ${content}/MicroOS/Android/${id}, refusing"
+        fi
+    elif ! mkdir "${tmp}/external" || ! chmod 0770 "${tmp}/external"; then
+        rm -rf "${tmp:?}"
+        fail "cannot make ${tmp}/external, refusing"
+    fi
+    sync "${tmp}" || { rm -rf "${tmp:?}"; fail "cannot sync ${tmp}, refusing"; }
+    mv -T "${tmp}" "${CONTEXT}" || { rm -rf "${tmp:?}"; fail "cannot move ${tmp} into ${CONTEXT}, refusing"; }
+    sync "$(dirname "${CONTEXT}")" || say "cannot sync ${CONTEXT}'s parent"
+    say "made the context ${CONTEXT}"
+    return 0
+}
 reason() {
     word_ok "${1:-}" || fail "${2:-refusal}"
     write_reason "${RUN}" "$1" || fail "$2"
@@ -328,6 +448,10 @@ if [[ "${1:-}" == --check ]]; then
 fi
 
 rm -f "${RUN}/start-failed"
+storage_lock_run || reason moving "a storage verb holds ${STORAGE_LOCK}, refusing"
+podman() {
+    command podman "$@" {storage_fd}>&-
+}
 rc=0
 podman container exists "${CONTAINER}" 2>/dev/null || rc=$?
 case "${rc}" in
@@ -355,7 +479,17 @@ rm -f "${lepton_err}"
 odm_source="${lepton_runtime}/images/rootfs/vendor/odm/etc/build.prop"
 [[ -f "${odm_source}" ]] || fail "${odm_source} missing"
 
-mkdir -p "${RUN}" "${DATA}" "${CONTEXT}/internal"
+mkdir -p "${RUN}" "${DATA}"
+if [[ ! -e "${CONTEXT}" && ! -L "${CONTEXT}" ]]; then
+    legacy_context > /dev/null && reason old-path "the context is at an older path, refusing"
+    context_create
+fi
+mkdir -p "${CONTEXT}/internal" || fail "cannot make ${CONTEXT}/internal"
+storage_kind=$(storage_state --locked | head -n 1)
+[[ "${storage_kind}" != card ]] || check_stub
+MICROOS_ANDROID_EXTERNAL=$(storage_external) || fail "cannot read the shared storage, refusing"
+[[ -n "${MICROOS_ANDROID_EXTERNAL}" ]] || fail "no shared storage folder, refusing"
+export MICROOS_ANDROID_EXTERNAL
 {
     cat "${odm_source}"
     echo "ro.sf.lcd_density=${density}"
@@ -425,19 +559,19 @@ export CONTAINERS_CONF_OVERRIDE="${RUN}/containers.conf"
 rm -f "${RUN}/lepton.out"
 mkfifo "${RUN}/lepton.out"
 : > "${DATA}/boot.log"
-boot_log &
+boot_log {storage_fd}>&- &
 boot_log_pid=$!
 if [[ -z "${MICROOS_STEAM_PIPE:-}" ]]; then
     mkdir -p "${STEAM_PIPE%/*}" && { [[ -e "${STEAM_PIPE}" || -L "${STEAM_PIPE}" ]] || mkfifo "${STEAM_PIPE}"; }
 fi
 if [[ -p "${STEAM_PIPE}" ]]; then
-    steam_pipe &
+    steam_pipe {storage_fd}>&- &
     steam_pipe_pid=$!
 else
     say "no ${STEAM_PIPE}, Steam links from Android are not read"
 fi
 if [[ -x "${SESSION_WATCH}" ]]; then
-    "${SESSION_WATCH}" &
+    "${SESSION_WATCH}" {storage_fd}>&- &
     session_watch_pid=$!
 else
     say "${SESSION_WATCH} missing, no session watch"
@@ -457,7 +591,7 @@ handle() {
         if (( stamp_changed )) && [[ -n "${gapps_set}" ]]; then
             printf 'gapps\n' > "${RUN}/first-boot.new" || say "cannot write ${RUN}/first-boot"
             mv -T "${RUN}/first-boot.new" "${RUN}/first-boot" 2>/dev/null || say "cannot write ${RUN}/first-boot"
-            first_gapps_boot &
+            first_gapps_boot {storage_fd}>&- &
         else
             write_stamp
         fi
@@ -475,7 +609,7 @@ partial=
 stopping=0
 trap 'stopping=1; say "stop requested, waiting for lepton start"' TERM
 trap 'stopping=1; say "stop requested, waiting for lepton start"' INT
-"${LEPTON}" start "${NAME}" > "${RUN}/lepton.out" 2>&1 &
+"${LEPTON}" start "${NAME}" {storage_fd}>&- > "${RUN}/lepton.out" 2>&1 &
 lepton_pid=$!
 exec 3< "${RUN}/lepton.out"
 rm -f "${RUN}/lepton.out"

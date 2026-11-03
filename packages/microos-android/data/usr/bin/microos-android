@@ -56,7 +56,7 @@ fail() {
 REVIEWED="${MICROOS_LEPTON_REVIEWED:-/usr/share/microos-lepton/reviewed}"
 
 usage() {
-    echo "usage: microos-android status | gapps install | gapps setup | gapps remove --yes | prune | reset --yes" >&2
+    echo "usage: microos-android status | gapps install | gapps setup | gapps remove --yes | prune | reset --yes | storage state | storage move card | storage move internal [--keep-card] [--seed <dir>] | storage new --yes | storage prune <id> --yes" >&2
     exit 1
 }
 
@@ -79,7 +79,7 @@ stamp_set() {
 }
 
 status() {
-    local key value built
+    local key value built storage_word storage_folder
     for key in lepton.build lepton.source last.result last.reason gapps.set gapps.gms gapps.play gapps.setup gsf_id keyboard; do
         value=$(state_get "${key}" 2>/dev/null) || value=
         printf '%s\t%s\n' "${key}" "${value}"
@@ -97,6 +97,20 @@ status() {
         built=not-reviewed
     fi
     printf 'lepton.reviewed\t%s\n' "${built}"
+    storage_read || :
+    printf 'storage\t%s\n' "${storage_word}"
+    other_folders
+}
+
+other_folders() {
+    local content owned folder
+    content=$(storage_content) || return 0
+    owned=$(storage_tie storage) || owned=
+    for folder in "${content}"/MicroOS/Android/*; do
+        [[ -d "${folder}" && ! -L "${folder}" ]] || continue
+        [[ "${folder##*/}" != "${owned}" ]] || continue
+        printf 'other %s\n' "${folder##*/}"
+    done
 }
 
 gapps_setup() {
@@ -270,23 +284,360 @@ prune() {
     say "${#stale[@]} package(s) queued, uninstalled at the next Android start that installs an .apk"
 }
 
+storage_remove_tree() {
+    [[ -e "$1" || -L "$1" ]] || return 0
+    podman unshare chmod -R u+rwX "$1" || return 1
+    podman unshare rm -rf "$1"
+}
+
 reset() {
-    local rc users container leptons
+    local rc users container path leptons word folder card id storage_word storage_folder
     [[ "${CONTEXT##*/}" == android ]] || fail "${CONTEXT} is not the android context, refusing"
     [[ "${1:-}" == --yes ]] || fail "reset removes every installed app, refusing without --yes"
     no_live
+    storage_lock
+    storage_read --locked || fail "cannot read the shared storage, refusing"
+    word=${storage_word}
+    folder=${storage_folder}
     users=$(podman ps -a --format '{{.Names}} {{.Label "STEAM_COMPAT_DATA_PATH"}}') || fail "podman ps failed, refusing"
     while read -r container path; do
         if [[ -n "${path}" && "$(readlink -m "${path}")" == "$(readlink -m "${CONTEXT}")" ]]; then
             fail "container ${container} uses ${CONTEXT}, refusing"
         fi
     done <<< "${users}"
-    if [[ -d "${CONTEXT}" ]]; then
-        podman unshare chmod -R u+rwX "${CONTEXT}" || fail "cannot chmod ${CONTEXT}"
-        podman unshare rm -rf "${CONTEXT}" || fail "cannot remove ${CONTEXT}"
-    fi
+    case "${word}" in
+        card)
+            [[ -z "${folder}" ]] || storage_remove_tree "${folder}" || fail "cannot remove ${folder}"
+            ;;
+        on-os-card)
+            ;;
+        *)
+            card=$(storage_tie card) || card=
+            id=$(storage_tie storage) || id=
+            [[ -z "${id}" ]] || say "the shared storage ${card:+${card}:}MicroOS/Android/${id} was left in place"
+            ;;
+    esac
+    storage_remove_tree "${CONTEXT}" || fail "cannot remove ${CONTEXT}"
     rm -rf "${DATA}/sideload" "${DATA}/prune"
     say "the next Android start boots a fresh context and installs every .apk again"
+}
+
+storage_lock() {
+    local uid status
+    uid=$(storage_owner) || fail "no micro user on this system, refusing"
+    [[ "$(id -u)" == "${uid}" ]] || fail "storage verbs run as micro only, refusing"
+    case "$(systemctl --user show -P ActiveState microos-lepton-prepare.service 2>/dev/null)" in
+        inactive|failed|"") ;;
+        *) fail "microos-lepton-prepare.service is running, refusing" ;;
+    esac
+    status=$(podman inspect --type container -f '{{.State.Status}}' lepton-android 2>/dev/null) || status=
+    case "${status}" in
+        running|paused|stopping) fail "container lepton-android is ${status}, refusing" ;;
+    esac
+    [[ ! -L "${STATE_DIR}" ]] || fail "${STATE_DIR} is a link, refusing"
+    mkdir -p "${STATE_DIR}" || fail "cannot make ${STATE_DIR}"
+    exec {storage_fd}>>"${STORAGE_LOCK}" || fail "cannot open ${STORAGE_LOCK}"
+    flock -x -n "${storage_fd}" || fail "another storage run holds ${STORAGE_LOCK}, refusing"
+}
+
+storage_free() {
+    local where=$1 path=$2 avail need
+    avail=$(df --output=avail "${where}" 2>/dev/null | sed -n 2p | tr -d ' ') || return 1
+    [[ "${avail}" =~ ^[0-9]+$ ]] || return 1
+    need=$(storage_du "${path}") || return 1
+    (( avail * 1024 >= need + STORAGE_MARGIN ))
+}
+
+storage_space() {
+    local where=$1 path=$2 size
+    size=$(storage_du "${path}") || size=
+    storage_free "${where}" "${path}" || fail "${size:-?} bytes plus the margin do not fit in ${where}, refusing"
+}
+
+storage_manifest_equal() {
+    local want=$1 dir=$2 got
+    got=$(storage_manifest "${dir}") || { say "cannot read the manifest of ${dir}"; return 1; }
+    diff -u "${want}" <(printf '%s\n' "${got}") > "${STATE_DIR}/storage-manifest.diff" || {
+        say "the copy in ${dir} is not the recorded source, see ${STATE_DIR}/storage-manifest.diff"
+        return 1
+    }
+    rm -f "${STATE_DIR}/storage-manifest.diff"
+    return 0
+}
+
+storage_move_card() {
+    local state="" ext card="" content row type uuid options folder tmp step="" id="" naming=0 fresh=1 storage_word storage_folder
+    storage_lock
+    storage_read --locked || fail "cannot read the shared storage, refusing"
+    state=${storage_word}
+    ext="${CONTEXT}/external"
+    [[ -d "${ext}" && ! -L "${ext}" ]] || fail "${ext} is not a directory, refusing"
+    id=$(storage_tie storage) || id=
+    [[ -z "${id}" ]] || storage_id_ok "${id}" || fail "the tie's id ${id} is not 16 lowercase hex digits, refusing"
+    [[ -n "${id}" ]] || id=$(storage_new_id)
+    content=$(storage_content) || fail "no content card, refusing"
+    row=$(storage_mount_row "${content}") || fail "cannot read the mount table of ${content}, refusing"
+    IFS='|' read -r type uuid options <<< "${row}"
+    [[ "${type}" == ext4 ]] || fail "${content} is ${type}, not ext4, refusing"
+    ! storage_read_only "${options}" || fail "${content} is read only, refusing"
+    folder="${content}/MicroOS/Android/${id}"
+    tmp="${folder}.tmp"
+    step=$(storage_step_get step) || step=
+    if [[ -n "${step}" && "$(storage_step_get verb)" == move-card && "$(storage_step_get id)" == "${id}" \
+        && "$(storage_step_get card)" == "${uuid}" ]]; then
+        fresh=0
+    fi
+    if (( fresh )); then
+        [[ -n "$(ls -A "${ext}" 2>/dev/null)" ]] || fail "${ext} is empty, nothing to move; storage new --yes makes an empty shared storage"
+    fi
+    if (( fresh )); then
+        step=copy
+        [[ "${state}" == on-internal ]] || fail "storage reads ${state}, move card needs on-internal, refusing"
+        storage_make_folder "${content}" "" || fail "cannot make ${content}/MicroOS/Android, refusing"
+        storage_step_write move-card "${id}" "${uuid}" 0 copy || fail "cannot write ${STORAGE_STEP}"
+    elif [[ "${step}" == copy || "${step}" == renamed ]]; then
+        storage_make_folder "${content}" "" || fail "cannot make ${content}/MicroOS/Android, refusing"
+    else
+        storage_component_ok "${folder}" || fail "${folder} is missing or fails its check, refusing"
+        storage_manifest_equal "${STORAGE_MANIFEST}" "${folder}" \
+            || fail "${folder} is not the recorded source, refusing"
+    fi
+    [[ "$(storage_tie card)" == "${uuid}" && "$(storage_tie storage)" == "${id}" ]] && naming=1
+    while :; do
+        case "${step}" in
+            copy)
+                [[ ! -e "${tmp}" && ! -L "${tmp}" ]] \
+                    || podman unshare rm -rf "${tmp:?}" || fail "cannot remove ${tmp}, refusing"
+                if (( ! naming )) && [[ -e "${folder}" || -L "${folder}" ]]; then
+                    podman unshare rm -rf "${folder:?}" || fail "cannot remove ${folder}, refusing"
+                    say "removed the existing ${folder}"
+                fi
+                storage_space "${content}" "${ext}"
+                mkdir "${tmp}" || fail "cannot make ${tmp}, refusing"
+                sync "${content}/MicroOS/Android" 2>/dev/null || :
+                storage_manifest "${ext}" > "${STORAGE_MANIFEST}" || fail "cannot record the manifest of ${ext}, refusing"
+                sync "${STORAGE_MANIFEST}" || fail "cannot sync ${STORAGE_MANIFEST}, refusing"
+                nice -n 10 podman unshare rsync -aHAX --numeric-ids --delete "${ext}/" "${tmp}/" \
+                    || fail "cannot copy ${ext} into ${tmp}, refusing"
+                storage_manifest_equal "${STORAGE_MANIFEST}" "${tmp}" || fail "the copy into ${tmp} is not ${ext}, refusing"
+                storage_step_write move-card "${id}" "${uuid}" 0 renamed || fail "cannot write ${STORAGE_STEP}"
+                step=renamed
+                ;;
+            renamed)
+                if (( naming )); then
+                    storage_step_write move-card "${id}" "${uuid}" 0 tie || fail "cannot write ${STORAGE_STEP}"
+                    step=tie
+                    continue
+                fi
+                if [[ ! -e "${tmp}" && ! -L "${tmp}" ]]; then
+                    if [[ -d "${folder}" && ! -L "${folder}" ]] \
+                        && storage_manifest_equal "${STORAGE_MANIFEST}" "${folder}"; then
+                        sync -f "${content}" || fail "cannot sync ${content}, refusing"
+                        storage_step_write move-card "${id}" "${uuid}" 0 tie || fail "cannot write ${STORAGE_STEP}"
+                        step=tie
+                        continue
+                    fi
+                    storage_step_write move-card "${id}" "${uuid}" 0 copy || fail "cannot write ${STORAGE_STEP}"
+                    step=copy
+                    continue
+                fi
+                mv -T "${tmp}" "${folder}" || fail "cannot move ${tmp} into ${folder}, refusing"
+                sync -f "${content}" || fail "cannot sync ${content}, refusing"
+                storage_step_write move-card "${id}" "${uuid}" 0 tie || fail "cannot write ${STORAGE_STEP}"
+                step=tie
+                ;;
+            tie)
+                storage_tie_write "${uuid}" "${id}" || fail "cannot write the tie, refusing"
+                storage_step_write move-card "${id}" "${uuid}" 0 emptying || fail "cannot write ${STORAGE_STEP}"
+                step=emptying
+                ;;
+            emptying)
+                podman unshare find "${ext:?}" -mindepth 1 -delete || fail "cannot empty ${ext}, refusing"
+                chmod 0555 "${ext}" || fail "cannot set ${ext} to 0555, refusing"
+                sync -f "${CONTEXT}" || fail "cannot sync ${CONTEXT}, refusing"
+                storage_step_forget
+                step="done"
+                ;;
+            *)
+                fail "${STORAGE_STEP} names the step ${step}, which move card does not have, refusing"
+                ;;
+        esac
+        [[ "${step}" != "done" ]] || break
+    done
+    say "the shared storage moved to ${folder}"
+}
+
+storage_move_internal() {
+    local state="" folder="" seed="" keep=0 step="" id="" card="" content="" row type uuid options fresh=1 need=0
+    local target="$CONTEXT" storage_word storage_folder
+    while (( $# )); do
+        case "$1" in
+            --keep-card) keep=1 ;;
+            --seed)
+                shift
+                seed=${1:-}
+                [[ -n "${seed}" && -d "${seed}" && ! -L "${seed}" ]] || fail "--seed needs a directory, refusing"
+                ;;
+            *) fail "unknown option $1, refusing" ;;
+        esac
+        shift
+    done
+    storage_lock
+    storage_read --locked || fail "cannot read the shared storage, refusing"
+    state=${storage_word}
+    id=$(storage_tie storage) || id=
+    [[ -z "${id}" ]] || storage_id_ok "${id}" || fail "the tie's id ${id} is not 16 lowercase hex digits, refusing"
+    card=$(storage_tie card) || card=
+    step=$(storage_step_get step) || step=
+    if [[ -n "${step}" && "$(storage_step_get verb)" == move-internal \
+        && ( -z "${id}" || "$(storage_step_get id)" == "${id}" ) \
+        && ( -z "${card}" || "$(storage_step_get card)" == "${card}" ) ]]; then
+        fresh=0
+        id=$(storage_step_get id) || id=
+        card=$(storage_step_get card) || card=
+        keep=$(storage_step_get keep-card) || keep=
+        [[ "${keep}" =~ ^[01]$ ]] || keep=0
+        storage_id_ok "${id}" || fail "the step file's id ${id} is not 16 lowercase hex digits, refusing"
+    else
+        fresh=1
+        step=
+        [[ "${state}" == card ]] || fail "storage reads ${state}, move internal needs card, refusing"
+        [[ -n "${storage_folder}" ]] || fail "storage reads card with no folder, refusing"
+        [[ -n "${id}" && -n "${card}" ]] || fail "the tie is incomplete, refusing"
+    fi
+    need=0
+    case "${step}" in
+        manifest|copy|"") need=2 ;;
+        tie|swapped|removing-card) (( keep )) || need=1 ;;
+    esac
+    if (( need )); then
+        content=$(storage_content) || fail "no content card, refusing"
+        row=$(storage_mount_row "${content}") || fail "cannot read the mount table of ${content}, refusing"
+        IFS='|' read -r type uuid options <<< "${row}"
+        [[ "${type}" == ext4 ]] || fail "${content} is ${type}, not ext4, refusing"
+        ! storage_read_only "${options}" || fail "${content} is read only, refusing"
+        [[ "${uuid}" == "${card}" ]] || fail "${content} is card ${uuid:-none}, not the tie's ${card}, refusing"
+        folder="${content}/MicroOS/Android/${id}"
+        (( need < 2 )) || [[ -d "${folder}" && ! -L "${folder}" ]] || fail "${folder} is not a directory, refusing"
+    fi
+    if (( fresh )); then
+        storage_manifest "${folder}" > "${STORAGE_MANIFEST}" || fail "cannot record the manifest of ${folder}, refusing"
+        sync "${STORAGE_MANIFEST}" || fail "cannot sync ${STORAGE_MANIFEST}, refusing"
+        storage_step_write move-internal "${id}" "${card}" "${keep}" manifest || fail "cannot write ${STORAGE_STEP}"
+        step=manifest
+    fi
+    while :; do
+        case "${step}" in
+            manifest)
+                storage_space "${target}" "${folder}"
+                storage_manifest "${folder}" > "${STORAGE_MANIFEST}.new" || fail "cannot record the manifest of ${folder}, refusing"
+                sync "${STORAGE_MANIFEST}.new" || fail "cannot sync ${STORAGE_MANIFEST}.new, refusing"
+                mv -T "${STORAGE_MANIFEST}.new" "${STORAGE_MANIFEST}" || fail "cannot write ${STORAGE_MANIFEST}, refusing"
+                sync "${STATE_DIR}" || fail "cannot sync ${STATE_DIR}, refusing"
+                storage_step_write move-internal "${id}" "${card}" "${keep}" copy || fail "cannot write ${STORAGE_STEP}"
+                step=copy
+                ;;
+            copy)
+                podman unshare rm -rf "${target:?}/external.tmp" 2>/dev/null || :
+                storage_space "${target}" "${folder}"
+                mkdir "${target}/external.tmp" || fail "cannot make ${target}/external.tmp, refusing"
+                if [[ -n "${seed}" ]]; then
+                    podman unshare cp -a --reflink=always "${seed}/." "${target}/external.tmp/" \
+                        || fail "cannot seed ${target}/external.tmp from ${seed}, refusing"
+                fi
+                nice -n 10 podman unshare rsync -aHAX --numeric-ids --delete "${folder}/" "${target}/external.tmp/" \
+                    || fail "cannot copy ${folder} into ${target}/external.tmp, refusing"
+                storage_manifest_equal "${STORAGE_MANIFEST}" "${target}/external.tmp" \
+                    || fail "the copy of ${folder} is not the card folder, refusing"
+                sync -f "${target}" || fail "cannot sync ${target}, refusing"
+                storage_step_write move-internal "${id}" "${card}" "${keep}" swapped || fail "cannot write ${STORAGE_STEP}"
+                step=swapped
+                ;;
+            swapped)
+                if [[ ! -e "${target}/external.tmp" && ! -L "${target}/external.tmp" ]]; then
+                    [[ -d "${target}/external" && ! -L "${target}/external" ]] \
+                        || fail "${target}/external.tmp is gone and ${target}/external is not a directory, refusing"
+                    storage_step_write move-internal "${id}" "${card}" "${keep}" tie || fail "cannot write ${STORAGE_STEP}"
+                    step=tie
+                    continue
+                fi
+                if [[ -d "${target}/external" && ! -L "${target}/external" ]]; then
+                    podman unshare rm -rf "${target:?}/external" || fail "cannot remove the stub ${target}/external, refusing"
+                fi
+                mv -T "${target}/external.tmp" "${target}/external" \
+                    || fail "cannot move the copy into ${target}/external, refusing"
+                sync "${target}" || fail "cannot sync ${target}, refusing"
+                storage_step_write move-internal "${id}" "${card}" "${keep}" tie || fail "cannot write ${STORAGE_STEP}"
+                step=tie
+                ;;
+            tie)
+                storage_tie_write "" "${id}" || fail "cannot write the tie, refusing"
+                storage_step_write move-internal "${id}" "${card}" "${keep}" removing-card \
+                    || fail "cannot write ${STORAGE_STEP}"
+                step=removing-card
+                ;;
+            removing-card)
+                if (( ! keep )); then
+                    if [[ -e "${folder}" || -L "${folder}" ]]; then
+                        storage_component_ok "${folder}" || fail "${folder} fails its check, refusing"
+                        podman unshare chmod -R u+rwX "${folder}" || fail "cannot chmod ${folder}, refusing"
+                        podman unshare rm -rf "${folder:?}" || fail "cannot remove ${folder}, refusing"
+                        sync -f "${content}" || fail "cannot sync the card, refusing"
+                    fi
+                fi
+                storage_step_forget
+                step="done"
+                ;;
+            *)
+                fail "${STORAGE_STEP} names the step ${step}, which move internal does not have, refusing"
+                ;;
+        esac
+        [[ "${step}" != "done" ]] || break
+    done
+    say "the shared storage moved to ${target}/external"
+}
+
+storage_new() {
+    local state="" content row type uuid options id old="" keep="" folder storage_word storage_folder
+    [[ "${1:-}" == --yes ]] || fail "storage new makes a new shared storage, refusing without --yes"
+    storage_lock
+    storage_read --locked || fail "cannot read the shared storage, refusing"
+    state=${storage_word}
+    case "${state}" in
+        other-card|folder-missing) ;;
+        *) fail "storage reads ${state}, storage new needs other-card or folder-missing, refusing" ;;
+    esac
+    content=$(storage_content) || fail "no content card, refusing"
+    row=$(storage_mount_row "${content}") || fail "cannot read the mount table of ${content}, refusing"
+    IFS='|' read -r type uuid options <<< "${row}"
+    [[ "${type}" == ext4 ]] || fail "${content} is ${type}, not ext4, refusing"
+    ! storage_read_only "${options}" || fail "${content} is read only, refusing"
+    id=$(storage_new_id)
+    storage_make_folder "${content}" "${id}" || fail "cannot make ${content}/MicroOS/Android/${id}, refusing"
+    sync -f "${content}" || fail "cannot sync ${content}, refusing"
+    old=$(storage_tie card) || old=
+    keep=$(storage_tie storage) || keep=
+    storage_tie_write "${uuid}" "${id}" || fail "cannot write the tie, refusing"
+    say "the shared storage is ${content}/MicroOS/Android/${id}"
+    [[ -z "${keep}" ]] || printf '%s:MicroOS/Android/%s\n' "${old}" "${keep}"
+}
+
+storage_prune() {
+    local id=${1:-} state="" folder storage_word storage_folder
+    [[ -n "${id}" && "${id}" =~ ^[0-9a-f]{16}$ ]] || fail "storage prune needs an id of 16 lowercase hex digits, refusing"
+    [[ "${2:-}" == --yes ]] || fail "storage prune removes a shared storage, refusing without --yes"
+    storage_lock
+    storage_read --locked || fail "cannot read the shared storage, refusing"
+    state=${storage_word}
+    [[ "${state}" == card ]] || fail "storage reads ${state}, storage prune needs card, refusing"
+    [[ "${id}" != "$(storage_tie storage)" ]] || fail "${id} is this context's own shared storage, refusing"
+    folder=$(storage_content)/MicroOS/Android/${id}
+    [[ -d "${folder}" && ! -L "${folder}" ]] || fail "${folder} is not a directory, refusing"
+    storage_component_ok "${folder}" || fail "${folder} fails its check, refusing"
+    podman unshare chmod -R u+rwX "${folder}" || fail "cannot chmod ${folder}, refusing"
+    podman unshare rm -rf "${folder:?}" || fail "cannot remove ${folder}, refusing"
+    sync -f "${folder%/*}" || fail "cannot sync the card, refusing"
+    say "${folder} removed"
 }
 
 case "${1:-}" in
@@ -321,6 +672,43 @@ case "${1:-}" in
     reset)
         shift
         reset "$@"
+        ;;
+    storage)
+        case "${2:-}" in
+            state)
+                me="microos-android storage state"
+                shift 2
+                (($# == 0 || $# == 1)) || usage
+                storage_state "$@" || exit 1
+                ;;
+            move)
+                case "${3:-}" in
+                    card)
+                        me="microos-android storage move card"
+                        shift 3
+                        (( $# == 0 )) || usage
+                        storage_move_card
+                        ;;
+                    internal)
+                        me="microos-android storage move internal"
+                        shift 3
+                        storage_move_internal "$@"
+                        ;;
+                    *) usage ;;
+                esac
+                ;;
+            new)
+                me="microos-android storage new"
+                shift 2
+                storage_new "$@"
+                ;;
+            prune)
+                me="microos-android storage prune"
+                shift 2
+                storage_prune "$@"
+                ;;
+            *) usage ;;
+        esac
         ;;
     *) usage ;;
 esac

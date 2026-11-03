@@ -88,7 +88,7 @@ snapshot_identity() {
 }
 
 main() {
-    local steam="" build="" snapshot="" identity="" stamp="" rc=0
+    local steam="" build="" snapshot="" identity="" stamp="" rc=0 storage_word
     readable "${REVIEWED}" || open "cannot read ${REVIEWED}"
     readable "$(android_data)" || open "cannot read $(android_data)"
     readable "${SNAPSHOTS}" || open "cannot read ${SNAPSHOTS}"
@@ -112,6 +112,11 @@ main() {
     if [[ -n "${identity}" && -n "${stamp}" ]] && identity_older "${stamp}" "${identity}"; then
         word downgrade
     fi
+    storage_read --wait || storage_word=no-card
+    case "${storage_word}" in
+        card|on-os-card) ;;
+        *) word "${storage_word}" ;;
+    esac
     exit 0
 }
 

@@ -18,6 +18,7 @@ export MICROOS_ANDROID_DATA="${T}/data"
 export MICROOS_ANDROID_CACHE="${T}/cache"
 export MICROOS_ANDROID_ROM="${T}/roms"
 export MICROOS_CONTENT="${T}/content"
+export MICROOS_SYSTEM_CARD="${T}/system-card"
 export MICROOS_APK_INFO="${T}/bin/apk-info-extractor"
 card="${T}/card"
 card_root="${MICROOS_CONTENT}/Android"
@@ -71,6 +72,11 @@ cat > "${T}/bin/logger" <<'STUB'
 shift 3
 echo "$*" >> "${STATE}/log"
 STUB
+cat > "${T}/bin/findmnt" <<STUB
+#!/usr/bin/bash
+row=\$(cat "\${STATE}/mount-row" 2>/dev/null) || row=
+printf '%s\n' "\${row:-ext4 CARD1-0000 rw}"
+STUB
 chmod 0755 "${T}/bin/"*
 export PATH="${T}/bin:${PATH}"
 
@@ -94,13 +100,16 @@ packages() {
 }
 
 reset() {
-    rm -rf "${STATE}" "${MICROOS_ANDROID_CONTEXT}" "${MICROOS_ANDROID_DATA}" "${MICROOS_ANDROID_CACHE}" "${MICROOS_ANDROID_ROM}" "${MICROOS_CONTENT}" "${card}"
-    mkdir -p "${STATE}" "${MICROOS_ANDROID_ROM}" "${card}"
+    rm -rf "${STATE}" "${MICROOS_ANDROID_CONTEXT}" "${MICROOS_ANDROID_DATA}" "${MICROOS_ANDROID_CACHE}" "${MICROOS_ANDROID_ROM}" "${MICROOS_CONTENT}" "${card}" "${MICROOS_SYSTEM_CARD}"
+    mkdir -p "${STATE}" "${MICROOS_ANDROID_ROM}" "${card}" "${MICROOS_ANDROID_CONTEXT}"
     ln -sfn "${card}" "${MICROOS_CONTENT}"
+    printf 'storage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+    echo none > "${MICROOS_SYSTEM_CARD}"
     : > "${STATE}/guest"
     : > "${STATE}/log"
     : > "${STATE}/extractor"
     : > "${STATE}/stdin"
+    rm -f "${STATE}/mount-row"
     echo Success > "${STATE}/install_out"
     echo Success > "${STATE}/uninstall_out"
 }
@@ -273,6 +282,18 @@ echo newer > "${MICROOS_ANDROID_ROM}/obb/main.25.com.uberspot.a2048.obb"
 touch -d '+1 min' "${MICROOS_ANDROID_ROM}/obb/main.25.com.uberspot.a2048.obb"
 run prepare "${a2048}"
 [[ "$(cat "${dest}/main.25.com.uberspot.a2048.obb")" == newer ]] || fail "changed obb not copied"
+
+case_name="obb on another word"
+reset
+make_apk "${a2048}" one com.uberspot.a2048 25
+mkdir -p "${MICROOS_ANDROID_ROM}/obb"
+echo data > "${MICROOS_ANDROID_ROM}/obb/main.25.com.uberspot.a2048.obb"
+printf 'card=CARD2-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+run prepare "${a2048}"
+[[ "${rc}" == 1 ]] || fail "exit ${rc}, out ${out}"
+logged "com.uberspot.a2048: shared storage reads other-card"
+[[ -z "$(ls -A "${MICROOS_ANDROID_CONTEXT}/external")" ]] || fail "obb copied on other-card"
 
 case_name="deleted apk"
 reset

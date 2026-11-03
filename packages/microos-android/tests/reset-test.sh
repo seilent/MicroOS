@@ -12,6 +12,10 @@ export STATE="${T}/state"
 export MICROOS_ANDROID_CONTEXT="${T}/contexts/android"
 export MICROOS_ANDROID_DATA="${T}/data"
 export MICROOS_GAPPS="${T}/gapps"
+export MICROOS_ANDROID_STATE="${T}/state-android"
+export MICROOS_SYSTEM_CARD="${T}/system-card"
+export MICROOS_TEST=1
+export MICROOS_ANDROID_UID="$(id -u)"
 
 cat > "${T}/bin/systemctl" <<'STUB'
 #!/usr/bin/bash
@@ -52,13 +56,17 @@ fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
 
 reset() {
     [[ ! -d "${T}/contexts" ]] || chmod -R u+w "${T}/contexts"
-    rm -rf "${STATE}" "${T}/contexts" "${MICROOS_ANDROID_DATA}"
+    rm -rf "${STATE}" "${T}/contexts" "${MICROOS_ANDROID_DATA}" "${MICROOS_ANDROID_STATE}"
     mkdir -p "${STATE}" "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system" "${MICROOS_ANDROID_DATA}/sideload"
     : > "${STATE}/calls"
     echo "$1" > "${STATE}/unit"
     echo "${2:-inactive}" > "${STATE}/update_unit"
     echo xml > "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system/packages.xml"
     chmod 0500 "${MICROOS_ANDROID_CONTEXT}/baked/data_overlay/system"
+    echo mmcblk0 > "${MICROOS_SYSTEM_CARD}"
+    mkdir -p "${MICROOS_ANDROID_STATE}"
+    mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+    printf 'storage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
     echo state > "${MICROOS_ANDROID_DATA}/sideload/com.example"
     echo com.example > "${MICROOS_ANDROID_DATA}/prune"
     echo log > "${MICROOS_ANDROID_DATA}/boot.log"
@@ -161,6 +169,37 @@ rm -rf "${T}/contexts"
 run --yes
 [[ "${rc}" == 0 ]] || fail "no context exit ${rc}: $(cat "${STATE}/out")"
 grep -q unshare "${STATE}/calls" && fail "no context: unshare called"
+
+reset inactive
+echo none > "${MICROOS_SYSTEM_CARD}"
+mkdir -p "${T}/content/MicroOS/Android/0123456789abcdef" "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+cat > "${T}/bin/findmnt" <<STUB
+#!/usr/bin/bash
+last=\${!#}
+[[ "\${last}" == "${T}/content" || "\${last}" == "${T}/content/"* ]] || exit 1
+case "\$*" in
+    *--mountpoint*) echo "ext4 CARD1-0000 rw" ;;
+    *) echo "CARD1-0000 ext4 rw" ;;
+esac
+STUB
+chmod 0755 "${T}/bin/findmnt"
+export MICROOS_CONTENT="${T}/content"
+run --yes
+[[ "${rc}" == 0 ]] || fail "a card reset exit ${rc}: $(cat "${STATE}/out")"
+[[ ! -e "${T}/content/MicroOS/Android/0123456789abcdef" ]] || fail "the card folder is left"
+[[ -d "${T}/content/MicroOS/Android" ]] || fail "the card's MicroOS tree was removed"
+
+reset inactive
+echo none > "${MICROOS_SYSTEM_CARD}"
+mkdir -p "${T}/content/MicroOS/Android/0123456789abcdef" "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'card=CARD2-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+run --yes
+[[ "${rc}" == 0 ]] || fail "another card exit ${rc}: $(cat "${STATE}/out")"
+[[ -d "${T}/content/MicroOS/Android/0123456789abcdef" ]] || fail "another card's folder was removed"
+grep -q "the shared storage CARD2-0000:MicroOS/Android/0123456789abcdef was left in place" "${STATE}/out" \
+    || fail "another card: no line: $(cat "${STATE}/out")"
+rm -f "${T}/bin/findmnt"
 
 if (( failures )); then
     echo "reset-test: ${failures} failure(s)" >&2

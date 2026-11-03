@@ -68,6 +68,7 @@ reset() {
         "${T}/home/.local/share/lepton" "${T}/home/.local/share/microemu"
     mkdir -p "${T}/reviewed" "${T}/snaps" "${T}/run/microos"
     rm -f "${STATE}/no-steam"
+    echo mmcblk0 > "${MICROOS_SYSTEM_CARD}"
 }
 
 stamp() {
@@ -225,6 +226,41 @@ steam_tree 25772114
 start=$SECONDS
 run
 (( SECONDS - start < 5 )) || fail "the check took $(( SECONDS - start )) s"
+
+reset
+steam_tree 25772114
+printf '25772114\n' > "${T}/reviewed/25772114"
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+echo none > "${MICROOS_SYSTEM_CARD}"
+mkdir -p "${T}/card/MicroOS/Android/0123456789abcdef"
+ln -s "${T}/card" "${T}/content"
+cat > "${T}/bin/findmnt" <<STUB
+#!/usr/bin/bash
+last=\${!#}
+[[ "\${last}" == "${T}/card" || "\${last}" == "${T}/card/"* ]] || exit 1
+case "\$*" in
+    *--mountpoint*) echo "ext4 CARD1-0000 rw" ;;
+    *) echo "CARD1-0000 ext4 rw" ;;
+esac
+STUB
+chmod 0755 "${T}/bin/findmnt"
+export MICROOS_CONTENT="${T}/content" MICROOS_TEST=1 MICROOS_ANDROID_UID="$(id -u)"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+run
+[[ "${rc}" == 0 && -z "${out}" ]] || fail "a usable card: exit ${rc} out ${out}: ${err}"
+echo mmcblk0 > "${MICROOS_SYSTEM_CARD}"
+run
+[[ "${rc}" == 2 && "${out}" == no-card ]] || fail "a card tie on an SD install: exit ${rc} out ${out}: ${err}"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+echo none > "${MICROOS_SYSTEM_CARD}"
+rm -rf "${T}/card/MicroOS"
+run
+[[ "${rc}" == 2 && "${out}" == folder-missing ]] || fail "the folder missing: exit ${rc} out ${out}: ${err}"
+mkdir -p "${T}/card/MicroOS/Android/0123456789abcdef"
+printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+run
+[[ "${rc}" == 0 && -z "${out}" ]] || fail "the folder back: exit ${rc} out ${out}: ${err}"
+rm -f "${MICROOS_CONTENT}" "${T}/bin/findmnt"
 
 [[ "${failures}" == 0 ]] || exit 1
 echo "check-test: ok"

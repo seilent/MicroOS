@@ -1,6 +1,9 @@
 #!/usr/bin/bash
 set -uo pipefail
 
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "${MICROOS_LEPTON_LIB:-${here}/microos-lepton-lib.sh}"
+
 LEPTON="${MICROOS_LEPTON:-/usr/libexec/microos/microos-lepton}"
 DATA="${MICROOS_ANDROID_DATA:-${HOME}/.local/share/microos-android}"
 CONTEXT="${MICROOS_ANDROID_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/android}"
@@ -270,9 +273,18 @@ install_set() {
 }
 
 copy_obb() {
-    local pkg=$1 dir=$2 src dest component target checked=
+    local pkg=$1 dir=$2 src dest component target checked="" folder="${CONTEXT}/external" storage_word storage_folder
     local -a sources=()
-    dest="${CONTEXT}/external/Android/obb/${pkg}"
+    storage_read || :
+    case "${storage_word}" in
+        card)
+            [[ -n "${storage_folder}" ]] || fail "${pkg}: the card folder is missing, not copying its obb files"
+            folder=${storage_folder}
+            ;;
+        on-internal) ;;
+        *) fail "${pkg}: shared storage reads ${storage_word}, not copying its obb files" ;;
+    esac
+    dest="${folder}/Android/obb/${pkg}"
     if [[ -L "${dir}/obb" ]]; then
         say "${dir}/obb is a link, not copying its obb files"
     elif [[ -d "${dir}/obb" ]]; then
@@ -287,7 +299,7 @@ copy_obb() {
         [[ -f "${src}" ]] || continue
         if [[ -z "${checked}" ]]; then
             for component in Android "Android/obb" "Android/obb/${pkg}"; do
-                target="${CONTEXT}/external/${component}"
+                target="${folder}/${component}"
                 [[ ! -L "${target}" ]] || fail "${pkg}: ${target} is a link, not copying its obb files"
             done
             checked=1

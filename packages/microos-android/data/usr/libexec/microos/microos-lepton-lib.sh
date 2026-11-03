@@ -16,6 +16,13 @@ SNAPSHOTS="${MICROOS_LEPTON_SNAPSHOTS:-${XDG_DATA_HOME}/microos-lepton/builds}"
 RUN="${MICROOS_RUNTIME_DIR:-${XDG_RUNTIME_DIR}/microos-lepton}"
 STATE_DIR="${MICROOS_ANDROID_STATE:-${XDG_STATE_HOME}/microos-android}"
 SYSTEM_CARD="${MICROOS_SYSTEM_CARD:-/run/microos/system-card}"
+CONTENT="${MICROOS_CONTENT:-/run/microos/content}"
+STORAGE_CONTEXT="${MICROOS_ANDROID_CONTEXT:-${DATA}/home/.local/share/lepton/contexts/android}"
+STORAGE_CONTEXT="${STORAGE_CONTEXT%/}"
+STORAGE_LOCK="${STATE_DIR}/storage.lock"
+STORAGE_STEP="${STATE_DIR}/storage-move"
+STORAGE_MANIFEST="${STATE_DIR}/storage-move.manifest"
+STORAGE_MARGIN="${MICROOS_STORAGE_MARGIN:-1073741824}"
 
 say() { printf '%s: %s\n' "${microos_me}" "$*" >&2; }
 
@@ -36,6 +43,286 @@ legacy_contexts() {
 fail() {
     say "$*"
     exit 1
+}
+
+storage_owner() {
+    local uid
+    if [[ "${MICROOS_TEST:-}" == 1 && -n "${MICROOS_ANDROID_UID:-}" ]]; then
+        printf '%s\n' "${MICROOS_ANDROID_UID}"
+        return 0
+    fi
+    uid=$(getent passwd micro 2>/dev/null | cut -d: -f3) || uid=
+    [[ -n "${uid}" ]] || return 1
+    printf '%s\n' "${uid}"
+}
+
+storage_tie() {
+    local file="${STORAGE_CONTEXT}/microos-android-storage" key=$1
+    [[ -f "${file}" && ! -L "${file}" ]] || return 1
+    sed -n "s/^${key}=//p" "${file}" 2>/dev/null | head -n 1
+}
+
+storage_content() {
+    local target
+    target=$(realpath -e "${CONTENT}" 2>/dev/null) || return 1
+    [[ -d "${target}" ]] || return 1
+    printf '%s\n' "${target}"
+}
+
+storage_mount_row() {
+    local target fields
+    target=$(realpath -e "$1" 2>/dev/null) || return 1
+    [[ -d "${target}" ]] || return 1
+    fields=$(findmnt -rno FSTYPE,UUID,FS-OPTIONS --mountpoint "${target}" 2>/dev/null) || return 1
+    [[ -n "${fields}" ]] || return 1
+    printf '%s\n' "${fields// /|}"
+}
+
+storage_id_ok() {
+    [[ "${1:-}" =~ ^[0-9a-f]{16}$ ]]
+}
+
+storage_du() {
+    local path=$1 size
+    [[ -e "${path}" || -L "${path}" ]] || return 1
+    size=$(podman unshare du -sb "${path}" 2>/dev/null | cut -f1) || size=
+    [[ "${size}" =~ ^[0-9]+$ ]] || size=$(du -sb "${path}" 2>/dev/null | cut -f1) || size=
+    [[ "${size}" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "${size}"
+}
+
+storage_token() {
+    local list=$1 want=$2 token
+    local -a tokens=()
+    IFS=, read -ra tokens <<< "${list}"
+    for token in "${tokens[@]}"; do
+        [[ "${token}" != "${want}" ]] || return 0
+    done
+    return 1
+}
+
+storage_read_only() {
+    storage_token "$1" ro || storage_token "$1" emergency_ro
+}
+
+storage_owner_ok() {
+    local path=$1 owner
+    owner=$(storage_owner) || return 1
+    [[ "$(stat -c %u "${path}" 2>/dev/null)" == "${owner}" ]]
+}
+
+storage_component_ok() {
+    local path=$1 flag
+    [[ ! "${path}" == *,* ]] || return 1
+    [[ -d "${path}" && ! -L "${path}" ]] || return 1
+    [[ "${path}" == "$(realpath -e "${path}" 2>/dev/null)" ]] || return 1
+    storage_owner_ok "${path}" || return 1
+    flag=$(lsattr -d "${path}" 2>/dev/null) || return 1
+    flag=${flag%%[[:space:]]*}
+    [[ "${flag}" != *F* ]]
+}
+
+storage_flag() {
+    local wait=$1 rounds=5 value
+    while [[ ! -e "${SYSTEM_CARD}" && ! -L "${SYSTEM_CARD}" ]]; do
+        [[ "${wait}" == 1 ]] || return 1
+        (( rounds > 0 )) || { say "system card flag not decided"; return 1; }
+        rounds=$((rounds - 1))
+        sleep 0.1
+    done
+    [[ ! -L "${SYSTEM_CARD}" ]] || { say "system card flag is a link, ignoring it"; return 1; }
+    value=$(head -n 1 "${SYSTEM_CARD}" 2>/dev/null) || value=
+    [[ -n "${value}" ]] || { say "system card flag is empty, ignoring it"; return 1; }
+    case "${value}" in
+        none) return 2 ;;
+        mmcblk[0-9]*) [[ "${value}" =~ ^mmcblk[0-9]+$ ]] || { say "system card flag reads ${value}, ignoring it"; return 1; } ;;
+        *) say "system card flag reads ${value}, ignoring it"; return 1 ;;
+    esac
+    printf '%s\n' "${value}"
+}
+
+storage_card_words() {
+    local id=$1 card=$2 content row type uuid options folder part
+    content=$(storage_content) || { printf 'no-card\n'; return 0; }
+    row=$(storage_mount_row "${content}") || { printf 'no-card\n'; return 0; }
+    IFS='|' read -r type uuid options <<< "${row}"
+    [[ "${type}" == ext4 ]] || { printf 'not-ext4\n'; return 0; }
+    storage_read_only "${options}" && { printf 'read-only\n'; return 0; }
+    [[ "${uuid}" == "${card}" ]] || { printf 'other-card\n'; return 0; }
+    folder="${content}/MicroOS/Android/${id}"
+    for part in "${content}/MicroOS" "${content}/MicroOS/Android"; do
+        [[ ! -e "${part}" && ! -L "${part}" ]] || storage_component_ok "${part}" \
+            || { printf 'folder-unusable\n'; return 0; }
+    done
+    [[ -e "${folder}" || -L "${folder}" ]] || { printf 'folder-missing\n'; return 0; }
+    storage_component_ok "${folder}" || { printf 'folder-unusable\n'; return 0; }
+    printf 'card\n%s\n' "${folder}"
+}
+
+storage_new_words() {
+    local content row type uuid options folder
+    content=$(storage_content) || { printf 'no-card\n'; return 0; }
+    row=$(storage_mount_row "${content}") || { printf 'no-card\n'; return 0; }
+    IFS='|' read -r type uuid options <<< "${row}"
+    [[ "${type}" == ext4 ]] || { printf 'not-ext4\n'; return 0; }
+    storage_read_only "${options}" && { printf 'read-only\n'; return 0; }
+    folder="${content}/MicroOS"
+    if [[ -e "${folder}" || -L "${folder}" ]] && ! storage_component_ok "${folder}"; then
+        printf 'folder-unusable\n'
+        return 0
+    fi
+    folder="${content}/MicroOS/Android"
+    if [[ -e "${folder}" || -L "${folder}" ]] && ! storage_component_ok "${folder}"; then
+        printf 'folder-unusable\n'
+        return 0
+    fi
+    printf 'card\n%s\n' "${content}/MicroOS/Android"
+}
+
+storage_read() {
+    local out
+    out=$(storage_state "$@") || return 1
+    storage_word=${out%%$'\n'*}
+    storage_folder=
+    [[ "${out}" != *$'\n'* ]] || storage_folder=${out#*$'\n'}
+}
+
+storage_state() {
+    local locked=0 wait=0 arg id="" card="" flag="" rc=0
+    for arg in "$@"; do
+        case "${arg}" in
+            --locked) locked=1 ;;
+            --wait) wait=1 ;;
+            -*) say "${arg} is not an option of storage state, refusing"; return 1 ;;
+        esac
+    done
+    if (( ! locked )) && storage_lock_taken; then
+        printf 'moving\n'
+        return 0
+    fi
+    id=$(storage_tie storage) || id=
+    card=$(storage_tie card) || card=
+    flag=$(storage_flag "${wait}") || rc=$?
+    if (( rc == 1 )); then
+        flag=
+    fi
+    if [[ -n "${card}" ]]; then
+        if [[ "${flag}" =~ ^mmcblk[0-9]+$ ]]; then
+            printf 'no-card\n'
+            return 0
+        fi
+        storage_card_words "${id}" "${card}"
+        return 0
+    fi
+    if [[ "${flag}" =~ ^mmcblk[0-9]+$ ]]; then
+        printf 'on-os-card\n%s/external\n' "${STORAGE_CONTEXT}"
+        return 0
+    fi
+    if [[ -e "${STORAGE_CONTEXT}" || -L "${STORAGE_CONTEXT}" ]]; then
+        printf 'on-internal\n'
+        return 0
+    fi
+    storage_new_words
+}
+
+storage_lock_taken() {
+    local fd
+    [[ -e "${STORAGE_LOCK}" ]] || return 1
+    { exec {fd}<"${STORAGE_LOCK}"; } 2>/dev/null || return 1
+    if flock -n -s "${fd}" 2>/dev/null; then
+        exec {fd}<&-
+        return 1
+    fi
+    exec {fd}<&-
+    return 0
+}
+
+storage_new_id() {
+    od -An -N8 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+storage_write() {
+    local file=$1 dir tmp
+    dir=$(dirname "${file}")
+    mkdir -p "${dir}" || return 1
+    tmp=$(mktemp "${dir}/.${file##*/}.XXXXXX") || return 1
+    if ! { cat > "${tmp}" && sync "${tmp}" && mv -T "${tmp}" "${file}" && sync "${dir}"; }; then
+        rm -f "${tmp}"
+        return 1
+    fi
+}
+
+storage_tie_write() {
+    local card=$1 id=$2
+    {
+        [[ -z "${card}" ]] || printf 'card=%s\n' "${card}"
+        printf 'storage=%s\n' "${id}"
+    } | storage_write "${STORAGE_CONTEXT}/microos-android-storage"
+}
+
+storage_step_write() {
+    local verb=$1 id=$2 card=$3 keep=$4 step=$5
+    {
+        printf 'verb=%s\n' "${verb}"
+        printf 'id=%s\n' "${id}"
+        printf 'card=%s\n' "${card}"
+        printf 'keep-card=%s\n' "${keep}"
+        printf 'step=%s\n' "${step}"
+        printf 'manifest=%s\n' "${STORAGE_MANIFEST}"
+    } | storage_write "${STORAGE_STEP}"
+}
+
+storage_step_get() {
+    local key=$1
+    [[ -f "${STORAGE_STEP}" && ! -L "${STORAGE_STEP}" ]] || return 1
+    sed -n "s/^${key}=//p" "${STORAGE_STEP}" 2>/dev/null | head -n 1
+}
+
+storage_step_forget() {
+    rm -f "${STORAGE_STEP}" "${STORAGE_MANIFEST}"
+}
+
+storage_manifest() {
+    local dir=$1
+    podman unshare bash -c '
+        set -uo pipefail
+        cd "$1" || exit 1
+        find -P . -mindepth 1 -printf "%y|%U|%m|%T@|%s|%l|%P\n" | LC_ALL=C sort | while IFS="|" read -r type owner mode mtime size target path; do
+            sha=-
+            case "${type}" in
+                f) sha=$(dd if="${path}" iflag=direct bs=1M status=none | sha256sum | cut -d" " -f1) || exit 1 ;;
+                d|l) ;;
+                *) printf "%s\n" "${path}" >&2; exit 2 ;;
+            esac
+            printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" "${type}" "${owner}" "${mode}" "${mtime%%.*}" "${size}" "${target}" "${sha}" "${path}"
+        done' _ "${dir}"
+}
+
+storage_make_component() {
+    local path=$1 mode=$2 flags
+    if [[ -e "${path}" || -L "${path}" ]]; then
+        return 0
+    fi
+    mkdir "${path}" || return 1
+    chmod "${mode}" "${path}" || return 1
+    flags=$(lsattr -d "${path}" 2>/dev/null) || flags=
+    flags=${flags%%[[:space:]]*}
+    if [[ "${flags}" == *F* ]]; then
+        chattr -F "${path}" || return 1
+    fi
+    return 0
+}
+
+storage_make_folder() {
+    local base=$1 id=$2
+    storage_make_component "${base}/MicroOS" 0755 || return 1
+    storage_component_ok "${base}/MicroOS" || return 1
+    storage_make_component "${base}/MicroOS/Android" 0755 || return 1
+    storage_component_ok "${base}/MicroOS/Android" || return 1
+    if [[ -n "${id}" ]]; then
+        storage_make_component "${base}/MicroOS/Android/${id}" 0770 || return 1
+        storage_component_ok "${base}/MicroOS/Android/${id}" || return 1
+    fi
 }
 
 paths() {

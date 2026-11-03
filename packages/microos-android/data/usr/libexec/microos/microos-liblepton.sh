@@ -223,6 +223,57 @@ microos_check_context() {
     fi
 }
 
+microos_external() {
+    local source=${MICROOS_ANDROID_EXTERNAL:-} tie="${STEAM_COMPAT_DATA_PATH:-}/microos-android-storage" card="" stem
+    local root uuid fstype options content part
+    local -a parts=()
+    if [[ -f "${tie}" && ! -L "${tie}" ]]; then
+        card=$(sed -n 's/^card=//p' "${tie}" 2>/dev/null | head -n 1) || card=
+    fi
+    if [[ -z "${source}" ]]; then
+        [[ -z "${card}" ]] || microos_refuse "MICROOS_ANDROID_EXTERNAL is not set for the card ${card}, refusing"
+        source="${STEAM_COMPAT_DATA_PATH}/external"
+    fi
+    [[ "${source}" == /* ]] || microos_refuse "MICROOS_ANDROID_EXTERNAL ${source} is not an absolute path, refusing"
+    [[ "${source}" != *,* ]] || microos_refuse "MICROOS_ANDROID_EXTERNAL ${source} holds a comma, refusing"
+    [[ -d "${source}" && ! -L "${source}" ]] || microos_refuse "MICROOS_ANDROID_EXTERNAL ${source} is not a directory, refusing"
+    [[ "${source}" == "$(readlink -f "${source}")" ]] || microos_refuse "MICROOS_ANDROID_EXTERNAL ${source} is not its own real path, refusing"
+    if [[ -z "${card}" ]]; then
+        [[ "${source}" == "${STEAM_COMPAT_DATA_PATH}/external" ]] \
+            || microos_refuse "MICROOS_ANDROID_EXTERNAL ${source} is not ${STEAM_COMPAT_DATA_PATH}/external on an SD install, refusing"
+        printf '%s' "${source}"
+        return 0
+    fi
+    root=$(realpath -e "${MICROOS_CONTENT:-/run/microos/content}" 2>/dev/null) || root=
+    if [[ -z "${root}" || ! -d "${root}" ]]; then
+        microos_refuse "the content card ${MICROOS_CONTENT:-/run/microos/content} is not there, refusing"
+    fi
+    [[ "${source}" == "${root}/"* ]] || microos_refuse "MICROOS_ANDROID_EXTERNAL ${source} is not on ${root}, refusing"
+    IFS='|' read -r uuid fstype options <<< "$(findmnt -rno UUID,FSTYPE,FS-OPTIONS --target "${source}" 2>/dev/null | tr ' ' '|')"
+    [[ "${fstype}" == ext4 ]] || microos_refuse "${source} is on ${fstype:-an unknown filesystem}, not ext4, refusing"
+    IFS=, read -ra parts <<< "${options}"
+    for part in "${parts[@]}"; do
+        case "${part}" in
+            ro|emergency_ro) microos_refuse "${source} is on a read only card, refusing" ;;
+        esac
+    done
+    [[ "${uuid}" == "${card}" ]] || microos_refuse "${source} is on card ${uuid:-none}, not the tie's ${card}, refusing"
+    stem=${source#"${root}/"}
+    part=
+    for content in ${stem//\// }; do
+        part="${part:+${part}/}${content}"
+        [[ -d "${root}/${part}" && ! -L "${root}/${part}" ]] \
+            || microos_refuse "${root}/${part} is not a directory, refusing"
+        [[ "${root}/${part}" == "$(readlink -f "${root}/${part}")" ]] \
+            || microos_refuse "${root}/${part} is not its own real path, refusing"
+        [[ "$(stat -c %u "${root}/${part}")" == "$(id -u)" ]] \
+            || microos_refuse "${root}/${part} is not $(id -un)'s, refusing"
+        [[ "$(lsattr -d "${root}/${part}" 2>/dev/null)" != *F* ]] \
+            || microos_refuse "${root}/${part} is casefold, refusing"
+    done
+    printf '%s' "${source}"
+}
+
 microos_narrow_bind() {
     local i found=0 external bind="type=bind,source=${LEPTON_DATA_DIR},destination=${LEPTON_DATA_DIR},rw"
     local -a cmdline=()
@@ -231,8 +282,8 @@ microos_narrow_bind() {
             found=$((found + 1))
             i=$((i + 1))
             if [[ -d "${STEAM_COMPAT_DATA_PATH:-}" ]]; then
-                external="${STEAM_COMPAT_DATA_PATH}/external"
-                cmdline+=(--mount "type=bind,source=${external},destination=${external},rw")
+                external=$(microos_external) || exit 1
+                cmdline+=(--mount "type=bind,source=${external},destination=${STEAM_COMPAT_DATA_PATH}/external,rw")
             fi
         else
             cmdline+=("${PODMAN_CMDLINE[i]}")
@@ -358,6 +409,9 @@ microos_audit_mounts() {
     if [[ -n "${STEAM_COMPAT_DATA_PATH:-}" ]]; then
         allowed+=("$(readlink -m "${STEAM_COMPAT_DATA_PATH}/external")")
     fi
+    if [[ -n "${MICROOS_ANDROID_EXTERNAL:-}" ]]; then
+        allowed+=("$(readlink -m "${MICROOS_ANDROID_EXTERNAL}")")
+    fi
     for arg in "${PODMAN_CMDLINE[@]}"; do
         case "${prev}" in
             -v|--volume)
@@ -391,6 +445,14 @@ microos_audit_mounts() {
     fi
     for source in "${sources[@]}"; do
         canonical=$(readlink -m "${source}") || continue
+        if [[ "${canonical}" == /run/media/* ]]; then
+            ok=0
+            for arg in "${allowed[@]}"; do
+                [[ "${canonical}" != "${arg}" ]] || ok=1
+            done
+            (( ok )) || microos_refuse "Lepton binds ${source} under /run/media/, refusing"
+            continue
+        fi
         [[ "${canonical}" == "${data}" || "${data}" == "${canonical%/}/"* || "${canonical}" == "${data}/"* ]] || continue
         readlink -f "${source}" > /dev/null 2>&1 \
             || microos_refuse "Lepton binds ${source}, at, above or under ${LEPTON_DATA_DIR} and cannot be resolved, refusing"

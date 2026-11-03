@@ -2182,7 +2182,9 @@ play_run="${repo}/data/usr/libexec/microos/microos-android-run"
 play_data="${T}/play-data"
 play_home="${play_data}/home"
 play_ctx="${play_home}/.local/share/lepton/contexts/android"
-mkdir -p "${T}/play-bin" "${play_data}"
+mkdir -p "${T}/play-bin" "${play_data}" "${play_ctx}/external"
+printf 'storage=0123456789abcdef\n' > "${play_ctx}/microos-android-storage"
+echo mmcblk0 > "${T}/play-card"
 cat > "${T}/play-bin/pad-nodes" <<'STUB'
 #!/usr/bin/bash
 exit 0
@@ -2203,8 +2205,12 @@ XDG_STATE_HOME="${T}/play-state" MICROOS_ANDROID_DATA="${play_data}" MICROOS_POL
     MICROOS_OPTS="${repo}/data/usr/share/microos-android/opts" \
     MICROOS_LEPTON="${launcher}" \
     MICROOS_PAD_NODES="${T}/play-bin/pad-nodes" \
+    MICROOS_CONTENT="${T}/play-content" MICROOS_SYSTEM_CARD="${T}/play-card" MICROOS_TEST=1 \
+    MICROOS_ANDROID_UID="$(id -u)" \
     STEAM_COMPAT_DATA_PATH="${play_ctx}" \
     timeout -k 2 20 "${play_run}" > "${STATE}/out-play-run" 2>&1 || rc=$?
+grep -qx "MICROOS_ANDROID_EXTERNAL=${play_ctx}/external" "${STATE}/env-android" \
+    || fail "play-run on the real launcher: the external source: $(tail -n 5 "${STATE}/out-play-run")"
 grep -qx "STEAM_COMPAT_DATA_PATH=${play_ctx}" "${STATE}/env-android" \
     || fail "play-run on the real launcher: the launcher refused the context: $(tail -n 5 "${STATE}/out-play-run")"
 grep -q "microos-lepton: kept ${play_data}/backups/android.pre-" "${STATE}/out-play-run" \
