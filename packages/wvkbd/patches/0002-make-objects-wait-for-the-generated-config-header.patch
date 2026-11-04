@@ -1,0 +1,11 @@
+--- a/Makefile
++++ b/Makefile
+@@ -46,7 +46,7 @@
+ proto/%-client-protocol.h: proto/%.xml
+ 	wayland-scanner client-header < $< > $@
+ 
+-$(OBJECTS): $(HDRS) $(WVKBD_HEADERS)
++$(OBJECTS): $(HDRS) $(WVKBD_HEADERS) $(BUILDDIR)/config.h
+ 
+ wvkbd-${LAYOUT}: $(BUILDDIR)/config.h $(OBJECTS) layout.${LAYOUT}.h
+ 	$(CC) -o wvkbd-${LAYOUT} $(OBJECTS) $(LDFLAGS)
