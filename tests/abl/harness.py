@@ -1119,8 +1119,14 @@ def partition_gates():
              == "refused: partitions", "payload larger than the slot")
         need(partition_refusal(box, length, {sda: fake_gpt("disk-a", default_parts(boot_a=0, boot_b=0))})
              == "refused: slot", "no active slot")
+        need(partition_refusal(box, length, {sda: fake_gpt("disk-a", default_parts(boot_a=0, boot_b=8))})
+             == "", "boot_b alone is active b")
+        need(partition_refusal(box, length, {sda: fake_gpt("disk-a", default_parts(boot_a=0, boot_b=0))})
+             == "refused: slot", "neither bit set")
+        need(partition_refusal(box, length, {sda: fake_gpt("disk-a", default_parts(boot_a=0, boot_b=0))})
+             == "refused: slot", "neither bit set")
         need(partition_refusal(box, length, {sda: fake_gpt("disk-a", default_parts(boot_a=4, boot_b=8))})
-             == "refused: slot", "both slots active")
+             == "", "the PM2 GPT with both bits set was refused")
 
         def cross(mod):
             mod.read_gpt = lambda dev: good.get(dev)

@@ -609,8 +609,8 @@ def active_slot(mode, labels):
     boot_b = labels["boot_b"][0][2]
     flag_a = bool(boot_a["attrs"] & 0x4)
     flag_b = bool(boot_b["attrs"] & 0x8)
-    if flag_a == flag_b:
-        fail("refused: slot", "the GPT boot attributes name no single active slot")
+    if not flag_a and not flag_b:
+        fail("refused: slot", "the GPT boot attributes name no active slot")
     active = "a" if flag_a else "b"
     for source in (boot_lun(), cmdline_suffix()):
         if source and source != active:
