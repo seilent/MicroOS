@@ -537,6 +537,15 @@ ablrows=$(awk -F'\t' -v v="$(ablkey MICROOS_ABL_VERSION)" -v l="$(ablkey MICROOS
 [[ $(grep -c . <<<"$ablrows") -eq 1 ]] || fail "rocknix-abl releases.tsv rows for the payload: $ablrows"
 abltop=$(awk -F'\t' 'NR > 1 && $1 + 0 >= m { m = $1 + 0; v = $2 } END { print v }' "$abl/releases.tsv")
 [[ $(ablkey MICROOS_ABL_VERSION) == "$abltop" ]] || fail "rocknix-abl manifest version is not the highest order row"
+[[ -f /usr/libexec/microos/microos-abl && -x /usr/libexec/microos/microos-abl ]] || fail "microos-abl is not executable"
+[[ $(stat -c '%a %U %G' /usr/libexec/microos/microos-abl) == '755 root root' ]] || fail "microos-abl mode or owner"
+[[ -L /usr/bin/microos-abl ]] || fail "/usr/bin/microos-abl is not a symlink"
+[[ $(readlink -f /usr/bin/microos-abl) == /usr/libexec/microos/microos-abl ]] \
+  || fail "/usr/bin/microos-abl does not resolve to the libexec tool"
+command -v systemd-inhibit > /dev/null || fail "systemd-inhibit is not on PATH"
+ablstatus=$(microos-abl status) || fail "microos-abl status failed: $ablstatus"
+[[ $(tail -n 1 <<< "$ablstatus") == 'microos-abl: refused: not a PM2' ]] \
+  || fail "microos-abl status: $(tail -n 1 <<< "$ablstatus")"
 for p in gamescope gamescope-session gamescope-session-steam; do
   [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
 done

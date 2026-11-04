@@ -1,0 +1,1374 @@
+#!/usr/bin/env python3
+import ctypes
+import errno
+import fcntl
+import glob
+import hashlib
+import json
+import mmap
+import os
+import re
+import signal
+import stat
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+import zlib
+
+ME = "microos-abl"
+ESP = os.environ.get("MICROOS_ESP") or "/boot/efi"
+RUNDIR = os.environ.get("MICROOS_RUNDIR") or "/run/microos"
+STATEDIR = os.environ.get("MICROOS_STATEDIR") or "/var/lib/microos"
+BOOTIMG = os.environ.get("MICROOS_BOOTIMG_UPDATE") or "/usr/libexec/microos/microos-bootimg-update"
+DT = os.environ.get("MICROOS_DT") or "/sys/firmware/devicetree/base"
+POWER = os.environ.get("MICROOS_POWER_SUPPLY") or "/sys/class/power_supply"
+CMDLINE = os.environ.get("MICROOS_CMDLINE") or "/proc/cmdline"
+BOOTID = os.environ.get("MICROOS_BOOTID") or "/proc/sys/kernel/random/boot_id"
+
+PAYLOAD = "/usr/lib/microos/abl"
+ELF = "abl_signed-SM8250.elf"
+ESP_SUB = os.path.join("rocknix_abl", "SM8250")
+ESP_BACKUP = "microos-backup"
+SLOT_MAX = 8 * 1024 * 1024
+LOCK_WAIT = 10
+BATTERY_MIN = 20
+BLKFLSBUF = 0x1261
+BLKSSZGET = 0x1268
+BLKGETSIZE64 = 0x80081272
+
+STOP = False
+
+
+class Refused(Exception):
+    def __init__(self, result, detail=""):
+        Exception.__init__(self, result)
+        self.result = result
+        self.detail = detail
+
+
+def say(msg):
+    try:
+        print(f"{ME}: {msg}", flush=True)
+    except OSError:
+        pass
+
+
+def note(msg):
+    try:
+        print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+    except OSError:
+        pass
+
+
+def fail(result, text=""):
+    raise Refused(result, text)
+
+
+def detail(err):
+    if err.detail:
+        note(err.detail)
+
+
+def code_of(result):
+    if result.startswith("refused") or result.startswith("failed"):
+        return 1
+    if result.startswith("skipped"):
+        return 3
+    return 0
+
+
+def report(result):
+    say(result)
+    return code_of(result)
+
+
+def boottime():
+    return time.clock_gettime(time.CLOCK_BOOTTIME)
+
+
+def read_text(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+
+
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def file_sha(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            block = f.read(1 << 20)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
+def sha256(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def fsync_dir(path):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_atomic(path, data, mode):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o755, exist_ok=True)
+    fd = -1
+    tmp = ""
+    try:
+        fd, tmp = tempfile.mkstemp(dir=directory, prefix="." + os.path.basename(path) + ".")
+        os.fchmod(fd, mode)
+        os.write(fd, data)
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(tmp, path)
+        tmp = ""
+        fsync_dir(directory)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def write_key_file(path, values, mode):
+    lines = "".join(f"{k}={v}\n" for k, v in values)
+    write_atomic(path, lines.encode(), mode)
+
+
+def run(cmd):
+    try:
+        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return 127, "", f"cannot run {cmd[0]}"
+    return p.returncode, p.stdout, p.stderr
+
+
+def u16(data, off):
+    return struct.unpack_from("<H", data, off)[0]
+
+
+def u32(data, off):
+    return struct.unpack_from("<I", data, off)[0]
+
+
+def identify(data):
+    if len(data) < 52 or data[:4] != b"\x7fELF" or data[4] != 1 or data[5] != 1:
+        return None
+    phoff = u32(data, 28)
+    if phoff == 0:
+        return None
+    phentsize = u16(data, 42)
+    phnum = u16(data, 44)
+    shoff = u32(data, 32)
+    shentsize = u16(data, 46)
+    shnum = u16(data, 48)
+    if phentsize < 32 or (phnum and phentsize * phnum > len(data)):
+        return None
+    length = shoff + shnum * shentsize
+    for i in range(phnum):
+        off = phoff + i * phentsize
+        if off + 20 > len(data):
+            return None
+        end = u32(data, off + 4) + u32(data, off + 16)
+        if end > length:
+            length = end
+    if length > len(data) or length == 0:
+        return None
+    return length, sha256(data[:length])
+
+
+def is_loop(path):
+    try:
+        if not stat.S_ISBLK(os.stat(path).st_mode):
+            return False
+    except OSError:
+        return False
+    name = os.path.realpath(path).rsplit("/", 1)[-1]
+    if not re.fullmatch(r"loop[0-9]+", name):
+        return False
+    return os.path.isdir(os.path.join("/sys/class/block", name))
+
+
+def mode_vars():
+    return {
+        "root": os.environ.get("MICROOS_ABL_ROOT", ""),
+        "catalog": os.environ.get("MICROOS_ABL_CATALOG", ""),
+        "a": os.environ.get("MICROOS_ABL_A", ""),
+        "b": os.environ.get("MICROOS_ABL_B", ""),
+        "active": os.environ.get("MICROOS_ABL_ACTIVE", ""),
+        "disk": os.environ.get("MICROOS_ABL_DISK_GUID", ""),
+        "guid_a": os.environ.get("MICROOS_ABL_PART_GUID_A", ""),
+        "guid_b": os.environ.get("MICROOS_ABL_PART_GUID_B", ""),
+        "scan": os.environ.get("MICROOS_ABL_SCAN", "").split(),
+    }
+
+
+def detect_mode():
+    v = mode_vars()
+    if v["scan"]:
+        if v["a"] or v["b"] or v["active"] or v["disk"] or v["guid_a"] or v["guid_b"]:
+            fail("refused: mode")
+        if not v["root"]:
+            fail("refused: mode")
+        for dev in v["scan"]:
+            if not is_loop(dev):
+                fail("refused: mode")
+        catalog = v["catalog"] or os.path.join(v["root"], "releases.tsv")
+        return {"name": "loop", "devices": v["scan"], "root": v["root"], "catalog": catalog}
+    if v["root"] or v["catalog"] or v["a"] or v["b"]:
+        for key in ("root", "catalog", "a", "b", "active", "disk", "guid_a", "guid_b"):
+            if not v[key]:
+                fail("refused: mode")
+        if v["active"] not in ("a", "b", "none"):
+            fail("refused: mode")
+        for slot in ("a", "b"):
+            try:
+                st = os.stat(v[slot])
+            except OSError:
+                fail("refused: mode")
+            if not stat.S_ISREG(st.st_mode):
+                fail("refused: mode")
+        return {"name": "testing", "root": v["root"], "catalog": v["catalog"], "a": v["a"], "b": v["b"],
+                "active": v["active"], "disk_guid": v["disk"], "guid_a": v["guid_a"], "guid_b": v["guid_b"]}
+    return {"name": "production", "devices": None, "root": PAYLOAD,
+            "catalog": os.path.join(PAYLOAD, "releases.tsv")}
+
+
+def catalog_rows(path):
+    try:
+        text = read_bytes(path).decode()
+    except OSError:
+        fail("refused: payload")
+    lines = text.splitlines()
+    if not lines or lines[0] != "order\tversion\tsoc\tlength\tsha256":
+        fail("refused: payload")
+    rows = []
+    orders = set()
+    idents = set()
+    for line in lines[1:]:
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) != 5:
+            fail("refused: payload")
+        order, version, soc, length, digest = fields
+        if not order.isdigit() or not length.isdigit() or not version:
+            fail("refused: payload")
+        if soc != "SM8250" or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            fail("refused: payload")
+        known = int(order)
+        size = int(length)
+        if known in orders or (size, digest) in idents or size <= 0:
+            fail("refused: payload")
+        orders.add(known)
+        idents.add((size, digest))
+        rows.append({"order": known, "version": version, "length": size, "sha256": digest})
+    if not rows:
+        fail("refused: payload")
+    return rows
+
+
+def manifest(path):
+    values = {}
+    try:
+        text = read_bytes(path).decode()
+    except OSError:
+        fail("refused: payload")
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
+
+
+def load_payload(mode):
+    root = mode["root"]
+    meta = manifest(os.path.join(root, "manifest"))
+    if meta.get("MICROOS_ABL_FORMAT") != "1" or meta.get("MICROOS_ABL_SOC") != "SM8250":
+        fail("refused: payload")
+    try:
+        data = read_bytes(os.path.join(root, ELF))
+    except OSError:
+        fail("refused: payload")
+    whole = sha256(data)
+    ident = identify(data)
+    if ident is None:
+        fail("refused: payload")
+    length = ident[0]
+    if meta.get("MICROOS_ABL_LENGTH") != str(length):
+        fail("refused: payload")
+    if meta.get("MICROOS_ABL_SHA256") != whole or meta.get("MICROOS_ABL_ADMITTED") != whole:
+        fail("refused: payload")
+    rows = catalog_rows(mode["catalog"])
+    found = [r for r in rows if (r["length"], r["sha256"]) == ident]
+    if len(found) != 1:
+        fail("refused: payload")
+    return {"data": data, "length": length, "sha256": whole, "ident": ident, "row": found[0],
+            "rows": rows, "root": root}
+
+
+def booted_id():
+    value = ""
+    for word in read_text(CMDLINE).split():
+        if word.startswith("microos.deploy="):
+            value = word.split("=", 1)[1]
+    return value
+
+
+def is_confirmed():
+    lines = read_text(os.path.join(STATEDIR, "confirmed")).splitlines()
+    if not lines:
+        return False
+    booted = booted_id()
+    return bool(booted) and lines[0] == booted
+
+
+def gate_platform():
+    try:
+        raw = read_bytes(os.path.join(DT, "compatible"))
+    except OSError:
+        fail("refused: not a PM2", f"no {os.path.join(DT, 'compatible')}")
+    parts = [p for p in raw.decode("utf-8", "replace").split("\0") if p]
+    if "ayaneo,pocket-micro2" not in parts or "qcom,sm8250" not in parts:
+        fail("refused: not a PM2", " ".join(parts))
+
+
+def gate_confirmed(mode):
+    lines = read_text(os.path.join(STATEDIR, "confirmed")).splitlines()
+    confirmed = lines[0] if lines else ""
+    booted = booted_id()
+    if not booted or confirmed != booted:
+        fail("refused: not confirmed", f"confirmed '{confirmed}' booted '{booted}'")
+    return load_payload(mode)
+
+
+def esp_sources(root):
+    src = {"README": os.path.join(root, "esp", "README")}
+    for name in (ELF, ELF + ".sha256", "releases.tsv", "manifest"):
+        src["SM8250/" + name] = os.path.join(root, name)
+    for name in ("backup_abl.sh", "flash_abl.sh", "restore_backup_abl.sh"):
+        src["SM8250/" + name] = os.path.join(root, "esp", name)
+    return src
+
+
+def sync_esp(payload):
+    base = os.path.join(ESP, "rocknix_abl")
+    for rel, source in esp_sources(payload["root"]).items():
+        try:
+            data = read_bytes(source)
+        except OSError:
+            fail("skipped: esp", f"no {source}")
+        dest = os.path.join(base, rel)
+        want = sha256(data)
+        try:
+            if file_sha(dest) == want:
+                continue
+        except OSError:
+            pass
+        try:
+            os.makedirs(os.path.dirname(dest), mode=0o755, exist_ok=True)
+            write_atomic(dest, data, 0o755 if dest.endswith(".sh") else 0o644)
+        except OSError:
+            fail("skipped: esp", f"cannot write {dest}")
+        if file_sha(dest) != want:
+            fail("skipped: esp", f"{dest} did not hold the payload bytes")
+    fsync_dir(base)
+
+
+def esp_check():
+    rc, out, err = run([BOOTIMG, "--check"])
+    if rc != 0:
+        fail("skipped: esp", err.strip() or f"--check exit {rc}")
+
+
+def refresh_esp(payload):
+    lock = take_lock(os.path.join(RUNDIR, "bootimg.lock"), LOCK_WAIT)
+    try:
+        sync_esp(payload)
+    finally:
+        os.close(lock)
+
+
+def kernel_size():
+    try:
+        return os.stat(os.path.join(ESP, "KERNEL")).st_size
+    except OSError:
+        return 0
+
+
+def inhibit():
+    if os.environ.get("MICROOS_ABL_INHIBITED"):
+        return
+    binary = os.environ.get("MICROOS_SYSTEMD_INHIBIT") or "systemd-inhibit"
+    try:
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    except (OSError, ValueError):
+        note("cannot ignore SIGHUP")
+    env = dict(os.environ)
+    env["MICROOS_ABL_INHIBITED"] = "1"
+    argv = [binary, "--what=sleep", "--mode=block", "--who=" + ME, "--why=writing the ABL",
+            sys.executable, os.path.realpath(__file__)] + [str(a) for a in sys.argv[1:]]
+    try:
+        os.execvpe(binary, argv, env)
+    except OSError as err:
+        fail("skipped: inhibit", f"cannot exec {binary}: {err}")
+
+
+def take_lock(path, wait):
+    try:
+        os.makedirs(os.path.dirname(path), mode=0o755, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644)
+    except OSError:
+        fail("refused: lock", f"cannot open {path}")
+    if wait is None:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            fail("skipped: busy")
+        return fd
+    end = boottime() + wait
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except OSError:
+            if boottime() >= end:
+                os.close(fd)
+                fail("skipped: esp busy")
+            time.sleep(0.1)
+
+
+def block_size(path):
+    st = os.stat(path)
+    if not stat.S_ISBLK(st.st_mode):
+        return st.st_size
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        return struct.unpack("<Q", fcntl.ioctl(fd, BLKGETSIZE64, b"\0" * 8))[0]
+    finally:
+        os.close(fd)
+
+
+def sector_size(path):
+    try:
+        if not stat.S_ISBLK(os.stat(path).st_mode):
+            return 512
+    except OSError:
+        return 512
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        return struct.unpack("<I", fcntl.ioctl(fd, BLKSSZGET, b"\0" * 4))[0]
+    finally:
+        os.close(fd)
+
+
+def read_gpt(dev):
+    try:
+        fd = os.open(dev, os.O_RDONLY | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        try:
+            ssz = struct.unpack("<I", fcntl.ioctl(fd, BLKSSZGET, b"\0" * 4))[0]
+        except OSError:
+            ssz = 512
+        header = os.pread(fd, 92, ssz)
+        if len(header) < 92 or header[:8] != b"EFI PART":
+            return None
+        hsize = struct.unpack_from("<I", header, 12)[0]
+        if hsize < 92 or hsize > ssz:
+            return None
+        stored = struct.unpack_from("<I", header, 16)[0]
+        check = bytearray(header[:hsize])
+        struct.pack_into("<I", check, 16, 0)
+        if zlib.crc32(bytes(check)) & 0xFFFFFFFF != stored:
+            return None
+        disk = str(uuid.UUID(bytes_le=header[56:72]))
+        elba, count, esize = struct.unpack_from("<QII", header, 72)
+        if esize < 128 or esize > 4096 or count < 1 or count > 4096:
+            return None
+        table = os.pread(fd, count * esize, elba * ssz)
+        if len(table) < count * esize:
+            return None
+        if zlib.crc32(table) & 0xFFFFFFFF != struct.unpack_from("<I", header, 88)[0]:
+            return None
+        parts = []
+        for index in range(count):
+            raw = table[index * esize:(index + 1) * esize]
+            if len(raw) < 128:
+                return None
+            if raw[:16] == b"\0" * 16:
+                parts.append(None)
+                continue
+            first, last = struct.unpack_from("<QQ", raw, 32)
+            attrs = struct.unpack_from("<Q", raw, 48)[0]
+            label = raw[56:128].decode("utf-16-le", "replace").split("\0")[0]
+            parts.append({"label": label, "guid": str(uuid.UUID(bytes_le=raw[16:32])),
+                          "first": first, "last": last, "attrs": attrs})
+        return {"disk_guid": disk, "sector": ssz, "parts": parts}
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def scanned_devices():
+    out = []
+    try:
+        names = sorted(os.listdir("/sys/block"))
+    except OSError:
+        return out
+    for name in names:
+        if name.startswith("loop") or name.startswith("ram") or name.startswith("zram"):
+            continue
+        out.append(os.path.join("/dev", name))
+    return out
+
+
+def part_node(dev, index):
+    number = str(index + 1)
+    if dev[-1:].isdigit():
+        return dev + "p" + number
+    return dev + number
+
+
+def block_name(dev):
+    return os.path.realpath(dev).rsplit("/", 1)[-1]
+
+
+def block_removable(dev):
+    value = read_text(os.path.join("/sys/class/block", block_name(dev), "removable"))
+    return value != "0"
+
+
+def block_sysfs(dev):
+    try:
+        return os.path.realpath(os.path.join("/sys/class/block", block_name(dev)))
+    except OSError:
+        return ""
+
+
+def boot_lun():
+    for base in sorted(glob.glob("/sys/class/scsi_host/host*")):
+        for rel in ("attributes/boot_lun_enabled", "../../attributes/boot_lun_enabled",
+                    "../../../attributes/boot_lun_enabled"):
+            path = os.path.normpath(os.path.join(base, rel))
+            try:
+                value = read_bytes(path).decode("utf-8", "replace").strip().lower()
+            except OSError:
+                continue
+            if value in ("a", "b"):
+                return value
+    return ""
+
+
+def cmdline_suffix():
+    value = ""
+    for word in read_text(CMDLINE).split():
+        if "slot_suffix=" in word:
+            value = word.rsplit("=", 1)[-1]
+    if value.startswith("_"):
+        value = value[1:]
+    return value if value in ("a", "b") else ""
+
+
+def active_slot(mode, labels):
+    if mode["name"] == "testing":
+        if mode["active"] not in ("a", "b"):
+            fail("refused: slot", f"active slot is {mode['active'] or 'unset'}")
+        return mode["active"]
+    for name in ("boot_a", "boot_b"):
+        if len(labels.get(name, [])) != 1:
+            fail("refused: slot", f"{name} is not exactly one partition")
+    boot_a = labels["boot_a"][0][2]
+    boot_b = labels["boot_b"][0][2]
+    flag_a = bool(boot_a["attrs"] & 0x4)
+    flag_b = bool(boot_b["attrs"] & 0x8)
+    if flag_a == flag_b:
+        fail("refused: slot", "the GPT boot attributes name no single active slot")
+    active = "a" if flag_a else "b"
+    for source in (boot_lun(), cmdline_suffix()):
+        if source and source != active:
+            fail("refused: slot", f"the GPT says {active}, another source says {source}")
+    return active
+
+
+def probe_partitions(mode, length):
+    if mode["name"] == "testing":
+        slots = {}
+        for key in ("a", "b"):
+            path = mode[key]
+            try:
+                size = block_size(path)
+                sector = sector_size(path)
+            except OSError:
+                fail("refused: partitions", f"cannot size {path}")
+            if size < length or size > SLOT_MAX:
+                fail("refused: partitions", f"{path} is {size} bytes, payload {length}")
+            slots[key] = {"path": path, "size": size, "sector": sector,
+                          "guid": mode["guid_" + key]}
+        return {"disk_guid": mode["disk_guid"], "slots": slots, "active": active_slot(mode, {})}
+    devices = mode["devices"] or scanned_devices()
+    tables = {}
+    labels = {}
+    for dev in devices:
+        table = read_gpt(dev)
+        if table is None:
+            continue
+        tables[dev] = table
+        for index, part in enumerate(table["parts"]):
+            if part is None:
+                continue
+            if part["label"] in ("abl_a", "abl_b", "boot_a", "boot_b"):
+                labels.setdefault(part["label"], []).append((dev, index, part))
+    for name in ("abl_a", "abl_b"):
+        if len(labels.get(name, [])) != 1:
+            fail("refused: partitions", f"{name} is not exactly one partition")
+    dev_a, index_a, part_a = labels["abl_a"][0]
+    dev_b, index_b, part_b = labels["abl_b"][0]
+    if dev_a != dev_b:
+        fail("refused: partitions", f"abl_a on {dev_a}, abl_b on {dev_b}")
+    if mode["name"] == "production":
+        name = block_name(dev_a)
+        if name.startswith("mmcblk"):
+            fail("refused: partitions", f"{dev_a} is an mmcblk device")
+        if block_removable(dev_a):
+            fail("refused: partitions", f"{dev_a} is removable")
+        if "ufshc" not in block_sysfs(dev_a):
+            fail("refused: partitions", f"{dev_a} is not under ufshc")
+    slots = {}
+    for key, dev, index, part in (("a", dev_a, index_a, part_a), ("b", dev_b, index_b, part_b)):
+        path = part_node(dev, index)
+        try:
+            size = block_size(path)
+            sector = sector_size(path)
+        except OSError:
+            fail("refused: partitions", f"cannot size {path}")
+        if size < length or size > SLOT_MAX:
+            fail("refused: partitions", f"{path} is {size} bytes, payload {length}")
+        slots[key] = {"path": path, "size": size, "sector": sector, "guid": part["guid"]}
+    active = active_slot(mode, labels)
+    return {"disk_guid": tables[dev_a]["disk_guid"], "slots": slots, "active": active}
+
+
+def read_direct(path, size, sector):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECT | os.O_CLOEXEC)
+    try:
+        out = bytearray()
+        chunk = 1 << 20
+        offset = 0
+        while offset < size:
+            want = min(chunk, size - offset)
+            want = (want + sector - 1) // sector * sector
+            buf = mmap.mmap(-1, want)
+            try:
+                got = os.preadv(fd, [buf], offset)
+                piece = bytes(buf[:min(got, size - offset)])
+            finally:
+                buf.close()
+            if not piece:
+                break
+            out += piece
+            offset += len(piece)
+        return bytes(out)
+    finally:
+        os.close(fd)
+
+
+def read_plain(path, size):
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        return os.pread(fd, size, 0)
+    finally:
+        os.close(fd)
+
+
+def read_block(path, size, sector):
+    try:
+        return read_direct(path, size, sector)
+    except OSError as err:
+        if err.errno not in (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP):
+            raise
+    return read_plain(path, size)
+
+
+def read_slot(slot):
+    return read_block(slot["path"], slot["size"], slot["sector"])
+
+
+def flush_cache(slot):
+    try:
+        fd = os.open(slot["path"], os.O_RDONLY | os.O_CLOEXEC)
+    except OSError:
+        return
+    try:
+        fcntl.ioctl(fd, BLKFLSBUF, 0)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def write_slot(slot, data):
+    sector = slot["sector"]
+    size = (len(data) + sector - 1) // sector * sector
+    fd = os.open(slot["path"], os.O_WRONLY | os.O_DIRECT | os.O_CLOEXEC)
+    try:
+        buf = mmap.mmap(-1, size)
+        try:
+            buf[:len(data)] = data
+            os.lseek(fd, 0, os.SEEK_SET)
+            got = os.write(fd, buf)
+        finally:
+            buf.close()
+        if got != size:
+            raise OSError(errno.EIO, "short write")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    flush_cache(slot)
+
+
+def journal_path():
+    return os.path.join(STATEDIR, "abl", "journal.json")
+
+
+def backup_dirs():
+    return [os.path.join(ESP, ESP_SUB, ESP_BACKUP), os.path.join(STATEDIR, "abl", "backup")]
+
+
+def read_journal():
+    try:
+        data = read_bytes(journal_path())
+    except OSError:
+        return None
+    try:
+        journal = json.loads(data.decode())
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return journal if isinstance(journal, dict) else None
+
+
+def save_journal(journal):
+    write_atomic(journal_path(), (json.dumps(journal, sort_keys=True) + "\n").encode(), 0o600)
+
+
+def boot_id():
+    return read_text(BOOTID)[:8]
+
+
+def gate_power():
+    try:
+        names = sorted(os.listdir(POWER))
+    except OSError:
+        fail("skipped: power", f"no {POWER}")
+    capacity = None
+    ac = False
+    for name in names:
+        base = os.path.join(POWER, name)
+        kind = read_text(os.path.join(base, "type"))
+        if kind == "Battery" and read_text(os.path.join(base, "present")) != "0":
+            try:
+                capacity = int(read_text(os.path.join(base, "capacity")))
+            except ValueError:
+                capacity = None
+        elif kind in ("Mains", "USB"):
+            try:
+                if int(read_text(os.path.join(base, "online")) or "0") != 0:
+                    ac = True
+            except ValueError:
+                continue
+    if ac:
+        return
+    if capacity is None or capacity < BATTERY_MIN:
+        fail("skipped: power", f"battery {capacity}, no AC online")
+
+
+def lock_memory():
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.mlockall(1 | 2)
+    except (OSError, AttributeError):
+        note("mlockall failed")
+
+
+def begin_window():
+    lock_memory()
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(sig, stop_handler)
+        except (OSError, ValueError):
+            note(f"cannot catch {sig}")
+
+
+def stop_handler(signum, frame):
+    global STOP
+    STOP = True
+
+
+def check_window():
+    if STOP:
+        fail("skipped: signal")
+
+
+def slot_rows(parts, rows):
+    out = {}
+    for key in ("a", "b"):
+        data = read_slot(parts["slots"][key])
+        ident = identify(data)
+        found = [r for r in rows if (r["length"], r["sha256"]) == ident] if ident else []
+        out[key] = found[0] if len(found) == 1 else None
+    return out
+
+
+def backup_name(digest):
+    return "abl-" + digest + ".img"
+
+
+def load_backup(entry):
+    if not isinstance(entry, dict):
+        return None
+    name = entry.get("name", "")
+    if not re.fullmatch(r"abl-[0-9a-f]{64}\.img", name):
+        return None
+    for directory in backup_dirs():
+        try:
+            data = read_bytes(os.path.join(directory, name))
+        except OSError:
+            continue
+        if sha256(data) == entry.get("sha256"):
+            return data
+    return None
+
+
+def pad_target(payload, backup, sector):
+    data = payload["data"][:payload["length"]]
+    size = (len(data) + sector - 1) // sector * sector
+    if size > len(backup):
+        size = len(backup)
+    return data + backup[len(data):size]
+
+
+def target_full(payload, backup, sector):
+    prefix = pad_target(payload, backup, sector)
+    return prefix + backup[len(prefix):]
+
+
+def torn(data, target, backup, sector):
+    if len(data) != len(target) or len(data) != len(backup):
+        return False
+    for offset in range(0, len(data), sector):
+        piece = data[offset:offset + sector]
+        if piece != target[offset:offset + sector] and piece != backup[offset:offset + sector]:
+            return False
+    return True
+
+
+def resume_info(parts, payload, unknown):
+    journal = read_journal()
+    if journal is None:
+        return None
+    if len(unknown) != 1:
+        return None
+    key = unknown[0]
+    if journal.get("phase") not in ("writing-" + key, "failed-" + key + "-unrestored"):
+        return None
+    if journal.get("disk_guid") != parts["disk_guid"]:
+        return None
+    guids = journal.get("part_guid", {})
+    if guids.get("a") != parts["slots"]["a"]["guid"] or guids.get("b") != parts["slots"]["b"]["guid"]:
+        return None
+    target = journal.get("target", {})
+    if target.get("sha256") != payload["ident"][1] or target.get("length") != payload["length"]:
+        return None
+    originals = {}
+    for slot in ("a", "b"):
+        data = load_backup(journal.get("original", {}).get(slot))
+        if data is None:
+            return None
+        originals[slot] = data
+    data = read_slot(parts["slots"][key])
+    padded = target_full(payload, originals[key], parts["slots"][key]["sector"])
+    if not torn(data, padded, originals[key], parts["slots"][key]["sector"]):
+        return None
+    other = "b" if key == "a" else "a"
+    if other in journal.get("written", []):
+        if identify(read_slot(parts["slots"][other])) != payload["ident"]:
+            return None
+    elif sha256(read_slot(parts["slots"][other])) != sha256(originals[other]):
+        return None
+    return {"slot": key, "original": originals}
+
+
+def gate_identify(parts, payload):
+    rows = payload["rows"]
+    found = slot_rows(parts, rows)
+    order = payload["row"]["order"]
+    ident = payload["ident"]
+    if all(found[key] and found[key]["order"] == order and found[key]["sha256"] == ident[1]
+           for key in ("a", "b")):
+        fail("current")
+    if any(found[key] and found[key]["order"] > order for key in ("a", "b")):
+        fail("refused: newer")
+    unknown = [key for key in ("a", "b") if found[key] is None]
+    resume = None
+    if unknown:
+        resume = resume_info(parts, payload, unknown)
+        if resume is None:
+            fail("refused: unrecognized")
+    return found, resume
+
+
+def gate_failed(parts, payload):
+    journal = read_journal()
+    if journal is None:
+        return
+    if journal.get("disk_guid") != parts["disk_guid"]:
+        return
+    target = journal.get("target", {})
+    if target.get("sha256") != payload["ident"][1] or target.get("length") != payload["length"]:
+        return
+    phase = journal.get("phase", "")
+    if phase.startswith("failed-" + parts["active"] + "-"):
+        fail("refused: failed before", phase)
+
+
+def carried_original(parts, payload):
+    journal = read_journal()
+    if journal is None:
+        return {}
+    if journal.get("disk_guid") != parts["disk_guid"]:
+        return {}
+    guids = journal.get("part_guid", {})
+    if guids.get("a") != parts["slots"]["a"]["guid"] or guids.get("b") != parts["slots"]["b"]["guid"]:
+        return {}
+    target = journal.get("target", {})
+    if target.get("sha256") != payload["ident"][1] or target.get("length") != payload["length"]:
+        return {}
+    if journal.get("phase") == "done":
+        return {}
+    original = journal.get("original", {})
+    if not isinstance(original, dict):
+        return {}
+    return {key: original[key] for key in ("a", "b") if isinstance(original.get(key), dict)}
+
+
+def read_file_exact(path, size):
+    fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        except OSError:
+            pass
+        return os.pread(fd, size, 0)
+    finally:
+        os.close(fd)
+
+
+def store_backup(name, data):
+    digest = sha256(data)
+    line = f"{digest}  {name}\n".encode()
+    for directory in backup_dirs():
+        try:
+            os.makedirs(directory, mode=0o755, exist_ok=True)
+        except OSError:
+            fail("skipped: backup", f"cannot create {directory}")
+        path = os.path.join(directory, name)
+        if os.path.exists(path):
+            try:
+                if file_sha(path) != digest:
+                    fail("refused: backup collision", f"{path} holds other content")
+            except OSError:
+                fail("skipped: backup", f"cannot read {path}")
+        else:
+            try:
+                write_atomic(path, data, 0o644)
+            except OSError:
+                fail("skipped: backup", f"cannot write {path}")
+        sha_path = path + ".sha256"
+        if os.path.exists(sha_path):
+            try:
+                if read_bytes(sha_path) != line:
+                    fail("refused: backup collision", f"{sha_path} names other content")
+            except OSError:
+                fail("skipped: backup", f"cannot read {sha_path}")
+        else:
+            try:
+                write_atomic(sha_path, line, 0o644)
+            except OSError:
+                fail("skipped: backup", f"cannot write {sha_path}")
+        try:
+            kept = read_file_exact(path, len(data))
+        except OSError:
+            fail("skipped: backup", f"cannot read {path} back")
+        if kept != data:
+            fail("skipped: backup", f"{path} did not hold its bytes")
+        if read_bytes(path + ".sha256") != line:
+            fail("skipped: backup", f"{sha_path} did not hold its line")
+    return {"sha256": digest, "name": name, "path": os.path.join(backup_dirs()[0], name)}
+
+
+def free_space(path):
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        fail("skipped: backup", f"cannot statvfs {path}")
+    return st.f_bavail * st.f_frsize
+
+
+def backup_slots(parts, payload, resume):
+    journal = read_journal() if resume else None
+    if resume and journal is None:
+        fail("skipped: backup", "no journal for the resume")
+    if journal is None:
+        journal = {"target": {"length": payload["length"], "sha256": payload["ident"][1],
+                              "version": payload["row"]["version"], "order": payload["row"]["order"]},
+                   "disk_guid": parts["disk_guid"],
+                   "part_guid": {key: parts["slots"][key]["guid"] for key in ("a", "b")},
+                   "boot_id": boot_id(), "written": [], "evidence": {},
+                   "original": carried_original(parts, payload)}
+    need = 4 * 1024 * 1024 + kernel_size()
+    for key in ("a", "b"):
+        need += parts["slots"][key]["size"]
+    if free_space(ESP) < need:
+        fail("skipped: backup", f"the ESP has no room for {need} bytes")
+    backups = {}
+    restore = {}
+    for key in ("a", "b"):
+        slot = parts["slots"][key]
+        first = read_slot(slot)
+        flush_cache(slot)
+        second = read_slot(slot)
+        if first != second:
+            fail("skipped: backup", f"abl_{key} read twice with different bytes")
+        entry = store_backup(backup_name(sha256(second)), second)
+        if resume and resume["slot"] == key:
+            journal["evidence"][key] = entry
+            backups[key] = second
+            restore[key] = resume["original"][key]
+        else:
+            if key not in journal["original"]:
+                journal["original"][key] = entry
+            backups[key] = second
+            restore[key] = second
+    journal["phase"] = "backed-up"
+    journal["slots"] = {}
+    for key in ("a", "b"):
+        journal["slots"][key] = {"full": sha256(backups[key])}
+    save_journal(journal)
+    return backups, restore, journal
+
+
+def prune_backups(journal):
+    keep = set()
+    for entry in list(journal.get("original", {}).values()) + list(journal.get("evidence", {}).values()):
+        if isinstance(entry, dict) and entry.get("name"):
+            keep.add(entry["name"])
+    for directory in backup_dirs():
+        try:
+            names = [n for n in os.listdir(directory) if re.fullmatch(r"abl-[0-9a-f]{64}\.img", n)]
+        except OSError:
+            continue
+        named = []
+        for name in names:
+            try:
+                named.append((os.stat(os.path.join(directory, name)).st_mtime, name))
+            except OSError:
+                continue
+        named.sort(reverse=True)
+        for _, name in named[4:]:
+            if name in keep:
+                continue
+            for suffix in ("", ".sha256"):
+                try:
+                    os.unlink(os.path.join(directory, name + suffix))
+                except OSError:
+                    break
+        fsync_dir(directory)
+
+
+def last_update(parts, payload, backups, result):
+    path = os.path.join(ESP, ESP_SUB, ESP_BACKUP, "last-update.txt")
+    values = [
+        ("from_a", sha256(backups["a"])),
+        ("from_b", sha256(backups["b"])),
+        ("to", payload["ident"][1]),
+        ("version", payload["row"]["version"]),
+        ("length", payload["length"]),
+        ("disk_guid", parts["disk_guid"]),
+        ("part_guid_a", parts["slots"]["a"]["guid"]),
+        ("part_guid_b", parts["slots"]["b"]["guid"]),
+        ("boot_id", boot_id()),
+        ("result", result),
+    ]
+    try:
+        write_key_file(path, values, 0o644)
+    except OSError:
+        fail("failed: final", f"cannot write {path}")
+
+
+def transfer(parts, payload, found, resume):
+    lock = take_lock(os.path.join(RUNDIR, "bootimg.lock"), LOCK_WAIT)
+    try:
+        backups, restore, journal = backup_slots(parts, payload, resume)
+        sync_esp(payload)
+        order = ["b", "a"] if parts["active"] == "a" else ["a", "b"]
+        journal["order"] = order
+        save_journal(journal)
+        for key in order:
+            row = found[key]
+            if row and row["length"] == payload["length"] and row["sha256"] == payload["ident"][1]:
+                continue
+            check_window()
+            slot = parts["slots"][key]
+            current = read_slot(slot)
+            if current != backups[key]:
+                fail("skipped: changed", f"abl_{key} changed since its backup")
+            padded = pad_target(payload, backups[key], slot["sector"])
+            journal["phase"] = "writing-" + key
+            save_journal(journal)
+            try:
+                write_slot(slot, padded)
+                got = read_slot(slot)
+                if got != padded + backups[key][len(padded):]:
+                    raise OSError(errno.EIO, "readback differs")
+            except OSError as err:
+                note(f"abl_{key} write failed: {err}")
+                restored = False
+                try:
+                    write_slot(slot, restore[key])
+                    restored = read_slot(slot) == restore[key]
+                except OSError:
+                    restored = False
+                journal["phase"] = f"failed-{key}-{'restored' if restored else 'unrestored'}"
+                save_journal(journal)
+                fail(f"failed-{key}-{'restored' if restored else 'unrestored'}")
+            journal["written"] = sorted(set(journal.get("written", []) + [key]))
+            save_journal(journal)
+        for key in ("a", "b"):
+            slot = parts["slots"][key]
+            data = read_slot(slot)
+            if identify(data) != payload["ident"]:
+                fail("failed: final", f"abl_{key} does not identify as the target")
+            padded = pad_target(payload, restore[key], slot["sector"])
+            if data[len(padded):] != restore[key][len(padded):]:
+                fail("failed: final", f"abl_{key} tail differs from its backup")
+        journal["phase"] = "done"
+        save_journal(journal)
+        prune_backups(journal)
+        last_update(parts, payload, backups, "done")
+        return f"updated {payload['row']['version']}"
+    finally:
+        os.close(lock)
+
+
+def verdict(found, payload):
+    order = payload["row"]["order"]
+    ident = payload["ident"]
+    if all(found[key] and found[key]["length"] == ident[0] and found[key]["sha256"] == ident[1]
+           for key in ("a", "b")):
+        return "current"
+    if any(found[key] and found[key]["order"] > order for key in ("a", "b")):
+        return "newer"
+    if any(found[key] is None for key in ("a", "b")):
+        return "unrecognized"
+    return "eligible"
+
+
+def cmd_update(mode, confirm):
+    inhibit()
+    lock = take_lock(os.path.join(RUNDIR, "abl.lock"), None)
+    try:
+        gate_platform()
+        payload = gate_confirmed(mode)
+        if confirm != payload["sha256"]:
+            fail("refused: confirm", f"the payload is {payload['sha256']}")
+        esp_check()
+        parts = probe_partitions(mode, payload["length"])
+        gate_failed(parts, payload)
+        try:
+            found, resume = gate_identify(parts, payload)
+        except Refused as err:
+            if err.result != "current":
+                raise
+            refresh_esp(payload)
+            raise
+        gate_power()
+        begin_window()
+        return transfer(parts, payload, found, resume)
+    finally:
+        os.close(lock)
+
+
+def cmd_status(mode):
+    lock = take_lock(os.path.join(RUNDIR, "abl.lock"), None)
+    try:
+        try:
+            gate_platform()
+        except Refused as err:
+            detail(err)
+            say(err.result)
+            return 0
+        try:
+            payload = load_payload(mode)
+        except Refused as err:
+            detail(err)
+            say(err.result)
+            return 0
+        say(f"payload {payload['row']['version']} {payload['length']} {payload['sha256']}")
+        say("confirmed " + ("yes" if is_confirmed() else "no"))
+        try:
+            parts = probe_partitions(mode, payload["length"])
+        except Refused as err:
+            detail(err)
+            say(err.result)
+            return 0
+        found = slot_rows(parts, payload["rows"])
+        for key in ("a", "b"):
+            row = found[key]
+            if row:
+                say(f"slot {key} {row['version']} {row['length']} {row['sha256']} order {row['order']}")
+            else:
+                say(f"slot {key} unknown")
+        say(verdict(found, payload))
+        return 0
+    finally:
+        os.close(lock)
+
+
+def journal_names(journal, key):
+    names = []
+    for group in ("original", "evidence"):
+        entries = journal.get(group, {})
+        if not isinstance(entries, dict):
+            continue
+        entry = entries.get(key)
+        if isinstance(entry, dict):
+            names.append(entry.get("sha256"))
+    return names
+
+
+def bound(journal, key, digest):
+    if digest in journal_names(journal, key):
+        return True
+    original = journal.get("original", {})
+    if not isinstance(original, dict):
+        return False
+    other = "b" if key == "a" else "a"
+    left = original.get(key)
+    right = original.get(other)
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    return left.get("sha256") == digest and right.get("sha256") == digest
+
+
+def cmd_restore(mode, key, image):
+    if key not in ("a", "b"):
+        return "refused: slot"
+    inhibit()
+    lock = take_lock(os.path.join(RUNDIR, "abl.lock"), None)
+    try:
+        gate_platform()
+        try:
+            data = read_bytes(image)
+        except OSError:
+            fail("refused: backup", f"no {image}")
+        parts = probe_partitions(mode, len(data))
+        journal = read_journal()
+        if journal is None:
+            fail("refused: backup", "no journal")
+        if journal.get("disk_guid") != parts["disk_guid"]:
+            fail("refused: backup", "the journal names another disk")
+        digest = sha256(data)
+        if not bound(journal, key, digest):
+            fail("refused: backup", f"the journal does not name this backup for abl_{key}")
+        if len(data) != parts["slots"][key]["size"]:
+            fail("refused: backup", "the backup is not one slot")
+        gate_power()
+        begin_window()
+        boot_lock = take_lock(os.path.join(RUNDIR, "bootimg.lock"), LOCK_WAIT)
+        try:
+            slot = parts["slots"][key]
+            write_slot(slot, data)
+            if read_slot(slot) != data:
+                fail(f"failed-restore-{key}", "readback differs")
+        finally:
+            os.close(boot_lock)
+        journal["restore"] = {"slot": key, "sha256": digest, "boot_id": boot_id()}
+        original = journal.get("original", {})
+        entry = original.get(key) if isinstance(original, dict) else None
+        if isinstance(entry, dict) and entry.get("sha256") == digest:
+            journal["phase"] = "restored-" + key
+        save_journal(journal)
+        return f"restored {key} {digest}"
+    finally:
+        os.close(lock)
+
+
+def usage():
+    print(f"usage: {ME} status|update <sha256>|restore <a|b> <backup.img>", file=sys.stderr)
+
+
+def main(argv):
+    if not argv:
+        usage()
+        return 2
+    command = argv[0]
+    if command == "restore":
+        if len(argv) != 3:
+            usage()
+            return 2
+    elif command == "update":
+        if len(argv) != 2:
+            usage()
+            return 2
+    elif command == "status":
+        if len(argv) != 1:
+            usage()
+            return 2
+    else:
+        usage()
+        return 2
+    try:
+        mode = detect_mode()
+    except Refused as err:
+        detail(err)
+        return report(err.result)
+    try:
+        if command == "status":
+            return cmd_status(mode)
+        if command == "update":
+            return report(cmd_update(mode, argv[1]))
+        return report(cmd_restore(mode, argv[1], argv[2]))
+    except Refused as err:
+        detail(err)
+        return report(err.result)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

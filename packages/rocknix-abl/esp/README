@@ -3,7 +3,12 @@
 The ROCKNIX ABL for SM8250 that this MicroOS install ships, taken from the ROCKNIX/abl release at build time and
 listed in `manifest`.
 
-Run these from a root shell on the Android side. They write `/dev/block/by-name/abl_a` and `abl_b`.
+This folder is the first install. A device still in stock Android runs the vendor ABL, which does not boot `\KERNEL`,
+so both slots are written from Android before MicroOS ever starts. Once MicroOS runs, `microos-abl update` writes a
+later ROCKNIX release from Linux, with the same backup and readback.
+
+Copy this folder from the card to the root of Android internal storage. The card's ESP can be mounted read only, and
+the backups are written here. Then run these from a root shell. They write `/dev/block/by-name/abl_a` and `abl_b`.
 
 ## Back up both slots
 
