@@ -1,0 +1,9 @@
+--- a/config.mk
++++ b/config.mk
+@@ -1,5 +1,5 @@
+ VERSION = 0.21
+-CFLAGS = -DVERSION=\"$(VERSION)\" -D_XOPEN_SOURCE=700
++CFLAGS += -DVERSION=\"$(VERSION)\" -D_XOPEN_SOURCE=700
+ PREFIX = /usr/local
+ MANPREFIX = ${PREFIX}/share/man
+ LAYOUT = mobintl

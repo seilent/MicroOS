@@ -1,0 +1,11 @@
+FROM localhost/microos-pkg-builder
+
+COPY wvkbd.spec SOURCE.env /tmp/wvkbd/
+RUN . /tmp/wvkbd/SOURCE.env \
+ && dnf -y --setopt=install_weak_deps=False builddep \
+      --define "wvkbd_version $WVKBD_VERSION" \
+      --define "wvkbd_commit $WVKBD_COMMIT" \
+      --define "wvkbd_layout $WVKBD_LAYOUT" \
+      /tmp/wvkbd/wvkbd.spec \
+ && dnf clean all \
+ && rm -rf /tmp/wvkbd
