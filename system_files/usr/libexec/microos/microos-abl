@@ -931,9 +931,9 @@ def gate_hold(state):
     if rc == 1 and "not held for" in err:
         state["declined"] = state.get("declined", 0) + 1
         save_state(state)
-        splash_message("microos-abl-updating")
+        splash_message("microos-abl-skip")
         fail("declined", err.strip())
-    splash_message("microos-abl-updating")
+    splash_message("microos-abl-skip")
     if rc == 4:
         fail("skipped: no pad", err.strip())
     if rc == 3:

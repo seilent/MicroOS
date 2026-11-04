@@ -537,6 +537,7 @@ ablrows=$(awk -F'\t' -v v="$(ablkey MICROOS_ABL_VERSION)" -v l="$(ablkey MICROOS
 [[ $(grep -c . <<<"$ablrows") -eq 1 ]] || fail "rocknix-abl releases.tsv rows for the payload: $ablrows"
 abltop=$(awk -F'\t' 'NR > 1 && $1 + 0 >= m { m = $1 + 0; v = $2 } END { print v }' "$abl/releases.tsv")
 [[ $(ablkey MICROOS_ABL_VERSION) == "$abltop" ]] || fail "rocknix-abl manifest version is not the highest order row"
+[[ ! -e $abl/write ]] || fail "the ABL enable flag /usr/lib/microos/abl/write is in the image"
 for p in gamescope gamescope-session gamescope-session-steam; do
   [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
 done
@@ -700,7 +701,8 @@ while read -r n r; do
 done < <(rpm -qa --qf '%{NAME} %{RELEASE}\n' 'plymouth*')
 retain='Closing FB %u (retaining)'
 grep -qaF "$retain" /usr/lib64/plymouth/renderers/drm.so || fail "renderers/drm.so lacks '$retain'"
-for f in microos.plymouth microos.script wordmark.png starting.png updating.png micro-dap.png micro-emu.png steam-os.png; do
+for f in microos.plymouth microos.script wordmark.png starting.png updating.png micro-dap.png micro-emu.png steam-os.png \
+  abl-prompt.png abl-updating.png abl-failed.png abl-unrestored.png; do
   [[ -f /usr/share/plymouth/themes/microos/$f ]] || fail "plymouth theme lacks $f"
 done
 while read -r h f; do
@@ -712,7 +714,73 @@ bcdf7ae9b099ff425628cce9233e68b88fc738d83f6690fae2f91535ba4510c8 updating.png
 fc260da897c77c7f6cadedb5778a6cad3e9ffdd096e8e08ff660c58a23d2a316 micro-dap.png
 1707d4b1dd3b21080243c5c1aaf3c5f69dabea01b34b94ba16645f07bfeab83b micro-emu.png
 99de3f2ed66b6cba2a343ecba55c7a3c8ee50322c7f4ac856386e5ac4b30825c steam-os.png
+8ae3f605004f52976c3f4f541443d98a11b2172457d186be37295d64c1daabb6 abl-prompt.png
+82a09a7f73e3fdac43c822f2e70bcddcbb6b7417d1656c924c543cb306cdd0fa abl-updating.png
+da46afb21772475afe560905a6fff7a04c8706bcd492c551fc8b74e294df32ab abl-failed.png
+88e193dc188de13acbbb36ca3c18faff0750a7afec28f62bf1d52673340e751f abl-unrestored.png
 EOF
+abltheme=/usr/share/plymouth/themes/microos
+while read -r t v i; do
+  grep -qxF "$v = Image(\"$i\");" "$abltheme/microos.script" || fail "microos.script does not load $i"
+  [[ $(grep -A1 -F "text == \"$t\")" "$abltheme/microos.script") == "  else if (text == \"$t\")
+    show($v);" ]] || fail "microos.script does not map $t to $v"
+done <<'EOF'
+microos-abl-prompt ablprompt abl-prompt.png
+microos-abl-updating ablupdating abl-updating.png
+microos-abl-failed ablfailed abl-failed.png
+microos-abl-unrestored ablunrestored abl-unrestored.png
+EOF
+grep -A1 -F 'text == "microos-abl-skip")' "$abltheme/microos.script" | grep -qxF '    show(wordmark);' \
+  || fail "microos.script does not map microos-abl-skip to the wordmark"
+python3 - "$abltheme" <<'PY' || fail "an ABL splash PNG is not 8 bit RGB with two colours and 76 or 161 px high, or the prompt lacks a line"
+import struct, sys, zlib
+root = sys.argv[1]
+want = {(0, 0, 0), (255, 255, 255)}
+for name in ("abl-prompt.png", "abl-updating.png", "abl-failed.png", "abl-unrestored.png"):
+    d = open(f"{root}/{name}", "rb").read()
+    if d[:8] != b"\x89PNG\r\n\x1a\n":
+        sys.exit(f"{name}: not a PNG")
+    i, idat = 8, b""
+    w = h = depth = ctype = inter = 0
+    while i < len(d):
+        n, t = struct.unpack(">I4s", d[i:i + 8])
+        if t == b"IHDR":
+            w, h, depth, ctype, comp, filt, inter = struct.unpack(">IIBBBBB", d[i + 8:i + 21])
+        elif t == b"IDAT":
+            idat += d[i + 8:i + 8 + n]
+        i += 12 + n
+    if (depth, ctype, inter) != (8, 2, 0) or h not in (76, 161):
+        sys.exit(f"{name}: {w}x{h} depth {depth} type {ctype} interlace {inter}")
+    raw = zlib.decompress(idat)
+    stride = w * 3
+    prev, pos, seen, ink = bytearray(stride), 0, set(), []
+    for y in range(h):
+        f = raw[pos]
+        pos += 1
+        line = bytearray(raw[pos:pos + stride])
+        pos += stride
+        for x in range(stride):
+            a = line[x - 3] if x >= 3 else 0
+            b = prev[x]
+            c = prev[x - 3] if x >= 3 else 0
+            if f == 1:
+                line[x] = (line[x] + a) & 255
+            elif f == 2:
+                line[x] = (line[x] + b) & 255
+            elif f == 3:
+                line[x] = (line[x] + ((a + b) >> 1)) & 255
+            elif f == 4:
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+        seen.update(tuple(line[x:x + 3]) for x in range(0, stride, 3))
+        ink.append(any(line[i:i + 3] == b"\xff\xff\xff" for i in range(0, stride, 3)))
+        prev = line
+    if seen != want:
+        sys.exit(f"{name}: colours {sorted(seen)[:4]}")
+    if name == "abl-prompt.png" and not (any(ink[15:76]) and any(ink[100:161])):
+        sys.exit(f"{name}: the two prompt lines are not both drawn")
+PY
 [[ $(< /etc/plymouth/plymouthd.conf) == $'[Daemon]\nTheme=microos\nShowDelay=0\nDeviceScale=1' ]] || fail "plymouthd.conf"
 [[ $(plymouth-set-default-theme) == microos ]] || fail "plymouth default theme is $(plymouth-set-default-theme)"
 for f in /usr/libexec/microos/microos-splash-quit /usr/libexec/microos/microos-splash-update \
@@ -1004,6 +1072,21 @@ after=$(systemctl cat microos-boot-ok.service | sed -n 's/^After=//p' | tr ' ' '
 for u in ostree-finalize-staged.service microos-bootimg-regen.service; do
   grep -qx "$u" <<< "$after" || fail "microos-boot-ok.service is not After=$u"
 done
+aunit=/usr/lib/systemd/system/microos-abl.service
+for l in 'Description=Back up and write the ROCKNIX ABL when a newer payload ships' DefaultDependencies=no \
+  ConditionPathExists=/run/ostree-booted 'After=local-fs.target systemd-journal-flush.service' \
+  'Before=microos-bootimg-regen.service ostree-finalize-staged.service display-manager.service final.target' \
+  Conflicts=final.target 'RequiresMountsFor=/sysroot /boot /boot/efi /var/lib/microos' Type=oneshot RemainAfterExit=yes \
+  TimeoutStopSec=90 TimeoutAbortSec=30 \
+  'ExecStop=-/usr/libexec/microos/microos-bootlog run abl -- /usr/libexec/microos/microos-abl shutdown' \
+  WantedBy=multi-user.target; do
+  grep -qxF "$l" "$aunit" || fail "microos-abl.service lacks $l"
+done
+grep -qxF 'enable microos-*' /usr/lib/systemd/system-preset/50-microos.preset || fail "50-microos.preset does not enable microos-*"
+[[ $(systemctl is-enabled microos-abl.service) == enabled ]] || fail "microos-abl.service is not enabled by the preset"
+before=$(systemctl cat microos-abl.service | sed -n 's/^Before=//p' | tr ' ' '\n') || fail "systemctl cat microos-abl.service"
+grep -qx microos-bootimg-regen.service <<< "$before" \
+  || fail "microos-abl.service does not stop after microos-bootimg-regen.service"
 
 pol=/etc/containers/policy.json
 keys=(/usr/share/microos/keys/microos.pub /usr/share/microos/keys/microos-backup.pub /usr/share/microos/keys/microos-next.pub)

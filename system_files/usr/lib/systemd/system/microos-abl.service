@@ -1,0 +1,18 @@
+[Unit]
+Description=Back up and write the ROCKNIX ABL when a newer payload ships
+DefaultDependencies=no
+ConditionPathExists=/run/ostree-booted
+After=local-fs.target systemd-journal-flush.service
+Before=microos-bootimg-regen.service ostree-finalize-staged.service display-manager.service final.target
+Conflicts=final.target
+RequiresMountsFor=/sysroot /boot /boot/efi /var/lib/microos
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStopSec=90
+TimeoutAbortSec=30
+ExecStop=-/usr/libexec/microos/microos-bootlog run abl -- /usr/libexec/microos/microos-abl shutdown
+
+[Install]
+WantedBy=multi-user.target

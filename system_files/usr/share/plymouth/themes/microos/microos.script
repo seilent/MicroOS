@@ -7,6 +7,10 @@ updating = Image("updating.png");
 microdap = Image("micro-dap.png");
 microemu = Image("micro-emu.png");
 steamos = Image("steam-os.png");
+ablprompt = Image("abl-prompt.png");
+ablupdating = Image("abl-updating.png");
+ablfailed = Image("abl-failed.png");
+ablunrestored = Image("abl-unrestored.png");
 sprite = Sprite();
 shown = 0;
 ticks = 0;
@@ -36,6 +40,16 @@ fun message(text)
     show(starting);
   else if (text == "microos-updating")
     show(updating);
+  else if (text == "microos-abl-prompt")
+    show(ablprompt);
+  else if (text == "microos-abl-updating")
+    show(ablupdating);
+  else if (text == "microos-abl-failed")
+    show(ablfailed);
+  else if (text == "microos-abl-unrestored")
+    show(ablunrestored);
+  else if (text == "microos-abl-skip")
+    show(wordmark);
   else if (text == "microos-session-microdap")
     show(microdap);
   else if (text == "microos-session-microemu")
