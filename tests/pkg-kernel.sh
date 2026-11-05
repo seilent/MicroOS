@@ -62,4 +62,5 @@ done
 "$here/pkg-kernel/fan-trips.sh" "$dtbs"
 "$here/pkg-kernel/dp-mode-valid.sh" "$out/src"
 "$here/pkg-kernel/dp-dither.sh" "$out/src"
+"$here/pkg-kernel/smb5-pd.sh" "$out/src" "$dtbs"
 echo "pkg-kernel: $(basename "$rpm") ok"

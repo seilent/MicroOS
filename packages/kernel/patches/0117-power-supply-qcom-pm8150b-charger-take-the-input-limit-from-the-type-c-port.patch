@@ -1,0 +1,452 @@
+From: seilent <github@seilent.net>
+Date: Thu, 5 Nov 2026 11:20:00 +0900
+Subject: [PATCH] power: supply: qcom-pm8150b-charger: take the input limit
+ from the type-c port
+
+The charger sized its input limit from APSD alone and never read the
+tcpm contract. A 5 V 3 A PD dock that APSD classifies as SDP, or whose
+APSD never completes, stayed at 500 mA and the battery did not gain.
+
+The work now reads the supplier named by power-supplies for ONLINE,
+USB_TYPE and CURRENT_MAX and hands them, with the PMIC state, to
+smb5_pick(). A PD, PPS or AVS type with a contract current takes that
+current capped at 3 A; a type C source limit of 1.5 or 3 A takes its
+own; anything else keeps the APSD class. OTG and an unplugged port
+select 500 mA.
+
+smb5_write_icl() writes above 500 mA in HC mode (USB51 mode with the
+ICL override after APSD) and at or below it in HW auto mode, skipping
+both when the cached limit and mode already match. BC1.2 detection is
+off while a PD row is selected and back on in the plug handler. A user
+limit through current_max caps the selection and is cleared on plug.
+
+usb_types gains C, PD, PD_PPS, PD_SPR_AVS and PD_PPS_SPR_AVS, and
+input_current_limit reports the programmed register.
+---
+ drivers/power/supply/qcom_pm8150b_charger.c | 283 ++++++++++++++++++++----
+ 1 file changed, 251 insertions(+), 32 deletions(-)
+
+diff --git a/drivers/power/supply/qcom_pm8150b_charger.c b/drivers/power/supply/qcom_pm8150b_charger.c
+index 4fea1c0..cb39455 100644
+--- a/drivers/power/supply/qcom_pm8150b_charger.c
++++ b/drivers/power/supply/qcom_pm8150b_charger.c
+@@ -97,6 +97,9 @@
+ #define P_PATH_POWER_PATH_MASK				GENMASK(2, 1)
+ #define P_PATH_VALID_INPUT_POWER_SOURCE_STS_BIT		BIT(0)
+ 
++#define DCDC_CMD_OTG				0x140
++#define OTG_EN_BIT				BIT(0)
++
+ #define OTG_CFG					0x153
+ #define OTG_RESERVED_BIT			BIT(7)
+ #define FAST_ROLE_SWAP_START_OPTION_BIT		BIT(6)
+@@ -258,6 +261,7 @@
+ #define CDP_CURRENT_UA			1500000
+ #define DCP_CURRENT_UA			3000000
+ #define CURRENT_MAX_UA			DCP_CURRENT_UA
++#define ICL_MAX_HW_AUTO_UA		500000
+ #define APSD_RERUNS			4
+ 
+ /* pmi8150b registers represent current in increments of 1/40th of an amp */
+@@ -317,12 +321,18 @@ struct smb5_chip {
+ 	unsigned long next_rerun;
+ 	bool apsd_warned;
+ 	int usb_type;
++	int source_ua;
++	int user_ua;
++	unsigned int icl_ua;
++	bool hc_mode;
++	bool bc12_off;
+ };
+ 
+ static enum power_supply_property smb5_properties[] = {
+ 	POWER_SUPPLY_PROP_MANUFACTURER,
+ 	POWER_SUPPLY_PROP_MODEL_NAME,
+ 	POWER_SUPPLY_PROP_CURRENT_MAX,
++	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
+ 	POWER_SUPPLY_PROP_CURRENT_NOW,
+ 	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+ 	POWER_SUPPLY_PROP_STATUS,
+@@ -455,19 +465,85 @@ static inline int smb5_get_current_limit(struct smb5_chip *chip,
+ 	return rc;
+ }
+ 
++static int smb5_icl_mode(struct smb5_chip *chip, bool hc)
++{
++	int rc;
++
++	lockdep_assert_held(&chip->lock);
++
++	rc = regmap_update_bits(chip->regmap, chip->base + USBIN_ICL_OPTIONS,
++				USB51_MODE_BIT, USBIN_MODE_CHG_BIT);
++	if (rc < 0)
++		return rc;
++
++	rc = regmap_update_bits(chip->regmap, chip->base + CMD_ICL_OVERRIDE,
++				ICL_OVERRIDE_BIT, 0);
++	if (rc < 0)
++		return rc;
++
++	return regmap_update_bits(chip->regmap, chip->base + USBIN_LOAD_CFG,
++				  ICL_OVERRIDE_AFTER_APSD_BIT,
++				  hc ? ICL_OVERRIDE_AFTER_APSD_BIT : 0);
++}
++
+ static int smb5_write_icl(struct smb5_chip *chip, unsigned int ua)
+ {
+ 	unsigned char val_raw;
++	bool hc;
++	int rc;
+ 
+ 	lockdep_assert_held(&chip->lock);
+ 
+ 	if (ua > 4950000)
+ 		return -EINVAL;
+ 
++	hc = ua > ICL_MAX_HW_AUTO_UA;
++	if (chip->icl_ua == ua && chip->hc_mode == hc)
++		return 0;
++
+ 	val_raw = ua / CURRENT_SCALE_FACTOR;
+ 
+-	return regmap_write(chip->regmap, chip->base + USBIN_CURRENT_LIMIT_CFG,
+-			    val_raw);
++	if (hc) {
++		rc = smb5_icl_mode(chip, true);
++		if (rc < 0)
++			return rc;
++	}
++
++	rc = regmap_write(chip->regmap, chip->base + USBIN_CURRENT_LIMIT_CFG,
++			  val_raw);
++	if (rc < 0)
++		return rc;
++
++	if (!hc) {
++		rc = smb5_icl_mode(chip, false);
++		if (rc < 0)
++			return rc;
++	}
++
++	chip->icl_ua = ua;
++	chip->hc_mode = hc;
++
++	return 0;
++}
++
++static int smb5_set_bc12(struct smb5_chip *chip, bool on)
++{
++	int rc;
++
++	lockdep_assert_held(&chip->lock);
++
++	if (chip->bc12_off == !on)
++		return 0;
++
++	rc = regmap_update_bits(chip->regmap, chip->base + USBIN_OPTIONS_1_CFG,
++				BC1P2_SRC_DETECT_BIT,
++				on ? BC1P2_SRC_DETECT_BIT : 0);
++	if (rc < 0)
++		return rc;
++
++	chip->bc12_off = !on;
++
++	return 0;
+ }
+ 
+ static int smb5_apsd_rerun(struct smb5_chip *chip)
+@@ -505,15 +581,101 @@ static struct smb5_rerun smb5_rerun_step(unsigned long now, unsigned int count,
+ 	return step;
+ }
+ 
++struct smb5_port_state {
++	bool usbin;
++	bool otg;
++	bool apsd_done;
++	int apsd_result;
++	bool bc12_off;
++	bool tcpm_err;
++	bool tcpm_online;
++	int tcpm_type;
++	int tcpm_ua;
++};
++
++struct smb5_pick {
++	unsigned int ua;
++	int type;
++	bool want_bc12_off;
++	bool rerun_allowed;
++};
++
++static struct smb5_pick smb5_pick(const struct smb5_port_state *st)
++{
++	struct smb5_pick pick = {
++		.ua = SDP_CURRENT_UA,
++		.type = POWER_SUPPLY_USB_TYPE_UNKNOWN,
++		.want_bc12_off = st->bc12_off,
++	};
++
++	if (st->otg)
++		return pick;
++
++	if (!st->usbin)
++		return pick;
++
++	if (!st->tcpm_err && st->tcpm_online) {
++		switch (st->tcpm_type) {
++		case POWER_SUPPLY_USB_TYPE_PD:
++		case POWER_SUPPLY_USB_TYPE_PD_PPS:
++		case POWER_SUPPLY_USB_TYPE_PD_SPR_AVS:
++		case POWER_SUPPLY_USB_TYPE_PD_PPS_SPR_AVS:
++			if (st->tcpm_ua <= 0)
++				break;
++			pick.ua = min(st->tcpm_ua, CURRENT_MAX_UA);
++			pick.type = st->tcpm_type;
++			pick.want_bc12_off = true;
++			return pick;
++		case POWER_SUPPLY_USB_TYPE_C:
++			if (st->tcpm_ua != 1500000 && st->tcpm_ua != 3000000)
++				break;
++			pick.ua = st->tcpm_ua;
++			pick.type = POWER_SUPPLY_USB_TYPE_C;
++			return pick;
++		default:
++			break;
++		}
++	}
++
++	if (st->bc12_off) {
++		pick.type = st->tcpm_err || !st->tcpm_online ?
++			POWER_SUPPLY_USB_TYPE_UNKNOWN : st->tcpm_type;
++		return pick;
++	}
++
++	if (!st->apsd_done) {
++		pick.rerun_allowed = true;
++		return pick;
++	}
++
++	switch (st->apsd_result) {
++	case POWER_SUPPLY_USB_TYPE_CDP:
++		pick.ua = CDP_CURRENT_UA;
++		pick.type = POWER_SUPPLY_USB_TYPE_CDP;
++		break;
++	case POWER_SUPPLY_USB_TYPE_DCP:
++		pick.ua = DCP_CURRENT_UA;
++		pick.type = POWER_SUPPLY_USB_TYPE_DCP;
++		break;
++	default:
++		pick.ua = SDP_CURRENT_UA;
++		pick.type = POWER_SUPPLY_USB_TYPE_SDP;
++		break;
++	}
++
++	return pick;
++}
++
+ static void smb5_status_change_work(struct work_struct *work)
+ {
++	struct power_supply *psy;
++	struct smb5_port_state st = {};
+ 	struct smb5_rerun step;
+-	unsigned int gen, ua = SDP_CURRENT_UA;
++	union power_supply_propval prop;
++	struct smb5_pick pick;
++	unsigned int gen, stat, icl;
+ 	unsigned long requeue = 0;
+-	struct power_supply *psy;
+-	bool apsd_done;
+-	int usb_online = 0;
+-	int type, rc;
++	int rc;
+ 	struct smb5_chip *chip;
+ 
+ 	chip = container_of(work, struct smb5_chip, status_change_work.work);
+@@ -525,13 +687,39 @@ static void smb5_status_change_work(struct work_struct *work)
+ 	gen = READ_ONCE(chip->plug_gen);
+ 	rmb();
+ 
+-	rc = smb5_get_prop_usb_online(chip, &usb_online);
++	rc = regmap_read(chip->regmap, chip->base + USBIN_INT_RT_STS_OFFSET,
++			 &stat);
++	st.usbin = !rc && (stat & USBIN_PLUGIN_RT_STS_BIT);
++
++	rc = regmap_read(chip->regmap, chip->base + DCDC_CMD_OTG, &stat);
++	st.otg = !rc && (stat & OTG_EN_BIT);
++
++	rc = smb5_apsd_get_charger_type(chip, &st.apsd_result);
++	st.apsd_done = st.usbin && rc == 0;
++
++	rc = power_supply_get_property_from_supplier(psy,
++						     POWER_SUPPLY_PROP_ONLINE,
++						     &prop);
+ 	if (rc < 0)
+-		usb_online = 0;
++		st.tcpm_err = true;
++	else
++		st.tcpm_online = prop.intval;
+ 
+-	type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+-	rc = smb5_apsd_get_charger_type(chip, &type);
+-	apsd_done = usb_online && rc == 0;
++	rc = power_supply_get_property_from_supplier(psy,
++						     POWER_SUPPLY_PROP_USB_TYPE,
++						     &prop);
++	if (rc < 0)
++		st.tcpm_err = true;
++	else
++		st.tcpm_type = prop.intval;
++
++	rc = power_supply_get_property_from_supplier(psy,
++						     POWER_SUPPLY_PROP_CURRENT_MAX,
++						     &prop);
++	if (rc < 0)
++		st.tcpm_err = true;
++	else
++		st.tcpm_ua = prop.intval;
+ 
+ 	mutex_lock(&chip->lock);
+ 	if (gen != chip->plug_gen) {
+@@ -540,27 +728,25 @@ static void smb5_status_change_work(struct work_struct *work)
+ 		return;
+ 	}
+ 
+-	if (apsd_done) {
+-		switch (type) {
+-		case POWER_SUPPLY_USB_TYPE_CDP:
+-			ua = CDP_CURRENT_UA;
+-			break;
+-		case POWER_SUPPLY_USB_TYPE_DCP:
+-			ua = DCP_CURRENT_UA;
+-			break;
+-		default:
+-			break;
+-		}
+-	} else {
+-		type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+-	}
++	st.bc12_off = chip->bc12_off;
++	pick = smb5_pick(&st);
++	icl = min_t(unsigned int, pick.ua,
++		    chip->user_ua ? chip->user_ua : INT_MAX);
+ 
+-	rc = smb5_write_icl(chip, ua);
++	rc = smb5_write_icl(chip, icl);
+ 	if (rc < 0)
+ 		dev_err(chip->dev, "Couldn't set the input current limit rc=%d\n",
+ 			rc);
+ 
+-	if (usb_online && !apsd_done) {
++	rc = smb5_set_bc12(chip, !pick.want_bc12_off);
++	if (rc < 0)
++		dev_err(chip->dev, "Couldn't set the bc1.2 detection rc=%d\n",
++			rc);
++
++	chip->source_ua = pick.ua;
++	chip->usb_type = pick.type;
++
++	if (pick.rerun_allowed) {
+ 		step = smb5_rerun_step(jiffies, chip->apsd_count,
+ 				       chip->next_rerun);
+ 		chip->apsd_count = step.count;
+@@ -575,7 +761,6 @@ static void smb5_status_change_work(struct work_struct *work)
+ 		}
+ 	}
+ 
+-	chip->usb_type = type;
+ 	mutex_unlock(&chip->lock);
+ 
+ 	power_supply_changed(psy);
+@@ -648,6 +833,8 @@ static int smb5_get_property(struct power_supply *psy,
+ 			     union power_supply_propval *val)
+ {
+ 	struct smb5_chip *chip = power_supply_get_drvdata(psy);
++	unsigned int icl;
++	int rc;
+ 
+ 	switch (psp) {
+ 	case POWER_SUPPLY_PROP_MANUFACTURER:
+@@ -658,6 +845,13 @@ static int smb5_get_property(struct power_supply *psy,
+ 		return 0;
+ 	case POWER_SUPPLY_PROP_CURRENT_MAX:
+ 		return smb5_get_current_limit(chip, &val->intval);
++	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
++		rc = regmap_read(chip->regmap,
++				 chip->base + USBIN_CURRENT_LIMIT_CFG, &icl);
++		if (rc < 0)
++			return rc;
++		val->intval = icl * CURRENT_SCALE_FACTOR;
++		return 0;
+ 	case POWER_SUPPLY_PROP_CURRENT_NOW:
+ 		return smb5_get_iio_chan(chip, chip->usb_in_i_chan,
+ 					 &val->intval);
+@@ -684,14 +878,22 @@ static int smb5_set_property(struct power_supply *psy,
+ 			     const union power_supply_propval *val)
+ {
+ 	struct smb5_chip *chip = power_supply_get_drvdata(psy);
+-	int rc;
++	unsigned int icl;
+ 
+ 	switch (psp) {
+ 	case POWER_SUPPLY_PROP_CURRENT_MAX:
++		if (val->intval < 50000)
++			return -EINVAL;
+ 		mutex_lock(&chip->lock);
+-		rc = smb5_write_icl(chip, val->intval);
++		chip->user_ua = val->intval;
++		icl = min_t(unsigned int, chip->source_ua ?
++			    chip->source_ua : SDP_CURRENT_UA, val->intval);
++		icl = min_t(unsigned int, icl, CURRENT_MAX_UA);
++		if (icl < chip->icl_ua)
++			smb5_write_icl(chip, icl);
+ 		mutex_unlock(&chip->lock);
+-		return rc;
++		mod_delayed_work(system_percpu_wq, &chip->status_change_work, 0);
++		return 0;
+ 	default:
+ 		dev_err(chip->dev, "No setter for property: %d\n", psp);
+ 		return -EINVAL;
+@@ -745,7 +947,11 @@ static irqreturn_t smb5_handle_usb_plugin(int irq, void *data)
+ 	chip->apsd_warned = false;
+ 	chip->next_rerun = jiffies + msecs_to_jiffies(1500);
+ 	chip->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
++	chip->source_ua = 0;
++	chip->user_ua = 0;
++	chip->icl_ua = UINT_MAX;
+ 	smb5_write_icl(chip, SDP_CURRENT_UA);
++	smb5_set_bc12(chip, true);
+ 	mutex_unlock(&chip->lock);
+ 
+ 	power_supply_changed(chip->chg_psy);
+@@ -780,18 +986,31 @@ static irqreturn_t smb5_handle_wdog_bark(int irq, void *data)
+ 	return IRQ_HANDLED;
+ }
+ 
++static void smb5_external_power_changed(struct power_supply *psy)
++{
++	struct smb5_chip *chip = power_supply_get_drvdata(psy);
++
++	mod_delayed_work(system_percpu_wq, &chip->status_change_work, 0);
++}
++
+ static const struct power_supply_desc smb5_psy_desc = {
+ 	.name = "pmi8998_charger",
+ 	.type = POWER_SUPPLY_TYPE_USB,
+ 	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_SDP) |
+ 		     BIT(POWER_SUPPLY_USB_TYPE_CDP) |
+ 		     BIT(POWER_SUPPLY_USB_TYPE_DCP) |
++		     BIT(POWER_SUPPLY_USB_TYPE_C) |
++		     BIT(POWER_SUPPLY_USB_TYPE_PD) |
++		     BIT(POWER_SUPPLY_USB_TYPE_PD_PPS) |
++		     BIT(POWER_SUPPLY_USB_TYPE_PD_SPR_AVS) |
++		     BIT(POWER_SUPPLY_USB_TYPE_PD_PPS_SPR_AVS) |
+ 		     BIT(POWER_SUPPLY_USB_TYPE_UNKNOWN),
+ 	.properties = smb5_properties,
+ 	.num_properties = ARRAY_SIZE(smb5_properties),
+ 	.get_property = smb5_get_property,
+ 	.set_property = smb5_set_property,
+ 	.property_is_writeable = smb5_property_is_writable,
++	.external_power_changed = smb5_external_power_changed,
+ };
+ 
+ /* Init sequence derived from vendor downstream driver */

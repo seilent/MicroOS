@@ -1,0 +1,354 @@
+From: seilent <github@seilent.net>
+Date: Thu, 5 Nov 2026 11:05:00 +0900
+Subject: [PATCH] power: supply: qcom-pm8150b-charger: bound the apsd rerun
+
+A source whose APSD never completes made the status work rerun the
+detection every second for as long as it stayed attached, and every run
+logged "Apsd not ready" as an error. A replug left the old limit in
+place because the plug handler only queued another pass.
+
+The rerun is bounded to four attempts, 1, 2, 4 and 8 seconds after a
+first pass that starts 1.5 s after the plug edge, and the work then
+holds 500 mA with one warning. The plug handler resets the counter,
+writes 500 mA and pushes the first pass out, so the power_supply_changed
+storm tcpm produces at attach cannot pull it forward.
+
+The work takes chip->lock and drops its result when plug_gen moved while
+it was reading the PMIC, with an rmb() between the snapshot load and the
+first register access. The lock and the work are initialised before the
+power supply is registered, and the work returns while chg_psy is NULL.
+
+usb_type now reports the last selected type, so reading it neither
+touches the PMIC nor logs. CDP moves to 1.5 A and DCP to 3 A.
+---
+ drivers/power/supply/qcom_pm8150b_charger.c | 211 ++++++++++++++++++++--------
+ 1 file changed, 155 insertions(+), 56 deletions(-)
+
+diff --git a/drivers/power/supply/qcom_pm8150b_charger.c b/drivers/power/supply/qcom_pm8150b_charger.c
+index 24370d2..4fea1c0 100644
+--- a/drivers/power/supply/qcom_pm8150b_charger.c
++++ b/drivers/power/supply/qcom_pm8150b_charger.c
+@@ -13,9 +13,12 @@
+ #include <linux/devm-helpers.h>
+ #include <linux/iio/consumer.h>
+ #include <linux/interrupt.h>
++#include <linux/jiffies.h>
+ #include <linux/kernel.h>
++#include <linux/lockdep.h>
+ #include <linux/minmax.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_wakeirq.h>
+ #include <linux/of.h>
+@@ -252,9 +255,10 @@
+ #define AICL_RERUN_TIME_MASK			GENMASK(1, 0)
+ 
+ #define SDP_CURRENT_UA			500000
+-#define CDP_CURRENT_UA			3000000
+-#define DCP_CURRENT_UA			3300000
++#define CDP_CURRENT_UA			1500000
++#define DCP_CURRENT_UA			3000000
+ #define CURRENT_MAX_UA			DCP_CURRENT_UA
++#define APSD_RERUNS			4
+ 
+ /* pmi8150b registers represent current in increments of 1/40th of an amp */
+ #define CURRENT_SCALE_FACTOR		50000
+@@ -306,6 +310,13 @@ struct smb5_chip {
+ 	struct iio_channel *usb_in_v_chan;
+ 
+ 	struct power_supply *chg_psy;
++
++	struct mutex lock;
++	unsigned int plug_gen;
++	unsigned int apsd_count;
++	unsigned long next_rerun;
++	bool apsd_warned;
++	int usb_type;
+ };
+ 
+ static enum power_supply_property smb5_properties[] = {
+@@ -356,10 +367,8 @@ static int smb5_apsd_get_charger_type(struct smb5_chip *chip, int *val)
+ 		dev_err(chip->dev, "Failed to read apsd status, rc = %d", rc);
+ 		return rc;
+ 	}
+-	if (!(apsd_stat & APSD_DTC_STATUS_DONE_BIT)) {
+-		dev_err(chip->dev, "Apsd not ready");
++	if (!(apsd_stat & APSD_DTC_STATUS_DONE_BIT))
+ 		return -EAGAIN;
+-	}
+ 
+ 	rc = regmap_read(chip->regmap, chip->base + APSD_RESULT_STATUS, &stat);
+ 	if (rc < 0) {
+@@ -446,71 +455,134 @@ static inline int smb5_get_current_limit(struct smb5_chip *chip,
+ 	return rc;
+ }
+ 
+-static int smb5_set_current_limit(struct smb5_chip *chip, unsigned int val)
++static int smb5_write_icl(struct smb5_chip *chip, unsigned int ua)
+ {
+ 	unsigned char val_raw;
+ 
+-	if (val > 4950000) {
+-		dev_err(chip->dev,
+-			"Can't set current limit higher than 4950000uA");
++	lockdep_assert_held(&chip->lock);
++
++	if (ua > 4950000)
+ 		return -EINVAL;
+-	}
+-	val_raw = val / CURRENT_SCALE_FACTOR;
++
++	val_raw = ua / CURRENT_SCALE_FACTOR;
+ 
+ 	return regmap_write(chip->regmap, chip->base + USBIN_CURRENT_LIMIT_CFG,
+-		val_raw);
++			    val_raw);
++}
++
++static int smb5_apsd_rerun(struct smb5_chip *chip)
++{
++	lockdep_assert_held(&chip->lock);
++
++	return regmap_update_bits(chip->regmap, chip->base + CMD_APSD,
++				  APSD_RERUN_BIT, APSD_RERUN_BIT);
++}
++
++struct smb5_rerun {
++	bool rerun;
++	bool fallback;
++	unsigned int count;
++	unsigned long next;
++	unsigned long requeue;
++};
++
++static struct smb5_rerun smb5_rerun_step(unsigned long now, unsigned int count,
++					 unsigned long next)
++{
++	struct smb5_rerun step = { .count = count, .next = next };
++
++	if (time_after_eq(now, next) && step.count < APSD_RERUNS) {
++		step.rerun = true;
++		step.next = now + (HZ << step.count);
++		step.count++;
++	}
++
++	if (step.count < APSD_RERUNS || time_before(now, step.next))
++		step.requeue = step.next - now;
++	else
++		step.fallback = true;
++
++	return step;
+ }
+ 
+ static void smb5_status_change_work(struct work_struct *work)
+ {
+-	unsigned int charger_type, current_ua;
++	struct smb5_rerun step;
++	unsigned int gen, ua = SDP_CURRENT_UA;
++	unsigned long requeue = 0;
++	struct power_supply *psy;
++	bool apsd_done;
+ 	int usb_online = 0;
+-	int count, rc;
++	int type, rc;
+ 	struct smb5_chip *chip;
+ 
+ 	chip = container_of(work, struct smb5_chip, status_change_work.work);
+ 
+-	smb5_get_prop_usb_online(chip, &usb_online);
+-	if (!usb_online)
++	psy = READ_ONCE(chip->chg_psy);
++	if (!psy)
+ 		return;
+ 
+-	for (count = 0; count < 3; count++) {
+-		dev_dbg(chip->dev, "get charger type retry %d\n", count);
+-		rc = smb5_apsd_get_charger_type(chip, &charger_type);
+-		if (rc != -EAGAIN)
+-			break;
+-		msleep(100);
+-	}
++	gen = READ_ONCE(chip->plug_gen);
++	rmb();
+ 
+-	if (rc < 0 && rc != -EAGAIN) {
+-		dev_err(chip->dev, "get charger type failed: %d\n", rc);
++	rc = smb5_get_prop_usb_online(chip, &usb_online);
++	if (rc < 0)
++		usb_online = 0;
++
++	type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
++	rc = smb5_apsd_get_charger_type(chip, &type);
++	apsd_done = usb_online && rc == 0;
++
++	mutex_lock(&chip->lock);
++	if (gen != chip->plug_gen) {
++		dev_dbg(chip->dev, "selection dropped\n");
++		mutex_unlock(&chip->lock);
+ 		return;
+ 	}
+ 
+-	if (rc < 0) {
+-		rc = regmap_update_bits(chip->regmap, chip->base + CMD_APSD,
+-					APSD_RERUN_BIT, APSD_RERUN_BIT);
+-		schedule_delayed_work(&chip->status_change_work,
+-				      msecs_to_jiffies(1000));
+-		dev_dbg(chip->dev, "get charger type failed, rerun apsd\n");
+-		return;
++	if (apsd_done) {
++		switch (type) {
++		case POWER_SUPPLY_USB_TYPE_CDP:
++			ua = CDP_CURRENT_UA;
++			break;
++		case POWER_SUPPLY_USB_TYPE_DCP:
++			ua = DCP_CURRENT_UA;
++			break;
++		default:
++			break;
++		}
++	} else {
++		type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+ 	}
+ 
+-	switch (charger_type) {
+-	case POWER_SUPPLY_USB_TYPE_CDP:
+-		current_ua = CDP_CURRENT_UA;
+-		break;
+-	case POWER_SUPPLY_USB_TYPE_DCP:
+-		current_ua = DCP_CURRENT_UA;
+-		break;
+-	case POWER_SUPPLY_USB_TYPE_SDP:
+-	default:
+-		current_ua = SDP_CURRENT_UA;
+-		break;
++	rc = smb5_write_icl(chip, ua);
++	if (rc < 0)
++		dev_err(chip->dev, "Couldn't set the input current limit rc=%d\n",
++			rc);
++
++	if (usb_online && !apsd_done) {
++		step = smb5_rerun_step(jiffies, chip->apsd_count,
++				       chip->next_rerun);
++		chip->apsd_count = step.count;
++		chip->next_rerun = step.next;
++		requeue = step.requeue;
++		if (step.rerun)
++			smb5_apsd_rerun(chip);
++		if (step.fallback && !chip->apsd_warned) {
++			dev_warn(chip->dev,
++				 "APSD did not complete, holding 500 mA\n");
++			chip->apsd_warned = true;
++		}
+ 	}
+ 
+-	smb5_set_current_limit(chip, current_ua);
+-	power_supply_changed(chip->chg_psy);
++	chip->usb_type = type;
++	mutex_unlock(&chip->lock);
++
++	power_supply_changed(psy);
++
++	if (requeue)
++		mod_delayed_work(system_percpu_wq, &chip->status_change_work,
++				 requeue);
+ }
+ 
+ static int smb5_get_iio_chan(struct smb5_chip *chip, struct iio_channel *chan,
+@@ -599,7 +671,8 @@ static int smb5_get_property(struct power_supply *psy,
+ 	case POWER_SUPPLY_PROP_HEALTH:
+ 		return smb5_get_prop_health(chip, &val->intval);
+ 	case POWER_SUPPLY_PROP_USB_TYPE:
+-		return smb5_apsd_get_charger_type(chip, &val->intval);
++		val->intval = READ_ONCE(chip->usb_type);
++		return 0;
+ 	default:
+ 		dev_err(chip->dev, "invalid property: %d\n", psp);
+ 		return -EINVAL;
+@@ -611,10 +684,14 @@ static int smb5_set_property(struct power_supply *psy,
+ 			     const union power_supply_propval *val)
+ {
+ 	struct smb5_chip *chip = power_supply_get_drvdata(psy);
++	int rc;
+ 
+ 	switch (psp) {
+ 	case POWER_SUPPLY_PROP_CURRENT_MAX:
+-		return smb5_set_current_limit(chip, val->intval);
++		mutex_lock(&chip->lock);
++		rc = smb5_write_icl(chip, val->intval);
++		mutex_unlock(&chip->lock);
++		return rc;
+ 	default:
+ 		dev_err(chip->dev, "No setter for property: %d\n", psp);
+ 		return -EINVAL;
+@@ -652,11 +729,29 @@ static irqreturn_t smb5_handle_batt_overvoltage(int irq, void *data)
+ static irqreturn_t smb5_handle_usb_plugin(int irq, void *data)
+ {
+ 	struct smb5_chip *chip = data;
++	unsigned int stat;
++	bool rising;
++	int rc;
++
++	rc = regmap_read(chip->regmap, chip->base + USBIN_INT_RT_STS_OFFSET,
++			 &stat);
++	if (rc < 0)
++		dev_err(chip->dev, "Couldn't read the usb in status rc=%d\n", rc);
++	rising = !rc && (stat & USBIN_PLUGIN_RT_STS_BIT);
++
++	mutex_lock(&chip->lock);
++	chip->plug_gen++;
++	chip->apsd_count = 0;
++	chip->apsd_warned = false;
++	chip->next_rerun = jiffies + msecs_to_jiffies(1500);
++	chip->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
++	smb5_write_icl(chip, SDP_CURRENT_UA);
++	mutex_unlock(&chip->lock);
+ 
+ 	power_supply_changed(chip->chg_psy);
+ 
+-	schedule_delayed_work(&chip->status_change_work,
+-			      msecs_to_jiffies(1500));
++	mod_delayed_work(system_percpu_wq, &chip->status_change_work,
++			 rising ? msecs_to_jiffies(1500) : 0);
+ 
+ 	return IRQ_HANDLED;
+ }
+@@ -867,6 +962,16 @@ static int smb5_probe(struct platform_device *pdev)
+ 	if (!desc->name)
+ 		return -ENOMEM;
+ 
++	rc = devm_mutex_init(chip->dev, &chip->lock);
++	if (rc)
++		return dev_err_probe(chip->dev, rc, "Failed to init the lock\n");
++
++	rc = devm_delayed_work_autocancel(chip->dev, &chip->status_change_work,
++					  smb5_status_change_work);
++	if (rc)
++		return dev_err_probe(chip->dev, rc,
++				     "Failed to init status change work\n");
++
+ 	chip->chg_psy =
+ 		devm_power_supply_register(chip->dev, desc, &supply_config);
+ 	if (IS_ERR(chip->chg_psy))
+@@ -878,12 +983,6 @@ static int smb5_probe(struct platform_device *pdev)
+ 		return dev_err_probe(chip->dev, rc,
+ 				     "Failed to get battery info\n");
+ 
+-	rc = devm_delayed_work_autocancel(chip->dev, &chip->status_change_work,
+-					  smb5_status_change_work);
+-	if (rc)
+-		return dev_err_probe(chip->dev, rc,
+-				     "Failed to init status change work\n");
+-
+ 	rc = clamp(chip->batt_info->voltage_max_design_uv, 3600000, 4450000);
+ 	rc = (rc - 3600000) / 10000;
+ 	rc = regmap_update_bits(chip->regmap, chip->base + FLOAT_VOLTAGE_CFG,
+@@ -924,7 +1023,7 @@ static int smb5_probe(struct platform_device *pdev)
+ 	platform_set_drvdata(pdev, chip);
+ 
+ 	/* Initialise charger state */
+-	schedule_delayed_work(&chip->status_change_work, 0);
++	mod_delayed_work(system_percpu_wq, &chip->status_change_work, 0);
+ 
+ 	return 0;
+ }
