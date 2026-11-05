@@ -1,0 +1,95 @@
+From: seilent <github@seilent.net>
+Date: Thu, 5 Nov 2026 10:42:17 +0900
+Subject: [PATCH] drm/msm/dpu: dither the DP output at 6 bpc
+
+Dither is enabled for the DSI interface only, from the connector
+display_info.bpc. A DP sink whose EDID carries no bpc gets 0 there, so
+the pingpong dither stays off at every mode and a mode the DP panel
+drives at 18 bpp shows banding.
+
+msm_dp_get_mode_bpc() returns the bpc the DP panel selects for a mode,
+from the same inputs msm_dp_panel_get_mode_bpp() takes in the bridge
+mode valid and in the panel mode init. _dpu_encoder_virt_enable_helper()
+now calls _dpu_encoder_setup_dither() for INTF_DP with that value and
+the encoder's cached mode.
+
+eDP is INTF_DP as well, so a 6 bpc eDP panel is dithered too.
+---
+ drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c | 12 ++++++++++++
+ drivers/gpu/drm/msm/dp/dp_display.c         | 13 +++++++++++++
+ drivers/gpu/drm/msm/msm_drv.h               |  8 ++++++++
+ 3 files changed, 33 insertions(+)
+
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+index 1f20695..f5884d1 100644
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+@@ -1307,6 +1307,18 @@ static void _dpu_encoder_virt_enable_helper(struct drm_encoder *drm_enc)
+ 			_dpu_encoder_setup_dither(dpu_enc->hw_pp[i], bpc);
+ 		}
+ 	}
++
++	if (dpu_enc->disp_info.intf_type == INTF_DP) {
++		struct msm_drm_private *priv = drm_enc->dev->dev_private;
++		u32 bpc = msm_dp_get_mode_bpc(priv->kms->dp[dpu_enc->disp_info.h_tile_instance[0]],
++					      &dpu_enc->cur_master->cached_mode);
++
++		for (i = 0; i < MAX_CHANNELS_PER_ENC; i++) {
++			if (!dpu_enc->hw_pp[i])
++				continue;
++			_dpu_encoder_setup_dither(dpu_enc->hw_pp[i], bpc);
++		}
++	}
+ }
+ 
+ /**
+diff --git a/drivers/gpu/drm/msm/dp/dp_display.c b/drivers/gpu/drm/msm/dp/dp_display.c
+index 22eade1..7aab173 100644
+--- a/drivers/gpu/drm/msm/dp/dp_display.c
++++ b/drivers/gpu/drm/msm/dp/dp_display.c
+@@ -1306,6 +1306,19 @@ bool msm_dp_wide_bus_available(const struct msm_dp *msm_dp_display)
+ 	return dp->wide_bus_supported;
+ }
+ 
++u32 msm_dp_get_mode_bpc(const struct msm_dp *msm_dp_display,
++			const struct drm_display_mode *mode)
++{
++	struct msm_dp_display_private *dp;
++	u32 bpc;
++
++	dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
++	bpc = dp->msm_dp_display.connector->display_info.bpc;
++
++	return msm_dp_panel_get_mode_bpp(dp->panel, bpc ? bpc * 3 : 24,
++					 mode->clock) / 3;
++}
++
+ void msm_dp_display_debugfs_init(struct msm_dp *msm_dp_display, struct dentry *root, bool is_edp)
+ {
+ 	struct msm_dp_display_private *dp;
+diff --git a/drivers/gpu/drm/msm/msm_drv.h b/drivers/gpu/drm/msm/msm_drv.h
+index 3d5679b..f6bb1e5 100644
+--- a/drivers/gpu/drm/msm/msm_drv.h
++++ b/drivers/gpu/drm/msm/msm_drv.h
+@@ -359,6 +359,8 @@ void msm_dp_snapshot(struct msm_disp_state *disp_state, struct msm_dp *dp_displa
+ bool msm_dp_needs_periph_flush(const struct msm_dp *dp_display,
+ 			       const struct drm_display_mode *mode);
+ bool msm_dp_wide_bus_available(const struct msm_dp *dp_display);
++u32 msm_dp_get_mode_bpc(const struct msm_dp *dp_display,
++			const struct drm_display_mode *mode);
+ 
+ #else
+ static inline int __init msm_dp_register(void)
+@@ -391,6 +393,12 @@ static inline bool msm_dp_wide_bus_available(const struct msm_dp *dp_display)
+ 	return false;
+ }
+ 
++static inline u32 msm_dp_get_mode_bpc(const struct msm_dp *dp_display,
++				      const struct drm_display_mode *mode)
++{
++	return 0;
++}
++
+ #endif
+ 
+ #ifdef CONFIG_DRM_MSM_MDP4

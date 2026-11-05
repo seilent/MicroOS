@@ -61,4 +61,5 @@ done
 "$here/pkg-kernel/gpu-opp.sh" "$dtbs" >/dev/null
 "$here/pkg-kernel/fan-trips.sh" "$dtbs"
 "$here/pkg-kernel/dp-mode-valid.sh" "$out/src"
+"$here/pkg-kernel/dp-dither.sh" "$out/src"
 echo "pkg-kernel: $(basename "$rpm") ok"
