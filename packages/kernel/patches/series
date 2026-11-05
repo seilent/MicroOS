@@ -50,3 +50,4 @@
 0136-drm-msm-dpu-dither-the-dp-output-at-6-bpc.patch
 0116-power-supply-qcom-pm8150b-charger-bound-the-apsd-rerun.patch
 0117-power-supply-qcom-pm8150b-charger-take-the-input-limit-from-the-type-c-port.patch
+0999-smb5-pd-0b-test-only.patch

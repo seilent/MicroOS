@@ -1,0 +1,152 @@
+--- a/drivers/power/supply/qcom_pm8150b_charger.c
++++ b/drivers/power/supply/qcom_pm8150b_charger.c
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <linux/bits.h>
++#include <linux/delay.h>
+ #include <linux/devm-helpers.h>
+ #include <linux/iio/consumer.h>
+ #include <linux/interrupt.h>
+@@ -24,6 +25,7 @@
+ #include <linux/of.h>
+ #include <linux/power_supply.h>
+ #include <linux/regmap.h>
++#include <linux/string.h>
+ #include <linux/types.h>
+ #include <linux/workqueue.h>
+ 
+@@ -526,6 +528,110 @@
+ 	return 0;
+ }
+ 
++static struct smb5_chip *smb5_test_chip;
++static unsigned int sel_delay_ms;
++
++static int smb5_test_write_icl_mode(struct smb5_chip *chip, unsigned int ua,
++				    bool hc)
++{
++	unsigned char val_raw;
++	unsigned int reg;
++	int rc;
++
++	lockdep_assert_held(&chip->lock);
++
++	val_raw = ua / CURRENT_SCALE_FACTOR;
++
++	rc = smb5_icl_mode(chip, hc);
++	if (rc < 0)
++		return rc;
++
++	rc = regmap_write(chip->regmap, chip->base + USBIN_CURRENT_LIMIT_CFG,
++			  val_raw);
++	if (rc < 0)
++		return rc;
++
++	chip->icl_ua = ua;
++	chip->hc_mode = hc;
++
++	rc = regmap_read(chip->regmap, chip->base + USBIN_CURRENT_LIMIT_CFG,
++			 &reg);
++	if (rc < 0)
++		return rc;
++
++	pr_info("hc_test: ua=%u mode=%s 0x%02x=0x%02x\n", ua,
++		hc ? "hc" : "auto", USBIN_CURRENT_LIMIT_CFG, reg);
++
++	return 0;
++}
++
++static int smb5_hc_test_set(const char *val, const struct kernel_param *kp)
++{
++	struct smb5_chip *chip = smb5_test_chip;
++	char buf[32];
++	char mode[8];
++	unsigned int ua;
++	bool hc;
++	int rc;
++
++	if (!chip)
++		return -ENODEV;
++
++	strscpy(buf, skip_spaces(val), sizeof(buf));
++
++	if (!buf[0] || buf[0] == '\n')
++		return 0;
++
++	if (sscanf(buf, "%u,%7s", &ua, mode) != 2)
++		return -EINVAL;
++
++	if (!strcmp(mode, "hc"))
++		hc = true;
++	else if (!strcmp(mode, "auto"))
++		hc = false;
++	else
++		return -EINVAL;
++
++	if (ua > 4950000)
++		return -EINVAL;
++
++	mutex_lock(&chip->lock);
++	rc = smb5_test_write_icl_mode(chip, ua, hc);
++	mutex_unlock(&chip->lock);
++
++	return rc;
++}
++
++static int smb5_hc_test_get(char *buffer, const struct kernel_param *kp)
++{
++	struct smb5_chip *chip = smb5_test_chip;
++	unsigned int ua;
++	bool hc;
++
++	if (!chip)
++		return scnprintf(buffer, 128, "\n");
++
++	mutex_lock(&chip->lock);
++	ua = chip->icl_ua;
++	hc = chip->hc_mode;
++	mutex_unlock(&chip->lock);
++
++	return scnprintf(buffer, 128, "%u,%s\n", ua, hc ? "hc" : "auto");
++}
++
++static const struct kernel_param_ops smb5_hc_test_ops = {
++	.set = smb5_hc_test_set,
++	.get = smb5_hc_test_get,
++};
++
++module_param_cb(hc_test, &smb5_hc_test_ops, NULL, 0644);
++module_param(sel_delay_ms, uint, 0644);
++
++static void smb5_test_chip_clear(void *data)
++{
++	smb5_test_chip = NULL;
++}
++
+ static int smb5_set_bc12(struct smb5_chip *chip, bool on)
+ {
+ 	int rc;
+@@ -721,6 +827,9 @@
+ 	else
+ 		st.tcpm_ua = prop.intval;
+ 
++	if (READ_ONCE(sel_delay_ms))
++		msleep(READ_ONCE(sel_delay_ms));
++
+ 	mutex_lock(&chip->lock);
+ 	if (gen != chip->plug_gen) {
+ 		dev_dbg(chip->dev, "selection dropped\n");
+@@ -1241,6 +1350,12 @@
+ 
+ 	platform_set_drvdata(pdev, chip);
+ 
++	rc = devm_add_action_or_reset(chip->dev, smb5_test_chip_clear, NULL);
++	if (rc)
++		return rc;
++
++	smb5_test_chip = chip;
++
+ 	/* Initialise charger state */
+ 	mod_delayed_work(system_percpu_wq, &chip->status_change_work, 0);
+ 
