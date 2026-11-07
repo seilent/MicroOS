@@ -25,7 +25,7 @@ tar -xzf "$tarball" -C "$top/vendor"
     | zstd -q -T0 -o "$top/SOURCES/steamos-manager-$ref-vendor.tar.zst"
 )
 rm -rf "$top/vendor"
-cp "$src"/patches/*.patch "$src/com.steampowered.SteamOSManager1.conf" "$top/SOURCES/"
+cp "$src"/patches/*.patch "$src/com.steampowered.SteamOSManager1.conf" "$src/microos-pm2.toml" "$top/SOURCES/"
 
 rpmbuild -ba \
   --define "_topdir $top" \

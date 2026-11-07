@@ -10,10 +10,12 @@ URL:            https://gitlab.steamos.cloud/holo/steamos-manager
 Source0:        %{url}/-/archive/%{commit}/%{name}-%{commit}.tar.gz
 Source1:        %{name}-%{commit}-vendor.tar.zst
 Source2:        com.steampowered.SteamOSManager1.conf
+Source3:        microos-pm2.toml
 Patch0001:      0001-wifi-keep-networkmanager-up-when-a-backend-is-missing.patch
 Patch0002:      0002-manager-user-take-cpuscaling1-from-a-remote.patch
 Patch0003:      0003-remote-relay-signals-from-the-first-registration.patch
 Patch0004:      0004-remote-keep-the-remoteinterface1-lock-off-object-server-changes.patch
+Patch0005:      0005-inputplumber-let-the-device-config-skip-deckservice.patch
 Vendor:         MicroOS
 BuildRequires:  cargo
 BuildRequires:  rust
@@ -31,6 +33,7 @@ talks to for device settings, and steamosctl.
 
 %prep
 %autosetup -n %{name}-%{commit} -p1 -a 1
+cp %{SOURCE3} steamos-manager/microos-pm2.toml
 
 %build
 %ifarch aarch64
@@ -42,7 +45,7 @@ cargo build --release --offline --frozen
 %ifarch aarch64
 export RUSTFLAGS="${RUSTFLAGS:-} -Ctarget-feature=+fp16,+dotprod,+rcpc"
 %endif
-cargo test --offline --frozen -p steamos-manager --lib -- wifi:: systemd:: manager::user::
+cargo test --offline --frozen -p steamos-manager --lib -- wifi:: systemd:: manager::user:: inputplumber::
 
 %install
 install -D -m 755 target/release/steamos-manager %{buildroot}%{_prefix}/lib/steamos-manager

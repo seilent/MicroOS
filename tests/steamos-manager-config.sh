@@ -25,6 +25,9 @@ if not m:
 compatible = m.group(1) if m else None
 
 device = load("system_files/usr/share/steamos-manager/devices/microos-pm2.toml")
+shipped = open(f"{root}/system_files/usr/share/steamos-manager/devices/microos-pm2.toml", "rb").read()
+if open(f"{root}/packages/steamos-manager/microos-pm2.toml", "rb").read() != shipped:
+    fail("packages/steamos-manager/microos-pm2.toml differs from the shipped device file")
 if set(device) != {"device", "inputplumber"}:
     fail(f"microos-pm2.toml sections {sorted(device)}")
 matches = device.get("device", [])
