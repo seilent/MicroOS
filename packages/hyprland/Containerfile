@@ -1,0 +1,31 @@
+FROM localhost/microos-pkg-builder
+
+COPY hyprland.spec SOURCE.env /tmp/hyprland/
+RUN . /tmp/hyprland/SOURCE.env \
+ && dnf -y --setopt=install_weak_deps=False builddep \
+      --define "stack $HYPR_STACK_REPO" \
+      --define "hyprutils_commit $HYPRUTILS_COMMIT" \
+      --define "hyprutils_version $HYPRUTILS_VERSION" \
+      --define "hyprlang_commit $HYPRLANG_COMMIT" \
+      --define "hyprlang_version $HYPRLANG_VERSION" \
+      --define "hyprgraphics_commit $HYPRGRAPHICS_COMMIT" \
+      --define "hyprgraphics_version $HYPRGRAPHICS_VERSION" \
+      --define "hyprwire_commit $HYPRWIRE_COMMIT" \
+      --define "hyprwire_version $HYPRWIRE_VERSION" \
+      --define "hyprprotocols_commit $HYPRPROTOCOLS_COMMIT" \
+      --define "aquamarine_commit $AQUAMARINE_COMMIT" \
+      --define "aquamarine_version $AQUAMARINE_VERSION" \
+      --define "hyprcursor_commit $HYPRCURSOR_COMMIT" \
+      --define "hyprcursor_version $HYPRCURSOR_VERSION" \
+      --define "hyprland_version $HYPRLAND_VERSION" \
+      --define "glaze_commit $GLAZE_COMMIT" \
+      --define "hyprwscanner_commit $HYPRWSCANNER_COMMIT" \
+      --define "hyprwscanner_version $HYPRWSCANNER_VERSION" \
+      /tmp/hyprland/hyprland.spec \
+ && allowed='' \
+ && for p in $(rpm -qa --qf '%{NAME}\n' | grep -E '^(aquamarine|hyprcursor|hyprgraphics|hyprland|hyprlang|hyprutils|hyprwayland-scanner|hyprwire|libudis86|udis86)' || true); do \
+      case " $allowed " in *" $p "*) continue ;; esac; \
+      dnf -y remove "$p"; \
+    done \
+ && dnf clean all \
+ && rm -rf /tmp/hyprland
