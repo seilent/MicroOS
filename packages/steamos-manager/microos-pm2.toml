@@ -1,0 +1,8 @@
+[[device]]
+dt.compatible = "ayaneo,pocket-micro2"
+device = "ayaneo_pocket_micro2"
+variant = "pocket_micro2"
+friendly_name = "AYANEO Pocket MICRO 2"
+
+[inputplumber]
+target_devices = ["deck-uhid", "keyboard"]
