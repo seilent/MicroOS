@@ -10,9 +10,9 @@ Summary:        On screen keyboard for wlroots compositors
 License:        GPL-3.0-only AND MIT AND HPND-sell-variant
 URL:            https://github.com/jjsullivan5196/wvkbd
 Source0:        %{url}/archive/%{wvkbd_commit}.tar.gz#/wvkbd-%{wvkbd_commit}.tar.gz
-Source1:        %{url}/raw/%{wvkbd_commit}/LICENSE#/LICENSE
-Source2:        %{url}/raw/%{wvkbd_commit}/COPYING#/COPYING
-Source3:        %{url}/raw/%{wvkbd_commit}/COPYING_WESTON#/COPYING_WESTON
+Source1:        https://raw.githubusercontent.com/jjsullivan5196/wvkbd/%{wvkbd_commit}/LICENSE#/LICENSE
+Source2:        https://raw.githubusercontent.com/jjsullivan5196/wvkbd/%{wvkbd_commit}/COPYING#/COPYING
+Source3:        https://raw.githubusercontent.com/jjsullivan5196/wvkbd/%{wvkbd_commit}/COPYING_WESTON#/COPYING_WESTON
 Patch0001:      0001-config-mk-keep-the-build-flags-from-the-environment.patch
 Patch0002:      0002-make-objects-wait-for-the-generated-config-header.patch
 Vendor:         MicroOS
