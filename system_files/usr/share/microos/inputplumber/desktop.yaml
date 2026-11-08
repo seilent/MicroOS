@@ -1,0 +1,52 @@
+version: 1
+kind: DeviceProfile
+name: Desktop
+description: Gamepad mapping to mouse controls for the desktop session
+mapping:
+  - name: Joystick Mouse
+    source_event:
+      gamepad:
+        axis:
+          name: RightStick
+    target_events:
+      - mouse:
+          motion:
+            speed_pps: 800
+
+  - name: Right Trigger
+    source_event:
+      gamepad:
+        trigger:
+          name: RightTrigger
+          deadzone: 0.2
+    target_events:
+      - mouse:
+          button: Left
+
+  - name: Left Trigger
+    source_event:
+      gamepad:
+        trigger:
+          name: LeftTrigger
+          deadzone: 0.2
+    target_events:
+      - mouse:
+          button: Right
+
+  - name: RB
+    source_event:
+      gamepad:
+        button: RightBumper
+    target_events:
+      - mouse:
+          wheel:
+            direction: up
+
+  - name: LB
+    source_event:
+      gamepad:
+        button: LeftBumper
+    target_events:
+      - mouse:
+          wheel:
+            direction: down
