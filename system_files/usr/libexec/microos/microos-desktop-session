@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-desktop-session
+runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+state=$runtime/microos
+
+log() { echo "$me: $*" >&2; }
+
+export DESKTOP_SESSION=microos-desktop
+export XDG_CURRENT_DESKTOP=Hyprland
+export XDG_SESSION_TYPE=wayland
+
+unset XDG_DESKTOP_PORTAL_DIR
+vars=(DESKTOP_SESSION)
+while IFS='=' read -r k _; do
+  [[ $k == XDG_* ]] && vars+=("$k")
+done < <(env)
+dbus-update-activation-environment --systemd "${vars[@]}" || log "dbus-update-activation-environment failed"
+systemctl --user unset-environment XDG_DESKTOP_PORTAL_DIR || log "unset of XDG_DESKTOP_PORTAL_DIR failed"
+
+install -d -m 0700 "$state" || log "cannot create $state"
+if [[ ! -e $state/desktop-transform ]]; then
+  printf '1\n' > "$state/desktop-transform" || log "cannot write $state/desktop-transform"
+fi
+
+trap 'systemctl --user stop microos-desktop.service' HUP INT TERM
+systemctl --user --wait start microos-desktop.service &
+wait
