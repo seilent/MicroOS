@@ -577,6 +577,15 @@ command -v wvkbd-mobintl >/dev/null || fail "wvkbd-mobintl is not on PATH"
 hyprjson=$(Hyprland --version-json) || fail "Hyprland --version-json failed"
 grep -q 0aa6745f705f2c4b0a5004eb019ef76e5bbdb426 <<< "$hyprjson" \
   || fail "Hyprland --version-json does not name 0aa6745f705f2c4b0a5004eb019ef76e5bbdb426"
+rpm -q mako foot grim xdg-desktop-portal xdg-desktop-portal-wlr xdg-desktop-portal-gtk xorg-x11-server-Xwayland >/dev/null \
+  || fail "spike desktop rpms missing"
+rt=$(mktemp -d)
+chown 1000:1000 "$rt"
+chmod 700 "$rt"
+verify=$(XDG_RUNTIME_DIR=$rt setpriv --reuid=1000 --regid=1000 --clear-groups \
+  Hyprland --verify-config --config /usr/share/microos/hypr/hyprland.lua 2>&1) \
+  || fail "Hyprland --verify-config: $verify"
+rm -rf "${rt:?}"
 
 for p in es-de microemu; do
   [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
@@ -1091,6 +1100,7 @@ done
 sessions=$(microos-session list) || fail "microos-session list"
 grep -qxF $'microdap\tMicro DAP\tyes' <<< "$sessions" || fail "microos-session list lacks microdap: $(tr '\n' ' ' <<< "$sessions")"
 grep -qxF $'microemu\tMicro EMU\tyes' <<< "$sessions" || fail "microos-session list lacks microemu: $(tr '\n' ' ' <<< "$sessions")"
+grep -qxF $'desktop\tDesktop\tyes' <<< "$sessions" || fail "microos-session list lacks desktop: $(tr '\n' ' ' <<< "$sessions")"
 for u in microdap-radio.service microdap-usb-audio.service; do
   [[ $(systemctl is-enabled "$u") == enabled ]] || fail "$u is not enabled"
 done
