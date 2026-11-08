@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-out=${1:?usage: build.sh <outdir>}
+out=${1:?usage: build.sh <outdir> <workdir>}
+work=${2:?usage: build.sh <outdir> <workdir>}
 src=$(cd "$(dirname "$0")" && pwd)
 . "$src/SOURCE.env"
 
@@ -35,15 +36,14 @@ $patches
 patches/
 $want"
 
-tarball=$top/SOURCES/wvkbd-$WVKBD_COMMIT.tar.gz
-curl -fsSL --retry 3 -o "$tarball" "$WVKBD_URL/archive/$WVKBD_COMMIT.tar.gz"
-echo "$WVKBD_SHA256  $tarball" | sha256sum -c -
-curl -fsSL --retry 3 -o "$top/SOURCES/LICENSE" "$WVKBD_LICENSE_URL"
-echo "$WVKBD_LICENSE_SHA256  $top/SOURCES/LICENSE" | sha256sum -c -
-curl -fsSL --retry 3 -o "$top/SOURCES/COPYING" "$WVKBD_COPYING_URL"
-echo "$WVKBD_COPYING_SHA256  $top/SOURCES/COPYING" | sha256sum -c -
-curl -fsSL --retry 3 -o "$top/SOURCES/COPYING_WESTON" "$WVKBD_WESTON_URL"
-echo "$WVKBD_WESTON_SHA256  $top/SOURCES/COPYING_WESTON" | sha256sum -c -
+copy() {
+  [[ -f $work/$1 ]] || die "fetch.sh left no $work/$1"
+  cp "$work/$1" "$top/SOURCES/$1"
+}
+copy "wvkbd-$WVKBD_COMMIT.tar.gz"
+copy LICENSE
+copy COPYING
+copy COPYING_WESTON
 cp "$src/patches"/*.patch "$top/SOURCES/"
 
 rpmbuild -ba \
