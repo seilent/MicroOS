@@ -1,0 +1,13 @@
+[Unit]
+Description=Hotkeys for the desktop session
+BindsTo=microos-desktop.service
+After=microos-desktop.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/libexec/microos/microos-hotkeyd desktop
+ExecStopPost=/usr/libexec/microos/microos-hotkeyd --reset-intercept
+Restart=always
+RestartSec=2
+RestartSteps=3
+RestartMaxDelaySec=10

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-desktop-env
+runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+vars=(WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE)
+
+log() { logger -t microos-spike "$me: $*"; }
+
+[[ -z ${DISPLAY:-} ]] || vars+=(DISPLAY)
+envs=()
+for v in "${vars[@]}"; do
+  [[ -z ${!v:-} ]] || envs+=("$v")
+done
+if (( ${#envs[@]} )); then
+  dbus-update-activation-environment --systemd "${envs[@]}" || log "dbus-update-activation-environment failed"
+fi
+log "imported ${envs[*]}"
+
+if [[ -e $runtime/microos/spike-no-portal-restart ]]; then
+  log "xdg-desktop-portal restart skipped, flag present"
+else
+  systemctl --user --no-block try-restart xdg-desktop-portal.service || log "xdg-desktop-portal restart failed"
+  log "xdg-desktop-portal restart requested"
+fi
+
+systemctl --user --no-block start microos-osk.service || log "microos-osk start failed"
+log "microos-osk start requested"
+
+systemctl --user --no-block start mako.service || log "mako start failed"
+log "mako start requested"
