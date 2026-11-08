@@ -167,6 +167,12 @@ if ! dnf -y install \
   gtk3 \
   python3-cairo \
   xprop \
+  mako \
+  foot \
+  grim \
+  xdg-desktop-portal \
+  xdg-desktop-portal-wlr \
+  xdg-desktop-portal-gtk \
   podman \
   passt \
   catatonit \
