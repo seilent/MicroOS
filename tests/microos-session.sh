@@ -1414,8 +1414,8 @@ grep -qF 'subject.user != "micro"' "$tree/usr/share/polkit-1/rules.d/50-microos-
 
 tr=$tmp/tfroot
 mkdir -p "$tr/etc" "$tr/usr/lib/tmpfiles.d"
-printf 'root:x:0:0::/root:/bin/bash\nmicro:x:1000:1000::/var/home/micro:/bin/bash\n' > "$tr/etc/passwd"
-printf 'root:x:0:\nmicro:x:1000:\n' > "$tr/etc/group"
+printf 'root:x:0:0::/root:/bin/bash\nmicro:x:1000:1000::/var/home/micro:/bin/bash\ngeoclue:x:995:995::/var/lib/geoclue:/sbin/nologin\n' > "$tr/etc/passwd"
+printf 'root:x:0:\nmicro:x:1000:\ngeoclue:x:995:\n' > "$tr/etc/group"
 cp "$tree/usr/lib/tmpfiles.d/microos.conf" "$tr/usr/lib/tmpfiles.d/"
 systemd-tmpfiles --create --root="$tr" microos.conf 2> "$tmp/out" || fail "systemd-tmpfiles: $(cat "$tmp/out")"
 for e in 'run/microos 755 0 0' 'run/microos/lock 700 0 0' 'run/microos/hold/.lock-keys 600 0 0' 'run/microos/user 755 1000 1000' \
