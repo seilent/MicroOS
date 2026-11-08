@@ -558,8 +558,8 @@ done
 for p in hyprland hyprutils hyprlang hyprgraphics hyprwire hyprcursor aquamarine hyprgrass; do
   [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
 done
-hyprutils=(/usr/lib64/libhyprutils.so.*)
-[[ ${#hyprutils[@]} -eq 1 && -f ${hyprutils[0]} ]] || fail "expected one libhyprutils.so.*, found ${hyprutils[*]}"
+mapfile -t hyprutils < <(find /usr/lib64 -maxdepth 1 -name 'libhyprutils.so.*' | grep -E '\.so\.[0-9]+$')
+[[ ${#hyprutils[@]} -eq 1 ]] || fail "expected one libhyprutils SONAME, found ${hyprutils[*]}"
 for b in /usr/bin/Hyprland /usr/bin/hyprctl /usr/lib64/libhyprgrass.so; do
   [[ -f $b ]] || fail "$b missing"
   ! ldd "$b" | grep -q 'not found' || fail "$b has unresolved libraries"
