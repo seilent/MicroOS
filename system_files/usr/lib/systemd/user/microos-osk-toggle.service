@@ -1,0 +1,6 @@
+[Unit]
+Description=Toggle the on screen keyboard
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl --user kill --signal=SIGRTMIN --kill-whom=main microos-osk.service

@@ -1,0 +1,7 @@
+[Unit]
+Description=On screen keyboard
+PartOf=microos-desktop.service
+After=microos-desktop.service
+
+[Service]
+ExecStart=/usr/bin/wvkbd-mobintl --auto --hidden
