@@ -69,6 +69,13 @@ grep -qx 'excludepkgs=pipewire\*,wireplumber\*' /etc/dnf/libdnf5.conf.d/20-micro
   || fail "20-microos-pipewire.conf does not exclude pipewire and wireplumber"
 ! rpm -q openh264 >/dev/null 2>&1 || fail "Cisco's openh264 is installed in the image"
 grep -qx 'excludepkgs=openh264' /etc/dnf/libdnf5.conf.d/20-microos-openh264.conf || fail "20-microos-openh264.conf does not exclude openh264"
+excl=$(dnf5 --dump-main-config | sed -n 's/^excludepkgs = //p') || fail "dnf5 --dump-main-config failed"
+[[ -n $excl ]] || fail "dnf5 --dump-main-config has no excludepkgs"
+excl=" ${excl//,/ } "
+for p in openh264 'pipewire*' 'wireplumber*' hyprland hyprutils hyprlang hyprgraphics hyprwire hyprcursor aquamarine \
+  hyprgrass udis86; do
+  [[ $excl == *" $p "* ]] || fail "dnf5 --dump-main-config excludepkgs lacks $p"
+done
 [[ $(rpm -qf --qf '%{NAME}' /usr/lib64/libopenh264.so.8) == noopenh264 ]] || fail "libopenh264.so.8 is not the noopenh264 stub"
 [[ $(rpm -q --qf '%{VENDOR}' inputplumber) == MicroOS ]] || fail "inputplumber is not the MicroOS build"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
@@ -556,6 +563,20 @@ for f in /etc/subuid /etc/subgid; do
   [[ $(< "$f") == micro:524288:65536 ]] || fail "$f is not micro:524288:65536"
   [[ $(stat -c '%a %U %G' "$f") == '644 root root' ]] || fail "$f mode or owner"
 done
+for p in hyprland hyprutils hyprlang hyprgraphics hyprwire hyprcursor aquamarine hyprgrass; do
+  [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
+done
+hyprutils=(/usr/lib64/libhyprutils.so.*)
+[[ ${#hyprutils[@]} -eq 1 && -f ${hyprutils[0]} ]] || fail "expected one libhyprutils.so.*, found ${hyprutils[*]}"
+for b in /usr/bin/Hyprland /usr/bin/hyprctl /usr/lib64/libhyprgrass.so; do
+  [[ -f $b ]] || fail "$b missing"
+  ! ldd "$b" | grep -q 'not found' || fail "$b has unresolved libraries"
+done
+command -v wvkbd-mobintl >/dev/null || fail "wvkbd-mobintl is not on PATH"
+! command -v hyprpm >/dev/null || fail "hyprpm is installed"
+hyprjson=$(Hyprland --version-json) || fail "Hyprland --version-json failed"
+grep -q 0aa6745f705f2c4b0a5004eb019ef76e5bbdb426 <<< "$hyprjson" \
+  || fail "Hyprland --version-json does not name 0aa6745f705f2c4b0a5004eb019ef76e5bbdb426"
 
 for p in es-de microemu; do
   [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
