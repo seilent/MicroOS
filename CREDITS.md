@@ -49,15 +49,23 @@ Projects MicroOS builds, with their authors and license.
 | `lsfg-vk` glibc layer build | xXJSONDeruloXx/lsfg-vk-arm64 `d2498550e7` | xXJSONDeruloXx | GPL-3.0-or-later |
 | toml++ in `lsfg-vk` | [marzer/tomlplusplus](https://github.com/marzer/tomlplusplus) `v3.4.0` | Mark Gillard | MIT |
 | `rocknix-abl` SM8250 elf | [ROCKNIX/abl](https://github.com/ROCKNIX/abl) `v1.2` `0e755e15`, built from [ROCKNIX/LinuxLoader](https://github.com/ROCKNIX/LinuxLoader) `e9d37131` (not public) | ROCKNIX contributors | not stated (no LICENSE in ROCKNIX/abl) |
+| `hyprland` | [hyprwm/Hyprland](https://github.com/hyprwm/Hyprland) `v0.57.0` `0aa6745f70` | vaxerski and Hyprland contributors | BSD-3-Clause; `subprojects/udis86` (Vivek Thampi) BSD-2-Clause |
+| `hyprland` stack libraries and tools: `hyprutils` 0.14.3, `hyprgraphics` 0.6.0, `hyprwire` 0.3.1, `hyprland-protocols` 0.8.0, `aquamarine` 0.15.1, `hyprcursor` 0.1.11, `hyprwayland-scanner` 0.4.6 (build only) | `github.com/hyprwm`, the archive of each pinned commit (`packages/hyprland/SOURCE.env`) | Hypr Development | BSD-3-Clause |
+| `hyprlang` in the `hyprland` stack | [hyprwm/hyprlang](https://github.com/hyprwm/hyprlang) `v0.6.8` `3a1c1b25b0` | Hypr Development | LGPL-3.0-only |
+| `glaze` in the `hyprland` stack, `glaze-devel` | [stephenberry/glaze](https://github.com/stephenberry/glaze) `v7.2.0` `b518eec7a2` | Stephen Berry | MIT |
+| `hyprgrass` | [horriblename/hyprgrass](https://github.com/horriblename/hyprgrass) `hl-0.57.0` `8ca1af717d` | Ching Pei Yang | BSD-3-Clause; `LICENSE.aosp` Apache-2.0 |
+| `hyprgrass` wf-touch subproject | [WayfireWM/wf-touch](https://github.com/WayfireWM/wf-touch) `8974eb0f6a` | Wayfire | MIT |
+| `wvkbd` | [jjsullivan5196/wvkbd](https://github.com/jjsullivan5196/wvkbd) `v0.21` `f7e9ea3a75` | John Sullivan | GPL-3.0-only; MIT for Wayland's `os-compatibility` (Kristian Høgsberg, Intel and Wayland contributors) and `wld` (Michael Forney); HPND-sell-variant for the `wlr-layer-shell` description (Drew DeVault) |
 
-`gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my four patches, `gamescope`
+`gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my five patches, `gamescope`
 carries Fedora's packaging patches, five of mine and an OGC patch backported by me (`0003` to `0008`, `0006` from
 OGC), `mangohud` carries ten upstream MangoHud patches, five of them backported by me, and five of mine, `plymouth`
 carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine, `es-de` carries my launch path
-escape patch, `inputplumber` carries three of mine and my polkit rule, and `lsfg-vk` is my fork's `microos-layer`
-branch (`PATCHES.md` in each package); the others are built as is. License texts in `packages/gamescope/`,
-`packages/gamescope-session/`, `packages/es-de/`, `packages/hexagonrpc/`, `packages/inputplumber/`,
-`packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and `packages/steamos-manager/`.
+escape patch, `inputplumber` carries three of mine and my polkit rule, `wvkbd` carries two of mine, and `lsfg-vk` is my
+fork's `microos-layer` branch (`PATCHES.md` in each package); the others are built as is. License texts in
+`packages/gamescope/`, `packages/gamescope-session/`, `packages/es-de/`, `packages/hexagonrpc/`,
+`packages/inputplumber/`, `packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and
+`packages/steamos-manager/`.
 
 
 ## Kernel
