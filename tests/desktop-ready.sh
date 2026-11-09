@@ -32,6 +32,21 @@ s=$(at "$desktop" 'ExecStopPost=-/usr/bin/systemctl --user stop --no-block micro
 u=$(at "$desktop" 'unset-environment WAYLAND_DISPLAY')
 [[ -n $s && -n $u ]] && (( s < u )) || fail "the ready target stop is not before the env unset"
 
+repo=$tree/usr/share/microos/flatpak/flathub.flatpakrepo
+[[ -f $repo ]] || fail "the flathub repo file is missing"
+[[ $(sha256sum < "$repo" | cut -d' ' -f1) == 3371dd250e61d9e1633630073fefda153cd4426f72f4afa0c3373ae2e8fea03a ]] ||
+  fail "the flathub repo file sha256"
+
+remote=$units/microos-flatpak-remote.service
+grep -qxF 'Type=oneshot' "$remote" || fail "the flatpak remote unit is not Type=oneshot"
+grep -qxF 'Before=microset-launcher.service' "$remote" || fail "the flatpak remote unit is not before the launcher"
+grep -qxF 'ExecStart=/usr/bin/flatpak remote-add --user --if-not-exists flathub /usr/share/microos/flatpak/flathub.flatpakrepo' \
+  "$remote" || fail "the flatpak remote add line"
+grep -qxF 'ExecStart=/usr/bin/mkdir -p %h/.local/share/flatpak/exports/share/applications' "$remote" ||
+  fail "the flatpak exports line"
+grep -qxF 'Wants=microos-flatpak-remote.service' "$units/microos-desktop-ready.target.d/30-microos-flatpak-remote.conf" ||
+  fail "the ready target does not want the flatpak remote unit"
+
 keys=$tree/usr/lib/microos/hotkeys.d/desktop.conf
 launcher="call net.seilent.MicroSet.Launcher /net/seilent/MicroSet/Launcher net.seilent.MicroSet.Launcher1"
 grep -qxF "lc tap $launcher Toggle" "$keys" || fail "the lc tap row"

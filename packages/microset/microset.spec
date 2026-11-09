@@ -20,6 +20,8 @@ BuildRequires:  qt6-qtdeclarative-devel
 BuildRequires:  qt6-qtwayland-devel
 BuildRequires:  layer-shell-qt-devel
 BuildRequires:  glib2-devel
+BuildRequires:  pkgconfig(flatpak)
+BuildRequires:  pkgconfig(appstream)
 BuildRequires:  wayland-protocols-devel
 BuildRequires:  wayland-devel
 BuildRequires:  pkgconfig(xcb)
@@ -70,6 +72,7 @@ Summary:        MicroSET launcher home
 Requires:       %{name}%{?_isa} = %{version}-%{release}
 Requires:       %{name}-fonts = %{version}-%{release}
 Requires:       layer-shell-qt%{?_isa}
+Requires:       flatpak
 Requires:       qt6-qtbase-gui%{?_isa}
 Requires:       qt6-qtdeclarative%{?_isa}
 

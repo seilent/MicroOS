@@ -171,6 +171,7 @@ if ! dnf -y install \
   mako \
   foot \
   grim \
+  flatpak \
   xdg-desktop-portal \
   xdg-desktop-portal-wlr \
   xdg-desktop-portal-gtk \
