@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+import os
+import select
+import socket
+import sys
+
+path = sys.argv[1]
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(path)
+server.listen(4)
+print("ready", flush=True)
+client = None
+pending = b""
+rest = b""
+while True:
+    rlist = [server, sys.stdin.fileno()]
+    if client is not None:
+        rlist.append(client)
+    ready, _, _ = select.select(rlist, [], [], 1.0)
+    if server in ready:
+        conn, _ = server.accept()
+        if client is not None:
+            client.close()
+        client = conn
+    if client is not None and client in ready:
+        try:
+            data = client.recv(4096)
+        except OSError:
+            data = b""
+        if not data:
+            client.close()
+            client = None
+    if sys.stdin.fileno() in ready:
+        chunk = os.read(sys.stdin.fileno(), 65536)
+        if not chunk:
+            break
+        pending += chunk
+        lines = pending.split(b"\n")
+        pending = lines.pop()
+        if client is None:
+            continue
+        out = b""
+        for line in lines:
+            if line == b"close":
+                client.close()
+                client = None
+                break
+            if line.startswith(b"half "):
+                body = line[5:]
+                cut = len(body) // 2
+                rest = body[cut:]
+                out += body[:cut]
+            elif line == b"rest":
+                out += rest + b"\n"
+                rest = b""
+            else:
+                out += line + b"\n"
+        if client is not None and out:
+            client.sendall(out)
+if client is not None:
+    client.close()
+server.close()
+os.unlink(path)
