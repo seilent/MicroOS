@@ -1091,6 +1091,18 @@ if bad:
     sys.exit(1)
 PY
 
+qtbase=$(rpm -q --qf '%{VERSION}' qt6-qtbase)
+rpm -q layer-shell-qt >/dev/null || fail "layer-shell-qt is not installed"
+lsqt=$(rpm -q --requires layer-shell-qt | sed -n 's/^libQt6WaylandClient\.so\.6(Qt_\([0-9]\+\.[0-9]\+\)_PRIVATE_API\(.*\)$/\1/p' | sort -u)
+[[ $lsqt =~ ^[0-9]+\.[0-9]+$ ]] || fail "layer-shell-qt names no one Qt Wayland client private API minor: $lsqt"
+[[ ${qtbase%.*} == "$lsqt" ]] || fail "layer-shell-qt targets Qt $lsqt, qt6-qtbase is ${qtbase%.*}"
+qwayland=/usr/lib64/qt6/plugins/platforms/libqwayland.so
+[[ -f $qwayland ]] || fail "the Qt Wayland platform plugin libqwayland.so is missing"
+[[ $(rpm -qf --qf '%{VERSION}' "$qwayland") == "$qtbase" ]] || fail "$qwayland and qt6-qtbase versions differ"
+[[ $(rpm -q --qf '%{VENDOR}' microset-launcher) == MicroOS ]] || fail "microset-launcher is not the MicroOS build"
+[[ -x /usr/bin/microset-launcher ]] || fail "/usr/bin/microset-launcher missing or not executable"
+[[ -f /usr/share/dbus-1/services/net.seilent.MicroSet.Launcher.service ]] || fail "the launcher D-Bus activation file is missing"
+
 [[ $(grep '^ExecStop=' /usr/lib/systemd/system/ostree-finalize-staged.service) == 'ExecStop=/usr/bin/ostree admin finalize-staged' ]] \
   || fail "ostree-finalize-staged.service ExecStop changed"
 stops=$(systemctl cat ostree-finalize-staged.service \
