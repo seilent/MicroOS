@@ -436,6 +436,15 @@ has "user stop --no-block app-microset\\x2dlauncher-500-1.scope" || fail "launch
 
 reset
 cur steam
+touch "$FAKE/home/.steam/steam.pipe"
+touch "$FAKE/scopes/app-flatpak-org.videolan.VLC-500-1.scope" "$FAKE/scopes/app-other1.scope"
+sw microdap
+[[ $r == 0 ]] || fail "switch with a flatpak scope: $r"
+has "user stop --no-block app-flatpak-org.videolan.VLC-500-1.scope" || fail "flatpak scope not stopped"
+! hasre 'app-other1' || fail "a scope outside the patterns was stopped"
+
+reset
+cur steam
 sw steam
 [[ $r == 0 && $(count "user stop gamescope-session-plus@steam.service") == 0 ]] || fail "switch to the active current session not a no op"
 echo activating > "$FAKE/units/$(unit_of steam)"
