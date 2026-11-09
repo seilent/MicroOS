@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+import json
+import os
+import sys
+
+directory = sys.argv[1]
+values = {"active": "1", "special": "", "transform": "1", "focused": "1", "outside": "HDMI-A-1"}
+workspaces = []
+windows = []
+for arg in sys.argv[2:]:
+    if "=" in arg and not arg.startswith("ws:") and not arg.startswith("win:"):
+        key, _, value = arg.partition("=")
+        values[key] = value
+    elif arg.startswith("ws:"):
+        workspaces.append(arg[3:])
+    elif arg.startswith("win:"):
+        windows.append(arg[4:])
+
+active = values["active"]
+special = values["special"]
+rows = []
+if not any(w.split(":")[0] == active for w in workspaces):
+    workspaces.append(f"{active}:0")
+
+monitors = [
+    {
+        "id": 0,
+        "name": "DSI-1",
+        "width": 640,
+        "height": 960,
+        "scale": 2.0,
+        "transform": int(values["transform"]),
+        "focused": values["focused"] == "1",
+        "activeWorkspace": {"address": active, "id": int(active), "type": "normal", "name": active},
+        "specialWorkspace": {"address": special, "type": "special" if special else "", "name": special},
+    },
+    {
+        "id": 1,
+        "name": values["outside"],
+        "width": 1920,
+        "height": 1080,
+        "scale": 1.0,
+        "transform": 0,
+        "focused": values["focused"] == "0",
+        "activeWorkspace": {"address": "9", "id": 9, "type": "normal", "name": "9"},
+        "specialWorkspace": {"address": "", "type": "", "name": ""},
+    },
+]
+
+for spec in workspaces:
+    parts = spec.split(":")
+    if parts[0] == "special":
+        rows.append({"address": f"special:{parts[1]}", "type": "special", "name": f"special:{parts[1]}",
+                     "monitor": "DSI-1", "windows": int(parts[2])})
+    else:
+        rows.append({"address": parts[0], "id": int(parts[0]), "type": "normal", "name": parts[0],
+                     "monitor": "DSI-1", "windows": int(parts[1])})
+
+clients = []
+for spec in windows:
+    fields = spec.split(",")
+    address, cls, title, workspace, focus = fields[:5]
+    pinned = len(fields) > 5 and fields[5] == "pinned"
+    normal = not workspace.startswith("special:")
+    clients.append({
+        "address": address,
+        "mapped": True,
+        "pinned": pinned,
+        "class": cls,
+        "title": title,
+        "focusHistoryID": int(focus),
+        "workspace": {"address": workspace, "type": "normal" if normal else "special", "name": workspace},
+    })
+
+
+def write(name, payload):
+    raw = json.dumps(payload).encode("utf-8").replace(b'"BADBYTE"', b'"\x80"')
+    with open(os.path.join(directory, name + ".json"), "wb") as handle:
+        handle.write(raw)
+
+
+write("monitors", monitors)
+write("workspaces", rows)
+write("clients", clients)

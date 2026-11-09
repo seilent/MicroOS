@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -uo pipefail
+dir=$HYPR_DIR
+if [[ ${1:-} == -j ]]; then
+  body=$(cat "$dir/${2:-none}.json" 2> /dev/null || echo '[]')
+  printf '%s\n' "${2:-}" >> "$dir/calls"
+  if [[ -e $dir/hold ]]; then
+    for _ in {1..1500}; do [[ -e $dir/hold ]] || break; sleep 0.02; done
+  fi
+  printf '%s\n' "$body"
+  exit "$(cat "$dir/json-rc" 2> /dev/null || echo 0)"
+fi
+if [[ ${1:-} == eval ]]; then
+  n=$(cat "$dir/eval-n" 2> /dev/null || echo 0)
+  n=$((n + 1))
+  printf '%s\n' "$n" > "$dir/eval-n"
+  printf '%s' "${2:-}" > "$dir/evals/$n"
+  if [[ -p $dir/eval-freeze ]]; then
+    read -r _ < "$dir/eval-freeze"
+  fi
+  if [[ -s $dir/eval-reply ]]; then
+    cat "$dir/eval-reply"
+  else
+    echo ok
+  fi
+  exit "$(cat "$dir/eval-rc" 2> /dev/null || echo 0)"
+fi
+exit 9

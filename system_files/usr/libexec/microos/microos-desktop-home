@@ -1,0 +1,520 @@
+#!/usr/bin/env python3
+import json
+import os
+import socket
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-desktop-home"
+NAME = "net.seilent.MicroOs.DesktopHome"
+PATH = "/net/seilent/MicroOs/DesktopHome"
+IFACE = "net.seilent.MicroOs.DesktopHome1"
+PROPS = "org.freedesktop.DBus.Properties"
+OUTPUT = "DSI-1"
+HYPRCTL = os.environ.get("MICROOS_DESKTOP_HOME_HYPRCTL", "/usr/bin/hyprctl")
+CALL_MS = 3000
+RETRY_MS = 1000
+REQUERY_MS = 250
+HISTORY = 8
+EVENTS = {
+    "openwindow",
+    "closewindow",
+    "movewindowv2",
+    "windowtitle",
+    "windowtitlev2",
+    "workspacev2",
+    "moveworkspacev2",
+    "pin",
+    "activespecial",
+    "focusedmon",
+    "monitoraddedv2",
+    "monitorremovedv2",
+    "configreloaded",
+}
+XML = f"""
+<node>
+  <interface name="{IFACE}">
+    <method name="Enter"/>
+    <method name="Leave"/>
+    <method name="Toggle"/>
+    <method name="FocusWindow">
+      <arg type="s" name="address" direction="in"/>
+    </method>
+    <property name="Shown" type="b" access="read"/>
+    <property name="Windows" type="a(sss)" access="read"/>
+    <property name="Transform" type="u" access="read"/>
+  </interface>
+</node>
+"""
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def lua(value):
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def text(raw):
+    if raw is None:
+        return ""
+    if hasattr(raw, "get_data"):
+        raw = raw.get_data()
+    return raw.decode("utf-8", "replace")
+
+
+def finish(state, callback, out, err):
+    if state["done"]:
+        return
+    state["done"] = True
+    if state["timer"] is not None:
+        GLib.source_remove(state["timer"])
+        state["timer"] = None
+    callback(out, err)
+
+
+def hung(proc, args, callback, state):
+    state["timer"] = None
+    proc.force_exit()
+    finish(state, callback, None, f"hyprctl {args[0]}: no reply in {CALL_MS} ms")
+    return GLib.SOURCE_REMOVE
+
+
+def done(proc, result, data):
+    proc, args, callback, state = data
+    if state["done"]:
+        return
+    try:
+        _ok, out, err = proc.communicate_finish(result)
+    except GLib.Error as fault:
+        finish(state, callback, None, f"hyprctl {args[0]}: {fault.message}")
+        return
+    if not proc.get_if_exited():
+        finish(state, callback, None, f"hyprctl {args[0]}: ended on a signal")
+        return
+    status = proc.get_exit_status()
+    if status != 0:
+        detail = text(out).strip() or text(err).strip()
+        finish(state, callback, None, f"hyprctl {args[0]} exit {status}: {detail}")
+        return
+    finish(state, callback, text(out), None)
+
+
+def hyprctl(args, callback):
+    state = {"done": False, "timer": None}
+    try:
+        proc = Gio.Subprocess.new([HYPRCTL, *args], Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+    except GLib.Error as err:
+        state["done"] = True
+        callback(None, f"hyprctl {args[0]}: {err.message}")
+        return
+    state["timer"] = GLib.timeout_add(CALL_MS, hung, proc, args, callback, state)
+    proc.communicate_async(None, None, done, (proc, args, callback, state))
+
+
+class Fault(Exception):
+    def __init__(self, name, message):
+        super().__init__(message)
+        self.name = name
+
+
+class Home:
+    def __init__(self, user):
+        self.user = user
+        self.loop = GLib.MainLoop()
+        self.owned = False
+        self.monitor = None
+        self.active = ""
+        self.special = ""
+        self.counts = {}
+        self.history = []
+        self.remembered = None
+        self.windows = []
+        self.transform = 0
+        self.shown = False
+        self.pending = False
+        self.busy = False
+        self.again = False
+        self.waiters = []
+        self.next_waiters = []
+        self.collected = {}
+        self.source = None
+        self.socket = None
+        self.buf = b""
+        self.retry_id = None
+        self.requery_id = None
+        self.watches = []
+        self.failing = set()
+
+    def warn(self, tag, msg):
+        if tag not in self.failing:
+            self.failing.add(tag)
+            log(msg)
+
+    def runtime(self):
+        return os.environ.get("XDG_RUNTIME_DIR", "")
+
+    def instance(self):
+        return os.path.join(self.runtime(), "hypr", os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", ""))
+
+    def query(self, done_callback=None):
+        if self.busy:
+            self.again = True
+            if done_callback is not None:
+                self.next_waiters.append(done_callback)
+            return
+        self.busy = True
+        self.waiters.extend(self.next_waiters)
+        self.next_waiters = []
+        if done_callback is not None:
+            self.waiters.append(done_callback)
+        self.collected = {}
+        for what in ("monitors", "workspaces", "clients"):
+            hyprctl(["-j", what], lambda out, err, what=what: self.collected_one(what, out, err))
+
+    def collected_one(self, what, out, err):
+        if err is not None:
+            self.warn(what, err)
+            self.collected[what] = None
+        else:
+            self.failing.discard(what)
+            try:
+                self.collected[what] = json.loads(out)
+            except ValueError as fault:
+                self.warn(what, f"hyprctl -j {what}: {fault}")
+                self.collected[what] = None
+        if len(self.collected) < 3:
+            return
+        self.busy = False
+        if self.again:
+            self.again = False
+            self.query()
+            return
+        self.apply()
+        if not self.owned:
+            self.own()
+        waiters, self.waiters = self.waiters, []
+        for waiter in waiters:
+            waiter()
+
+    def apply(self):
+        monitors = self.collected.get("monitors")
+        workspaces = self.collected.get("workspaces")
+        clients = self.collected.get("clients")
+        if monitors is None or workspaces is None or clients is None:
+            return
+        monitor = next((m for m in monitors if m.get("name") == OUTPUT), None)
+        if monitor is None:
+            self.warn("output", f"no {OUTPUT} in the monitors")
+            return
+        self.failing.discard("output")
+        counts = {}
+        ranked = []
+        for client in clients:
+            if not client.get("mapped"):
+                continue
+            workspace = client.get("workspace", {})
+            if workspace.get("type") != "normal":
+                continue
+            address = workspace.get("address", "")
+            if not client.get("pinned"):
+                counts[address] = counts.get(address, 0) + 1
+            row = (client.get("address", ""), client.get("class", ""), client.get("title", ""))
+            ranked.append((client.get("focusHistoryID", 0), row))
+        ranked.sort(key=lambda item: item[0])
+        active = monitor.get("activeWorkspace", {}).get("address", "")
+        self.monitor = monitor
+        self.counts = counts
+        self.active = active
+        self.special = monitor.get("specialWorkspace", {}).get("name", "")
+        if counts.get(active, 0) > 0:
+            self.remembered = None
+        if not self.history or self.history[-1] != active:
+            self.history = (self.history + [active])[-HISTORY:]
+        self.set_shown(counts.get(active, 0) == 0 and not self.special)
+        self.set_windows([row for _, row in ranked])
+        self.set_transform(int(monitor.get("transform", 0)))
+
+    def publish(self, prop, kind, value):
+        self.user.emit_signal(
+            None, PATH, PROPS, "PropertiesChanged",
+            GLib.Variant("(sa{sv}as)", (IFACE, {prop: GLib.Variant(kind, value)}, [])),
+        )
+
+    def set_shown(self, shown):
+        if shown == self.shown:
+            return
+        self.shown = shown
+        self.publish("Shown", "b", shown)
+
+    def set_windows(self, windows):
+        if windows == self.windows:
+            return
+        self.windows = windows
+        self.publish("Windows", "a(sss)", windows)
+
+    def set_transform(self, transform):
+        if transform == self.transform:
+            return
+        self.transform = transform
+        self.publish("Transform", "u", transform)
+
+    def schedule(self):
+        if self.pending:
+            return
+        self.pending = True
+        GLib.idle_add(self.run_query)
+
+    def run_query(self):
+        self.pending = False
+        self.query()
+        return GLib.SOURCE_REMOVE
+
+    def watch_transform(self):
+        path = os.path.join(self.runtime(), "microos", "desktop-transform")
+        try:
+            monitor = Gio.File.new_for_path(path).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        except GLib.Error as err:
+            self.warn("transform", f"cannot watch {path}: {err.message}")
+            return
+        self.failing.discard("transform")
+        monitor.connect("changed", self.transform_changed)
+        self.watches.append(monitor)
+
+    def transform_changed(self, monitor, file, other, event):
+        if event not in (Gio.FileMonitorEvent.CREATED, Gio.FileMonitorEvent.CHANGED):
+            return
+        if self.requery_id is not None:
+            return
+        self.schedule()
+        self.requery_id = GLib.timeout_add(REQUERY_MS, self.requery)
+
+    def requery(self):
+        self.requery_id = None
+        self.query()
+        return GLib.SOURCE_REMOVE
+
+    def connect(self, done_callback=None):
+        if self.retry_id is not None:
+            GLib.source_remove(self.retry_id)
+            self.retry_id = None
+        path = os.path.join(self.instance(), ".socket2.sock")
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.setblocking(False)
+        try:
+            sock.connect(path)
+        except OSError as err:
+            sock.close()
+            self.warn("socket", f"cannot connect to {path}: {err}")
+            self.retry()
+            return
+        self.socket = sock
+        self.buf = b""
+        self.failing.difference_update(("socket", "dropped"))
+        self.source = GLib.io_add_watch(
+            sock.fileno(), GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.readable
+        )
+        if done_callback is not None:
+            done_callback()
+
+    def retry(self):
+        if self.retry_id is not None:
+            return
+        self.retry_id = GLib.timeout_add(RETRY_MS, self.reconnected)
+
+    def reconnected(self):
+        self.retry_id = None
+        self.connect(lambda: self.query())
+        return GLib.SOURCE_REMOVE
+
+    def dropped(self, msg):
+        self.source = None
+        if self.socket is not None:
+            self.socket.close()
+            self.socket = None
+        self.warn("dropped", msg)
+        self.retry()
+
+    def readable(self, fd, cond):
+        try:
+            data = self.socket.recv(65536)
+        except BlockingIOError:
+            return GLib.SOURCE_CONTINUE
+        except OSError as err:
+            self.dropped(f"reading socket2 failed: {err}")
+            return GLib.SOURCE_REMOVE
+        if not data:
+            self.dropped("socket2 closed")
+            return GLib.SOURCE_REMOVE
+        self.buf += data
+        while b"\n" in self.buf:
+            line, self.buf = self.buf.split(b"\n", 1)
+            self.event(line.decode("utf-8", "replace"))
+        return GLib.SOURCE_CONTINUE
+
+    def event(self, line):
+        name, _, data = line.partition(">>")
+        if name == "openwindow":
+            fields = data.split(",", 3)
+            if len(fields) >= 2 and fields[1] == self.active:
+                self.set_shown(False)
+        elif name == "workspacev2":
+            if self.monitor is not None and self.monitor.get("focused"):
+                if self.counts.get(data.split(",", 1)[0], 0) > 0:
+                    self.set_shown(False)
+        if name in EVENTS:
+            self.schedule()
+
+    def previous(self):
+        for name in reversed(self.history):
+            if name != self.active:
+                return name
+        return None
+
+    def evaluate(self, code, callback):
+        hyprctl(["eval", code], lambda out, err: callback(self.reply(out, err)))
+
+    def reply(self, out, err):
+        if err is not None:
+            return err
+        value = (out or "").strip()
+        if value != "ok":
+            return value or "no reply"
+        return None
+
+    def enter(self, callback):
+        if self.shown:
+            callback(None)
+            return
+
+        def ready():
+            if self.shown:
+                callback(None)
+                return
+            if self.monitor is None:
+                callback(Fault(f"{IFACE}.NoOutput", f"no {OUTPUT}"))
+                return
+            self.remembered = self.active
+            code = []
+            if not self.monitor.get("focused"):
+                code.append(f'hl.dispatch(hl.dsp.focus({{monitor="{lua(OUTPUT)}"}}))')
+            if self.special.startswith("special:"):
+                code.append(f'hl.dispatch(hl.dsp.workspace.toggle_special("{lua(self.special[8:])}"))')
+            code.append('hl.dispatch(hl.dsp.focus({workspace="emptym"}))')
+            self.evaluate("\n".join(code), self.failed(callback))
+
+        self.query(ready)
+
+    def leave(self, callback):
+        def ready():
+            if self.remembered is not None and self.counts.get(self.remembered, 0) > 0:
+                code = f'hl.dispatch(hl.dsp.focus({{workspace="{lua(self.remembered)}"}}))'
+            else:
+                earlier = self.previous()
+                if earlier is None or self.counts.get(earlier, 0) == 0:
+                    callback(None)
+                    return
+                code = "\n".join([
+                    f'hl.dispatch(hl.dsp.focus({{monitor="{lua(OUTPUT)}"}}))',
+                    f'hl.dispatch(hl.dsp.focus({{workspace="{lua(earlier)}"}}))',
+                ])
+            self.evaluate(code, self.failed(callback))
+
+        self.query(ready)
+
+    def failed(self, callback):
+        def report(err):
+            callback(Fault(f"{IFACE}.Failed", err) if err is not None else None)
+        return report
+
+    def toggle(self, callback):
+        if self.shown:
+            self.leave(callback)
+        else:
+            self.enter(callback)
+
+    def focus_window(self, address, callback):
+        if not any(row[0] == address for row in self.windows):
+            callback(Fault("org.freedesktop.DBus.Error.InvalidArgs", f"no window {address}"))
+            return
+        self.evaluate(f'hl.dispatch(hl.dsp.focus({{window="address:{lua(address)}"}}))', self.failed(callback))
+
+    def props(self):
+        return {
+            "Shown": ("b", self.shown),
+            "Windows": ("a(sss)", self.windows),
+            "Transform": ("u", self.transform),
+        }
+
+    def on_call(self, conn, sender, path, iface, method, params, inv):
+        if iface == PROPS:
+            args = params.unpack()
+            if args[0] != IFACE:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownInterface", f"no interface {args[0]}")
+                return
+            props = self.props()
+            if method == "GetAll":
+                inv.return_value(GLib.Variant("(a{sv})", ({k: GLib.Variant(t, v) for k, (t, v) in props.items()},)))
+            elif method == "Get":
+                if args[1] not in props:
+                    inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownProperty", f"no property {args[1]}")
+                    return
+                kind, value = props[args[1]]
+                inv.return_value(GLib.Variant("(v)", (GLib.Variant(kind, value),)))
+            else:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", f"no method {method}")
+            return
+
+        def answer(fault):
+            if fault is not None:
+                inv.return_dbus_error(fault.name, str(fault))
+                return
+            inv.return_value(None)
+
+        if method == "Enter":
+            self.enter(answer)
+        elif method == "Leave":
+            self.leave(answer)
+        elif method == "Toggle":
+            self.toggle(answer)
+        elif method == "FocusWindow":
+            self.focus_window(params.unpack()[0], answer)
+        else:
+            inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", f"no method {method}")
+
+    def own(self):
+        self.owned = True
+        Gio.bus_own_name_on_connection(self.user, NAME, Gio.BusNameOwnerFlags.DO_NOT_QUEUE, self.acquired, self.lost)
+
+    def acquired(self, conn, name):
+        log(f"{ME}: owns {name}")
+
+    def lost(self, conn, name):
+        log(f"{ME}: lost the name {name}")
+        self.loop.quit()
+
+    def start(self):
+        self.watch_transform()
+        self.query()
+        self.connect()
+
+
+def main():
+    if not os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        log(f"{ME}: HYPRLAND_INSTANCE_SIGNATURE is empty")
+        return 2
+    user = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    home = Home(user)
+    user.register_object_with_closures2(PATH, Gio.DBusNodeInfo.new_for_xml(XML).interfaces[0], home.on_call, None, None)
+    home.start()
+    home.loop.run()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
