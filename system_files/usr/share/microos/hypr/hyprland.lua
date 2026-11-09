@@ -1,24 +1,24 @@
 local function read_transform()
     local runtime = os.getenv("XDG_RUNTIME_DIR")
     if not runtime then
-        return 1
+        return 3
     end
 
     local file = io.open(runtime .. "/microos/desktop-transform", "r")
     if not file then
-        return 1
+        return 3
     end
 
     local line = file:read("*l")
     file:close()
 
     if not line then
-        return 1
+        return 3
     end
 
     local digit = line:match("^%s*([0-7])%s*$")
     if not digit then
-        return 1
+        return 3
     end
 
     return tonumber(digit)
@@ -94,6 +94,8 @@ if hyprgrass_file then
 end
 
 if hl.plugin.hyprgrass then
+    local launcher_toggle = "gdbus call --session --dest net.seilent.MicroSet.Launcher --object-path /net/seilent/MicroSet/Launcher --method net.seilent.MicroSet.Launcher1.Toggle"
+
     local function spike_log(name)
         hl.dispatch(hl.dsp.exec_cmd("logger -t microos-spike " .. name))
     end
@@ -146,7 +148,7 @@ if hl.plugin.hyprgrass then
     hl.plugin.hyprgrass.gesture({
         pattern = { kind = "swipe", fingers = 4, direction = "right" },
         action = function()
-            spike_log("launcher")
+            hl.dispatch(hl.dsp.exec_cmd(launcher_toggle))
         end,
     })
 
@@ -185,9 +187,7 @@ if hl.plugin.hyprgrass then
 
     hl.plugin.hyprgrass.bind({
         pattern = { kind = "edge", origin = "up", direction = "down" },
-        action = function()
-            spike_log("launcher")
-        end,
+        action = hl.dsp.exec_cmd(launcher_toggle),
     })
 
     hl.plugin.hyprgrass.bind({

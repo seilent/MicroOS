@@ -10,6 +10,7 @@ Environment=XDG_CURRENT_DESKTOP=Hyprland XDG_SESSION_TYPE=wayland LIBSEAT_BACKEN
 ExecStart=/usr/bin/Hyprland --config /usr/share/microos/hypr/hyprland.lua
 ExecStartPre=-/usr/bin/systemctl --user start --no-block microos-shm-reap-request.service
 ExecStopPost=-/usr/bin/systemctl --user start --no-block microos-shm-reap-request.service
+ExecStopPost=-/usr/bin/systemctl --user stop --no-block microos-desktop-ready.target
 ExecStopPost=-/usr/bin/systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 TimeoutStopSec=15
 TimeoutStopFailureMode=kill

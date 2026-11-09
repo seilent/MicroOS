@@ -29,3 +29,6 @@ log "microos-osk start requested"
 
 systemctl --user --no-block start mako.service || log "mako start failed"
 log "mako start requested"
+
+systemctl --user --no-block start microos-desktop-ready.target || log "microos-desktop-ready start failed"
+log "microos-desktop-ready start requested"

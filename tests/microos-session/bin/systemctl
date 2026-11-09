@@ -140,8 +140,23 @@ if [[ $1 == --user ]]; then
       ;;
     list-jobs) cat "$F/jobs" 2> /dev/null ;;
     list-units)
+      shift
+      pats=()
+      for a; do
+        case $a in
+          -*) ;;
+          *) pats+=("$a") ;;
+        esac
+      done
+      (( ${#pats[@]} )) || pats=('*')
       for s in "$F"/scopes/*; do
-        [[ -e $s ]] && echo "${s##*/} loaded active running Steam game"
+        [[ -e $s ]] || continue
+        for p in "${pats[@]}"; do
+          if [[ ${s##*/} == ${p//\\/\\\\} ]]; then
+            echo "${s##*/} loaded active running Steam game"
+            break
+          fi
+        done
       done
       ;;
     stop)

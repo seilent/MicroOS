@@ -1,0 +1,5 @@
+[Unit]
+Description=MicroOS desktop helpers
+Requisite=microos-desktop.service
+After=microos-desktop.service
+Wants=microos-desktop-home.service microset-launcher.service
