@@ -20,7 +20,7 @@ dbus-update-activation-environment --systemd "${vars[@]}" || log "dbus-update-ac
 systemctl --user unset-environment XDG_DESKTOP_PORTAL_DIR || log "unset of XDG_DESKTOP_PORTAL_DIR failed"
 
 install -d -m 0700 "$state" || log "cannot create $state"
-rotation=$(timeout 5 microset get display.rotation 2> /dev/null || true)
+rotation=$(timeout 3 microset watch display.rotation 2> /dev/null | tail -n 1 | cut -f 2)
 case $rotation in
   portrait) transform=0 ;;
   portrait-flipped) transform=2 ;;
