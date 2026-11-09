@@ -16,6 +16,7 @@ own=(
   microset/microset
   microset/microset-recovery
   microset/microset-settings
+  microset/microset-launcher
   microset/microset-fonts
   hexagonrpc/hexagonrpc
   microos-eq/microos-eq

@@ -15,7 +15,13 @@ Vendor:         MicroOS
 BuildRequires:  cmake
 BuildRequires:  gcc-c++
 BuildRequires:  qt6-qtbase-devel
+BuildRequires:  qt6-qtbase-private-devel
 BuildRequires:  qt6-qtdeclarative-devel
+BuildRequires:  qt6-qtwayland-devel
+BuildRequires:  layer-shell-qt-devel
+BuildRequires:  glib2-devel
+BuildRequires:  wayland-protocols-devel
+BuildRequires:  wayland-devel
 BuildRequires:  pkgconfig(xcb)
 BuildRequires:  alsa-lib-devel
 BuildRequires:  dbus-daemon
@@ -58,6 +64,18 @@ Requires:       xprop
 %description settings
 The MicroSET settings page as a gamescope overlay in the Steam, MicroDAP and
 MicroEMU sessions, toggled with RC.
+
+%package launcher
+Summary:        MicroSET launcher home
+Requires:       %{name}%{?_isa} = %{version}-%{release}
+Requires:       %{name}-fonts = %{version}-%{release}
+Requires:       layer-shell-qt%{?_isa}
+Requires:       qt6-qtbase-gui%{?_isa}
+Requires:       qt6-qtdeclarative%{?_isa}
+
+%description launcher
+The app grid, running row, status strip and power page of the MicroOS
+desktop session.
 
 %package fonts
 Summary:        Selawik font for the MicroSET and MicroDAP screens
@@ -135,6 +153,14 @@ install -pm644 fonts/*.ttf %{buildroot}%{_datadir}/fonts/microset/
 %{_prefix}/lib/microos/hotkeys.d/steam.conf.d/60-microset.conf
 %{_prefix}/lib/microos/hotkeys.d/microdap.conf.d/60-microset.conf
 %{_prefix}/lib/microos/hotkeys.d/microemu.conf.d/60-microset.conf
+
+%files launcher
+%license LICENSE
+%{_bindir}/microset-launcher
+%{_userunitdir}/microset-launcher.service
+%dir %{_userunitdir}/microos-desktop-ready.target.d
+%{_userunitdir}/microos-desktop-ready.target.d/30-microset-launcher.conf
+%{_datadir}/dbus-1/services/net.seilent.MicroSet.Launcher.service
 
 %files fonts
 %license Selawik.txt
