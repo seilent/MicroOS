@@ -32,6 +32,11 @@ s=$(at "$desktop" 'ExecStopPost=-/usr/bin/systemctl --user stop --no-block micro
 u=$(at "$desktop" 'unset-environment WAYLAND_DISPLAY')
 [[ -n $s && -n $u ]] && (( s < u )) || fail "the ready target stop is not before the env unset"
 
+keys=$tree/usr/lib/microos/hotkeys.d/desktop.conf
+launcher="call net.seilent.MicroSet.Launcher /net/seilent/MicroSet/Launcher net.seilent.MicroSet.Launcher1"
+grep -qxF "lc tap $launcher Toggle" "$keys" || fail "the lc tap row"
+grep -qxF "power hold $launcher ShowPower" "$keys" || fail "the power hold row"
+
 if ((rc == 0)); then
   echo "desktop-ready: ok"
 fi
