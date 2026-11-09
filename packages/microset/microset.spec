@@ -80,6 +80,19 @@ Requires:       qt6-qtdeclarative%{?_isa}
 The app grid, running row, status strip and power page of the MicroOS
 desktop session.
 
+%package store
+Summary:        MicroSET desktop store
+Requires:       %{name}%{?_isa} = %{version}-%{release}
+Requires:       %{name}-fonts = %{version}-%{release}
+Requires:       layer-shell-qt%{?_isa}
+Requires:       flatpak
+Requires:       qt6-qtbase-gui%{?_isa}
+Requires:       qt6-qtdeclarative%{?_isa}
+
+%description store
+The Flathub catalog of the MicroOS desktop session, a layer surface that
+installs, opens and removes apps.
+
 %package fonts
 Summary:        Selawik font for the MicroSET and MicroDAP screens
 License:        OFL-1.1
@@ -164,6 +177,13 @@ install -pm644 fonts/*.ttf %{buildroot}%{_datadir}/fonts/microset/
 %dir %{_userunitdir}/microos-desktop-ready.target.d
 %{_userunitdir}/microos-desktop-ready.target.d/30-microset-launcher.conf
 %{_datadir}/dbus-1/services/net.seilent.MicroSet.Launcher.service
+
+%files store
+%license LICENSE
+%{_bindir}/microset-store
+%{_userunitdir}/microset-store.service
+%{_datadir}/dbus-1/services/net.seilent.MicroSet.Store.service
+%{_datadir}/applications/net.seilent.MicroSet.Store.desktop
 
 %files fonts
 %license Selawik.txt
