@@ -528,7 +528,7 @@ for f in abl_signed-SM8250.elf abl_signed-SM8250.elf.sha256 manifest releases.ts
   [[ -f $abl/$f ]] || fail "rocknix-abl ships no $f"
 done
 [[ $(wc -l < "$abl/manifest") -eq 6 ]] || fail "rocknix-abl manifest is not six lines"
-bad=$(grep -vE '^MICROOS_ABL_(FORMAT|VERSION|SOC|LENGTH|SHA256|ADMITTED)=[0-9A-Za-z.]+$' "$abl/manifest")
+bad=$(grep -vE '^MICROOS_ABL_(FORMAT|VERSION|SOC|LENGTH|SHA256|ADMITTED)=[0-9A-Za-z.]+$' "$abl/manifest" || true)
 [[ -z $bad ]] || fail "rocknix-abl manifest lines: $bad"
 ablkey() { sed -n "s/^$1=//p" "$abl/manifest"; }
 [[ $(ablkey MICROOS_ABL_FORMAT) == 1 ]] || fail "rocknix-abl manifest format is not 1"
