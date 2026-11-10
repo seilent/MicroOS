@@ -1,0 +1,10 @@
+layer=overlay
+anchor=top-center
+font=Selawik 12
+height=40
+background-color=#000000CC
+padding=0,16
+border-size=0
+icons=0
+default-timeout=3500
+include=/run/user/1000/microos/mako-geometry

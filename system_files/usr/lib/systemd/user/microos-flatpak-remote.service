@@ -1,0 +1,11 @@
+[Unit]
+Description=Add the Flathub remote for the user
+Requisite=microos-desktop-ready.target
+After=microos-desktop-ready.target
+Before=microset-launcher.service
+PartOf=microos-desktop-ready.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flatpak remote-add --user --if-not-exists flathub /usr/share/microos/flatpak/flathub.flatpakrepo
+ExecStart=/usr/bin/mkdir -p %h/.local/share/flatpak/exports/share/applications

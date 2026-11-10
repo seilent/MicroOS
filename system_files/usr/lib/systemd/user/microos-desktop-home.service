@@ -1,0 +1,10 @@
+[Unit]
+Description=MicroOS desktop home
+Requisite=microos-desktop-ready.target
+After=microos-desktop-ready.target
+PartOf=microos-desktop-ready.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/microos/microos-desktop-home
+Restart=on-failure

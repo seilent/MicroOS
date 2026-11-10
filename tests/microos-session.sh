@@ -427,6 +427,24 @@ has "user kill app-steam-app1.scope" || fail "stubborn game scope not killed"
 
 reset
 cur steam
+touch "$FAKE/home/.steam/steam.pipe"
+touch "$FAKE/scopes/app-microset\\x2dlauncher-500-1.scope" "$FAKE/scopes/app-other1.scope"
+sw microdap
+[[ $r == 0 ]] || fail "switch with a launcher scope: $r"
+has "user stop --no-block app-microset\\x2dlauncher-500-1.scope" || fail "launcher scope not stopped"
+! hasre 'app-other1' || fail "a scope outside the patterns was stopped"
+
+reset
+cur steam
+touch "$FAKE/home/.steam/steam.pipe"
+touch "$FAKE/scopes/app-flatpak-org.videolan.VLC-500-1.scope" "$FAKE/scopes/app-other1.scope"
+sw microdap
+[[ $r == 0 ]] || fail "switch with a flatpak scope: $r"
+has "user stop --no-block app-flatpak-org.videolan.VLC-500-1.scope" || fail "flatpak scope not stopped"
+! hasre 'app-other1' || fail "a scope outside the patterns was stopped"
+
+reset
+cur steam
 sw steam
 [[ $r == 0 && $(count "user stop gamescope-session-plus@steam.service") == 0 ]] || fail "switch to the active current session not a no op"
 echo activating > "$FAKE/units/$(unit_of steam)"
@@ -1414,8 +1432,8 @@ grep -qF 'subject.user != "micro"' "$tree/usr/share/polkit-1/rules.d/50-microos-
 
 tr=$tmp/tfroot
 mkdir -p "$tr/etc" "$tr/usr/lib/tmpfiles.d"
-printf 'root:x:0:0::/root:/bin/bash\nmicro:x:1000:1000::/var/home/micro:/bin/bash\n' > "$tr/etc/passwd"
-printf 'root:x:0:\nmicro:x:1000:\n' > "$tr/etc/group"
+printf 'root:x:0:0::/root:/bin/bash\nmicro:x:1000:1000::/var/home/micro:/bin/bash\ngeoclue:x:995:995::/var/lib/geoclue:/sbin/nologin\n' > "$tr/etc/passwd"
+printf 'root:x:0:\nmicro:x:1000:\ngeoclue:x:995:\n' > "$tr/etc/group"
 cp "$tree/usr/lib/tmpfiles.d/microos.conf" "$tr/usr/lib/tmpfiles.d/"
 systemd-tmpfiles --create --root="$tr" microos.conf 2> "$tmp/out" || fail "systemd-tmpfiles: $(cat "$tmp/out")"
 for e in 'run/microos 755 0 0' 'run/microos/lock 700 0 0' 'run/microos/hold/.lock-keys 600 0 0' 'run/microos/user 755 1000 1000' \

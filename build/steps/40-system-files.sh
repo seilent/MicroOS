@@ -35,6 +35,7 @@ done
 
 systemctl mask \
   bootloader-update.service \
+  flatpak-add-fedora-repos.service \
   systemd-backlight@.service \
   systemd-hibernate.service \
   systemd-hybrid-sleep.service \

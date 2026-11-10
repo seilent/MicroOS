@@ -1,0 +1,13 @@
+FROM localhost/microos-pkg-builder
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+      cmake meson gcc-c++ glm-devel doctest-devel pkgconf-pkg-config \
+      cairo-devel libglvnd-devel mesa-libgbm-devel glslang-devel hwdata-devel \
+      libcanberra-devel libdisplay-info-devel libdrm-devel libeis libheif-devel libinput-devel \
+      libjpeg-turbo-devel libjxl-devel file-devel libpng-devel librsvg2-devel libseat-devel \
+      systemd-devel libwebp-devel libzip-devel lua-devel muParser-devel pango-devel \
+      pixman pixman-devel pugixml-devel re2-devel readline-devel sdbus-cpp-devel \
+      tomlplusplus-devel libuuid-devel wayland-devel wayland-protocols-devel libxcb-devel \
+      xcb-util-errors-devel xcb-util-wm-devel libxkbcommon-devel xorg-x11-server-Xwayland-devel \
+      cmake-filesystem \
+ && dnf clean all

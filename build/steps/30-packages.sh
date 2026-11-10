@@ -16,6 +16,8 @@ own=(
   microset/microset
   microset/microset-recovery
   microset/microset-settings
+  microset/microset-launcher
+  microset/microset-store
   microset/microset-fonts
   hexagonrpc/hexagonrpc
   microos-eq/microos-eq
@@ -30,6 +32,15 @@ own=(
   android-guestos/microos-android-guestos
   microos-android/microos-android
   rocknix-abl/rocknix-abl
+  hyprland/hyprland
+  hyprland/hyprutils
+  hyprland/hyprlang
+  hyprland/hyprgraphics
+  hyprland/hyprwire
+  hyprland/aquamarine
+  hyprland/hyprcursor
+  hyprgrass/hyprgrass
+  wvkbd/wvkbd
 )
 
 own_rpm() {
@@ -158,6 +169,13 @@ if ! dnf -y install \
   gtk3 \
   python3-cairo \
   xprop \
+  mako \
+  foot \
+  grim \
+  flatpak \
+  xdg-desktop-portal \
+  xdg-desktop-portal-wlr \
+  xdg-desktop-portal-gtk \
   podman \
   passt \
   catatonit \
@@ -173,3 +191,5 @@ if ! dnf -y install \
   echo "30-packages: pipewire is pinned at $PIPEWIRE_EVR and wireplumber at $WIREPLUMBER_EVR; if a package needs newer ones, run packages/pipewire-aptx/bump.sh <pipewire EVR> <wireplumber EVR>" >&2
   exit 1
 fi
+printf '[main]\nexcludepkgs=hyprland,hyprutils,hyprlang,hyprgraphics,hyprwire,hyprcursor,aquamarine,hyprgrass,udis86\n' \
+  > /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf

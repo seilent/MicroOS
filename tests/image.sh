@@ -69,6 +69,13 @@ grep -qx 'excludepkgs=pipewire\*,wireplumber\*' /etc/dnf/libdnf5.conf.d/20-micro
   || fail "20-microos-pipewire.conf does not exclude pipewire and wireplumber"
 ! rpm -q openh264 >/dev/null 2>&1 || fail "Cisco's openh264 is installed in the image"
 grep -qx 'excludepkgs=openh264' /etc/dnf/libdnf5.conf.d/20-microos-openh264.conf || fail "20-microos-openh264.conf does not exclude openh264"
+excl=$(dnf5 --dump-main-config | sed -n 's/^excludepkgs = //p') || fail "dnf5 --dump-main-config failed"
+[[ -n $excl ]] || fail "dnf5 --dump-main-config has no excludepkgs"
+excl=" ${excl//,/ } "
+for p in openh264 'pipewire*' 'wireplumber*' hyprland hyprutils hyprlang hyprgraphics hyprwire hyprcursor aquamarine \
+  hyprgrass udis86; do
+  [[ $excl == *" $p "* ]] || fail "dnf5 --dump-main-config excludepkgs lacks $p"
+done
 [[ $(rpm -qf --qf '%{NAME}' /usr/lib64/libopenh264.so.8) == noopenh264 ]] || fail "libopenh264.so.8 is not the noopenh264 stub"
 [[ $(rpm -q --qf '%{VENDOR}' inputplumber) == MicroOS ]] || fail "inputplumber is not the MicroOS build"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
@@ -548,6 +555,29 @@ for f in /etc/subuid /etc/subgid; do
   [[ $(< "$f") == micro:524288:65536 ]] || fail "$f is not micro:524288:65536"
   [[ $(stat -c '%a %U %G' "$f") == '644 root root' ]] || fail "$f mode or owner"
 done
+for p in hyprland hyprutils hyprlang hyprgraphics hyprwire hyprcursor aquamarine hyprgrass; do
+  [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
+done
+mapfile -t hyprutils < <(find /usr/lib64 -maxdepth 1 -name 'libhyprutils.so.*' | grep -E '\.so\.[0-9]+$')
+[[ ${#hyprutils[@]} -eq 1 ]] || fail "expected one libhyprutils SONAME, found ${hyprutils[*]}"
+for b in /usr/bin/Hyprland /usr/bin/hyprctl /usr/lib64/libhyprgrass.so; do
+  [[ -f $b ]] || fail "$b missing"
+  ! ldd "$b" | grep -q 'not found' || fail "$b has unresolved libraries"
+done
+command -v wvkbd-mobintl >/dev/null || fail "wvkbd-mobintl is not on PATH"
+! command -v hyprpm >/dev/null || fail "hyprpm is installed"
+hyprjson=$(Hyprland --version-json) || fail "Hyprland --version-json failed"
+grep -q 0aa6745f705f2c4b0a5004eb019ef76e5bbdb426 <<< "$hyprjson" \
+  || fail "Hyprland --version-json does not name 0aa6745f705f2c4b0a5004eb019ef76e5bbdb426"
+rpm -q mako foot grim xdg-desktop-portal xdg-desktop-portal-wlr xdg-desktop-portal-gtk xorg-x11-server-Xwayland >/dev/null \
+  || fail "spike desktop rpms missing"
+rt=$(mktemp -d)
+chown 1000:1000 "$rt"
+chmod 700 "$rt"
+verify=$(XDG_RUNTIME_DIR=$rt setpriv --reuid=1000 --regid=1000 --clear-groups \
+  Hyprland --verify-config --config /usr/share/microos/hypr/hyprland.lua 2>&1) \
+  || fail "Hyprland --verify-config: $verify"
+rm -rf "${rt:?}"
 
 for p in es-de microemu; do
   [[ $(rpm -q --qf '%{VENDOR}' "$p") == MicroOS ]] || fail "$p is not the MicroOS build"
@@ -1061,6 +1091,18 @@ if bad:
     sys.exit(1)
 PY
 
+qtbase=$(rpm -q --qf '%{VERSION}' qt6-qtbase)
+rpm -q layer-shell-qt >/dev/null || fail "layer-shell-qt is not installed"
+lsqt=$(rpm -q --requires layer-shell-qt | sed -n 's/^libQt6WaylandClient\.so\.6(Qt_\([0-9]\+\.[0-9]\+\)_PRIVATE_API\(.*\)$/\1/p' | sort -u)
+[[ $lsqt =~ ^[0-9]+\.[0-9]+$ ]] || fail "layer-shell-qt names no one Qt Wayland client private API minor: $lsqt"
+[[ ${qtbase%.*} == "$lsqt" ]] || fail "layer-shell-qt targets Qt $lsqt, qt6-qtbase is ${qtbase%.*}"
+qwayland=/usr/lib64/qt6/plugins/platforms/libqwayland.so
+[[ -f $qwayland ]] || fail "the Qt Wayland platform plugin libqwayland.so is missing"
+[[ $(rpm -qf --qf '%{VERSION}' "$qwayland") == "$qtbase" ]] || fail "$qwayland and qt6-qtbase versions differ"
+[[ $(rpm -q --qf '%{VENDOR}' microset-launcher) == MicroOS ]] || fail "microset-launcher is not the MicroOS build"
+[[ -x /usr/bin/microset-launcher ]] || fail "/usr/bin/microset-launcher missing or not executable"
+[[ -f /usr/share/dbus-1/services/net.seilent.MicroSet.Launcher.service ]] || fail "the launcher D-Bus activation file is missing"
+
 [[ $(grep '^ExecStop=' /usr/lib/systemd/system/ostree-finalize-staged.service) == 'ExecStop=/usr/bin/ostree admin finalize-staged' ]] \
   || fail "ostree-finalize-staged.service ExecStop changed"
 stops=$(systemctl cat ostree-finalize-staged.service \
@@ -1144,6 +1186,7 @@ done
 sessions=$(microos-session list) || fail "microos-session list"
 grep -qxF $'microdap\tMicro DAP\tyes' <<< "$sessions" || fail "microos-session list lacks microdap: $(tr '\n' ' ' <<< "$sessions")"
 grep -qxF $'microemu\tMicro EMU\tyes' <<< "$sessions" || fail "microos-session list lacks microemu: $(tr '\n' ' ' <<< "$sessions")"
+grep -qxF $'desktop\tDesktop\tyes' <<< "$sessions" || fail "microos-session list lacks desktop: $(tr '\n' ' ' <<< "$sessions")"
 for u in microdap-radio.service microdap-usb-audio.service; do
   [[ $(systemctl is-enabled "$u") == enabled ]] || fail "$u is not enabled"
 done

@@ -368,7 +368,7 @@ stop_source() {
 
 scopes() {
   as_user systemctl --user list-units --plain --no-legend --type=scope --state=active,activating,deactivating \
-    'app-steam-app*' 2> /dev/null | awk '{ print $1 }'
+    'app-steam-app*' 'app-microset\x2dlauncher-*' 'app-flatpak-*' 2> /dev/null | awk '{ print $1 }'
 }
 
 no_scopes() { [[ -z $(scopes) ]]; }
