@@ -48,3 +48,5 @@
 0128-ASoC-qcom-sm8250-create-the-headset-jack-on-every-card-bind.patch
 0133-ASoC-soc-core-keep-a-copy-of-the-dai-names-parsed-from-the-device-tree.patch
 0136-drm-msm-dpu-dither-the-dp-output-at-6-bpc.patch
+0116-power-supply-qcom-pm8150b-charger-bound-the-apsd-rerun.patch
+0117-power-supply-qcom-pm8150b-charger-take-the-input-limit-from-the-type-c-port.patch
