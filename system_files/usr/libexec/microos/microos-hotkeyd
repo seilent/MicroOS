@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import contextlib
 import fcntl
 import functools
 import glob
@@ -40,6 +41,9 @@ XML = f"""
 """
 EVENT = struct.Struct("llHHi")
 EVIOCSCLOCKID = 0x400445A0
+KEY_BYTES = 96
+EVIOCGRAB = 0x40044590
+EVIOCGKEY = 0x80004518 | KEY_BYTES << 16
 LONG_MS = 1000
 REPEAT_DELAY_MS = 400
 REPEAT_MS = 100
@@ -113,7 +117,7 @@ def load_table(session):
             continue
         for n, line in enumerate(lines, 1):
             words = line.split()
-            if not words or words[0].startswith("#"):
+            if not words or words[0].startswith("#") or (path == main and words == ["grab"]):
                 continue
             if (len(words) < 3 or words[0] not in KEYS or words[1] not in GESTURES or not valid(words[2], words[3:])
                     or (words[1] == "press" and words[2] not in ("volume", "none"))):
@@ -125,6 +129,14 @@ def load_table(session):
             log(f"{key} {gesture}: ignored, {key} has a press row")
             del table[(key, gesture)]
     return table
+
+
+def table_grabs(session):
+    try:
+        with open(os.path.join(TABLES, f"{session}.conf")) as f:
+            return any(line.split() == ["grab"] for line in f)
+    except OSError:
+        return False
 
 
 def game_scope(session):
@@ -176,6 +188,25 @@ def open_node(path):
             os.close(fd)
             raise
     return fd
+
+
+def keys_up(path, fd):
+    try:
+        if INPUT:
+            with open(f"{path}.keys") as f:
+                return not f.read().split()
+        buf = bytearray(KEY_BYTES)
+        fcntl.ioctl(fd, EVIOCGKEY, buf)
+        return not any(buf)
+    except OSError:
+        return False
+
+
+def grab(path, fd, on):
+    if INPUT:
+        log(f"EVIOCGRAB {path} {on}")
+        return
+    fcntl.ioctl(fd, EVIOCGRAB, on)
 
 
 def client_running():
@@ -242,6 +273,8 @@ class Hotkeyd:
         keys = {"power"} | {k for (k, _), row in self.table.items() if row[0] != "none"}
         self.codes = {KEYS[k]: k for k in keys}
         self.wanted = sorted({KEYS[k][0] for k in keys})
+        self.grabs = {n for n in self.wanted if n != PWR} if table_grabs(session) else set()
+        self.pending_grab = set()
         self.state = {k: [None, None, False] for k in keys}
         self.skip = set()
         self.fds = {}
@@ -291,7 +324,8 @@ class Hotkeyd:
         return any(n == name for n, _ in self.fds.values())
 
     def arm(self, force=False):
-        if self.timer is None and (force or self.block_fd is None or not all(map(self.has, self.wanted))):
+        if self.timer is None and (force or self.pending_grab or self.block_fd is None
+                                   or not all(map(self.has, self.wanted))):
             self.timer = GLib.timeout_add_seconds(REOPEN_S, self.retry)
 
     def retry(self):
@@ -300,6 +334,8 @@ class Hotkeyd:
         return GLib.SOURCE_REMOVE
 
     def reopen(self):
+        for path in sorted(self.pending_grab):
+            self.take_grab(path)
         for name in self.wanted:
             paths = node_paths(name)
             if not paths:
@@ -312,10 +348,12 @@ class Hotkeyd:
                 except OSError as err:
                     self.warn(path, f"cannot read {path}: {err}")
                     continue
-                self.failing.difference_update((name, path))
+                self.failing.difference_update((name, path, f"grab {path}"))
                 self.fds[path] = (name, fd)
                 self.bufs[path] = b""
                 GLib.io_add_watch(fd, GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.readable, path)
+                if name in self.grabs:
+                    self.take_grab(path)
         if self.has(PWR) and self.block_fd is None:
             try:
                 self.block_fd = self.inhibit(
@@ -326,11 +364,29 @@ class Hotkeyd:
                 self.warn("block", f"inhibit failed: {err.message}")
         self.arm()
 
+    def take_grab(self, path):
+        fd = self.fds[path][1]
+        self.pending_grab.add(path)
+        try:
+            if not keys_up(path, fd):
+                return
+            grab(path, fd, 1)
+        except OSError as err:
+            self.warn(f"grab {path}", f"cannot grab {path}: {err}")
+        else:
+            if not keys_up(path, fd):
+                with contextlib.suppress(OSError):
+                    grab(path, fd, 0)
+                return
+            log(f"grabbed {path}")
+        self.pending_grab.discard(path)
+
     def close_node(self, path, msg):
         log(msg)
         name, fd = self.fds.pop(path)
         os.close(fd)
         del self.bufs[path]
+        self.pending_grab.discard(path)
         if name == PWR and not self.has(PWR) and self.block_fd is not None:
             os.close(self.block_fd)
             self.block_fd = None
@@ -782,6 +838,8 @@ class Hotkeyd:
         while len(buf) >= EVENT.size:
             sec, usec, etype, code, value = EVENT.unpack_from(buf)
             buf = buf[EVENT.size:]
+            if etype == E.EV_KEY and value == 0 and path in self.pending_grab:
+                self.take_grab(path)
             key = self.codes.get((name, code))
             if etype == E.EV_KEY and key:
                 self.key(key, sec + usec / 1e6, value)

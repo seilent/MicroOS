@@ -18,6 +18,7 @@ KEYS = {
     "rc": ("event1", 185),
     "guide2": ("event2", 183),
     "volup": ("event3", 115),
+    "esc": ("event3", 1),
     "voldown": ("event4", 114),
 }
 LOGIN1 = ("org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager")

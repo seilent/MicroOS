@@ -558,6 +558,7 @@ until_ok grep -qsx toggle "$tmp/v.log" || fail "rc did not toggle the MicroSET o
 (( $(grep -cx toggle "$tmp/v.log") == 1 )) || fail "one rc tap toggled $(grep -cx toggle "$tmp/v.log") times"
 
 python3 "$here/hotkeyd/consume.py" "$tree" || fail "Consume cases"
+python3 "$here/hotkeyd/grab.py" "$tree" "$tmp/grab" || fail "grab cases"
 
 cat > "$tmp/bin/microos-session" <<EOF
 #!/usr/bin/env bash
@@ -793,6 +794,66 @@ printf 'guide hold switch recovery confirm-in-game\n' > "$tmp/n/n.conf"
 boot n "$tmp/n"
 hold guide
 [[ $(calls) == "systemctl start --no-block microos-session-switch@recovery.service" ]] || fail "a table row over the built in guide hold: $(calls)"
+
+keyfile() { echo "$tmp/input/$1/node.keys"; }
+grabs_are() { [[ $(count "$tmp/hotkeyd.err" "microos-hotkeyd: grabbed $tmp/input/$1/node") == "$2" ]]; }
+ioctls_are() { [[ $(count "$tmp/hotkeyd.err" "microos-hotkeyd: EVIOCGRAB $tmp/input/$1/node $2") == "$3" ]]; }
+closes_are() { [[ $(count "$tmp/hotkeyd.err" "microos-hotkeyd: InputPlumber Keyboard ($tmp/input/$1/node) closed") == "$2" ]]; }
+scanned() { ! atime_old; }
+for i in 1 2 3 4; do : > "$(keyfile "event$i")"; done
+echo 115 > "$(keyfile event3)"
+rm -f "$(keyfile event4)"
+boot android
+until_ok grabs_are event1 1 || fail "android: event1 not grabbed: $(cat "$tmp/hotkeyd.err")"
+until_ok grabs_are event2 1 || fail "android: event2 not grabbed: $(cat "$tmp/hotkeyd.err")"
+k wait:0.3
+grabs_are event3 0 || fail "android: gpio-keys grabbed with a key down at open"
+ioctls_are event3 1 0 || fail "android: EVIOCGRAB on gpio-keys with a key down at open"
+grabs_are event4 0 || fail "android: pm8941_resin grabbed without a .keys file"
+
+touch -a -d @946684800 "$tmp/input/event0/device/name"
+until_ok scanned || fail "android: no node scan with grabs pending"
+: > "$(keyfile event3)"
+touch -a -d @946684800 "$tmp/input/event0/device/name"
+k esc.up wait:0.3
+grabs_are event3 1 || fail "android: an unbound key's up did not grab gpio-keys: $(cat "$tmp/hotkeyd.err")"
+atime_old || fail "android: the gpio-keys grab came from the retry"
+: > "$(keyfile event4)"
+until_ok grabs_are event4 1 || fail "android: pm8941_resin not grabbed by the retry: $(cat "$tmp/hotkeyd.err")"
+
+k guide.up
+rm -f "$(keyfile event1)"
+mkfifo "$(keyfile event1)"
+k close:guide
+timeout 5 sh -c ': > "$0"' "$(keyfile event1)" || fail "android: no EVIOCGKEY at the event1 reopen"
+until_ok ioctls_are event1 1 2 || fail "android: no grab at the event1 reopen: $(cat "$tmp/hotkeyd.err")"
+timeout 5 sh -c 'echo 183 > "$0"' "$(keyfile event1)" || fail "android: no EVIOCGKEY after the event1 grab"
+until_ok ioctls_are event1 0 1 || fail "android: a key down after the grab kept it: $(cat "$tmp/hotkeyd.err")"
+grabs_are event1 1 || fail "android: grabbed logged with a key down after the grab"
+rm -f "$(keyfile event1)"
+: > "$(keyfile event1)"
+k guide.up
+until_ok grabs_are event1 2 || fail "android: no regrab after the event1 reopen: $(cat "$tmp/hotkeyd.err")"
+
+echo 183 > "$(keyfile event2)"
+k guide2.up close:guide2
+until_ok closes_are event2 1 || fail "android: event2 not closed"
+until_ok fd_open event2 || fail "android: event2 not reopened"
+echo gone > "$tmp/input/event2/device/name"
+k guide2.up close:guide2
+until_ok closes_are event2 2 || fail "android: event2 not closed again"
+touch -a -d @946684800 "$tmp/input/event0/device/name"
+until_ok scanned || fail "android: no node scan after event2 closed"
+touch -a -d @946684800 "$tmp/input/event0/device/name"
+k wait:4.5
+atime_old || fail "android: node scan after a pending node was lost"
+echo "InputPlumber Keyboard" > "$tmp/input/event2/device/name"
+grabs_are event2 1 || fail "android: event2 grabbed with a key down"
+
+grep -q "EVIOCGRAB $tmp/input/event0/node" "$tmp/hotkeyd.err" && fail "android: EVIOCGRAB on the power node"
+grep -q Traceback "$tmp/hotkeyd.err" && fail "android: $(cat "$tmp/hotkeyd.err")"
+fd_open event3 || fail "android: gpio-keys not open"
+stop "$hk"
 
 if (( rc == 0 )); then
   echo "hotkeyd: ok"

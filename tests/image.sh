@@ -1043,7 +1043,8 @@ grep -qxF CPUWeight=100 /usr/lib/systemd/user/game.slice || fail "game.slice lac
 grep -qx 'ExecStart=/usr/libexec/microos/microos-hotkeyd %i' /usr/lib/systemd/user/microos-hotkeyd@.service || fail "hotkeyd unit ExecStart"
 grep -qx 'BindsTo=gamescope-session-plus@%i.service' /usr/lib/systemd/user/microos-hotkeyd@.service || fail "hotkeyd unit BindsTo"
 grep -qx 'After=gamescope-session-plus@%i.service' /usr/lib/systemd/user/microos-hotkeyd@.service || fail "hotkeyd unit After"
-[[ -f /usr/lib/microos/hotkeys.d/steam.conf && -f /usr/lib/microos/hotkeys.d/recovery.conf ]] || fail "hotkeys.d tables missing"
+[[ -f /usr/lib/microos/hotkeys.d/steam.conf && -f /usr/lib/microos/hotkeys.d/recovery.conf && -f /usr/lib/microos/hotkeys.d/android.conf ]] \
+  || fail "hotkeys.d tables missing"
 grep -qxF 'guide hold none' /usr/lib/microos/hotkeys.d/recovery.conf || fail "recovery.conf lacks guide hold none"
 grep -qxF $'steam\tSteam OS\tyes' <<< "$(microos-session list)" || fail "microos-session list lacks steam as Steam OS"
 grep -qxF 'ExecStart=/usr/bin/microos-session install %i' /usr/lib/systemd/user/microos-session-install@.service ||
@@ -1082,12 +1083,25 @@ loader = importlib.machinery.SourceFileLoader("hotkeyd", "/usr/libexec/microos/m
 h = importlib.util.module_from_spec(importlib.util.spec_from_loader("hotkeyd", loader))
 loader.exec_module(h)
 bad = []
-for s in ("steam", "microdap", "microemu"):
+for s in ("steam", "microdap", "microemu", "android"):
     t = h.load_table(s)
     if t.get(("guide", "hold")) != ("session-menu",) or t.get(("lc", "hold"), ("",))[0] == "switch":
         bad.append(s)
 if bad:
     print(f"FAIL: guide hold or lc hold in {bad}", file=sys.stderr)
+    sys.exit(1)
+PY
+
+python3 - <<'PY' || fail "hotkeyd android table lacks grab or its rows"
+import importlib.machinery, importlib.util, sys
+loader = importlib.machinery.SourceFileLoader("hotkeyd", "/usr/libexec/microos/microos-hotkeyd")
+h = importlib.util.module_from_spec(importlib.util.spec_from_loader("hotkeyd", loader))
+loader.exec_module(h)
+want = {("power", "tap"): ("suspend",), ("guide", "hold"): ("session-menu",), ("volup", "press"): ("volume", "up"),
+        ("voldown", "press"): ("volume", "down"), ("power", "hold"): ("session-menu",)}
+t = h.load_table("android")
+if {k: t.get(k) for k in want} != want or not h.table_grabs("android"):
+    print(f"FAIL: android table {t}", file=sys.stderr)
     sys.exit(1)
 PY
 
