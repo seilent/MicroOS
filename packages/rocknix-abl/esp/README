@@ -1,0 +1,39 @@
+# ROCKNIX ABL for the Pocket MICRO 2
+
+The ROCKNIX ABL for SM8250 that this MicroOS install ships, taken from the ROCKNIX/abl release at build time and
+listed in `manifest`.
+
+This folder is the first install. A device still in stock Android runs the vendor ABL, which does not boot `\KERNEL`,
+so both slots are written from Android before MicroOS ever starts. Once MicroOS runs, the slots are settled and only a
+later ROCKNIX release changes them, at shutdown, with the same backup and readback.
+
+Copy this folder from the card to the root of Android internal storage. The card's ESP can be mounted read only, and
+the backups are written here. Then run these from a root shell. They write `/dev/block/by-name/abl_a` and `abl_b`.
+
+## Back up both slots
+
+    sh backup_abl.sh
+
+Writes `abl-<sha256>.img` and its `.sha256` for each slot in this folder. The image is the whole partition, and the
+partition is hashed again after the file.
+
+## Write both slots
+
+    sh flash_abl.sh
+
+Checks the elf against its `.sha256`, both slots against a backup in this folder, and each slot's `order` in
+`releases.tsv`: a slot at or above the payload's order is refused. A slot that is not in `releases.tsv` is written with
+a warning. The inactive slot goes first from `ro.boot.slot_suffix`, then the active one, and each is read back.
+
+## Restore one slot
+
+    sh restore_backup_abl.sh a abl-<sha256>.img
+
+## Files
+
+`abl_signed-SM8250.elf` and `.sha256`: the bootloader. `releases.tsv`: `order version soc length sha256`, one row per
+ROCKNIX ABL, a higher `order` is newer. `manifest`: what this MicroOS install ships.
+
+## Overrides
+
+`ABL_BLOCK_DIR` (`/dev/block/by-name`), `ABL_BACKUP` and `ABL_PAYLOAD` (this folder).

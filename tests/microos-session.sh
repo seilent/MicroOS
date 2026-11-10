@@ -1042,11 +1042,11 @@ hold BTN_SOUTH 1 09
 [[ $r == 2 ]] || fail "pad-hold took a wait with a leading zero: $r"
 nopads
 hold BTN_SOUTH 1 0
-[[ $r == 1 ]] && grep -q "no AYANEO Controller" "$tmp/out" || fail "pad-hold without a pad: $r $(cat "$tmp/out")"
+[[ $r == 4 ]] && grep -q "no AYANEO Controller" "$tmp/out" || fail "pad-hold without a pad: $r $(cat "$tmp/out")"
 mkpad event9 virtual
 echo BTN_SOUTH > "$FAKE/keys/event9"
 hold BTN_SOUTH 1 0
-[[ $r == 1 ]] && grep -q "no AYANEO Controller" "$tmp/out" || fail "pad-hold took a virtual pad: $r"
+[[ $r == 4 ]] && grep -q "no AYANEO Controller" "$tmp/out" || fail "pad-hold took a virtual pad: $r"
 mkpad event4 real
 echo BTN_SOUTH > "$FAKE/keys/event4"
 hold BTN_SOUTH 1 0
@@ -1091,7 +1091,7 @@ for bad in mode link missing; do
   esac
   echo BTN_SOUTH > "$FAKE/keys/event4"
   hold BTN_SOUTH 1 0
-  [[ $r == 1 ]] && grep -q "missing or not root 0600" "$tmp/out" || fail "pad-hold with a $bad lock: $r $(cat "$tmp/out")"
+  [[ $r == 4 ]] && grep -q "missing or not root 0600" "$tmp/out" || fail "pad-hold with a $bad lock: $r $(cat "$tmp/out")"
 done
 rm -f "$run/hold/.lock" "$tmp/lock-target"
 install -m 0600 /dev/null "$run/hold/.lock"
@@ -1115,7 +1115,7 @@ nopads
 mkpad event4 real
 echo "BTN_SOUTH KEY_PROG4" > "$FAKE/keys/event4"
 hold KEY_PROG4 1 0
-[[ $r == 1 ]] && grep -q "no aya-keys" "$tmp/out" || fail "pad-hold took KEY_PROG4 from the pad: $r $(cat "$tmp/out")"
+[[ $r == 4 ]] && grep -q "no aya-keys" "$tmp/out" || fail "pad-hold took KEY_PROG4 from the pad: $r $(cat "$tmp/out")"
 for bad in virtual name ids driver two; do
   nopads
   case $bad in
@@ -1127,13 +1127,13 @@ for bad in virtual name ids driver two; do
   esac
   echo KEY_PROG4 > "$FAKE/keys/event0"
   hold KEY_PROG4 1 0
-  [[ $r == 1 ]] && grep -q "no aya-keys" "$tmp/out" || fail "pad-hold took a $bad aya-keys: $r $(cat "$tmp/out")"
+  [[ $r == 4 ]] && grep -q "no aya-keys" "$tmp/out" || fail "pad-hold took a $bad aya-keys: $r $(cat "$tmp/out")"
 done
 nopads
 mkkeys event0 real
 echo BTN_SOUTH > "$FAKE/keys/event0"
 hold BTN_SOUTH 1 0
-[[ $r == 1 ]] && grep -q "no AYANEO Controller" "$tmp/out" || fail "pad-hold took BTN_SOUTH from aya-keys: $r $(cat "$tmp/out")"
+[[ $r == 4 ]] && grep -q "no AYANEO Controller" "$tmp/out" || fail "pad-hold took BTN_SOUTH from aya-keys: $r $(cat "$tmp/out")"
 mkpad event4 real
 mkkeys event1 real gpio-keys
 mkkeys event9 virtual
@@ -1213,7 +1213,7 @@ for bad in mode link missing owner; do
   esac
   echo KEY_PROG4 > "$FAKE/keys/event0"
   hold KEY_PROG4 1 0
-  [[ $r == 1 ]] && grep -q "missing or not root 0600" "$tmp/out" || fail "pad-hold with a $bad keys lock: $r $(cat "$tmp/out")"
+  [[ $r == 4 ]] && grep -q "missing or not root 0600" "$tmp/out" || fail "pad-hold with a $bad keys lock: $r $(cat "$tmp/out")"
 done
 rm -f "$run/hold/.lock-keys" "$tmp/lock-target"
 echo BTN_SOUTH > "$FAKE/keys/event4"
@@ -1270,10 +1270,10 @@ mkkeys event0 real
 mkdir -p "$MICROOS_DEV/input"
 ln -sfn /dev/null "$MICROOS_DEV/input/event0"
 hold KEY_PROG4 1 0
-[[ $r == 1 ]] && grep -q "is not the device in" "$tmp/out" || fail "pad-hold took a node with another st_rdev: $r $(cat "$tmp/out")"
+[[ $r == 4 ]] && grep -q "is not the device in" "$tmp/out" || fail "pad-hold took a node with another st_rdev: $r $(cat "$tmp/out")"
 printf '%d:%d\n' "0x$(stat -L -c %t /dev/null)" "0x$(stat -L -c %T /dev/null)" > "$MICROOS_SYSFS/class/input/event0/dev"
 hold KEY_PROG4 1 0
-[[ $r == 1 ]] && ! grep -q "is not the device in" "$tmp/out" || fail "pad-hold refused a node with the same st_rdev: $r $(cat "$tmp/out")"
+[[ $r == 4 ]] && ! grep -q "is not the device in" "$tmp/out" || fail "pad-hold refused a node with the same st_rdev: $r $(cat "$tmp/out")"
 rm -f "$MICROOS_DEV/input/event0"
 nopads
 

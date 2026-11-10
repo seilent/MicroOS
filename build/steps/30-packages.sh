@@ -29,6 +29,7 @@ own=(
   plymouth/plymouth-scripts
   android-guestos/microos-android-guestos
   microos-android/microos-android
+  rocknix-abl/rocknix-abl
 )
 
 own_rpm() {

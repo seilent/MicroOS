@@ -107,6 +107,30 @@ id=$(podman run --rm --pull=never --net=none --security-opt label=disable \
 
 cp "$work/bake/KERNEL" "$esp/KERNEL"
 printf '%s\n' "$id" > "$esp/.microos-bootimg.id"
+
+abl=$deploy/usr/lib/microos/abl
+for f in manifest abl_signed-SM8250.elf abl_signed-SM8250.elf.sha256 releases.tsv \
+  esp/README esp/backup_abl.sh esp/flash_abl.sh esp/restore_backup_abl.sh; do
+  [[ -f $abl/$f ]] || die "the deployment has no usr/lib/microos/abl/$f"
+done
+abl_sha=$(sed -n 's/^MICROOS_ABL_SHA256=//p' "$abl/manifest")
+[[ $abl_sha =~ ^[0-9a-f]{64}$ ]] || die "usr/lib/microos/abl/manifest has no MICROOS_ABL_SHA256"
+echo "$abl_sha  $abl/abl_signed-SM8250.elf" | sha256sum -c --quiet - \
+  || die "the ABL elf differs from the deployment manifest"
+( cd "$abl" && sha256sum -c --quiet abl_signed-SM8250.elf.sha256 ) \
+  || die "the ABL elf differs from its .sha256"
+install -d "$esp/rocknix_abl/SM8250"
+install -m644 "$abl/esp/README" "$esp/rocknix_abl/README"
+install -m644 "$abl/abl_signed-SM8250.elf" "$esp/rocknix_abl/SM8250/abl_signed-SM8250.elf"
+install -m644 "$abl/abl_signed-SM8250.elf.sha256" "$esp/rocknix_abl/SM8250/abl_signed-SM8250.elf.sha256"
+install -m644 "$abl/releases.tsv" "$esp/rocknix_abl/SM8250/releases.tsv"
+install -m644 "$abl/manifest" "$esp/rocknix_abl/SM8250/manifest"
+install -m755 "$abl/esp/backup_abl.sh" "$esp/rocknix_abl/SM8250/backup_abl.sh"
+install -m755 "$abl/esp/flash_abl.sh" "$esp/rocknix_abl/SM8250/flash_abl.sh"
+install -m755 "$abl/esp/restore_backup_abl.sh" "$esp/rocknix_abl/SM8250/restore_backup_abl.sh"
+sync
+[[ $(sha256sum "$esp/rocknix_abl/SM8250/abl_signed-SM8250.elf" | cut -d' ' -f1) == "$abl_sha" ]] \
+  || die "the staged ABL elf differs from the deployment manifest"
 sync
 umount "$esp"
 fatlabel "${loop}p1" MICROOS

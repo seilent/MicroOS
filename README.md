@@ -12,6 +12,13 @@ from other branches, each with an SD card image as a workflow artifact.
 After the Format confirm in Settings > Storage, release A, then hold it for 1 s within 15 s.
 A MicroOS card formats the same way, except the one the PM2 is running from.
 
+## Bootloader Update
+
+At shutdown, a ROCKNIX ABL newer than the one on the device shows a prompt. Release A, then hold it for 1 s within 15 s.
+Three declines stop the prompt until `microos-abl reset`. Both slots are backed up to
+`rocknix_abl/SM8250/microos-backup/` on the ESP, the card's on an SD install. A first install from stock Android needs
+the ABL before MicroOS boots; `rocknix_abl/README` on the card has those steps.
+
 ## License
 
 GPL-2.0-or-later, see [LICENSE](LICENSE). Components taken from other projects keep their own license and are listed

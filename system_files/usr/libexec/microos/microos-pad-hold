@@ -34,7 +34,7 @@ released=$held
 
 if [[ ! -f $lock || -L $lock || $(stat -c %u:%a "$lock" 2> /dev/null) != 0:600 ]] || ! exec 6>> "$lock"; then
   log "refused: lock file $lock missing or not root 0600"
-  exit 1
+  exit 4
 fi
 if ! flock -n 6; then
   log "refused: another hold is waiting"
@@ -43,7 +43,7 @@ fi
 mapfile -t nodes < <("$node")
 if (( ! ${#nodes[@]} )); then
   log "refused: no $dev"
-  exit 1
+  exit 4
 fi
 exec 5< <(pad_poll "$poll" "${nodes[@]}" 6>&-)
 p=$!
@@ -61,7 +61,7 @@ for (( i = 0; i < polls; i++ )); do
   k=""
   if ! read -r -t 2 k <&5; then
     log "refused: no key state from $dev"
-    exit 1
+    exit 4
   fi
   (( i || ! held )) || log "first sample at $(mono) monotonic"
   all=1
