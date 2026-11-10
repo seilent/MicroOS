@@ -48,6 +48,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0134 ASoC: qcom: q6afe: retry a rejected lpass core hw vote | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0128 ASoC: qcom: sm8250: create the headset jack on every card bind | written new 2026-10-22 | seilent | none | CONFIRMED |
 | 0133 ASoC: soc-core: keep a copy of the dai names parsed from the device tree | written new 2026-10-22 | seilent | none | CONFIRMED |
+| 0136 drm/msm/dpu: dither the DP output at 6 bpc | written new 2026-11-05; torvalds master still dithers INTF_DSI only in `_dpu_encoder_virt_enable_helper` and has no DPU facing bpc query past `msm_dp_wide_bus_available` (fetched 2026-11-05) | seilent | none | CONFIRMED |
 | PM2 DTS | my Armada `pocket-micro-2-build` tree | seilent; block layout and many lines shared with mainline `qrb5165-rb5.dts`, `sm8250-retroidpocket-common.dtsi`, `sm8250-ayn-thorlite.dts`; the `gpio-sbu-mux` block follows Tom's Retroid routing (Armada `9741312`, 2026-09-19) with PM2 GPIOs | own | CONFIRMED. 403 of 677 non trivial lines also appear in mainline board files, 145 only in the sibling files |
 
 ## Why and test
@@ -94,6 +95,7 @@ Provenance traced 2026-10-12. ROCKNIX means `ROCKNIX/distribution` at `next` `d5
 | 0134 | a rejected LPASS core vote is sent again up to 10 times, 20 ms apart; the va macro vote was rejected (error 0x16) 53 ms after an ADSP restart although 0131's check had passed, and va failed its probe | no "AFE failed to vote" over the T2 injected restarts; `vote ... rejected` lines with dyndbg on q6afe |
 | 0128 | a card rebind came back without the headset jack and the MBHC reported into the freed one | Jack controls and one Headset Jack input device after an ADSP restart |
 | 0133 | the card kept the soundwire DAI name pointers it parsed at probe; soundwire DAI names are per device and freed on unbind, so after an ADSP restart the card bind never matched the new DAIs | the card binds again after an ADSP restart |
+| 0136 | the dither ran for DSI only and read `display_info.bpc`, which a DP sink with EDID 1.3 leaves at 0, so a mode the DP panel drives at 18 bpp stayed undithered and banded | `PP_DITHER_EN` in the kms dump reads 1 at 1080p90 and 0 at 60 Hz, and an ftrace count on `dpu_hw_pp_setup_dither` across the modeset |
 | PM2 DTS | the board | `dts-drivers.sh`, `gpu-opp.sh` |
 
 ## patch-id
