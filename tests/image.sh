@@ -1059,7 +1059,7 @@ grep -qxF 'ExecStart=/usr/bin/microset-settings --overlay' "$ou" || fail "micros
 grep -qxF 'BindsTo=gamescope-session-plus@%i.service' "$ou" || fail "microset-overlay@ BindsTo"
 XDG_RUNTIME_DIR=$tmp/xdg SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no microset-overlay@steam.service \
   || fail "systemd-analyze verify --user microset-overlay@steam.service"
-for s in steam microdap microemu; do
+for s in steam microdap microemu android; do
   [[ $(< "/usr/lib/systemd/user/gamescope-session-plus@$s.service.d/30-microset-overlay.conf") == $'[Unit]\nWants=microset-overlay@'"$s"'.service' ]] \
     || fail "$s session overlay drop-in"
   [[ $(< "/usr/lib/microos/hotkeys.d/$s.conf.d/60-microset.conf") == 'rc tap call net.seilent.MicroSet.Overlay /net/seilent/MicroSet/Overlay net.seilent.MicroSet.Overlay1 Toggle' ]] \
@@ -1071,7 +1071,7 @@ loader = importlib.machinery.SourceFileLoader("hotkeyd", "/usr/libexec/microos/m
 h = importlib.util.module_from_spec(importlib.util.spec_from_loader("hotkeyd", loader))
 loader.exec_module(h)
 want = ("call", "net.seilent.MicroSet.Overlay", "/net/seilent/MicroSet/Overlay", "net.seilent.MicroSet.Overlay1", "Toggle")
-bad = [s for s in ("steam", "microdap", "microemu") if h.load_table(s).get(("rc", "tap")) != want]
+bad = [s for s in ("steam", "microdap", "microemu", "android") if h.load_table(s).get(("rc", "tap")) != want]
 if bad:
     print(f"FAIL: rc tap in {bad}", file=sys.stderr)
     sys.exit(1)

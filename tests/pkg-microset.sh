@@ -62,7 +62,7 @@ if ! rpm -qpR "${rpms[microset-recovery]}" | grep -q '^microset-fonts = '; then 
 
 dropins=()
 hotkeys=()
-for s in steam microdap microemu; do
+for s in steam microdap microemu android; do
   dropins+=("/usr/lib/systemd/user/gamescope-session-plus@$s.service.d/30-microset-overlay.conf")
   hotkeys+=("/usr/lib/microos/hotkeys.d/$s.conf.d/60-microset.conf")
 done
@@ -97,7 +97,7 @@ for kv in BindsTo=gamescope-session-plus@%i.service After=gamescope-session-plus
   if ! grep -qxF "$kv" "$ou"; then fail "microset-overlay@.service lacks $kv"; fi
 done
 if [[ ! -x $tmp/usr/libexec/microset/microset-wait-x ]]; then fail "microset-wait-x not executable"; fi
-for s in steam microdap microemu; do
+for s in steam microdap microemu android; do
   if [[ $(< "$tmp/usr/lib/systemd/user/gamescope-session-plus@$s.service.d/30-microset-overlay.conf") != $'[Unit]\nWants=microset-overlay@'"$s"'.service' ]]; then
     fail "$s session drop-in"
   fi

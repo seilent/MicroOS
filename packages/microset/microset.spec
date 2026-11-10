@@ -159,16 +159,20 @@ install -pm644 fonts/*.ttf %{buildroot}%{_datadir}/fonts/microset/
 %dir %{_userunitdir}/gamescope-session-plus@steam.service.d
 %dir %{_userunitdir}/gamescope-session-plus@microdap.service.d
 %dir %{_userunitdir}/gamescope-session-plus@microemu.service.d
+%dir %{_userunitdir}/gamescope-session-plus@android.service.d
 %{_userunitdir}/gamescope-session-plus@steam.service.d/30-microset-overlay.conf
 %{_userunitdir}/gamescope-session-plus@microdap.service.d/30-microset-overlay.conf
 %{_userunitdir}/gamescope-session-plus@microemu.service.d/30-microset-overlay.conf
+%{_userunitdir}/gamescope-session-plus@android.service.d/30-microset-overlay.conf
 %dir %{_prefix}/lib/microos/hotkeys.d
 %dir %{_prefix}/lib/microos/hotkeys.d/steam.conf.d
 %dir %{_prefix}/lib/microos/hotkeys.d/microdap.conf.d
 %dir %{_prefix}/lib/microos/hotkeys.d/microemu.conf.d
+%dir %{_prefix}/lib/microos/hotkeys.d/android.conf.d
 %{_prefix}/lib/microos/hotkeys.d/steam.conf.d/60-microset.conf
 %{_prefix}/lib/microos/hotkeys.d/microdap.conf.d/60-microset.conf
 %{_prefix}/lib/microos/hotkeys.d/microemu.conf.d/60-microset.conf
+%{_prefix}/lib/microos/hotkeys.d/android.conf.d/60-microset.conf
 
 %files launcher
 %license LICENSE
