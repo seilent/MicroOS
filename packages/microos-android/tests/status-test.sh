@@ -52,6 +52,20 @@ mkdir -p "${MICROOS_ANDROID_CONTEXT}"
 export MICROOS_LEPTON_REVIEWED="${T}/reviewed"
 export MICROOS_LEPTON_SNAPSHOTS="${T}/snaps"
 mkdir -p "${MICROOS_ANDROID_STATE}" "${MICROOS_ANDROID_DATA}" "${MICROOS_LEPTON_REVIEWED}" "${MICROOS_LEPTON_SNAPSHOTS}"
+mkdir -p "${T}/bin"
+cat > "${T}/bin/podman" <<'FAKE'
+#!/usr/bin/bash
+case "$(cat "${FAKE_PODMAN_MODE}" 2>/dev/null)" in
+    app) echo "  mResumedActivity: ActivityRecord{1a2b3c u0 com.example.VkCube/android.app.NativeActivity t7}" ;;
+    launcher) echo "  mResumedActivity: ActivityRecord{1a2b3c u0 com.android.launcher3/.Launcher t1}" ;;
+    garbage) echo "mResumedActivity: none"; echo "ActivityRecord{ //" ;;
+    slow) exec sleep 5 ;;
+    *) exit 125 ;;
+esac
+FAKE
+chmod +x "${T}/bin/podman"
+export FAKE_PODMAN_MODE="${T}/podman-mode"
+export PATH="${T}/bin:${PATH}"
 
 set_state() {
     python3 - "${MICROOS_ANDROID_STATE}/state.json" "$@" <<'PY'
@@ -143,6 +157,34 @@ fi
 rm -f "${MICROOS_ANDROID_STATE}/state.json"
 sleep 0.3
 [[ "$(prop Lepton)" == not-installed ]] || fail "a missing state file: $(prop Lepton)"
+
+foreground() {
+    local raw
+    raw=$(gdbus call --session --dest net.seilent.MicroOs.Android1 --object-path /net/seilent/MicroOs/Android \
+        --method net.seilent.MicroOs.Android1.Foreground) || return 1
+    raw=${raw#(\'}
+    raw=${raw%\',)}
+    printf '%s' "${raw}"
+}
+
+echo app > "${FAKE_PODMAN_MODE}"
+[[ "$(foreground)" == com.example.VkCube ]] || fail "Foreground with a resumed app: $(foreground)"
+echo launcher > "${FAKE_PODMAN_MODE}"
+[[ "$(foreground)" == "" ]] || fail "Foreground on the launcher: $(foreground)"
+echo down > "${FAKE_PODMAN_MODE}"
+[[ "$(foreground)" == "" ]] || fail "Foreground with the container not running: $(foreground)"
+echo garbage > "${FAKE_PODMAN_MODE}"
+[[ "$(foreground)" == "" ]] || fail "Foreground with garbage output: $(foreground)"
+echo slow > "${FAKE_PODMAN_MODE}"
+slow_start=$SECONDS
+foreground > "${T}/slow-out" &
+slow_pid=$!
+pids+=("${slow_pid}")
+sleep 0.5
+[[ "$(prop Lepton)" == not-installed ]] || fail "a property read blocked on a slow Foreground: $(prop Lepton)"
+wait "${slow_pid}"
+[[ "$(cat "${T}/slow-out")" == "" ]] || fail "Foreground past the timeout: $(cat "${T}/slow-out")"
+(( SECONDS - slow_start < 4 )) || fail "Foreground took $(( SECONDS - slow_start )) s"
 
 monitor() {
     gdbus monitor --session --dest net.seilent.MicroOs.Android1 --object-path /net/seilent/MicroOs/Android \

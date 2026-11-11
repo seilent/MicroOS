@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -24,6 +25,9 @@ XML = f"""
     <property name="LastReason" type="s" access="read"/>
     <property name="Storage" type="s" access="read"/>
     <property name="StorageCard" type="s" access="read"/>
+    <method name="Foreground">
+      <arg name="package" type="s" direction="out"/>
+    </method>
   </interface>
 </node>
 """
@@ -32,6 +36,9 @@ LIBRARY = os.environ.get("MICROOS_LEPTON_LIB") or os.path.join(os.path.dirname(o
                                                                "microos-lepton-lib.sh")
 POLL_MS = int(os.environ.get("MICROOS_STATUS_POLL_MS") or 1000)
 SETTLE_MS = int(os.environ.get("MICROOS_STATUS_SETTLE_MS") or 50)
+FOREGROUND_MS = int(os.environ.get("MICROOS_STATUS_FOREGROUND_MS") or 2000)
+LAUNCHER = "com.android.launcher3"
+RESUMED = re.compile(r"mResumedActivity: .* ([A-Za-z0-9_.]*)/[A-Za-z0-9_.$]*")
 FIELDS = ("Lepton", "LeptonBuild", "GooglePlay", "GsfId", "LastResult", "LastReason", "Storage", "StorageCard")
 
 
@@ -141,6 +148,13 @@ def storage_values():
     return (word, card)
 
 
+def resumed_package(output):
+    found = RESUMED.search(output)
+    if not found or found.group(1) == LAUNCHER:
+        return ""
+    return found.group(1)
+
+
 def directory_tie():
     base = os.environ.get("MICROOS_ANDROID_DATA") or os.path.join(home(), ".local/share/microos-android")
     context = os.environ.get("MICROOS_ANDROID_CONTEXT") or os.path.join(
@@ -195,7 +209,45 @@ class Status:
         }
 
     def method(self, conn, sender, path, interface, name, params, invocation):
+        if name == "Foreground":
+            self.foreground(invocation)
+            return
         invocation.return_dbus_error(NAME + ".UnknownMethod", f"{name} is not a method")
+
+    def foreground(self, invocation):
+        def answer(package):
+            invocation.return_value(GLib.Variant("(s)", (package,)))
+
+        try:
+            process = Gio.Subprocess.new(
+                ["podman", "exec", "lepton-android", "/system/bin/dumpsys", "activity", "activities"],
+                Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_SILENCE)
+        except GLib.Error:
+            answer("")
+            return
+        cancellable = Gio.Cancellable()
+        timer = {"id": 0}
+
+        def expire():
+            timer["id"] = 0
+            cancellable.cancel()
+            process.force_exit()
+            return False
+
+        def done(proc, result):
+            if timer["id"]:
+                GLib.source_remove(timer["id"])
+            package = ""
+            try:
+                data = proc.communicate_finish(result)[1]
+                if proc.get_if_exited() and proc.get_exit_status() == 0:
+                    package = resumed_package(bytes(data.get_data() if data else b"").decode(errors="replace"))
+            except Exception:
+                package = ""
+            answer(package)
+
+        timer["id"] = GLib.timeout_add(FOREGROUND_MS, expire)
+        process.communicate_async(None, cancellable, done)
 
     def property(self, conn, sender, path, interface, name):
         return GLib.Variant("s", self.values().get(name, ""))
