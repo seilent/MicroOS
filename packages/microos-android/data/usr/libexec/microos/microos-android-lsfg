@@ -1,0 +1,181 @@
+#!/usr/bin/python3
+import os
+import re
+import signal
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+gi.require_version("GLibUnix", "2.0")
+from gi.repository import Gio, GLib, GLibUnix
+
+ME = "microos-android-lsfg"
+MICROSET = ("net.seilent.MicroSet", "/net/seilent/MicroSet", "net.seilent.MicroSet1")
+CONTAINER = "lepton-android"
+TIMEOUT_S = float(os.environ.get("MICROOS_LSFG_TIMEOUT_S") or 5)
+LAYER = os.environ.get("MICROOS_ANDROID_LSFG_LAYER") == "1"
+DLL = os.environ.get("MICROOS_ANDROID_LSFG_DLL") == "1"
+PANEL_HZ = 60
+PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+")
+LAYER_NAME = "VK_LAYER_LSFGVK_frame_generation"
+DLL_PATH = "/vendor/etc/lsfg/Lossless.dll"
+SETTINGS = ("enable_gpu_debug_layers", "gpu_debug_app", "gpu_debug_layers")
+PROPS = ("fps", "dll_path", "flow_scale", "performance_mode", "multiplier")
+DEFAULTS = {"lsfg.enabled": True, "lsfg.multiplier": 2, "lsfg.flow_scale": 25, "lsfg.performance_mode": True,
+            "lsfg.fps_cap": "auto", "lsfg.android_app": "", "lsfg.android_state": False, "lsfg.android_fps": 0}
+CLEAR = [f"/system/bin/cmd settings delete global {name}" for name in SETTINGS] + \
+    [f"/system/bin/setprop debug.lsfgvk.{name} ''" for name in PROPS]
+
+
+def log(message):
+    print(f"{ME}: {message}", file=sys.stderr, flush=True)
+
+
+def quote(text):
+    return "'" + str(text).replace("'", "'\\''") + "'"
+
+
+def script(lines):
+    return "r=0\n" + "".join(f"{line} >/dev/null 2>&1 || r=1\n" for line in lines) + 'exit "$r"\n'
+
+
+def guest(text):
+    try:
+        result = subprocess.run(["podman", "exec", CONTAINER, "/system/bin/sh", "-c", text],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return f"timed out after {TIMEOUT_S:g} s", ""
+    except OSError as error:
+        return f"podman failed: {error}", ""
+    out = result.stdout.decode(errors="replace")
+    return (f"failed (rc={result.returncode})" if result.returncode else None), out
+
+
+def debuggable(error, out):
+    first = out.split("\n", 1)[0].strip()
+    if error and not first:
+        return None
+    if first != "1":
+        log("ro.debuggable is not 1, clear only")
+    return first == "1"
+
+
+class Writer:
+    def __init__(self, bus, debuggable):
+        self.bus = bus
+        self.debuggable = debuggable
+        self.values = None
+        self.bad_caps = set()
+
+    def get(self, key):
+        value = self.values.get(key, DEFAULTS[key])
+        if type(value) is not type(DEFAULTS[key]):
+            log(f"{key} {value!r} not valid, using {DEFAULTS[key]!r}")
+            return DEFAULTS[key]
+        return value
+
+    def target(self):
+        if self.values is None:
+            return None, "no microsetd"
+        if self.debuggable is None:
+            return None, "ro.debuggable unknown"
+        if not self.debuggable:
+            return None, "ro.debuggable is not 1"
+        app = self.get("lsfg.android_app")
+        if not app:
+            return None, "no app chosen"
+        if not LAYER:
+            return None, "no layer bind"
+        if not PACKAGE.fullmatch(app):
+            return None, f"{app!r} is not a package name"
+        multiplier = self.get("lsfg.multiplier")
+        generation = self.get("lsfg.enabled") and self.get("lsfg.android_state") and multiplier >= 2
+        if generation and DLL:
+            cap = self.get("lsfg.fps_cap")
+            if cap != "auto" and cap != "off" and not cap.isdigit():
+                if cap not in self.bad_caps:
+                    self.bad_caps.add(cap)
+                    log(f"lsfg.fps_cap {cap!r} unknown, using auto")
+                cap = "auto"
+            fps = PANEL_HZ // multiplier if cap == "auto" else 0 if cap == "off" else int(cap)
+            props = {"fps": fps, "dll_path": DLL_PATH, "flow_scale": self.get("lsfg.flow_scale") / 100,
+                     "performance_mode": int(self.get("lsfg.performance_mode")), "multiplier": multiplier}
+            return (app, props), f"frame generation {multiplier}x for {app}, base cap {fps}"
+        fps = self.get("lsfg.android_fps")
+        props = {"fps": fps, "dll_path": "", "flow_scale": "", "performance_mode": "", "multiplier": 1}
+        if generation:
+            return (app, props), f"no Lossless.dll bind, frame limit {fps} for {app}"
+        return (app, props), f"frame limit {fps} for {app}"
+
+    def reconcile(self):
+        if self.debuggable is None and self.values is not None:
+            self.debuggable = debuggable(*guest("/system/bin/getprop ro.debuggable\n"))
+        wanted, summary = self.target()
+        if wanted is None:
+            lines = CLEAR
+            summary = f"cleared, {summary}"
+        else:
+            app, props = wanted
+            lines = [f"/system/bin/setprop debug.lsfgvk.{name} {quote(props[name])}" for name in PROPS]
+            lines += ["/system/bin/cmd settings put global enable_gpu_debug_layers 1",
+                      f"/system/bin/cmd settings put global gpu_debug_app {quote(app)}",
+                      f"/system/bin/cmd settings put global gpu_debug_layers {LAYER_NAME}"]
+        error, _ = guest(script(lines))
+        log(f"{summary}: {error}" if error else summary)
+
+    def appeared(self, _conn, _name, _owner):
+        self.bus.call(
+            *MICROSET, "List", GLib.Variant("(s)", ("lsfg.",)),
+            GLib.VariantType("(a{sv})"), Gio.DBusCallFlags.NONE, 5000, None, self.loaded, None,
+        )
+
+    def loaded(self, bus, result, _data):
+        try:
+            values = bus.call_finish(result).unpack()[0]
+        except GLib.Error as err:
+            log(f"reading the lsfg keys failed: {err.message}")
+            return
+        self.values = {key: values.get(key, default) for key, default in DEFAULTS.items()}
+        self.reconcile()
+
+    def vanished(self, _conn, _name):
+        if self.values is not None:
+            self.values = None
+            self.reconcile()
+
+    def changed(self, _conn, _sender, _path, _iface, _signal, params):
+        key, value = params.unpack()
+        if self.values is None or key not in DEFAULTS:
+            return
+        self.values[key] = value
+        self.reconcile()
+
+
+def main():
+    loop = GLib.MainLoop()
+    GLibUnix.signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, loop.quit)
+    error, out = guest("/system/bin/getprop ro.debuggable\n" + script(CLEAR))
+    if error:
+        log(f"the clear at start {error}")
+    readable = debuggable(error, out)
+    if readable is None:
+        log("ro.debuggable unknown, read again at the next reconcile")
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    except GLib.Error as err:
+        log(f"no system bus, clear only: {err.message}")
+        return 0
+    writer = Writer(bus, readable)
+    bus.signal_subscribe(
+        MICROSET[0], MICROSET[2], "Changed", MICROSET[1], None, Gio.DBusSignalFlags.NONE, writer.changed,
+    )
+    Gio.bus_watch_name_on_connection(bus, MICROSET[0], Gio.BusNameWatcherFlags.NONE, writer.appeared,
+                                     writer.vanished)
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

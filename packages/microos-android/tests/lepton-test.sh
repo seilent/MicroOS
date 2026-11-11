@@ -1122,8 +1122,10 @@ intact "${ctx}" "app manifest"
 
 for rel in internal external media0 baked/data_workdir baked/app_workdir baked/app_overlay baked/app_lowerdir \
     baked/data_overlay/misc/ethernet baked/data_overlay/misc/ethernet/ipconfig.txt baked/data_overlay/steamvr \
-    baked/data_overlay/steamvr/runtime baked/data_overlay/steam_app; do
+    baked/data_overlay/steamvr/runtime baked/data_overlay/steam_app baked/data_overlay/local \
+    baked/data_overlay/local/debug baked/data_overlay/local/debug/vulkan; do
     link="${ctx}/${rel}"
+    mkdir -p "${link%/*}"
     [[ ! -e "${link}" ]] || mv "${link}" "${T}/kept"
     if [[ "${rel}" == */ipconfig.txt ]]; then
         ln -s "${T}/outside/ipconfig.txt" "${link}"

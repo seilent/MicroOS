@@ -16,6 +16,8 @@ export MICROOS_LEPTON="${T}/bin/lepton"
 export MICROOS_PAD_NODES="${T}/bin/pad-nodes"
 export MICROOS_KEYBOARD_INSTALL="${T}/bin/keyboard-install"
 export MICROOS_SESSION_WATCH="${T}/bin/session-watch"
+export MICROOS_LSFG_WRITER="${T}/lsfg/microos-android-lsfg"
+export MICROOS_ANDROID_LSFG_DIR="${T}/lsfg-layer"
 export MICROOS_ANDROID_CONTEXT="${T}/contexts/android"
 export MICROOS_CONTENT="${T}/content"
 export MICROOS_SYSTEM_CARD="${T}/system-card"
@@ -125,7 +127,16 @@ echo "watch start" >> "\${STATE}/watch"
 trap 'echo "watch stop" >> "\${STATE}/watch"; exit 0' TERM INT
 while :; do sleep 0.05; done
 STUB
-chmod 0755 "${T}/bin/"*
+mkdir -p "${T}/lsfg"
+cat > "${MICROOS_LSFG_WRITER}" <<'STUB'
+#!/usr/bin/bash
+trap 'cat "${MICROOS_RUNTIME_DIR}/lsfg-writer.pid" > "${STATE}/lsfg-pidfile" 2>/dev/null; echo "lsfg stop" >> "${STATE}/lsfg"; exit 0' TERM
+env > "${STATE}/lsfg-env"
+printf '%s\n' "$$" > "${STATE}/lsfg-self"
+echo "lsfg start" >> "${STATE}/lsfg"
+while :; do sleep 0.05; done
+STUB
+chmod 0755 "${T}/bin/"* "${MICROOS_LSFG_WRITER}"
 export PATH="${T}/bin:${PATH}"
 export MICROOS_STEAM_PIPE="${T}/steam.pipe"
 
@@ -135,6 +146,7 @@ fail() { echo "FAIL ${case_name}: $*" >&2; failures=$((failures + 1)); }
 
 reset() {
     rm -rf "${STATE}" "${MICROOS_RUNTIME_DIR}" "${MICROOS_ANDROID_CONTEXT}" "${MICROOS_ANDROID_DATA}"
+    rm -rf "${MICROOS_ANDROID_LSFG_DIR}" "${XDG_STATE_HOME}/microos-lsfg" "${T}/steam"
     mkdir -p "${STATE}" "${T}/lepton/images/rootfs/system/etc/init"
     rm -rf "${T}/lepton/images/rootfs_overlay"
     mkdir -p "${T}/lepton/images/rootfs_overlay"
@@ -397,6 +409,144 @@ reset
 run
 [[ "${rc}" == 0 ]] || fail "exit ${rc}"
 mounted | grep -qF "/dev/input/" && fail "a pad node was mounted with none present: $(mounted)"
+
+lsfg_layer() {
+    mkdir -p "${MICROOS_ANDROID_LSFG_DIR}"
+    : > "${MICROOS_ANDROID_LSFG_DIR}/libVkLayer_lsfg.so"
+}
+
+lsfg_state() {
+    mkdir -p "${XDG_STATE_HOME}/microos-lsfg"
+    python3 -c 'import json, sys; json.dump({"install": sys.argv[2], "branch_ok": sys.argv[3] == "true", "library": sys.argv[4]}, open(sys.argv[1], "w"))' \
+        "${XDG_STATE_HOME}/microos-lsfg/state.json" "$@"
+}
+
+lsfg_dll() {
+    mkdir -p "$1/steamapps/common/Lossless Scaling"
+    : > "$1/steamapps/common/Lossless Scaling/Lossless.dll"
+}
+
+no_dll() {
+    mounted | grep -q 'destination=/vendor/etc/lsfg/Lossless.dll' && fail "$1: Lossless.dll bound: $(mounted)"
+    grep -qx MICROOS_ANDROID_LSFG_DLL=0 "${STATE}/lsfg-env" || fail "$1: the writer was not told 0: $(grep LSFG "${STATE}/lsfg-env")"
+    grep -qF "$2, no Lossless.dll bind" "${STATE}/stderr" || fail "$1: no log: $(cat "${STATE}/stderr")"
+}
+
+case_name="lsfg layer bound"
+reset
+lsfg_layer
+run
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+mounted | grep -qF "\"type=bind,source=${MICROOS_ANDROID_LSFG_DIR},destination=/data/local/debug/vulkan,ro\"" \
+    || fail "the layer dir is not bound: $(mounted)"
+grep -qx MICROOS_ANDROID_LSFG_LAYER=1 "${STATE}/lsfg-env" || fail "the writer was not told 1: $(grep LSFG "${STATE}/lsfg-env")"
+grep -qF "frame generation layer from ${MICROOS_ANDROID_LSFG_DIR}" "${STATE}/stderr" || fail "no log: $(cat "${STATE}/stderr")"
+[[ "$(cat "${STATE}/lsfg")" == $'lsfg start\nlsfg stop' ]] || fail "the writer did not start and stop once: $(cat "${STATE}/lsfg")"
+[[ -s "${STATE}/lsfg-pidfile" && "$(cat "${STATE}/lsfg-pidfile")" == "$(cat "${STATE}/lsfg-self")" ]] \
+    || fail "the pid file named $(cat "${STATE}/lsfg-pidfile" 2>/dev/null), the writer is $(cat "${STATE}/lsfg-self")"
+[[ ! -e "${MICROOS_RUNTIME_DIR}/lsfg-writer.pid" ]] || fail "the run left the pid file"
+no_dll "no state.json" "cannot read ${XDG_STATE_HOME}/microos-lsfg/state.json"
+
+case_name="lsfg layer absent"
+reset
+mkdir -p "${MICROOS_ANDROID_LSFG_DIR}"
+run
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+mounted | grep -q 'destination=/data/local/debug/vulkan' && fail "an empty layer dir was bound: $(mounted)"
+grep -qx MICROOS_ANDROID_LSFG_LAYER=0 "${STATE}/lsfg-env" || fail "the writer was not told 0: $(grep LSFG "${STATE}/lsfg-env")"
+grep -qF "no ${MICROOS_ANDROID_LSFG_DIR}/libVkLayer_lsfg.so, no frame generation layer" "${STATE}/stderr" \
+    || fail "no log: $(cat "${STATE}/stderr")"
+
+case_name="lsfg layer dir refused"
+for dir in "${T}/lsfg,layer" "${T}/lsfg"$'\t'"layer" /run/media/micro/CARD1/layer; do
+    reset
+    mkdir -p "${dir}" 2>/dev/null && : > "${dir}/libVkLayer_lsfg.so"
+    MICROOS_ANDROID_LSFG_DIR="${dir}" run
+    [[ "${rc}" == 0 ]] || fail "${dir}: exit ${rc}: $(cat "${STATE}/stderr")"
+    mounted | grep -q 'destination=/data/local/debug/vulkan' && fail "${dir}: bound: $(mounted)"
+    grep -qx MICROOS_ANDROID_LSFG_LAYER=0 "${STATE}/lsfg-env" || fail "${dir}: the writer was not told 0"
+    case "${dir}" in
+        /run/media/*) want="${dir} is on a card, no frame generation layer" ;;
+        *) want="${dir} holds a comma, quote, apostrophe, backslash or control character, no frame generation layer" ;;
+    esac
+    grep -qF "${want}" "${STATE}/stderr" || fail "${dir}: no log: $(cat "${STATE}/stderr")"
+    [[ "${dir}" == /run/media/* ]] || rm -rf "${dir:?}"
+done
+
+case_name="lsfg writer missing"
+reset
+MICROOS_LSFG_WRITER="${T}/absent-writer" run
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qF "${T}/absent-writer missing, no frame generation writer" "${STATE}/stderr" || fail "no log: $(cat "${STATE}/stderr")"
+
+case_name="lsfg dll present"
+reset
+lsfg_layer
+lsfg_state installed true "${T}/steam"
+lsfg_dll "${T}/steam"
+dll="$(readlink -m "${T}/steam/steamapps/common/Lossless Scaling/Lossless.dll")"
+run
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+mounted | grep -qF "\"type=bind,source=${dll},destination=/vendor/etc/lsfg/Lossless.dll,ro\"" || fail "no DLL bind: $(mounted)"
+grep -qx MICROOS_ANDROID_LSFG_DLL=1 "${STATE}/lsfg-env" || fail "the writer was not told 1: $(grep LSFG "${STATE}/lsfg-env")"
+grep -qF "Lossless.dll from ${dll}" "${STATE}/stderr" || fail "no log: $(cat "${STATE}/stderr")"
+
+case_name="lsfg dll absent"
+reset
+lsfg_layer
+lsfg_state installed true "${T}/steam"
+run
+no_dll "absent" "${T}/steam/steamapps/common/Lossless Scaling/Lossless.dll is not a regular file"
+
+case_name="lsfg dll a link"
+reset
+lsfg_layer
+lsfg_dll "${T}/steam-real"
+mkdir -p "${T}/steam/steamapps/common/Lossless Scaling"
+ln -s "${T}/steam-real/steamapps/common/Lossless Scaling/Lossless.dll" "${T}/steam/steamapps/common/Lossless Scaling/Lossless.dll"
+lsfg_state installed true "${T}/steam"
+run
+rm -rf "${T}/steam-real"
+no_dll "a link" "${T}/steam/steamapps/common/Lossless Scaling/Lossless.dll is not a regular file"
+
+case_name="lsfg dll on a card"
+reset
+lsfg_layer
+lsfg_state installed true /run/media/micro/CARD1/SteamLibrary
+run
+no_dll "a card library" "/run/media/micro/CARD1/SteamLibrary/steamapps/common/Lossless Scaling/Lossless.dll is on a card"
+reset
+lsfg_layer
+ln -s /run/media/micro/CARD1/SteamLibrary "${T}/steam"
+lsfg_state installed true "${T}/steam"
+run
+no_dll "a link to a card library" "/run/media/micro/CARD1/SteamLibrary/steamapps/common/Lossless Scaling/Lossless.dll is on a card"
+
+case_name="lsfg dll with a quote"
+for c in , '"' "'" '\' $'\t' $'\x1b'; do
+    reset
+    lsfg_layer
+    lib="${T}/steam/lib${c}rary"
+    lsfg_state installed true "${lib}"
+    lsfg_dll "${lib}"
+    run
+    [[ "${rc}" == 0 ]] || fail "${c}: exit ${rc}: $(cat "${STATE}/stderr")"
+    no_dll "${c}" "${lib}/steamapps/common/Lossless Scaling/Lossless.dll holds a comma, quote, apostrophe, backslash or control character"
+done
+
+case_name="lsfg dll not on a working branch"
+reset
+lsfg_layer
+lsfg_state installed false "${T}/steam"
+lsfg_dll "${T}/steam"
+run
+no_dll "branch_ok false" "Lossless Scaling is not on a working branch"
+reset
+lsfg_layer
+lsfg_state installing true "${T}/steam"
+lsfg_dll "${T}/steam"
+run
+no_dll "installing" "Lossless Scaling is not installed"
 
 case_name="stop"
 reset
@@ -706,6 +856,17 @@ unit="${repo}/data/usr/lib/systemd/user/microos-android.service"
 grep -qx SuccessExitStatus=143 "${unit}" || fail "the unit does not treat 143 as a success: $(cat "${unit}")"
 grep -qE '^SuccessExitStatus=.*\b137\b' "${unit}" && fail "the unit hides a 137: $(cat "${unit}")"
 grep -qx TimeoutStopSec=20 "${unit}" || fail "the stop bound is not 20 s"
+stop_default() { sed -n 's/^[A-Z_]*="${'"$1"':-\([0-9]*\)}"$/\1/p' "${stop_script}"; }
+guest_ms=$(( $(stop_default MICROOS_GUEST_TIMEOUT) * 1000 ))
+writer_ms=$(( $(stop_default MICROOS_LSFG_TIMEOUT_S) * 1000 + 1000 ))
+clear_ms=$(( $(stop_default MICROOS_LSFG_CLEAR_TIMEOUT_S) * 1000 ))
+home_ms=$(( 2 * guest_ms + $(stop_default MICROOS_STOP_WAIT_MS) + guest_ms ))
+budget_ms=$(( writer_ms + clear_ms + home_ms + 1000 ))
+(( guest_ms == 1000 && writer_ms == 6000 && clear_ms == 3000 && budget_ms == 14000 )) \
+    || fail "the stop budget is writer ${writer_ms} + clear ${clear_ms} + activity, HOME and wait ${home_ms} + podman stop 1000 = ${budget_ms} ms, not 14000"
+(( budget_ms <= 15000 )) || fail "the stop's worst case ${budget_ms} ms is not well under the 20 s bound"
+grep -qF "TIMEOUT_S = float(os.environ.get(\"MICROOS_LSFG_TIMEOUT_S\") or $(stop_default MICROOS_LSFG_TIMEOUT_S))" \
+    "${libexec}/microos-android-lsfg" || fail "the writer and the stop read different MICROOS_LSFG_TIMEOUT_S defaults"
 grep -qx 'ExecStop=/usr/libexec/microos/microos-android-stop' "${unit}" || fail "the unit has no single stop owner"
 grep -qx 'ExecStopPost=/usr/libexec/microos/microos-android-stop --post' "${unit}" || fail "the unit has no post stop"
 

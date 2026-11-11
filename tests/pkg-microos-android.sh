@@ -56,6 +56,7 @@ for f in \
   /usr/libexec/microos/microos-android-install \
   /usr/libexec/microos/microos-android-client \
   /usr/libexec/microos/microos-android-session-watch \
+  /usr/libexec/microos/microos-android-lsfg \
   /usr/libexec/microos/microos-android-status \
   /usr/libexec/microos/microos-lepton-prepare \
   /usr/libexec/microos/microos-gamescope-plain \

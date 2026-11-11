@@ -319,8 +319,8 @@ grep -qx "lepton start android" "${STATE}/events" || fail "android context: lept
 grep -qx "podman container exists lepton-android" "${STATE}/podman" || fail "android context: container not checked"
 reset "exit 0"
 "${stop_script}" 2> "${STATE}/stderr"
-head -n 2 "${STATE}/podman" | sed 's/^podman //' | tr '\n' '|' \
-    | grep -qxF "exec lepton-android /system/bin/dumpsys activity activities|exec lepton-android /system/bin/am start -W -a android.intent.action.MAIN -c android.intent.category.HOME|" \
+grep '^podman ' "${STATE}/podman" | head -n 3 | sed 's/^podman //' | tr '\n' '|' \
+    | grep -qxF "exec lepton-android /system/bin/sh -c r=0|exec lepton-android /system/bin/dumpsys activity activities|exec lepton-android /system/bin/am start -W -a android.intent.action.MAIN -c android.intent.category.HOME|" \
     || fail "stop: $(cat "${STATE}/podman")"
 [[ "$(tail -n 1 "${STATE}/podman")" == "podman stop -t 1 lepton-android" ]] || fail "stop: $(cat "${STATE}/podman")"
 grep -q "did not report com.example.app/.Main stopped" "${STATE}/stderr" \

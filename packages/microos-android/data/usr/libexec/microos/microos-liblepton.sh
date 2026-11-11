@@ -194,7 +194,7 @@ microos_check_context() {
     for path in "${ctx}" "${ctx}/internal" "${ctx}/external" "${ctx}/media0" "${baked}" "${baked}/data_workdir" \
         "${baked}/app_workdir" "${baked}/app_overlay" "${baked}/app_lowerdir" "${data}" "${data}/media" "${data}/misc" \
         "${data}/misc/adb" "${data}/misc/ethernet" "${data}/misc/ethernet/ipconfig.txt" "${data}/steamvr" \
-        "${data}/steamvr/runtime" "${data}/steam_app"; do
+        "${data}/steamvr/runtime" "${data}/steam_app" "${data}/local" "${data}/local/debug" "${data}/local/debug/vulkan"; do
         if [[ -L "${path}" ]]; then
             microos_refuse "${path} is a link, refusing"
         fi

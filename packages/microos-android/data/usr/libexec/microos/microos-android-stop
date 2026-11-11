@@ -6,6 +6,17 @@ verb=${1:-}
 GUEST_TIMEOUT="${MICROOS_GUEST_TIMEOUT:-1}"
 STOP_S="${MICROOS_STOP_S:-0.1}"
 STOP_WAIT_MS="${MICROOS_STOP_WAIT_MS:-1000}"
+LSFG_TIMEOUT="${MICROOS_LSFG_TIMEOUT_S:-5}"
+LSFG_WAIT_MS=$(( LSFG_TIMEOUT * 1000 + 1000 ))
+LSFG_CLEAR_TIMEOUT="${MICROOS_LSFG_CLEAR_TIMEOUT_S:-3}"
+LSFG_CLEAR='r=0
+for s in enable_gpu_debug_layers gpu_debug_app gpu_debug_layers; do
+    /system/bin/cmd settings delete global "$s" >/dev/null 2>&1 || r=1
+done
+for p in fps dll_path flow_scale performance_mode multiplier; do
+    /system/bin/setprop "debug.lsfgvk.$p" "" >/dev/null 2>&1 || r=1
+done
+exit "$r"'
 
 say() { printf 'microos-android-stop: %s\n' "$*" >&2; }
 
@@ -66,6 +77,11 @@ stop() {
 }
 
 run=
+if [[ -n "${MICROOS_RUNTIME_DIR:-}" ]]; then
+    run="${MICROOS_RUNTIME_DIR}"
+elif [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    run="${XDG_RUNTIME_DIR}/microos-android"
+fi
 recorded=
 stamp=
 
@@ -84,8 +100,47 @@ drop_record() {
     rm -f -- "${file}"
 }
 
+writer_alive() {
+    local arg
+    local -a args
+    kill -0 "$1" 2>/dev/null || return 1
+    mapfile -d '' -t args 2>/dev/null < "/proc/$1/cmdline" || return 1
+    for arg in "${args[@]}"; do
+        [[ "${arg##*/}" != microos-android-lsfg ]] || return 0
+    done
+    return 1
+}
+
+stop_writer() {
+    local file="${run}/lsfg-writer.pid" pid="" deadline now
+    [[ -n "${run}" && -f "${file}" && ! -L "${file}" ]] || return 0
+    read -r pid < "${file}" 2>/dev/null || pid=
+    rm -f -- "${file}"
+    [[ "${pid}" =~ ^[1-9][0-9]*$ ]] && writer_alive "${pid}" || return 0
+    kill "${pid}" 2>/dev/null
+    say "sent TERM to the frame generation writer ${pid}"
+    deadline=$(now_ms) || deadline=0
+    deadline=$(( deadline + LSFG_WAIT_MS ))
+    while writer_alive "${pid}"; do
+        now=$(now_ms) || now=${deadline}
+        if (( now >= deadline )); then
+            say "the frame generation writer ${pid} did not stop, killing it"
+            pkill -KILL -P "${pid}" 2>/dev/null
+            kill -KILL "${pid}" 2>/dev/null
+            return 0
+        fi
+        sleep "${STOP_S}"
+    done
+}
+
+lsfg_clear() {
+    timeout "${LSFG_CLEAR_TIMEOUT}" podman exec "${CONTAINER}" /system/bin/sh -c "${LSFG_CLEAR}" > /dev/null 2>&1
+}
+
 case "${verb}" in
     "")
+        stop_writer
+        lsfg_clear || say "the frame generation clear failed"
         activity=$(resumed) || activity=
         home_intent || say "the guest did not take the HOME intent"
         if [[ -n "${activity}" ]] && ! launcher "${activity}"; then
@@ -97,11 +152,6 @@ case "${verb}" in
         prefix=$(podman inspect -f '{{ index .Config.Labels "PREFIX" }}' "${CONTAINER}" 2>/dev/null)
         podman stop -t 1 "${CONTAINER}" > /dev/null 2>&1
         podman rm -fi "${CONTAINER}" > /dev/null 2>&1
-        if [[ -n "${MICROOS_RUNTIME_DIR:-}" ]]; then
-            run="${MICROOS_RUNTIME_DIR}"
-        elif [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
-            run="${XDG_RUNTIME_DIR}/microos-android"
-        fi
         if [[ -n "${run}" ]]; then
             if [[ -f "${run}/lepton-prefix" && ! -L "${run}/lepton-prefix" ]]; then
                 stamp=$(stat -c '%i %s' -- "${run}/lepton-prefix" 2>/dev/null) || stamp=

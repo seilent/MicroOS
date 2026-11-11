@@ -9,6 +9,9 @@ microos_me=microos-android-run
 LEPTON="${MICROOS_LEPTON:-/usr/libexec/microos/microos-lepton}"
 PAD_NODES="${MICROOS_PAD_NODES:-/usr/libexec/microos/microos-android-pad-nodes}"
 SESSION_WATCH="${MICROOS_SESSION_WATCH:-/usr/libexec/microos/microos-android-session-watch}"
+LSFG_WRITER="${MICROOS_LSFG_WRITER:-/usr/libexec/microos/microos-android-lsfg}"
+LSFG_DIR="${MICROOS_ANDROID_LSFG_DIR:-/usr/share/guestos/android-lsfg/vulkan}"
+LSFG_STATE="${XDG_STATE_HOME}/microos-lsfg/state.json"
 RUN="${MICROOS_RUNTIME_DIR}"
 POLL_S="${MICROOS_POLL_S:-0.5}"
 STEAM_PIPE="${MICROOS_STEAM_PIPE:-${DATA}/home/.steam/steam.pipe}"
@@ -373,6 +376,50 @@ first_gapps_boot() {
     say "first boot with ${gapps_set}: grants done"
 }
 
+lsfg_source_ok() {
+    local path
+    for path in "$1" "$(readlink -m -- "$1")"; do
+        case "${path}" in
+            *[,\"\'\\[:cntrl:]]*) say "${path} holds a comma, quote, apostrophe, backslash or control character, $2"; return 1 ;;
+            /run/media/*) say "${path} is on a card, $2"; return 1 ;;
+        esac
+    done
+}
+
+lsfg_dll_source() {
+    local library dll
+    library=$(python3 -I - "${LSFG_STATE}" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as handle:
+        state = json.load(handle)
+except (OSError, ValueError):
+    print("cannot read " + sys.argv[1])
+    sys.exit(1)
+if not isinstance(state, dict) or state.get("install") != "installed":
+    print("Lossless Scaling is not installed")
+    sys.exit(1)
+if state.get("branch_ok") is not True:
+    print("Lossless Scaling is not on a working branch")
+    sys.exit(1)
+library = state.get("library")
+if not isinstance(library, str) or not library.startswith("/") or "\n" in library:
+    print("no library in " + sys.argv[1])
+    sys.exit(1)
+print(library)
+PY
+) || { say "${library}, no Lossless.dll bind"; return 1; }
+    dll="${library}/steamapps/common/Lossless Scaling/Lossless.dll"
+    lsfg_source_ok "${dll}" "no Lossless.dll bind" || return 1
+    if [[ ! -f "${dll}" || -L "${dll}" ]]; then
+        say "${dll} is not a regular file, no Lossless.dll bind"
+        return 1
+    fi
+    readlink -m -- "${dll}"
+}
+
 quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 
 apply_opts() {
@@ -427,6 +474,7 @@ p() { if /system/bin/cmd package list packages "$2" 2>/dev/null | /system/bin/gr
 boot_log_pid=
 steam_pipe_pid=
 session_watch_pid=
+lsfg_writer_pid=
 
 stop_child() {
     local pid=$1 i
@@ -514,6 +562,22 @@ done < <("${PAD_NODES}")
 mounts+=("\"type=bind,source=${RUN}/lineage-system.rc,destination=/system/etc/init/lineage-system.rc,ro\"")
 mounts+=("\"type=bind,source=${RUN}/odm-build.prop,destination=/vendor/odm/etc/build.prop,ro\"")
 mounts+=("\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\"")
+lsfg_layer=0
+if lsfg_source_ok "${LSFG_DIR}" "no frame generation layer"; then
+    if [[ -f "${LSFG_DIR}/libVkLayer_lsfg.so" ]]; then
+        mounts+=("\"type=bind,source=${LSFG_DIR},destination=/data/local/debug/vulkan,ro\"")
+        lsfg_layer=1
+        say "frame generation layer from ${LSFG_DIR}"
+    else
+        say "no ${LSFG_DIR}/libVkLayer_lsfg.so, no frame generation layer"
+    fi
+fi
+lsfg_dll=0
+if lsfg_source=$(lsfg_dll_source); then
+    mounts+=("\"type=bind,source=${lsfg_source},destination=/vendor/etc/lsfg/Lossless.dll,ro\"")
+    lsfg_dll=1
+    say "Lossless.dll from ${lsfg_source}"
+fi
 
 gapps_set=
 old_stamp=$(cat "${CONTEXT}/microos-android-stamp" 2>/dev/null)
@@ -589,6 +653,13 @@ handle() {
     [[ "${line}" == "Boot complete!" ]] || return 0
     if container_running && boot_completed; then
         ready=1
+        if [[ -x "${LSFG_WRITER}" ]]; then
+            MICROOS_ANDROID_LSFG_LAYER=${lsfg_layer} MICROOS_ANDROID_LSFG_DLL=${lsfg_dll} "${LSFG_WRITER}" {storage_fd}>&- &
+            lsfg_writer_pid=$!
+            printf '%s\n' "${lsfg_writer_pid}" > "${RUN}/lsfg-writer.pid" || say "cannot write ${RUN}/lsfg-writer.pid"
+        else
+            say "${LSFG_WRITER} missing, no frame generation writer"
+        fi
         apply_opts
         if (( stamp_changed )) && [[ -n "${gapps_set}" ]]; then
             printf 'gapps\n' > "${RUN}/first-boot.new" || say "cannot write ${RUN}/first-boot"
@@ -649,6 +720,8 @@ done
 stop_child "${boot_log_pid}"
 stop_child "${steam_pipe_pid}"
 stop_session_watch
+stop_child "${lsfg_writer_pid}"
+rm -f "${RUN}/lsfg-writer.pid"
 say "lepton start exited with ${rc}"
 printf 'microos-android-run: lepton start exited with %s\n' "${rc}" >> "${DATA}/lepton.log"
 if (( stopping )); then
