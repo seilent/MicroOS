@@ -18,6 +18,7 @@ cleanup() {
     rm -rf "${T}"
 }
 trap cleanup EXIT
+unset MANGOHUD_CONFIGFILE
 
 failures=0
 fail() { echo "FAIL ${case_name}: $*" >&2; failures=$((failures + 1)); }

@@ -1,0 +1,122 @@
+#!/usr/bin/python3
+import os
+import re
+import signal
+import stat
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+gi.require_version("GLibUnix", "2.0")
+from gi.repository import Gio, GLib, GLibUnix
+
+ME = "microos-android-perf"
+MICROSET = ("net.seilent.MicroSet", "/net/seilent/MicroSet", "net.seilent.MicroSet1")
+KEY = "perf.android_overlay"
+CONFIG = re.compile(r"/tmp/mangohud\.[A-Za-z0-9]{8}")
+TEXT = {True: b"preset=2\n", False: b"no_display\n"}
+
+
+def log(message):
+    print(f"{ME}: {message}", file=sys.stderr, flush=True)
+
+
+def refusal(path):
+    if not path:
+        return "no MANGOHUD_CONFIGFILE"
+    if not CONFIG.fullmatch(path):
+        return f"{path!r} is not a mangohud config path"
+    try:
+        info = os.lstat(path)
+    except OSError as error:
+        return f"cannot read {path}: {error.strerror}"
+    return not_owned(path, info)
+
+
+def not_owned(path, info):
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        return f"{path} is not a regular file owned by {os.getuid()}"
+    return None
+
+
+class Writer:
+    def __init__(self, bus, path):
+        self.bus = bus
+        self.path = path
+        self.refused = set()
+
+    def refuse(self, reason):
+        if reason not in self.refused:
+            self.refused.add(reason)
+            log(f"{reason}, not written")
+
+    def write(self, value):
+        if type(value) is not bool:
+            log(f"{KEY} {value!r} not valid, using False")
+            value = False
+        reason = refusal(self.path)
+        if reason:
+            self.refuse(reason)
+            return
+        try:
+            fd = os.open(self.path, os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except OSError as error:
+            self.refuse(f"cannot write {self.path}: {error.strerror}")
+            return
+        try:
+            reason = not_owned(self.path, os.fstat(fd))
+            if not reason:
+                os.ftruncate(fd, 0)
+                os.write(fd, TEXT[value])
+        except OSError as error:
+            reason = f"cannot write {self.path}: {error.strerror}"
+        finally:
+            os.close(fd)
+        if reason:
+            self.refuse(reason)
+            return
+        log("overlay on" if value else "overlay off")
+
+    def appeared(self, _conn, _name, _owner):
+        self.bus.call(
+            *MICROSET, "List", GLib.Variant("(s)", ("perf.",)),
+            GLib.VariantType("(a{sv})"), Gio.DBusCallFlags.NONE, 5000, None, self.loaded, None,
+        )
+
+    def loaded(self, bus, result, _data):
+        try:
+            values = bus.call_finish(result).unpack()[0]
+        except GLib.Error as err:
+            log(f"reading {KEY} failed: {err.message}")
+            return
+        self.write(values.get(KEY, False))
+
+    def changed(self, _conn, _sender, _path, _iface, _signal, params):
+        self.write(params.unpack()[1])
+
+
+def main():
+    path = os.environ.get("MANGOHUD_CONFIGFILE", "")
+    reason = refusal(path)
+    if reason:
+        log(f"{reason}, no overlay control")
+        return 0
+    loop = GLib.MainLoop()
+    GLibUnix.signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, loop.quit)
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    except GLib.Error as err:
+        log(f"no system bus, no overlay control: {err.message}")
+        return 0
+    writer = Writer(bus, path)
+    bus.signal_subscribe(
+        MICROSET[0], MICROSET[2], "Changed", MICROSET[1], KEY, Gio.DBusSignalFlags.NONE, writer.changed,
+    )
+    Gio.bus_watch_name_on_connection(bus, MICROSET[0], Gio.BusNameWatcherFlags.NONE, writer.appeared, None)
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

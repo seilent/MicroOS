@@ -19,6 +19,7 @@ SESSION = "gamescope-session-plus@android.service"
 SETUP = "microos-android-gapps-setup.service"
 TRACK = os.environ.get("MICROOS_TRACK") or "/usr/libexec/microos/microos-session-track"
 CONTAINER = "lepton-android"
+MANGOHUD_CONFIG = re.compile(r"/tmp/mangohud\.[A-Za-z0-9]{8}")
 MANAGER = ("org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager")
 PROPS = "org.freedesktop.DBus.Properties"
 REFUSE_WAIT = float(os.environ.get("MICROOS_REFUSE_WAIT") or 30)
@@ -385,8 +386,10 @@ class Client:
                 pass
 
     def write_session_env(self):
-        write_atomic(os.path.join(run_dir(), "session.env"),
-                     f"DISPLAY={env('DISPLAY')}\nGAMESCOPE_WAYLAND_DISPLAY={env('GAMESCOPE_WAYLAND_DISPLAY')}\n")
+        text = f"DISPLAY={env('DISPLAY')}\nGAMESCOPE_WAYLAND_DISPLAY={env('GAMESCOPE_WAYLAND_DISPLAY')}\n"
+        if MANGOHUD_CONFIG.fullmatch(env("MANGOHUD_CONFIGFILE")):
+            text += f"MANGOHUD_CONFIGFILE={env('MANGOHUD_CONFIGFILE')}\n"
+        write_atomic(os.path.join(run_dir(), "session.env"), text)
 
     def mark_ready(self):
         self.ready = True

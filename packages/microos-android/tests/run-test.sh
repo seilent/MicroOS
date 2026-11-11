@@ -9,6 +9,7 @@ stop_script="${libexec}/microos-android-stop"
 
 T=$(mktemp -d)
 trap 'rm -rf "${T}"' EXIT
+unset MANGOHUD_CONFIGFILE
 mkdir -p "${T}/bin" "${T}/lepton/images/rootfs/system/etc/init" "${T}/lepton/images/rootfs_overlay" \
     "${T}/lepton/images/rootfs/vendor/odm/etc" "${T}/lepton/sysbake" "${T}/lepton/liblepton"
 export STATE="${T}/state"
@@ -18,6 +19,7 @@ export MICROOS_KEYBOARD_INSTALL="${T}/bin/keyboard-install"
 export MICROOS_SESSION_WATCH="${T}/bin/session-watch"
 export MICROOS_LSFG_WRITER="${T}/lsfg/microos-android-lsfg"
 export MICROOS_ANDROID_LSFG_DIR="${T}/lsfg-layer"
+export MICROOS_PERF_WRITER="${T}/perf/microos-android-perf"
 export MICROOS_ANDROID_CONTEXT="${T}/contexts/android"
 export MICROOS_CONTENT="${T}/content"
 export MICROOS_SYSTEM_CARD="${T}/system-card"
@@ -54,8 +56,10 @@ if [[ "\${1:-}" == runtime ]]; then
 fi
 echo "lepton \$*" >> "\${STATE}/events"
 env > "\${STATE}/env"
+cat "\${MICROOS_RUNTIME_DIR}/perf-writer.pid" > "\${STATE}/perf-at-lepton" 2>/dev/null
 echo "Boot complete!"
 sleep 0.2
+: > "\${STATE}/lepton-exit"
 exit 0
 STUB
 cat > "${T}/bin/pad-nodes" <<'STUB'
@@ -136,7 +140,16 @@ printf '%s\n' "$$" > "${STATE}/lsfg-self"
 echo "lsfg start" >> "${STATE}/lsfg"
 while :; do sleep 0.05; done
 STUB
-chmod 0755 "${T}/bin/"* "${MICROOS_LSFG_WRITER}"
+mkdir -p "${T}/perf"
+cat > "${MICROOS_PERF_WRITER}" <<'STUB'
+#!/usr/bin/bash
+trap 'if [[ -e "${STATE}/lepton-exit" ]]; then echo "perf stop after lepton"; else echo "perf stop before lepton"; fi >> "${STATE}/perf"; exit 0' TERM
+env > "${STATE}/perf-env"
+printf '%s\n' "$$" > "${STATE}/perf-self"
+echo "perf start" >> "${STATE}/perf"
+while :; do sleep 0.05; done
+STUB
+chmod 0755 "${T}/bin/"* "${MICROOS_LSFG_WRITER}" "${MICROOS_PERF_WRITER}"
 export PATH="${T}/bin:${PATH}"
 export MICROOS_STEAM_PIPE="${T}/steam.pipe"
 
@@ -547,6 +560,33 @@ lsfg_state installing true "${T}/steam"
 lsfg_dll "${T}/steam"
 run
 no_dll "installing" "Lossless Scaling is not installed"
+
+case_name="perf writer before the boot, stopped after lepton"
+reset
+MANGOHUD_CONFIGFILE=/tmp/mangohud.Ab3dE5fG run
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+[[ -s "${STATE}/perf-at-lepton" && "$(cat "${STATE}/perf-at-lepton")" == "$(cat "${STATE}/perf-self")" ]] \
+    || fail "no pid file of the writer at lepton start: $(cat "${STATE}/perf-at-lepton" 2>/dev/null), the writer is $(cat "${STATE}/perf-self" 2>/dev/null)"
+[[ "$(cat "${STATE}/perf")" == $'perf start\nperf stop after lepton' ]] \
+    || fail "the writer did not start once and stop after lepton: $(cat "${STATE}/perf")"
+grep -qx MANGOHUD_CONFIGFILE=/tmp/mangohud.Ab3dE5fG "${STATE}/perf-env" \
+    || fail "the writer has no MANGOHUD_CONFIGFILE: $(grep MANGOHUD "${STATE}/perf-env")"
+[[ ! -e "${MICROOS_RUNTIME_DIR}/perf-writer.pid" ]] || fail "the run left the pid file"
+
+case_name="perf writer with no MANGOHUD_CONFIGFILE"
+reset
+run
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qxF "microos-android-run: no MANGOHUD_CONFIGFILE, no performance overlay writer" "${STATE}/stderr" \
+    || fail "no log: $(cat "${STATE}/stderr")"
+[[ ! -e "${STATE}/perf" ]] || fail "a writer ran: $(cat "${STATE}/perf")"
+
+case_name="perf writer missing"
+reset
+MANGOHUD_CONFIGFILE=/tmp/mangohud.Ab3dE5fG MICROOS_PERF_WRITER="${T}/absent-perf" run
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qF "${T}/absent-perf missing, no performance overlay writer" "${STATE}/stderr" || fail "no log: $(cat "${STATE}/stderr")"
+[[ ! -e "${STATE}/perf" ]] || fail "a writer ran: $(cat "${STATE}/perf")"
 
 case_name="stop"
 reset

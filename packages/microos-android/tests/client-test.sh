@@ -218,6 +218,7 @@ export MICROOS_SYSTEM_CARD="${T}/system-card"
 : > "${MICROOS_SYSTEM_CARD}"
 export DISPLAY=:0
 export GAMESCOPE_WAYLAND_DISPLAY=gamescope-0
+unset MANGOHUD_CONFIGFILE
 mkdir -p "${T}/bin" "${MICROOS_RUNDIR}" "${MICROOS_RUNTIME_DIR}" "${MICROOS_ANDROID_STATE}" "${T}/xdg"
 
 cat > "${T}/bin/run-check" <<STUB
@@ -301,7 +302,23 @@ for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/session.env" ]] && break; sl
 grep -qx "DISPLAY=:0" "${MICROOS_RUNTIME_DIR}/session.env" || fail "session.env DISPLAY: $(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)"
 grep -qx "GAMESCOPE_WAYLAND_DISPLAY=gamescope-0" "${MICROOS_RUNTIME_DIR}/session.env" \
     || fail "session.env GAMESCOPE_WAYLAND_DISPLAY: $(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)"
+grep -q "^MANGOHUD_CONFIGFILE=" "${MICROOS_RUNTIME_DIR}/session.env" \
+    && fail "session.env MANGOHUD_CONFIGFILE with none set: $(cat "${MICROOS_RUNTIME_DIR}/session.env")"
 wait_for "^start microos-android.service replace$" || fail "StartUnit was not called: $(cat "${STATE}/calls")"
+stop_client
+
+reset
+MANGOHUD_CONFIGFILE=/tmp/mangohud.Ab3dE5fG background
+for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/session.env" ]] && break; sleep 0.05; done
+[[ "$(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)" == $'DISPLAY=:0\nGAMESCOPE_WAYLAND_DISPLAY=gamescope-0\nMANGOHUD_CONFIGFILE=/tmp/mangohud.Ab3dE5fG' ]] \
+    || fail "session.env MANGOHUD_CONFIGFILE: $(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)"
+stop_client
+
+reset
+MANGOHUD_CONFIGFILE=$'/tmp/mangohud.Ab3dE5fG\nMICROOS_LEPTON=/tmp/x' background
+for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/session.env" ]] && break; sleep 0.05; done
+[[ "$(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)" == $'DISPLAY=:0\nGAMESCOPE_WAYLAND_DISPLAY=gamescope-0' ]] \
+    || fail "session.env took a bad MANGOHUD_CONFIGFILE: $(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)"
 stop_client
 
 reset

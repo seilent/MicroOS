@@ -12,6 +12,7 @@ SESSION_WATCH="${MICROOS_SESSION_WATCH:-/usr/libexec/microos/microos-android-ses
 LSFG_WRITER="${MICROOS_LSFG_WRITER:-/usr/libexec/microos/microos-android-lsfg}"
 LSFG_DIR="${MICROOS_ANDROID_LSFG_DIR:-/usr/share/guestos/android-lsfg/vulkan}"
 LSFG_STATE="${XDG_STATE_HOME}/microos-lsfg/state.json"
+PERF_WRITER="${MICROOS_PERF_WRITER:-/usr/libexec/microos/microos-android-perf}"
 RUN="${MICROOS_RUNTIME_DIR}"
 POLL_S="${MICROOS_POLL_S:-0.5}"
 STEAM_PIPE="${MICROOS_STEAM_PIPE:-${DATA}/home/.steam/steam.pipe}"
@@ -475,6 +476,7 @@ boot_log_pid=
 steam_pipe_pid=
 session_watch_pid=
 lsfg_writer_pid=
+perf_writer_pid=
 
 stop_child() {
     local pid=$1 i
@@ -642,6 +644,15 @@ if [[ -x "${SESSION_WATCH}" ]]; then
 else
     say "${SESSION_WATCH} missing, no session watch"
 fi
+if [[ -z "${MANGOHUD_CONFIGFILE:-}" ]]; then
+    say "no MANGOHUD_CONFIGFILE, no performance overlay writer"
+elif [[ -x "${PERF_WRITER}" ]]; then
+    "${PERF_WRITER}" {storage_fd}>&- &
+    perf_writer_pid=$!
+    printf '%s\n' "${perf_writer_pid}" > "${RUN}/perf-writer.pid" || say "cannot write ${RUN}/perf-writer.pid"
+else
+    say "${PERF_WRITER} missing, no performance overlay writer"
+fi
 
 handle() {
     local line=$1
@@ -721,7 +732,8 @@ stop_child "${boot_log_pid}"
 stop_child "${steam_pipe_pid}"
 stop_session_watch
 stop_child "${lsfg_writer_pid}"
-rm -f "${RUN}/lsfg-writer.pid"
+stop_child "${perf_writer_pid}"
+rm -f "${RUN}/lsfg-writer.pid" "${RUN}/perf-writer.pid"
 say "lepton start exited with ${rc}"
 printf 'microos-android-run: lepton start exited with %s\n' "${rc}" >> "${DATA}/lepton.log"
 if (( stopping )); then
