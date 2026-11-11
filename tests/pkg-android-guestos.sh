@@ -9,11 +9,14 @@ fail() { echo "FAIL: $*" >&2; rc=1; }
 version=${MESA_VERSION:?SOURCE.env has no MESA_VERSION}
 ndk=/opt/android-ndk-$NDK_VERSION
 readelf=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf
+nm=$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm
 sysroot=$ndk/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/$ANDROID_API
 guestos=/usr/share/guestos/android
 licdir=/usr/share/licenses/microos-android-guestos
 layer=$guestos/vendor/vulkan_layers/libVkLayer_fossilize.so
 json=/usr/share/vulkan/guestos-android/VkLayer_fossilize.json
+lsfgdir=/usr/share/guestos/android-lsfg
+lsfg=$lsfgdir/vulkan/libVkLayer_lsfg.so
 
 rpm=$(find "$dir" -maxdepth 1 -name "microos-android-guestos-$version-*.microos.aarch64.rpm")
 if [[ -z $rpm || $(wc -l <<<"$rpm") -ne 1 ]]; then
@@ -35,7 +38,8 @@ if requires=$(rpm -qp --requires "$rpm" | grep -v '^rpmlib('); then fail "requir
 
 sources=$(rpm -qp --qf '[%{SOURCE}\n]' "$srpm" | sort)
 want=$(printf '%s\n' "mesa-$version.tar.xz" "Fossilize-$FOSSILIZE_REF.tar.gz" "rapidjson-$RAPIDJSON_REF.tar.gz" \
-  "libdrm-$LIBDRM_VERSION.tar.xz" "angle-$ANGLE_REF-LICENSE" microos-noubwc.rc build.sh fetch.sh licenses.py SOURCE.env | sort)
+  "libdrm-$LIBDRM_VERSION.tar.xz" "angle-$ANGLE_REF-LICENSE" "lsfg-vk-arm64-$LSFGVK_REF.tar.gz" lsfg-vk-android-LICENSE.md \
+  tomlplusplus-LICENSE microos-noubwc.rc build.sh fetch.sh licenses.py SOURCE.env | sort)
 if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$sources")"; fi
 
 writable=$(rpm -qp --qf '[%{FILEMODES:perms} %{FILENAMES}\n]' "$rpm" | awk 'substr($1, 1, 1) != "l" && (substr($1, 6, 1) == "w" || substr($1, 9, 1) == "w")')
@@ -48,11 +52,11 @@ mesa=(
   "$guestos/vendor/lib64/egl/libGLESv2_mesa.so"
   "$guestos/vendor/lib64/libgallium_dri.so"
 )
-libs=("${mesa[@]}" "$layer")
+libs=("${mesa[@]}" "$layer" "$lsfg")
 files=$(rpm -qlp "$rpm" | grep -v -e "^$licdir$" -e "^$licdir/")
 expected=$(printf '%s\n' /usr/share/guestos "$guestos" "$guestos/vendor" "$guestos/vendor/etc" "$guestos/vendor/etc/init" \
   "$guestos/vendor/etc/init/microos-noubwc.rc" "$guestos/vendor/lib64" "$guestos/vendor/lib64/egl" "$guestos/vendor/lib64/hw" \
-  "$guestos/vendor/vulkan_layers" "${libs[@]}" /usr/share/vulkan/guestos-android "$json" | sort)
+  "$guestos/vendor/vulkan_layers" "${libs[@]}" "$lsfgdir" "$lsfgdir/vulkan" /usr/share/vulkan/guestos-android "$json" | sort)
 if [[ $files != "$expected" ]]; then fail "file list: $(diff <(echo "$expected") <(echo "$files") | grep '^[<>]' | tr '\n' ' ')"; fi
 
 tmp=$(mktemp -d)
@@ -83,6 +87,11 @@ for lib in "${libs[@]}"; do
   if grep -qE '\((RUNPATH|RPATH)\)' <<<"$dyn"; then fail "$lib has a RUNPATH or RPATH"; fi
   soname=$(sed -n 's/.*(SONAME).*\[\(.*\)\]/\1/p' <<<"$dyn")
   if [[ $soname != "${lib##*/}" ]]; then fail "$lib has SONAME $soname"; fi
+  if [[ $lib == "$lsfg" ]]; then
+    needed=$(sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' <<<"$dyn" | sort | paste -sd' ')
+    [[ $needed == 'libc.so libdl.so liblog.so libm.so' ]] || fail "$lib needs $needed"
+    continue
+  fi
   while read -r need; do
     [[ -n $need && -z ${shipped[$need]:-} ]] || continue
     if [[ $lib == "$layer" ]]; then
@@ -100,6 +109,12 @@ assert d['layer']['name'] == 'VK_LAYER_fossilize', d['layer']['name']
 assert d['layer']['library_path'] == sys.argv[2], d['layer']['library_path']
 EOF
 
+exports=$("$nm" -D --defined-only "$root$lsfg" | awk '{ print $3 }' | sort | paste -sd' ')
+want=$(printf '%s\n' vkNegotiateLoaderLayerInterfaceVersion vkEnumerateInstanceLayerProperties \
+  vkEnumerateInstanceExtensionProperties vkEnumerateDeviceLayerProperties vkEnumerateDeviceExtensionProperties \
+  vkGetInstanceProcAddr vkGetDeviceProcAddr | sort | paste -sd' ')
+if [[ $exports != "$want" ]]; then fail "$lsfg exports $exports"; fi
+
 if [[ $(cat "$root$guestos/vendor/etc/init/microos-noubwc.rc") != $'on early-init\n    setprop debug.mesa.tu.debug noubwc' ]]; then fail "microos-noubwc.rc content"; fi
 
 if ! grep -qF -- ' -Dandroid-strict=false ' "$tmp/src/microos-android-guestos.spec"; then
@@ -116,7 +131,7 @@ lic, tag = sys.argv[1], sys.argv[2]
 rows = [line.rstrip('\n').split('\t') for line in open(os.path.join(lic, 'SOURCES.tsv'))]
 assert all(len(r) == 2 and r[0] and r[1] for r in rows), 'bad SOURCES.tsv row'
 paths = [r[1] for r in rows]
-for want in ('mesa-', 'Fossilize-', 'rapidjson-', 'libdrm-', 'libc++_static.a', 'libc++abi.a', 'crtbegin_so.o'):
+for want in ('mesa-', 'Fossilize-', 'rapidjson-', 'libdrm-', 'lsfg-vk-arm64-', 'libc++_static.a', 'libc++abi.a', 'crtbegin_so.o'):
     assert any(want in p for p in paths), f'no compiled file from {want}'
 atoms = set()
 for expr, _ in rows:
@@ -133,13 +148,25 @@ assert used == texts, f'texts not used by the compiled list: {sorted(texts - use
 want = ' AND '.join(sorted(a if ' OR ' not in a else f'({a})' for a in atoms))
 assert tag == want, f'License tag {tag}, compiled list {want}'
 EOF
-  python3 - "$lic" "$tmp/src" "$version" "$LIBDRM_VERSION" "$NDK_VERSION" <<'EOF' || fail "license rows differ from the source text"
+  python3 - "$lic" "$tmp/src" "$version" "$LIBDRM_VERSION" "$NDK_VERSION" "$LSFGVK_REF" <<'EOF' || fail "license rows differ from the source text"
 import glob, os, re, sys, tarfile
-lic, src, version, libdrm, ndk = sys.argv[1:]
+lic, src, version, libdrm, ndk, lsfgref = sys.argv[1:]
 rows = {}
 for line in open(os.path.join(lic, 'SOURCES.tsv')):
     expr, path = line.rstrip('\n').split('\t')
     rows[path] = expr
+lsfg = f'lsfg-vk-arm64-{lsfgref}/'
+port = ('lsfg-vk-backend/src/helpers/utils.cpp', 'lsfg-vk-common/include/lsfg-vk-common/vulkan/shader.hpp',
+        'lsfg-vk-common/include/lsfg-vk-common/vulkan/vulkan.hpp', 'lsfg-vk-common/src/vulkan/descriptor_set.cpp',
+        'lsfg-vk-common/src/vulkan/shader.cpp', 'lsfg-vk-common/src/vulkan/vulkan.cpp')
+for path in port:
+    assert rows.get(lsfg + path) == 'GPL-3.0-or-later AND MIT', f'{path}: {rows.get(lsfg + path)}'
+assert rows.get(lsfg + 'lsfg-vk-common/thirdparty/include/toml.hpp') == 'MIT', 'toml.hpp'
+others = {e for p, e in rows.items() if p.startswith(lsfg) and p[len(lsfg):] not in port and not p.endswith('/toml.hpp')}
+assert others == {'GPL-3.0-or-later'}, f'lsfg-vk rows: {others}'
+mit = open(os.path.join(lic, 'LICENSES', 'MIT.txt')).read()
+for name in ('lsfg-vk-android-LICENSE.md', 'tomlplusplus-LICENSE'):
+    assert open(os.path.join(src, name)).read().rstrip() in mit, f'{name} is not in MIT.txt'
 mesa = f'mesa-{version}/'
 drm = f'{mesa}subprojects/libdrm-{libdrm}/'
 known = {
@@ -190,6 +217,8 @@ for ball in glob.glob(os.path.join(src, '*.tar.*')):
 assert seen == len(names), f'{seen} of {len(names)} MIT rows found in the SRPM tarballs'
 EOF
 fi
+
+"$here/pkg-android-guestos/licenses.sh" "$tmp/src/licenses.py" || fail "licenses.py fixtures"
 
 if grep -rqia armada "$root" "$tmp/src"; then fail "armada in $(grep -rlia armada "$root" "$tmp/src" | head -n3 | tr '\n' ' ')"; fi
 

@@ -44,10 +44,10 @@ Projects MicroOS builds, with their authors and license.
 | `microos-android-guestos` Fossilize layer | [ValveSoftware/Fossilize](https://github.com/ValveSoftware/Fossilize) `556da9ff7d` | Hans-Kristian Arntzen and Fossilize contributors | MIT; built in: miniz 2.0.8 (Rich Geldreich, RAD Game Tools and Valve Software, MIT), Khronos Vulkan headers (Apache-2.0, `vulkan_core.h` Apache-2.0 OR MIT) |
 | RapidJSON in the Fossilize layer, Fossilize's `rapidjson` submodule | [Tencent/rapidjson](https://github.com/Tencent/rapidjson) `8f4c021fa2` | THL A29 Limited (Tencent), Milo Yip | MIT |
 | C++ runtime, startup objects and system headers in `microos-android-guestos` | Android NDK r30 (30.0.16248370): `libc++_static`, `libc++abi`, `libunwind` and compiler-rt builtins linked statically, `crtbegin_so.o`, `crtend_so.o`, the sysroot headers | LLVM project contributors; The Android Open Source Project, the University of California and the other authors in the NDK sysroot `NOTICE` | Apache-2.0 WITH LLVM-exception; the sysroot headers per the NDK sysroot `NOTICE` |
-| `lsfg-vk` | [PancakeTAS/lsfg-vk](https://github.com/PancakeTAS/lsfg-vk), built from my fork [seilent/lsfg-vk-arm64](https://github.com/seilent/lsfg-vk-arm64) `bd4b8201e7` | PancakeTAS and lsfg-vk contributors | GPL-3.0-or-later; the code from before `5bedd8d` MIT |
-| `lsfg-vk` ARM64 descriptor fallbacks | [FrankBarretta/lsfg-vk-android](https://github.com/FrankBarretta/lsfg-vk-android) `a9edb2f515`, `48bf76348a`, ported to v2 in [xXJSONDeruloXx/lsfg-vk-arm64](https://github.com/xXJSONDeruloXx/lsfg-vk-arm64) `337788901e` | FrankBarretta, xXJSONDeruloXx | MIT, GPL-3.0-or-later |
+| `lsfg-vk`, the lsfg-vk layer in `microos-android-guestos` | [PancakeTAS/lsfg-vk](https://github.com/PancakeTAS/lsfg-vk), built from my fork [seilent/lsfg-vk-arm64](https://github.com/seilent/lsfg-vk-arm64), `bd4b8201e7` for `lsfg-vk`, `d4ab7fb2c1` for `microos-android-guestos` | PancakeTAS and lsfg-vk contributors | GPL-3.0-or-later; the code from before `5bedd8d` MIT |
+| ARM64 descriptor fallbacks in `lsfg-vk` and `microos-android-guestos` | [FrankBarretta/lsfg-vk-android](https://github.com/FrankBarretta/lsfg-vk-android) `a9edb2f515`, `48bf76348a`, ported to v2 in [xXJSONDeruloXx/lsfg-vk-arm64](https://github.com/xXJSONDeruloXx/lsfg-vk-arm64) `337788901e` | FrankBarretta, xXJSONDeruloXx | MIT, GPL-3.0-or-later |
 | `lsfg-vk` glibc layer build | xXJSONDeruloXx/lsfg-vk-arm64 `d2498550e7` | xXJSONDeruloXx | GPL-3.0-or-later |
-| toml++ in `lsfg-vk` | [marzer/tomlplusplus](https://github.com/marzer/tomlplusplus) `v3.4.0` | Mark Gillard | MIT |
+| toml++ in `lsfg-vk` and `microos-android-guestos` | [marzer/tomlplusplus](https://github.com/marzer/tomlplusplus) `v3.4.0` | Mark Gillard | MIT |
 | `rocknix-abl` SM8250 elf | [ROCKNIX/abl](https://github.com/ROCKNIX/abl) `v1.2` `0e755e15`, built from [ROCKNIX/LinuxLoader](https://github.com/ROCKNIX/LinuxLoader) `e9d37131` (not public) | ROCKNIX contributors | not stated (no LICENSE in ROCKNIX/abl) |
 | `hyprland` | [hyprwm/Hyprland](https://github.com/hyprwm/Hyprland) `v0.57.0` `0aa6745f70` | vaxerski and Hyprland contributors | BSD-3-Clause; `subprojects/udis86` (Vivek Thampi) BSD-2-Clause |
 | `hyprland` stack libraries and tools: `hyprutils` 0.14.3, `hyprgraphics` 0.6.0, `hyprwire` 0.3.1, `hyprland-protocols` 0.8.0, `aquamarine` 0.15.1, `hyprcursor` 0.1.11, `hyprwayland-scanner` 0.4.6 (build only) | `github.com/hyprwm`, the archive of each pinned commit (`packages/hyprland/SOURCE.env`) | Hypr Development | BSD-3-Clause |
@@ -61,10 +61,10 @@ Projects MicroOS builds, with their authors and license.
 carries Fedora's packaging patches, five of mine and an OGC patch backported by me (`0003` to `0008`, `0006` from
 OGC), `mangohud` carries ten upstream MangoHud patches, five of them backported by me, and five of mine, `plymouth`
 carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine, `es-de` carries my launch path
-escape patch, `inputplumber` carries three of mine and my polkit rule, `wvkbd` carries two of mine, and `lsfg-vk` is my
-fork's `microos-layer` branch (`PATCHES.md` in each package); the others are built as is. License texts in
-`packages/gamescope/`, `packages/gamescope-session/`, `packages/es-de/`, `packages/hexagonrpc/`,
-`packages/inputplumber/`, `packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and
+escape patch, `inputplumber` carries three of mine and my polkit rule, `wvkbd` carries two of mine, and `lsfg-vk` and
+the lsfg-vk layer in `microos-android-guestos` are my fork's `microos-layer` branch (`PATCHES.md` in each package);
+the others are built as is. License texts in `packages/gamescope/`, `packages/gamescope-session/`, `packages/es-de/`,
+`packages/hexagonrpc/`, `packages/inputplumber/`, `packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and
 `packages/steamos-manager/`.
 
 

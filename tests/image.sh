@@ -673,11 +673,13 @@ env HOME="$tmp/steamvr" steamvr launch >/dev/null 2>&1 || rc=$?
 [[ $(rpm -q --qf '%{VENDOR}' microos-android-guestos) == MicroOS ]] || fail "microos-android-guestos is not the MicroOS build"
 guestos=/usr/share/guestos/android
 [[ -d $guestos && ! -L $guestos ]] || fail "$guestos missing"
+lsfglayer=/usr/share/guestos/android-lsfg/vulkan/libVkLayer_lsfg.so
+[[ -f $lsfglayer && ! -L $lsfglayer ]] || fail "$lsfglayer missing"
 while IFS= read -r f; do
   owners=$(rpm -qf --qf '%{NAME}\n' "$f" | sort -u | paste -sd' ' || true)
   [[ $owners == microos-android-guestos ]] || fail "$f is owned by $owners"
-done < <(find "$guestos")
-! grep -rqi armada "$guestos" /usr/share/vulkan/guestos-android || fail "guestos files name Armada"
+done < <(find "$guestos" /usr/share/guestos/android-lsfg)
+! grep -rqi armada "$guestos" /usr/share/guestos/android-lsfg /usr/share/vulkan/guestos-android || fail "guestos files name Armada"
 mapfile -t fzid < <(find /usr/share/vulkan -name '*.json' -type f -print0 | xargs -0 jq -r '.. | objects
   | select(.library_path? | type == "string" and endswith("libVkLayer_fossilize.so")) | .name?' | grep -v '^null$')
 [[ ${#fzid[@]} == 1 && ${fzid[0]} == VK_LAYER_fossilize ]] || fail "Fossilize layer ids under /usr/share/vulkan: ${fzid[*]}"

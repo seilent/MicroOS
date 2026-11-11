@@ -14,3 +14,6 @@ fetch "$LIBDRM_URL" "$LIBDRM_SHA256" "libdrm-$LIBDRM_VERSION.tar.xz"
 fetch "$FOSSILIZE_URL/archive/$FOSSILIZE_REF.tar.gz" "$FOSSILIZE_SHA256" "Fossilize-$FOSSILIZE_REF.tar.gz"
 fetch "$RAPIDJSON_URL/archive/$RAPIDJSON_REF.tar.gz" "$RAPIDJSON_SHA256" "rapidjson-$RAPIDJSON_REF.tar.gz"
 fetch "$ANGLE_LICENSE_URL" "$ANGLE_LICENSE_SHA256" "angle-$ANGLE_REF-LICENSE"
+fetch "$LSFGVK_URL/archive/$LSFGVK_REF.tar.gz" "$LSFGVK_SHA256" "lsfg-vk-arm64-$LSFGVK_REF.tar.gz"
+fetch "$LSFGVK_MIT_URL" "$LSFGVK_MIT_SHA256" lsfg-vk-android-LICENSE.md
+fetch "$TOMLPP_LICENSE_URL" "$TOMLPP_LICENSE_SHA256" tomlplusplus-LICENSE

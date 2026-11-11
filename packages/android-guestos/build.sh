@@ -21,6 +21,7 @@ defs=(
   --define "fossilize_ref $FOSSILIZE_REF"
   --define "rapidjson_ref $RAPIDJSON_REF"
   --define "angle_ref $ANGLE_REF"
+  --define "lsfgvk_ref $LSFGVK_REF"
 )
 version=$(rpmspec -q --srpm --qf '%{VERSION}' "${defs[@]}" "$src/microos-android-guestos.spec")
 [[ $version == "$MESA_VERSION" ]] || { echo "build.sh: spec Version $version, SOURCE.env $MESA_VERSION" >&2; exit 1; }
@@ -31,6 +32,9 @@ sources=(
   "$FOSSILIZE_SHA256 Fossilize-$FOSSILIZE_REF.tar.gz"
   "$RAPIDJSON_SHA256 rapidjson-$RAPIDJSON_REF.tar.gz"
   "$ANGLE_LICENSE_SHA256 angle-$ANGLE_REF-LICENSE"
+  "$LSFGVK_SHA256 lsfg-vk-arm64-$LSFGVK_REF.tar.gz"
+  "$LSFGVK_MIT_SHA256 lsfg-vk-android-LICENSE.md"
+  "$TOMLPP_LICENSE_SHA256 tomlplusplus-LICENSE"
 )
 for s in "${sources[@]}"; do
   echo "${s%% *}  $work/${s#* }" | sha256sum -c -

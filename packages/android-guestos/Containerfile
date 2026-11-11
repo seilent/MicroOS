@@ -24,6 +24,7 @@ RUN . /tmp/android-guestos/SOURCE.env \
       --define "fossilize_ref $FOSSILIZE_REF" \
       --define "rapidjson_ref $RAPIDJSON_REF" \
       --define "angle_ref $ANGLE_REF" \
+      --define "lsfgvk_ref $LSFGVK_REF" \
       /tmp/android-guestos/microos-android-guestos.spec \
  && dnf clean all \
  && rm -rf /tmp/android-guestos

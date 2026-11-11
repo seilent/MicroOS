@@ -58,13 +58,14 @@ def leading_comment(path, rule):
 
 
 class Inventory:
-    def __init__(self, ndk, top, extra):
+    def __init__(self, ndk, top, extra, notes):
         self.ndk = os.path.realpath(ndk)
         self.top = top
         self.mesa = self.one('mesa-*')
         self.libdrm = self.one(os.path.join(self.mesa, 'subprojects', 'libdrm-*'))
         self.fossilize = self.one('Fossilize-*')
         self.rapidjson = self.one('rapidjson-*')
+        self.lsfg = self.one('lsfg-vk-arm64-*')
         lic = os.path.join(self.mesa, 'licenses')
         self.claims = {
             os.path.join(self.mesa, 'src/gallium/drivers/zink/zink_program.h'):
@@ -90,7 +91,10 @@ class Inventory:
             (self.mesa, 'MIT', None),
             (self.fossilize, 'MIT', os.path.join(self.fossilize, 'LICENSE')),
             (self.rapidjson, 'MIT', os.path.join(self.rapidjson, 'license.txt')),
+            (self.lsfg, 'GPL-3.0-or-later', os.path.join(self.lsfg, 'LICENSE.md')),
         ]
+        self.notes = [self.license_file(os.path.realpath(os.path.join(top, f)), os.path.realpath(t))[:3] for f, t in notes]
+        self.noted = set()
         self.texts = {
             'MIT': [os.path.join(lic, 'MIT')],
             'Apache-2.0': [os.path.join(lic, 'Apache-2.0')],
@@ -191,7 +195,13 @@ class Inventory:
             self.notice(e, src)
         if root[2] and root[1] in re.split(r' AND | OR | WITH ', expr.replace('(', '').replace(')', '')):
             self.notice(root[1], ('file', root[2]))
-        return {expr}
+        exprs = {expr}
+        for prefix, e, src in self.notes:
+            if path == prefix or path.startswith(prefix + '/'):
+                exprs.add(e)
+                self.notice(e, ('file', src))
+                self.noted.add(prefix)
+        return exprs
 
     def generated(self, bdir, rel, seen):
         try:
@@ -224,11 +234,13 @@ class Inventory:
             exprs |= self.classify(bdir, p, seen)
         if not exprs:
             owner = self.libdrm if rel.startswith('subprojects/libdrm-') else (
-                self.fossilize if bdir.endswith('build-fossilize') else self.mesa)
-            exprs.add('MIT')
+                self.fossilize if bdir.endswith('build-fossilize') else
+                self.lsfg if bdir.endswith('build-lsfg') else self.mesa)
             for prefix, expr, src in self.roots:
-                if prefix == owner and src:
-                    self.notice(expr, ('file', src))
+                if prefix == owner:
+                    exprs.add(expr)
+                    if src:
+                        self.notice(expr, ('file', src))
         return exprs
 
     def classify(self, bdir, path, seen=()):
@@ -355,14 +367,18 @@ def main():
     ap.add_argument('--clangxx', required=True)
     ap.add_argument('--out', required=True)
     ap.add_argument('--license', action='append', default=[], metavar='FILE=LICENSE')
+    ap.add_argument('--notice', action='append', default=[], metavar='FILE=LICENSE')
     ap.add_argument('targets', nargs='+')
     a = ap.parse_args()
-    inv = Inventory(a.ndk, os.getcwd(), [x.split('=', 1) for x in a.license])
+    inv = Inventory(a.ndk, os.getcwd(), [x.split('=', 1) for x in a.license], [x.split('=', 1) for x in a.notice])
     rows = {}
     for t in a.targets:
         bdir, files = inv.compiled(t)
         for f in sorted(files):
             rows[inv.label(f)] = conjunction(inv.classify(bdir, f))
+    for prefix, _, _ in inv.notes:
+        if prefix not in inv.noted:
+            sys.exit(f'licenses.py: --notice {prefix} matches no compiled file')
     archives, objects = inv.runtime(a.clangxx)
     for ar in archives:
         rows[inv.label(ar)] = 'Apache-2.0 WITH LLVM-exception'
