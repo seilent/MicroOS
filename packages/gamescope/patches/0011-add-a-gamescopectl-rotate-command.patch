@@ -1,0 +1,97 @@
+From 46e9c2eab5f6294e4efefdbef48ca7dd4470f1d3 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Sun, 15 Nov 2026 07:25:00 +0900
+Subject: [PATCH] Add a gamescopectl rotate command
+
+---
+ src/Apps/gamescopectl.cpp | 51 ++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 50 insertions(+), 1 deletion(-)
+
+diff --git a/src/Apps/gamescopectl.cpp b/src/Apps/gamescopectl.cpp
+index a7a017a..740dfba 100644
+--- a/src/Apps/gamescopectl.cpp
++++ b/src/Apps/gamescopectl.cpp
+@@ -41,6 +41,7 @@ namespace gamescope
+ 
+         bool Init( bool bInitControl, bool bInitPrivate );
+         bool Execute( std::span<std::string_view> args );
++        bool Rotate( std::span<std::string_view> args );
+ 
+         std::span<GamescopeFeature> GetFeatures() { return std::span<GamescopeFeature>{ m_Features }; }
+         const std::optional<GamescopeActiveDisplayInfo> &GetActiveDisplayInfo() { return m_ActiveDisplayInfo; }
+@@ -125,6 +126,9 @@ namespace gamescope
+             return false;
+         }
+ 
++        if ( args[0] == "rotate" )
++            return Rotate( args.subspan( 1 ) );
++
+         std::string szArg1 = std::string{ args[0] };
+         std::string szArg2 = args.size() == 1 ? "" : std::string{ args[1] };
+ 
+@@ -134,6 +138,50 @@ namespace gamescope
+         return true;
+     }
+ 
++    bool GamescopeCtl::Rotate( std::span<std::string_view> args )
++    {
++        std::optional<gamescope_control_display_rotation_flag> oeOrientation;
++        if ( args.size() >= 1 )
++        {
++            if ( args[0] == "normal" )
++                oeOrientation = GAMESCOPE_CONTROL_DISPLAY_ROTATION_FLAG_NORMAL;
++            else if ( args[0] == "left" )
++                oeOrientation = GAMESCOPE_CONTROL_DISPLAY_ROTATION_FLAG_LEFT;
++            else if ( args[0] == "right" )
++                oeOrientation = GAMESCOPE_CONTROL_DISPLAY_ROTATION_FLAG_RIGHT;
++            else if ( args[0] == "upsidedown" )
++                oeOrientation = GAMESCOPE_CONTROL_DISPLAY_ROTATION_FLAG_UPSIDEDOWN;
++        }
++
++        std::optional<gamescope_control_display_target_type> oeTarget = GAMESCOPE_CONTROL_DISPLAY_TARGET_TYPE_INTERNAL;
++        if ( args.size() >= 2 )
++        {
++            if ( args[1] == "internal" )
++                oeTarget = GAMESCOPE_CONTROL_DISPLAY_TARGET_TYPE_INTERNAL;
++            else if ( args[1] == "external" )
++                oeTarget = GAMESCOPE_CONTROL_DISPLAY_TARGET_TYPE_EXTERNAL;
++            else
++                oeTarget = std::nullopt;
++        }
++
++        if ( !oeOrientation || !oeTarget || args.size() > 2 )
++        {
++            fprintf( stderr, "Usage: gamescopectl rotate normal|left|right|upsidedown [internal|external]\n" );
++            return false;
++        }
++
++        if ( gamescope_control_get_version( m_pGamescopeControl ) < GAMESCOPE_CONTROL_ROTATE_DISPLAY_SINCE_VERSION )
++        {
++            fprintf( stderr, "gamescope_control has no rotate_display\n" );
++            return false;
++        }
++
++        gamescope_control_rotate_display( m_pGamescopeControl, *oeOrientation, *oeTarget );
++        wl_display_roundtrip( m_pDisplay );
++
++        return true;
++    }
++
+     void GamescopeCtl::Wayland_Registry_Global( wl_registry *pRegistry, uint32_t uName, const char *pInterface, uint32_t uVersion )
+     {
+         if ( m_bInitControl && !strcmp( pInterface, gamescope_control_interface.name ) )
+@@ -245,9 +293,10 @@ namespace gamescope
+         console_log.bPrefixEnabled = false;
+ 
+         bool bInfoOnly = argc < 2;
++        bool bControlOnly = !bInfoOnly && std::string_view{ argv[1] } == "rotate";
+ 
+         gamescope::GamescopeCtl gamescopeCtl;
+-        if ( !gamescopeCtl.Init( bInfoOnly, !bInfoOnly ) )
++        if ( !gamescopeCtl.Init( bInfoOnly || bControlOnly, !bInfoOnly && !bControlOnly ) )
+             return 1;
+ 
+         if ( bInfoOnly )
+-- 
+2.43.0
+

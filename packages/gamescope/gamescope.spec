@@ -27,6 +27,7 @@ Patch:          0007-add-a-virtual-output.patch
 Patch:          0008-add-gamescopevirtual.patch
 Patch:          0009-publish-the-applied-fps-limit-on-the-root-windows.patch
 Patch:          0010-forward-tablet-tools-to-clients.patch
+Patch:          0011-add-a-gamescopectl-rotate-command.patch
 
 Vendor:         MicroOS
 BuildRequires:  cmake

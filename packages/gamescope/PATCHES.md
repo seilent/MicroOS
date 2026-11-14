@@ -16,6 +16,7 @@ commits come from `SOURCE.env` (same commits as the OGC tag's submodules and Fed
 | `0008-add-gamescopevirtual.patch` | mine | seilent |
 | `0009-publish-the-applied-fps-limit-on-the-root-windows.patch` | mine | seilent |
 | `0010-forward-tablet-tools-to-clients.patch` | mine | seilent |
+| `0011-add-a-gamescopectl-rotate-command.patch` | mine | seilent |
 
 The first two are Fedora packaging patches, not sent upstream. `stb.pc` is from Fedora `rpms/gamescope` `e2cc884` (Neal Gompa).
 
@@ -80,6 +81,11 @@ lease companion holds a device matching `--ignore-touch-device`, and in the `Dis
 with the connector orientation and is dropped while the virtual output is current, as i2c touch is; i2c and USB devices
 keep their behavior. A static `LIBINPUT_CALIBRATION_MATRIX` on an SPI touchscreen or its pen adds to the connector
 orientation.
+
+`0011` adds `gamescopectl rotate normal|left|right|upsidedown [internal|external]` (internal by default), which sends
+`gamescope_control.rotate_display`. gamescope turns `left` into panel orientation 90 and `right` into 270. It exits 1 on
+a usage error or when the server lacks the request. Touch and tablets on a connector turn with the picture; a static
+`LIBINPUT_CALIBRATION_MATRIX` stays as set.
 
 Fedora's `0001-cstdint.patch` is not carried: reshade `696b14cd` already includes `<cstdint>` in
 `source/effect_token.hpp` (reshade `5c8b8f09`).
