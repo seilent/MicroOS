@@ -149,9 +149,13 @@ pkg-push name:
 test:
     tests/pkg-hash.sh
 
-test-services:
+test-services device="pm2":
     #!/usr/bin/env bash
     set -euo pipefail
+    [[ $1 =~ ^[a-z0-9]+$ ]] || { echo "test-services: bad device $1" >&2; exit 1; }
+    ctx=out/ctx/$1
+    rm -rf "${ctx:?}"
+    build/compose.sh "$1" "$ctx"
     case $(uname -m) in
       x86_64) arch=amd64 ;;
       aarch64) arch=arm64 ;;
@@ -159,22 +163,22 @@ test-services:
     esac
     fedora=registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
     dnf="dnf -yq --setopt=install_weak_deps=False install"
-    run() { podman run --rm --memory=14g --cpus=8 --arch "$arch" -v "$PWD:/repo:ro,Z" "$@"; }
+    run() { podman run --rm --memory=14g --cpus=8 --arch "$arch" -v "$PWD/$ctx:/repo:ro,Z" "$@"; }
     run "$fedora" sh -c "$dnf python3-gobject python3-evdev dbus-daemon util-linux systemd-udev gstreamer1-plugins-base gstreamer1-plugins-good openssl && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/steamos-manager-config.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh && /repo/tests/steam-compat.sh && /repo/tests/proton-hook.sh && /repo/tests/lsfg-detect.sh /repo/tests/usb-display.sh && /repo/tests/desktop-home.sh && /repo/tests/desktop-ready.sh"
     run docker.io/library/python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb \
       python3 /repo/tests/steam-compat/module.py
     run docker.io/library/python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb \
       python3 /repo/tests/proton-hook/hook.py
-    run -v "$PWD/system_files/usr/bin/steamos-update:/usr/bin/steamos-update:ro,Z" "$fedora" \
+    run -v "$PWD/$ctx/system_files/usr/bin/steamos-update:/usr/bin/steamos-update:ro,Z" "$fedora" \
       sh -c "$dnf systemd-udev && /repo/tests/helpers.sh"
     pin="/repo/build/pin-pipewire.sh /repo/packages/pipewire-aptx/SOURCE.env"
     run "$fedora" sh -c "$pin alsa-ucm alsa-ucm-utils alsa-utils systemd-udev pulseaudio-utils && /repo/tests/audio.sh"
     run "$fedora" sh -c "$pin pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ ladspa-devel util-linux && /repo/tests/audio-eq.sh"
     run "$fedora" sh -c "$dnf jq util-linux systemd-udev && /repo/tests/storage.sh"
     run "$fedora" sh -c "$dnf jq python3 util-linux systemd && /repo/tests/microos-session.sh"
-    FEDORA=$fedora tests/usb-display-units.sh
+    FEDORA=$fedora "$ctx/tests/usb-display-units.sh"
     run "$fedora" sh -c "$dnf python3 rpm-build rpm-sign gnupg2 cpio && /repo/tests/openh264.sh"
-    run "$fedora" sh -c "$dnf git-core && /repo/tests/pkg-hash.sh"
+    podman run --rm --memory=14g --cpus=8 --arch "$arch" -v "$PWD:/repo:ro,Z" "$fedora" sh -c "$dnf git-core && /repo/tests/pkg-hash.sh"
     just pkg microset
     just pkg gamescope-session
-    run "$fedora" sh -c "$dnf /repo/out/pkg/gamescope-session/*.noarch.rpm && /repo/tests/session.sh"
+    run -v "$PWD/out/pkg/gamescope-session:/rpms:ro,Z" "$fedora" sh -c "$dnf /rpms/*.noarch.rpm && /repo/tests/session.sh"

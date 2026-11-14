@@ -34,7 +34,9 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx /ctx/steps/99-cleanup.sh
 RUN bootc container lint --fatal-warnings
 
 ARG MICROOS_SEED
+ARG DEVICE
 
 LABEL org.opencontainers.image.source=https://github.com/seilent/MicroOS
+LABEL microos.device=${DEVICE}
 LABEL microos.seed=${MICROOS_SEED}
 LABEL org.opencontainers.image.version=${MICROOS_VERSION}

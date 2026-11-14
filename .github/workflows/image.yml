@@ -16,6 +16,7 @@ defaults:
     shell: bash
 
 env:
+  DEVICE: pm2
   IMAGE: ghcr.io/seilent/microos
   PKG_KERNEL: ghcr.io/seilent/microos/pkg/kernel-pm2
   PUBKEY: system_files/usr/share/microos/keys/microos.pub
@@ -64,6 +65,9 @@ jobs:
         with:
           cosign-release: v2.6.3
 
+      - name: Compose
+        run: build/compose.sh "$DEVICE" "$RUNNER_TEMP/ctx"
+
       - name: Kernel
         id: kernel
         run: |
@@ -76,8 +80,7 @@ jobs:
       - name: Packages
         run: |
           mkdir -p "$RUNNER_TEMP/pkgs" "$RUNNER_TEMP/srpms/pkgs" "$RUNNER_TEMP/oci"
-          for name in $(git ls-files -- 'packages/*/build.sh' | cut -d/ -f2); do
-            [[ $name != kernel-* ]] || continue
+          for name in $(< "devices/$DEVICE/packages"); do
             hash=$(build/pkg-hash.sh "$name")
             repo=$IMAGE/pkg/$name
             if [[ -n $(git ls-files -- "packages/$name/LOCAL") ]] && ! err=$(skopeo inspect --no-creds --raw "docker://$repo:$hash" 2>&1 > /dev/null); then
@@ -175,9 +178,12 @@ jobs:
             --build-arg "KERNEL_REF=$KERNEL_REF" \
             --build-arg "MICROOS_VERSION=$VERSION" \
             --build-arg "MICROOS_SEED=$SEED" \
+            --build-arg "DEVICE=$DEVICE" \
             --build-context "pkgs=$RUNNER_TEMP/pkgs" \
             --build-context "seed=$RUNNER_TEMP/seed" \
-            -t "$IMAGE:$TAG" .
+            -t "$IMAGE:$TAG" "$RUNNER_TEMP/ctx"
+          device=$(podman image inspect --format '{{index .Labels "microos.device"}}' "$IMAGE:$TAG")
+          [[ $device == "$DEVICE" ]] || { echo "::error::microos.device label is '$device', not $DEVICE"; exit 1; }
           base=$(sed -n 's/^FROM \([^ ]*\/fedora-bootc:[^ ]*\)$/\1/p' Containerfile)
           [[ -n $base ]] || { echo "::error::no fedora-bootc FROM line in Containerfile"; exit 1; }
           mapfile -t want < <(podman image inspect --format '{{range .RootFS.Layers}}{{println .}}{{end}}' "$base" | sed '/^$/d')
@@ -206,20 +212,20 @@ jobs:
 
       - name: InputPlumber config
         run: |
-          podman run --rm -v "$PWD:/repo:ro" -v "$RUNNER_TEMP/pkgs/inputplumber:/rpms:ro" \
+          podman run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" -v "$RUNNER_TEMP/pkgs/inputplumber:/rpms:ro" \
             registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install cpio python3-jsonschema python3-pyyaml && /repo/tests/inputplumber-config.sh /rpms'
 
       - name: steamos-manager config
         run: |
-          podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
+          podman run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$FEDORA" \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install python3 && /repo/tests/steamos-manager-config.sh'
 
       - name: Repo test key
         id: testkey
         run: |
-          sum=$(git ls-files -s -- tests system_files build packages .github/workflows/image.yml \
-            ':!packages/microset' ':!packages/microdap' ':!packages/microemu' | sha256sum | cut -c1-32)
+          sum=$({ git ls-files -s -- tests system_files build packages devices .github/workflows/image.yml \
+            ':!packages/microset' ':!packages/microdap' ':!packages/microemu'; echo "$DEVICE"; } | sha256sum | cut -c1-32)
           echo "sum=$sum" >> "$GITHUB_OUTPUT"
           echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
 
@@ -237,33 +243,34 @@ jobs:
       - name: EQ chains
         if: steps.testcache.outputs.cache-hit != 'true'
         run: |
-          podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
+          podman run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$FEDORA" \
             sh -c '/repo/build/pin-pipewire.sh /repo/packages/pipewire-aptx/SOURCE.env pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ ladspa-devel util-linux && /repo/tests/audio-eq.sh'
 
       - name: Steam module on Python 3.13
         run: |
-          podman run --rm -v "$PWD:/repo:ro" "$PYTHON313" python3 /repo/tests/steam-compat/module.py
+          podman run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$PYTHON313" python3 /repo/tests/steam-compat/module.py
 
       - name: Proton hook on Python 3.13
         run: |
-          podman run --rm -v "$PWD:/repo:ro" "$PYTHON313" python3 /repo/tests/proton-hook/hook.py
+          podman run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$PYTHON313" python3 /repo/tests/proton-hook/hook.py
 
       - name: Android guest cmd
         if: steps.testcache.outputs.cache-hit != 'true'
         run: |
-          podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
+          podman run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$FEDORA" \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install mksh diffutils && /repo/tests/microos-android-cmd.sh --inner'
 
       - name: Repo tests
         if: steps.testcache.outputs.cache-hit != 'true'
         run: |
-          podman run --rm -v "$PWD:/repo:ro" "$FEDORA" \
+          podman run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$FEDORA" \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh && /repo/tests/steam-compat.sh && /repo/tests/proton-hook.sh && /repo/tests/lsfg-detect.sh && /repo/tests/abl.sh && /repo/tests/desktop-home.sh && /repo/tests/desktop-ready.sh'
           mkdir -p "$RUNNER_TEMP/testok"
           date -u > "$RUNNER_TEMP/testok/passed"
 
       - name: USB display units
-        run: tests/usb-display-units.sh
+        run: |
+          "$RUNNER_TEMP/ctx/tests/usb-display-units.sh"
 
       - name: Test
         env:
@@ -271,20 +278,20 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin main
           PKG_HASH_BASE=FETCH_HEAD tests/pkg-hash.sh
-          podman run --rm -v "$PWD/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/seed-rpm:ro" "$IMAGE:$TAG" /tests/image.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/helpers.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/storage.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootimg.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/abl.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootok.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/update.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/audio.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/session.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/microos-session.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-launcher.sh
-          podman run --rm -e MICROOS_TREE=/ -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-seed.sh
-          podman run --rm -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-libs.sh
-          podman run --rm -v "$PWD/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/lsfg-vk:/lsfg-vk:ro" "$IMAGE:$TAG" /tests/lsfg-loader.sh /lsfg-vk
+          podman run --rm -e "MICROOS_IMAGE=$IMAGE" -v "$RUNNER_TEMP/ctx/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/seed-rpm:ro" "$IMAGE:$TAG" /tests/image.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/helpers.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/storage.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootimg.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/abl.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootok.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/update.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/audio.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/session.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/microos-session.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-launcher.sh
+          podman run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-seed.sh
+          podman run --rm -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-libs.sh
+          podman run --rm -v "$RUNNER_TEMP/ctx/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/lsfg-vk:/lsfg-vk:ro" "$IMAGE:$TAG" /tests/lsfg-loader.sh /lsfg-vk
 
       - name: Source RPMs
         env:
@@ -334,7 +341,7 @@ jobs:
         env:
           TAG: ${{ steps.version.outputs.push_tag }}
         run: |
-          podman run --rm -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" /tests/verify-sig.sh unsigned "docker://$IMAGE:$TAG"
+          podman run --rm -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/verify-sig.sh unsigned "docker://$IMAGE:$TAG"
 
       - name: Sign
         env:
@@ -357,7 +364,7 @@ jobs:
           TAG: ${{ steps.version.outputs.push_tag }}
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
-          podman run --rm -v "$PWD/tests:/tests:ro" "$IMAGE:$TAG" \
+          podman run --rm -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" \
             /tests/verify-sig.sh signed "docker://$IMAGE@$DIGEST" dir:/var/tmp/signed
 
   source:
@@ -612,7 +619,9 @@ jobs:
         run: sudo build/finalize-disk.sh "$RAW" "$IMAGE:$TAG"
 
       - name: Test
-        run: sudo tests/disk.sh "$RAW" "$IMAGE:$TAG"
+        run: |
+          build/compose.sh "$DEVICE" "$RUNNER_TEMP/ctx"
+          sudo "$RUNNER_TEMP/ctx/tests/disk.sh" "$RAW" "$IMAGE:$TAG"
 
       - name: Root size
         run: |

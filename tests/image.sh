@@ -2,6 +2,7 @@
 set -euo pipefail
 
 fail() { echo "image: $*" >&2; exit 1; }
+image=${MICROOS_IMAGE:?usage: MICROOS_IMAGE=<device image> image.sh}
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -124,6 +125,7 @@ done
 grep -qxF 'z /sys/class/backlight/backlight/brightness 0664 root microset -' /usr/lib/tmpfiles.d/microos-backlight.conf \
   || fail "microos-backlight.conf does not give brightness to group microset"
 dtb=/usr/lib/modules/$kver/dtb/$(sed -n 's/^MICROOS_DTB=//p' /usr/lib/microos/bootimg.conf)
+[[ -f $dtb ]] || fail "MICROOS_DTB of bootimg.conf is not in the image: $dtb"
 light=$(python3 - "$dtb" <<'PY'
 import struct
 import sys
@@ -1149,13 +1151,16 @@ grep -qx microos-bootimg-regen.service <<< "$before" \
 pol=/etc/containers/policy.json
 keys=(/usr/share/microos/keys/microos.pub /usr/share/microos/keys/microos-backup.pub /usr/share/microos/keys/microos-next.pub)
 jq -e '.default == [{"type": "reject"}]' "$pol" >/dev/null || fail "policy default is not reject"
-jq -e '.transports.docker["ghcr.io/seilent/microos"] == [{"type": "sigstoreSigned", "keyPaths": $ARGS.positional,
-  "signedIdentity": {"type": "matchRepository"}}]' --args "${keys[@]}" < "$pol" >/dev/null || fail "policy scope ghcr.io/seilent/microos"
+[[ $(sed -n 's/^repo=//p' /usr/bin/microos-update) == "$image" ]] || fail "microos-update repo= is not $image"
+jq -e --arg i "$image" '.transports.docker[$i] == [{"type": "sigstoreSigned", "keyPaths": $ARGS.positional,
+  "signedIdentity": {"type": "matchRepository"}}]' --args "${keys[@]}" < "$pol" >/dev/null || fail "policy scope $image"
+jq -e --arg i "$image" '[.transports.docker | to_entries[] | select(any(.value[]; .type == "sigstoreSigned")) | .key] == [$i]' "$pol" >/dev/null \
+  || fail "policy has a signed scope other than $image"
 for k in "${keys[@]}"; do
   openssl pkey -pubin -noout -in "$k" 2>/dev/null || fail "$k is not a public key"
 done
-[[ $(< /etc/containers/registries.d/ghcr-microos.yaml) == $'docker:\n  ghcr.io/seilent/microos:\n    use-sigstore-attachments: true' ]] \
-  || fail "registries.d ghcr-microos.yaml"
+[[ $(< /etc/containers/registries.d/ghcr-microos.yaml) == $'docker:\n  '"$image"$':\n    use-sigstore-attachments: true' ]] \
+  || fail "registries.d ghcr-microos.yaml is not for $image"
 
 mkdir -p "$tmp/etc/ssh"
 ssh-keygen -A -f "$tmp" >/dev/null
