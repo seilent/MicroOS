@@ -1,0 +1,508 @@
+From 1a51c35193d82726e07edd48bf01cf8860f9d1c0 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Sun, 15 Nov 2026 07:20:00 +0900
+Subject: [PATCH] Forward tablet tools to clients
+
+---
+ src/wlserver.cpp | 417 +++++++++++++++++++++++++++++++++++++++++++++--
+ 1 file changed, 402 insertions(+), 15 deletions(-)
+
+diff --git a/src/wlserver.cpp b/src/wlserver.cpp
+index 034d373..fdfc0f7 100644
+--- a/src/wlserver.cpp
++++ b/src/wlserver.cpp
+@@ -11,6 +11,7 @@
+ #include <xf86drm.h>
+ #include <sys/eventfd.h>
+ 
++#include <linux/input.h>
+ #include <linux/input-event-codes.h>
+ 
+ #include <X11/extensions/XTest.h>
+@@ -37,6 +38,8 @@
+ #include <wlr/types/wlr_keyboard_group.h>
+ #include <wlr/types/wlr_pointer.h>
+ #include <wlr/types/wlr_seat.h>
++#include <wlr/types/wlr_tablet_tool.h>
++#include <wlr/types/wlr_tablet_v2.h>
+ #include <wlr/types/wlr_touch.h>
+ #include <wlr/types/wlr_drm.h>
+ #include <wlr/util/log.h>
+@@ -476,39 +479,67 @@ static inline uint32_t TouchClickModeToLinuxButton( gamescope::TouchClickMode eT
+ 
+ std::atomic<bool> g_bPendingTouchMovement = { false };
+ 
+-static void wlserver_touch_associate_connector(struct wlserver_touch *touch)
++static bool wlserver_input_device_screen_type( struct wlr_input_device *device, bool bBusType, gamescope::GamescopeScreenType *peScreenType )
+ {
+-	if (touch->connector != nullptr) return;
++	struct libinput_device *lidev = wlr_libinput_get_device_handle( device );
++	if ( !lidev )
++		return false;
+ 
+-	// Heuristic to associate a monitor to a touch input device:
+-	//  - if a touchscreen's bus is I²C, it can very likely be associated to an internal monitor.
+-	//  - if its bus is USB, it can be associated to an external monitor.
+-	// This isn't perfect, but we can't rely on the physical sizes reported by both devices,
+-	// because it's not uncommon for touchscreens to report wildly incorrect sizes.
+-	gamescope::IBackendConnector* connector = nullptr;
+-	struct libinput_device *lidev = wlr_libinput_get_device_handle(&touch->wlr->base);
++	bool bFound = false;
++	bool bBusFound = false;
++	gamescope::GamescopeScreenType eBusScreenType = gamescope::GAMESCOPE_SCREEN_TYPE_INTERNAL;
+ 	struct udev_device *dev = libinput_device_get_udev_device(lidev);
+ 	auto *parent = dev;
+ 	while (parent) {
+ 		const char *subsystem = udev_device_get_subsystem(parent);
+ 		if (subsystem) {
+-			if (strcmp( subsystem, "i2c" ) == 0) {
+-				connector = GetBackend()->GetConnector(gamescope::GAMESCOPE_SCREEN_TYPE_INTERNAL);
+-				touch->bInternal = true;
++			if (strcmp( subsystem, "i2c" ) == 0 || strcmp( subsystem, "spi" ) == 0) {
++				*peScreenType = gamescope::GAMESCOPE_SCREEN_TYPE_INTERNAL;
++				bFound = true;
+ 				break;
+ 			} else if (strcmp( subsystem, "usb" ) == 0) {
+-				connector = GetBackend()->GetConnector(gamescope::GAMESCOPE_SCREEN_TYPE_EXTERNAL);
++				*peScreenType = gamescope::GAMESCOPE_SCREEN_TYPE_EXTERNAL;
++				bFound = true;
+ 				break;
++			} else if ( bBusType && !bBusFound && strcmp( subsystem, "input" ) == 0 ) {
++				const char *pBusType = udev_device_get_sysattr_value( parent, "id/bustype" );
++				unsigned long ulBusType = pBusType ? strtoul( pBusType, nullptr, 16 ) : 0;
++				if ( ulBusType == BUS_I2C || ulBusType == BUS_SPI ) {
++					eBusScreenType = gamescope::GAMESCOPE_SCREEN_TYPE_INTERNAL;
++					bBusFound = true;
++				} else if ( ulBusType == BUS_USB ) {
++					eBusScreenType = gamescope::GAMESCOPE_SCREEN_TYPE_EXTERNAL;
++					bBusFound = true;
++				}
+ 			}
+ 		}
+ 		parent = udev_device_get_parent(parent);
+ 	}
+ 	udev_device_unref(dev);
++
++	if ( !bFound && bBusFound ) {
++		*peScreenType = eBusScreenType;
++		bFound = true;
++	}
++
++	return bFound;
++}
++
++static void wlserver_touch_associate_connector(struct wlserver_touch *touch)
++{
++	if (touch->connector != nullptr) return;
++
++	gamescope::GamescopeScreenType eScreenType;
++	if ( !wlserver_input_device_screen_type( &touch->wlr->base, false, &eScreenType ) )
++		return;
++
++	touch->bInternal = eScreenType == gamescope::GAMESCOPE_SCREEN_TYPE_INTERNAL;
++	gamescope::IBackendConnector* connector = GetBackend()->GetConnector( eScreenType );
+ 	if (connector != nullptr) {
+ 		touch->connector = connector;
+ 		wl_log.infof("associating connector %s (%s %s) with touch input device %s",
+ 			connector->GetName(), connector->GetMake(), connector->GetModel(),
+-			libinput_device_get_name(lidev));
++			touch->wlr->base.name);
+ 	}
+ }
+ 
+@@ -612,6 +643,11 @@ static void wlserver_handle_touch_destroy(struct wl_listener *listener, void *da
+ 	free( touch );
+ }
+ 
++static struct wlr_tablet_manager_v2 *s_pTabletManager = nullptr;
++static uint32_t s_uTabletToolsDown = 0;
++
++static void wlserver_new_tablet( struct wlr_input_device *device );
++
+ static void wlserver_new_input(struct wl_listener *listener, void *data)
+ {
+ 	struct wlr_input_device *device = (struct wlr_input_device *) data;
+@@ -692,6 +728,9 @@ static void wlserver_new_input(struct wl_listener *listener, void *data)
+ 			wlserver_touch_associate_connector( touch );
+ 		}
+ 		break;
++		case WLR_INPUT_DEVICE_TABLET:
++			wlserver_new_tablet( device );
++			break;
+ 		default:
+ 			break;
+ 	}
+@@ -2615,6 +2654,13 @@ bool wlserver_init( void ) {
+ 	wlserver.new_pointer_constraint.notify = handle_pointer_constraint;
+ 	wl_signal_add(&wlserver.constraints->events.new_constraint, &wlserver.new_pointer_constraint);
+ 
++	s_pTabletManager = wlr_tablet_v2_create(wlserver.display);
++	if ( !s_pTabletManager )
++	{
++		wl_log.errorf( "Failed to create tablet manager" );
++		return false;
++	}
++
+ 	wlr_data_device_manager_create(wlserver.display);
+ 
+ 	wlserver.xdg_shell = wlr_xdg_shell_create(wlserver.display, 3);
+@@ -3062,7 +3108,7 @@ bool wlserver_input_held()
+ {
+ 	assert( wlserver_is_lock_held() );
+ 
+-	return wlserver.wlr.seat->pointer_state.button_count > 0 || !wlserver.touch_down_ids.empty();
++	return wlserver.wlr.seat->pointer_state.button_count > 0 || !wlserver.touch_down_ids.empty() || s_uTabletToolsDown > 0;
+ }
+ 
+ // Xwayland adds the window origin to the pointer position, so a dragging
+@@ -3865,6 +3911,347 @@ void wlserver_touchup( int touch_id, uint32_t time )
+ 	bump_input_counter();
+ }
+ 
++struct wlserver_tablet {
++	struct wlr_tablet *wlr;
++	struct wlr_tablet_v2_tablet *tablet_v2;
++
++	bool bHasScreenType;
++	gamescope::GamescopeScreenType eScreenType;
++	bool bIgnoreWhileLeased;
++	double flCalibration[4];
++
++	struct wl_listener axis;
++	struct wl_listener proximity;
++	struct wl_listener tip;
++	struct wl_listener button;
++	struct wl_listener destroy;
++};
++
++struct wlserver_tablet_tool {
++	struct wlr_tablet_tool *wlr;
++	struct wlr_tablet_v2_tablet_tool *tool_v2;
++
++	double x;
++	double y;
++	double pressure;
++	double tilt_x;
++	double tilt_y;
++	bool bTipDown;
++	bool bDropped;
++
++	struct wl_listener destroy;
++};
++
++static gamescope::IBackendConnector *wlserver_tablet_connector( struct wlserver_tablet *tablet )
++{
++	if ( !tablet->bHasScreenType )
++		return nullptr;
++
++	return GetBackend()->GetConnector( tablet->eScreenType );
++}
++
++static void wlserver_tablet_tool_set_tip( struct wlserver_tablet_tool *tool, bool bDown )
++{
++	if ( tool->bTipDown == bDown )
++		return;
++
++	tool->bTipDown = bDown;
++	if ( bDown )
++	{
++		s_uTabletToolsDown++;
++	}
++	else
++	{
++		s_uTabletToolsDown--;
++		wlserver_drag_anchor_release();
++	}
++}
++
++static void wlserver_handle_tablet_tool_destroy( struct wl_listener *listener, void *data )
++{
++	struct wlserver_tablet_tool *tool = wl_container_of( listener, tool, destroy );
++
++	wlserver_tablet_tool_set_tip( tool, false );
++	tool->wlr->data = nullptr;
++	wl_list_remove( &tool->destroy.link );
++	free( tool );
++}
++
++static struct wlserver_tablet_tool *wlserver_tablet_get_tool( struct wlr_tablet_tool *wlr_tool )
++{
++	if ( wlr_tool->data )
++		return (struct wlserver_tablet_tool *) wlr_tool->data;
++
++	struct wlr_tablet_v2_tablet_tool *tool_v2 = wlr_tablet_tool_create( s_pTabletManager, wlserver.wlr.seat, wlr_tool );
++	if ( !tool_v2 )
++		return nullptr;
++
++	struct wlserver_tablet_tool *tool = (struct wlserver_tablet_tool *) calloc( 1, sizeof( struct wlserver_tablet_tool ) );
++	tool->wlr = wlr_tool;
++	tool->tool_v2 = tool_v2;
++	tool->destroy.notify = wlserver_handle_tablet_tool_destroy;
++	wl_signal_add( &wlr_tool->events.destroy, &tool->destroy );
++	wlr_tool->data = tool;
++
++	return tool;
++}
++
++static void wlserver_tablet_tool_leave( struct wlserver_tablet_tool *tool )
++{
++	struct wlr_tablet_v2_tablet_tool *tool_v2 = tool->tool_v2;
++
++	wlr_tablet_v2_tablet_tool_notify_up( tool_v2 );
++
++	uint32_t uButtons[ WLR_TABLET_V2_TOOL_BUTTONS_CAP ];
++	size_t nButtons = tool_v2->num_buttons;
++	memcpy( uButtons, tool_v2->pressed_buttons, nButtons * sizeof( uint32_t ) );
++	for ( size_t i = 0; i < nButtons; i++ )
++		wlr_tablet_v2_tablet_tool_notify_button( tool_v2, uButtons[ i ], ZWP_TABLET_PAD_V2_BUTTON_STATE_RELEASED );
++
++	wlr_tablet_v2_tablet_tool_notify_proximity_out( tool_v2 );
++}
++
++static bool wlserver_tablet_tool_dropped( struct wlserver_tablet *tablet, struct wlserver_tablet_tool *tool )
++{
++	if ( tool->bDropped )
++		return true;
++
++	bool bDrop = ( tablet->bHasScreenType && tablet->eScreenType == gamescope::GAMESCOPE_SCREEN_TYPE_INTERNAL && g_bVirtualOutputCurrent ) ||
++		( tablet->bIgnoreWhileLeased && g_nActiveLeaseClients.load() > 0 ) ||
++		GetBackend()->GetTouchClickMode() == gamescope::TouchClickModes::Disabled;
++	if ( !bDrop )
++		return false;
++
++	wlserver_tablet_tool_set_tip( tool, false );
++	wlserver_tablet_tool_leave( tool );
++	tool->bDropped = true;
++	return true;
++}
++
++static void wlserver_tablet_tool_send_tilt( struct wlserver_tablet *tablet, struct wlserver_tablet_tool *tool )
++{
++	double tx = tablet->flCalibration[0] * tool->tilt_x + tablet->flCalibration[1] * tool->tilt_y;
++	double ty = tablet->flCalibration[2] * tool->tilt_x + tablet->flCalibration[3] * tool->tilt_y;
++
++	gamescope::IBackendConnector *pConnector = wlserver_tablet_connector( tablet );
++	if ( pConnector )
++	{
++		GamescopePanelOrientation eOrientation = pConnector->GetCurrentOrientation();
++		double ox = 0.0, oy = 0.0;
++		double xx = 1.0, xy = 0.0;
++		double yx = 0.0, yy = 1.0;
++		apply_touchscreen_orientation( eOrientation, &ox, &oy );
++		apply_touchscreen_orientation( eOrientation, &xx, &xy );
++		apply_touchscreen_orientation( eOrientation, &yx, &yy );
++		xx -= ox;
++		xy -= oy;
++		yx -= ox;
++		yy -= oy;
++
++		if ( xx != 0.0 || xy != 0.0 || yx != 0.0 || yy != 0.0 )
++		{
++			double rx = xx * tx + yx * ty;
++			double ry = xy * tx + yy * ty;
++			tx = rx;
++			ty = ry;
++		}
++	}
++
++	wlr_tablet_v2_tablet_tool_notify_tilt( tool->tool_v2, clamp( tx, -90.0, 90.0 ), clamp( ty, -90.0, 90.0 ) );
++}
++
++static void wlserver_tablet_tool_motion( struct wlserver_tablet *tablet, struct wlserver_tablet_tool *tool )
++{
++	if ( wlserver.mouse_focus_surface == NULL )
++	{
++		wlserver_tablet_tool_leave( tool );
++		return;
++	}
++
++	if ( !tool->tool_v2->is_down )
++	{
++		struct wlr_surface *pPrevSurface = tool->tool_v2->focused_surface;
++		wlr_tablet_v2_tablet_tool_notify_proximity_in( tool->tool_v2, tablet->tablet_v2, wlserver.mouse_focus_surface );
++		if ( tool->tool_v2->focused_surface && tool->tool_v2->focused_surface != pPrevSurface )
++		{
++			if ( tool->wlr->pressure )
++				wlr_tablet_v2_tablet_tool_notify_pressure( tool->tool_v2, tool->pressure );
++			if ( tool->wlr->tilt )
++				wlserver_tablet_tool_send_tilt( tablet, tool );
++		}
++	}
++
++	double tx = tool->x;
++	double ty = tool->y;
++
++	gamescope::IBackendConnector *pConnector = wlserver_tablet_connector( tablet );
++	if ( pConnector )
++		apply_touchscreen_orientation( pConnector->GetCurrentOrientation(), &tx, &ty );
++
++	tx *= g_nOutputWidth;
++	ty *= g_nOutputHeight;
++	tx += focusedWindowOffsetX;
++	ty += focusedWindowOffsetY;
++	tx *= focusedWindowScaleX;
++	ty *= focusedWindowScaleY;
++
++	auto [nWidth, nHeight] = wlserver_get_cursor_bounds();
++	tx = clamp( tx, 0.0, nWidth - 0.1 );
++	ty = clamp( ty, 0.0, nHeight - 0.1 );
++
++	wlserver_drag_anchor_apply( tx, ty );
++	wlr_tablet_v2_tablet_tool_notify_motion( tool->tool_v2, tx, ty );
++}
++
++static void wlserver_handle_tablet_axis( struct wl_listener *listener, void *data )
++{
++	struct wlserver_tablet *tablet = wl_container_of( listener, tablet, axis );
++	struct wlr_tablet_tool_axis_event *event = (struct wlr_tablet_tool_axis_event *) data;
++
++	struct wlserver_tablet_tool *tool = wlserver_tablet_get_tool( event->tool );
++	if ( !tool || wlserver_tablet_tool_dropped( tablet, tool ) )
++		return;
++
++	if ( event->updated_axes & WLR_TABLET_TOOL_AXIS_X )
++		tool->x = event->x;
++	if ( event->updated_axes & WLR_TABLET_TOOL_AXIS_Y )
++		tool->y = event->y;
++	if ( event->updated_axes & WLR_TABLET_TOOL_AXIS_PRESSURE )
++		tool->pressure = event->pressure;
++	if ( event->updated_axes & WLR_TABLET_TOOL_AXIS_TILT_X )
++		tool->tilt_x = event->tilt_x;
++	if ( event->updated_axes & WLR_TABLET_TOOL_AXIS_TILT_Y )
++		tool->tilt_y = event->tilt_y;
++
++	if ( event->updated_axes & ( WLR_TABLET_TOOL_AXIS_X | WLR_TABLET_TOOL_AXIS_Y ) )
++		wlserver_tablet_tool_motion( tablet, tool );
++	if ( event->updated_axes & WLR_TABLET_TOOL_AXIS_PRESSURE )
++		wlr_tablet_v2_tablet_tool_notify_pressure( tool->tool_v2, tool->pressure );
++	if ( event->updated_axes & ( WLR_TABLET_TOOL_AXIS_TILT_X | WLR_TABLET_TOOL_AXIS_TILT_Y ) )
++		wlserver_tablet_tool_send_tilt( tablet, tool );
++
++	bump_input_counter();
++}
++
++static void wlserver_handle_tablet_proximity( struct wl_listener *listener, void *data )
++{
++	struct wlserver_tablet *tablet = wl_container_of( listener, tablet, proximity );
++	struct wlr_tablet_tool_proximity_event *event = (struct wlr_tablet_tool_proximity_event *) data;
++
++	struct wlserver_tablet_tool *tool = wlserver_tablet_get_tool( event->tool );
++	if ( !tool )
++		return;
++
++	tool->bDropped = false;
++
++	if ( event->state == WLR_TABLET_TOOL_PROXIMITY_OUT )
++	{
++		wlserver_tablet_tool_set_tip( tool, false );
++		wlserver_tablet_tool_leave( tool );
++	}
++	else
++	{
++		if ( wlserver_tablet_tool_dropped( tablet, tool ) )
++			return;
++
++		tool->x = event->x;
++		tool->y = event->y;
++		wlserver_tablet_tool_motion( tablet, tool );
++	}
++
++	bump_input_counter();
++}
++
++static void wlserver_handle_tablet_tip( struct wl_listener *listener, void *data )
++{
++	struct wlserver_tablet *tablet = wl_container_of( listener, tablet, tip );
++	struct wlr_tablet_tool_tip_event *event = (struct wlr_tablet_tool_tip_event *) data;
++
++	struct wlserver_tablet_tool *tool = wlserver_tablet_get_tool( event->tool );
++	if ( !tool || wlserver_tablet_tool_dropped( tablet, tool ) )
++		return;
++
++	if ( event->state == WLR_TABLET_TOOL_TIP_DOWN )
++	{
++		wlserver_tablet_tool_set_tip( tool, true );
++		wlr_tablet_v2_tablet_tool_notify_down( tool->tool_v2 );
++	}
++	else
++	{
++		wlr_tablet_v2_tablet_tool_notify_up( tool->tool_v2 );
++		wlserver_tablet_tool_set_tip( tool, false );
++	}
++
++	bump_input_counter();
++}
++
++static void wlserver_handle_tablet_button( struct wl_listener *listener, void *data )
++{
++	struct wlserver_tablet *tablet = wl_container_of( listener, tablet, button );
++	struct wlr_tablet_tool_button_event *event = (struct wlr_tablet_tool_button_event *) data;
++
++	struct wlserver_tablet_tool *tool = wlserver_tablet_get_tool( event->tool );
++	if ( !tool || wlserver_tablet_tool_dropped( tablet, tool ) )
++		return;
++
++	wlr_tablet_v2_tablet_tool_notify_button( tool->tool_v2, event->button,
++		event->state == WLR_BUTTON_PRESSED ? ZWP_TABLET_PAD_V2_BUTTON_STATE_PRESSED : ZWP_TABLET_PAD_V2_BUTTON_STATE_RELEASED );
++
++	bump_input_counter();
++}
++
++static void wlserver_handle_tablet_destroy( struct wl_listener *listener, void *data )
++{
++	struct wlserver_tablet *tablet = wl_container_of( listener, tablet, destroy );
++
++	wl_list_remove( &tablet->axis.link );
++	wl_list_remove( &tablet->proximity.link );
++	wl_list_remove( &tablet->tip.link );
++	wl_list_remove( &tablet->button.link );
++	wl_list_remove( &tablet->destroy.link );
++	free( tablet );
++}
++
++static void wlserver_new_tablet( struct wlr_input_device *device )
++{
++	struct wlr_tablet_v2_tablet *tablet_v2 = wlr_tablet_create( s_pTabletManager, wlserver.wlr.seat, device );
++	if ( !tablet_v2 )
++	{
++		wl_log.errorf( "failed to add tablet %s", device->name );
++		return;
++	}
++
++	struct wlserver_tablet *tablet = (struct wlserver_tablet *) calloc( 1, sizeof( struct wlserver_tablet ) );
++
++	tablet->wlr = wlr_tablet_from_input_device( device );
++	tablet->tablet_v2 = tablet_v2;
++	tablet->bHasScreenType = wlserver_input_device_screen_type( device, true, &tablet->eScreenType );
++	tablet->bIgnoreWhileLeased = g_sIgnoreTouchDevice && g_sIgnoreTouchDevice[0] != '\0' &&
++		strstr( device->name, g_sIgnoreTouchDevice ) != nullptr;
++
++	float flMatrix[6] = { 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f };
++	struct libinput_device *lidev = wlr_libinput_get_device_handle( device );
++	if ( lidev )
++		libinput_device_config_calibration_get_matrix( lidev, flMatrix );
++	double flRowX = std::hypot( flMatrix[0], flMatrix[1] );
++	double flRowY = std::hypot( flMatrix[3], flMatrix[4] );
++	tablet->flCalibration[0] = flRowX > 0.0 ? flMatrix[0] / flRowX : 1.0;
++	tablet->flCalibration[1] = flRowX > 0.0 ? flMatrix[1] / flRowX : 0.0;
++	tablet->flCalibration[2] = flRowY > 0.0 ? flMatrix[3] / flRowY : 0.0;
++	tablet->flCalibration[3] = flRowY > 0.0 ? flMatrix[4] / flRowY : 1.0;
++
++	tablet->axis.notify = wlserver_handle_tablet_axis;
++	wl_signal_add( &tablet->wlr->events.axis, &tablet->axis );
++	tablet->proximity.notify = wlserver_handle_tablet_proximity;
++	wl_signal_add( &tablet->wlr->events.proximity, &tablet->proximity );
++	tablet->tip.notify = wlserver_handle_tablet_tip;
++	wl_signal_add( &tablet->wlr->events.tip, &tablet->tip );
++	tablet->button.notify = wlserver_handle_tablet_button;
++	wl_signal_add( &tablet->wlr->events.button, &tablet->button );
++	tablet->destroy.notify = wlserver_handle_tablet_destroy;
++	wl_signal_add( &device->events.destroy, &tablet->destroy );
++}
++
+ gamescope_xwayland_server_t *wlserver_get_xwayland_server( size_t index )
+ {
+ 	if (index >= wlserver.wlr.xwayland_servers.size() )
+-- 
+2.43.0
+

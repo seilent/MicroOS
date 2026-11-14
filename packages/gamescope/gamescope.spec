@@ -26,6 +26,7 @@ Patch:          0006-catch-up-to-the-next-vblank-in-one-step.patch
 Patch:          0007-add-a-virtual-output.patch
 Patch:          0008-add-gamescopevirtual.patch
 Patch:          0009-publish-the-applied-fps-limit-on-the-root-windows.patch
+Patch:          0010-forward-tablet-tools-to-clients.patch
 
 Vendor:         MicroOS
 BuildRequires:  cmake

@@ -15,6 +15,7 @@ commits come from `SOURCE.env` (same commits as the OGC tag's submodules and Fed
 | `0007-add-a-virtual-output.patch` | mine | seilent |
 | `0008-add-gamescopevirtual.patch` | mine | seilent |
 | `0009-publish-the-applied-fps-limit-on-the-root-windows.patch` | mine | seilent |
+| `0010-forward-tablet-tools-to-clients.patch` | mine | seilent |
 
 The first two are Fedora packaging patches, not sent upstream. `stb.pc` is from Fedora `rpms/gamescope` `e2cc884` (Neal Gompa).
 
@@ -60,6 +61,25 @@ goes, 2 on a usage error or a missing global and 3 on `failed`, with `failed: <r
 `0009` publishes the FPS limit the frame limiter applies as `GAMESCOPE_FPS_LIMIT_FEEDBACK` (CARDINAL, 0 for no limit) on
 every Xwayland root, written when it changes and on each root as its server starts. Steam's quick access frame limit
 arrives over `gamescope_control` and never shows in `GAMESCOPE_FPS_LIMIT`.
+
+`0010` forwards libinput tablet tools to clients over tablet v2 and puts SPI touchscreens on the internal connector, as
+i2c ones are. A tool enters the surface under touch focus, follows a focus change while its tip is up, and gets the
+current pressure and tilt again on each new surface. Touch and tablets take a connector from their device's parents:
+i2c or SPI is internal, USB external. A tablet with neither takes it from its input bus type (`id/bustype` I2C or SPI
+internal, USB external). The Y700's `NVTCapacitivePen` sits under `/devices/virtual/input` on bus SPI (`0x1c`) and in a
+libinput device group of its own (`1c/0/0:input/pen`, the touchscreen is `1c/0/0:input/ts`), so its bus type puts it
+on the internal connector with the touchscreen. With a connector, position and tilt turn by
+`apply_touchscreen_orientation`, which uses the internal connector's orientation, or the external one when the screen
+type is forced. Forced external before a panel type change, it maps every point to 0: position goes to 0 as touch does,
+and tilt keeps its calibrated value. Tilt first goes through libinput's calibration matrix with its rows normalized and
+is clamped to 90 degrees either way. Position is then scaled and clamped as touch is: output size, focused window offset
+and scale. Pressure (0 to 1 from libinput, 0 to 65535 on the wire), tilt in degrees, tip and buttons pass through. A
+tip down counts as held input for the drag anchor. The pen gets a tip up, button releases and one proximity out, then
+stays out until its next proximity in, while the virtual output is current on its internal connector, while a DRM
+lease companion holds a device matching `--ignore-touch-device`, and in the `Disabled` touch mode. SPI touch now turns
+with the connector orientation and is dropped while the virtual output is current, as i2c touch is; i2c and USB devices
+keep their behavior. A static `LIBINPUT_CALIBRATION_MATRIX` on an SPI touchscreen or its pen adds to the connector
+orientation.
 
 Fedora's `0001-cstdint.patch` is not carried: reshade `696b14cd` already includes `<cstdint>` in
 `source/effect_token.hpp` (reshade `5c8b8f09`).
