@@ -78,8 +78,8 @@ pkg name:
     podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -f build/pkg-wrap.Containerfile --label "microos.dirty=$dirty" -t "$tag" "$out"
     echo "$tag"
 
-kernel:
-    PKG_CCACHE="${XDG_CACHE_HOME:-$HOME/.cache}/microos-ccache/kernel" just pkg kernel
+kernel name:
+    PKG_CCACHE="${XDG_CACHE_HOME:-$HOME/.cache}/microos-ccache/$1" just pkg "$1"
 
 pkg-push name:
     #!/usr/bin/env bash

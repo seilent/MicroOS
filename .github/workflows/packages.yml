@@ -99,7 +99,7 @@ jobs:
   build:
     needs: list
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: ${{ (matrix.package == 'kernel' || matrix.package == 'hyprland') && 240 || matrix.package == 'steam-bootstrap' && 120 || matrix.package == 'gamescope' && 90 || 60 }}
+    timeout-minutes: ${{ (startsWith(matrix.package, 'kernel-') || matrix.package == 'hyprland') && 240 || matrix.package == 'steam-bootstrap' && 120 || matrix.package == 'gamescope' && 90 || 60 }}
     permissions:
       contents: read
       packages: read
@@ -198,7 +198,7 @@ jobs:
         if: >-
           (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true')
           && (steps.hash.outputs.local == 'true'
-            || matrix.package == 'kernel' && !(github.event_name == 'workflow_dispatch' && github.workflow == 'packages'))
+            || startsWith(matrix.package, 'kernel-') && !(github.event_name == 'workflow_dispatch' && github.workflow == 'packages'))
         env:
           HASH: ${{ steps.hash.outputs.hash }}
           LOCAL: ${{ steps.hash.outputs.local }}
@@ -206,13 +206,13 @@ jobs:
           if [[ $LOCAL == true ]]; then
             echo "::notice::$REPO:$HASH comes from the build PC (just pkg-push $PKG): $(head -n 1 "packages/$PKG/LOCAL")"
           else
-            echo "::notice::$REPO:$HASH comes from the build PC (just pkg-push kernel); run packages.yml by hand to build it here"
+            echo "::notice::$REPO:$HASH comes from the build PC (just pkg-push $PKG); run packages.yml by hand to build it here"
           fi
           echo "skip=true" >> "$GITHUB_OUTPUT"
 
       - name: Restore ccache
         if: >-
-          (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && contains(fromJSON('["kernel","microset","hyprland"]'), matrix.package)
+          (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && (startsWith(matrix.package, 'kernel-') || contains(fromJSON('["microset","hyprland"]'), matrix.package))
           && steps.local.outputs.skip != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
@@ -223,7 +223,7 @@ jobs:
       - name: Build
         if: (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && steps.local.outputs.skip != 'true'
         env:
-          CACHE: ${{ contains(fromJSON('["kernel","microset","hyprland"]'), matrix.package) && format('{0}/ccache', runner.temp) || '' }}
+          CACHE: ${{ (startsWith(matrix.package, 'kernel-') || contains(fromJSON('["microset","hyprland"]'), matrix.package)) && format('{0}/ccache', runner.temp) || '' }}
         run: PKG_CCACHE="$CACHE" just pkg "$PKG"
 
       - name: Save
@@ -459,7 +459,7 @@ jobs:
               echo "$PKG was not built in this run, $REPO:$hash exists"
               exit 0
             fi
-            if [[ -n $(git ls-files -- "packages/$PKG/LOCAL") || ($PKG == kernel && $DISPATCH != true) ]]; then
+            if [[ -n $(git ls-files -- "packages/$PKG/LOCAL") || ($PKG == kernel-* && $DISPATCH != true) ]]; then
               echo "::warning::$REPO:$hash is missing and comes from the build PC (just pkg-push $PKG)"
               exit 0
             fi
@@ -481,7 +481,7 @@ jobs:
           ARCHIVE: ${{ steps.built.outputs.archive }}
           DISPATCH: ${{ github.event_name == 'workflow_dispatch' && github.workflow == 'packages' }}
         run: |
-          [[ $PKG != kernel || $DISPATCH == true ]] || { echo "::error::kernel artifact outside a packages.yml dispatch"; exit 1; }
+          [[ $PKG != kernel-* || $DISPATCH == true ]] || { echo "::error::kernel artifact outside a packages.yml dispatch"; exit 1; }
           [[ -z $(git ls-files -- "packages/$PKG/LOCAL") ]] || { echo "::error::$PKG artifact, packages/$PKG/LOCAL keeps it off CI"; exit 1; }
           mapfile -t names < <(awk '$1 == "Name:" { n = $2; print n } $1 == "%package" { print ($2 == "-n" ? $3 : n "-" $2) }' "packages/$PKG"/*.spec)
           (( ${#names[@]} )) || { echo "::error::no spec Name in packages/$PKG"; exit 1; }

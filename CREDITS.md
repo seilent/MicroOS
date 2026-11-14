@@ -71,7 +71,7 @@ the others are built as is. License texts in `packages/gamescope/`, `packages/ga
 ## Kernel
 
 Linux 7.2.12 from [kernel.org](https://www.kernel.org/), GPL-2.0-only WITH Linux-syscall-note. Patches and their
-origins in `packages/kernel/PATCHES.md`.
+origins in `packages/kernel-pm2/PATCHES.md`.
 
 | What | Origin | Author | License |
 |---|---|---|---|

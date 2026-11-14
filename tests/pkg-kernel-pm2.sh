@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-out=${1:?usage: pkg-kernel.sh <rpmdir>}
+out=${1:?usage: pkg-kernel-pm2.sh <rpmdir>}
 here=$(cd "$(dirname "$0")" && pwd)
 rpm=$(find "$out" -name 'microos-kernel-[0-9]*.aarch64.rpm' | head -1)
-[[ -n $rpm ]] || { echo "pkg-kernel: no microos-kernel rpm in $out" >&2; exit 1; }
+[[ -n $rpm ]] || { echo "pkg-kernel-pm2: no microos-kernel rpm in $out" >&2; exit 1; }
 
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
@@ -13,12 +13,12 @@ rpm2cpio "$rpm" > "$root/kernel.cpio"
 rm "$root/kernel.cpio"
 
 mods=("$root"/usr/lib/modules/*)
-[[ ${#mods[@]} -eq 1 && -d ${mods[0]} ]] || { echo "pkg-kernel: expected one modules dir" >&2; exit 1; }
+[[ ${#mods[@]} -eq 1 && -d ${mods[0]} ]] || { echo "pkg-kernel-pm2: expected one modules dir" >&2; exit 1; }
 kdir=${mods[0]}
-[[ $(basename "$kdir") == *-microos ]] || { echo "pkg-kernel: modules dir $(basename "$kdir")" >&2; exit 1; }
-[[ $(head -c 64 "$kdir/vmlinuz" | tail -c 8 | od -An -c | tr -d ' ') == ARMd* ]] || { echo "pkg-kernel: vmlinuz is not a raw arm64 Image" >&2; exit 1; }
+[[ $(basename "$kdir") == *-microos ]] || { echo "pkg-kernel-pm2: modules dir $(basename "$kdir")" >&2; exit 1; }
+[[ $(head -c 64 "$kdir/vmlinuz" | tail -c 8 | od -An -c | tr -d ' ') == ARMd* ]] || { echo "pkg-kernel-pm2: vmlinuz is not a raw arm64 Image" >&2; exit 1; }
 dtbs=$(find "$kdir/dtb" -name '*.dtb')
-[[ $dtbs == "$kdir/dtb/qcom/sm8250-ayaneo-pocket-micro2.dtb" ]] || { echo "pkg-kernel: unexpected dtb set: $dtbs" >&2; exit 1; }
+[[ $dtbs == "$kdir/dtb/qcom/sm8250-ayaneo-pocket-micro2.dtb" ]] || { echo "pkg-kernel-pm2: unexpected dtb set: $dtbs" >&2; exit 1; }
 
 builtin=(
   PINCTRL_SM8250 SM_DISPCC_8250 INTERCONNECT_QCOM_SM8250 QCOM_LLCC
@@ -34,11 +34,11 @@ builtin=(
   ANDROID_BINDER_IPC ANDROID_BINDERFS NETFILTER_NETLINK IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES IPV6_MULTIPLE_TABLES FIB_RULES
 )
 for s in "${builtin[@]}"; do
-  grep -qx "CONFIG_$s=y" "$kdir/config" || { echo "pkg-kernel: CONFIG_$s is not built in" >&2; exit 1; }
+  grep -qx "CONFIG_$s=y" "$kdir/config" || { echo "pkg-kernel-pm2: CONFIG_$s is not built in" >&2; exit 1; }
 done
 
-grep -qE '^CONFIG_LSM="([^"]*,)?yama(,[^"]*)?"$' "$kdir/config" || { echo "pkg-kernel: CONFIG_LSM lacks yama: $(grep '^CONFIG_LSM=' "$kdir/config")" >&2; exit 1; }
-grep -qx 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"' "$kdir/config" || { echo "pkg-kernel: CONFIG_ANDROID_BINDER_DEVICES is not the Kconfig default: $(grep '^CONFIG_ANDROID_BINDER_DEVICES=' "$kdir/config")" >&2; exit 1; }
+grep -qE '^CONFIG_LSM="([^"]*,)?yama(,[^"]*)?"$' "$kdir/config" || { echo "pkg-kernel-pm2: CONFIG_LSM lacks yama: $(grep '^CONFIG_LSM=' "$kdir/config")" >&2; exit 1; }
+grep -qx 'CONFIG_ANDROID_BINDER_DEVICES="binder,hwbinder,vndbinder"' "$kdir/config" || { echo "pkg-kernel-pm2: CONFIG_ANDROID_BINDER_DEVICES is not the Kconfig default: $(grep '^CONFIG_ANDROID_BINDER_DEVICES=' "$kdir/config")" >&2; exit 1; }
 
 off=(
   NF_TABLES NF_TABLES_INET NF_NAT NFT_CT NFT_NAT NFT_MASQ NFT_REDIR NFT_REJECT NFT_REJECT_INET NFT_COMPAT NFT_LIMIT NFT_LOG
@@ -46,21 +46,21 @@ off=(
   NETFILTER_XT_MATCH_MULTIPORT XFRM_USER NET_KEY
 )
 for s in "${off[@]}"; do
-  ! grep -qE "^CONFIG_$s=[ym]$" "$kdir/config" || { echo "pkg-kernel: CONFIG_$s is set" >&2; exit 1; }
+  ! grep -qE "^CONFIG_$s=[ym]$" "$kdir/config" || { echo "pkg-kernel-pm2: CONFIG_$s is set" >&2; exit 1; }
 done
 
 for m in snd-seq joydev hid-playstation hid-sony hid-nintendo hid-microsoft xpad zram exfat ntfs3 nfnetlink_log; do
-  find "$kdir" -name "$m.ko*" | grep -q . || { echo "pkg-kernel: module $m missing" >&2; exit 1; }
+  find "$kdir" -name "$m.ko*" | grep -q . || { echo "pkg-kernel-pm2: module $m missing" >&2; exit 1; }
 done
 
 for s in gpu_levels gpu_levels_applied gpu_levels_fallback GPU_LEVELS_FALLBACK GPU_LEVELS_APPLIED; do
-  grep -qaF "$s" "$kdir/vmlinuz" || { echo "pkg-kernel: $s missing from vmlinuz" >&2; exit 1; }
+  grep -qaF "$s" "$kdir/vmlinuz" || { echo "pkg-kernel-pm2: $s missing from vmlinuz" >&2; exit 1; }
 done
 
-"$here/pkg-kernel/dts-drivers.sh" "$dtbs" "$kdir/config"
-"$here/pkg-kernel/gpu-opp.sh" "$dtbs" >/dev/null
-"$here/pkg-kernel/fan-trips.sh" "$dtbs"
-"$here/pkg-kernel/dp-mode-valid.sh" "$out/src"
-"$here/pkg-kernel/dp-dither.sh" "$out/src"
-"$here/pkg-kernel/smb5-pd.sh" "$out/src" "$dtbs"
-echo "pkg-kernel: $(basename "$rpm") ok"
+"$here/pkg-kernel-pm2/dts-drivers.sh" "$dtbs" "$kdir/config"
+"$here/pkg-kernel-pm2/gpu-opp.sh" "$dtbs" >/dev/null
+"$here/pkg-kernel-pm2/fan-trips.sh" "$dtbs"
+"$here/pkg-kernel-pm2/dp-mode-valid.sh" "$out/src"
+"$here/pkg-kernel-pm2/dp-dither.sh" "$out/src"
+"$here/pkg-kernel-pm2/smb5-pd.sh" "$out/src" "$dtbs"
+echo "pkg-kernel-pm2: $(basename "$rpm") ok"

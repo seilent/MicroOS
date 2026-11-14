@@ -18,7 +18,7 @@ def load(path):
     with open(f"{root}/{path}", "rb") as f:
         return tomllib.load(f)
 
-dts = open(f"{root}/packages/kernel/dts/sm8250-ayaneo-pocket-micro2.dts").read()
+dts = open(f"{root}/packages/kernel-pm2/dts/sm8250-ayaneo-pocket-micro2.dts").read()
 m = re.search(r'^/ \{\n(?:\t[^\t\n].*\n)*?\tcompatible = "([^"]+)"', dts, re.M)
 if not m:
     fail("no root compatible in the PM2 DTS")
