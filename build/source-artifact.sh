@@ -18,7 +18,7 @@ pkgs=$4
 [[ -d $pkgs ]] || fail "$pkgs is not a dir"
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-. "$root/packages/kernel-pm2/SOURCE.env"
+. "$root/packages/${KERNEL:?}/SOURCE.env"
 
 mkdir -p "$out"
 out=$(cd "$out" && pwd)
