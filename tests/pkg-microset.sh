@@ -33,6 +33,7 @@ for f in \
   /usr/bin/microset \
   $libdir/libmicroset.so.0 \
   /usr/share/microset/schema.d/10-microset.json \
+  /usr/share/microset/schema-y700.d/10-microset.json \
   /usr/lib/systemd/system/microsetd.service \
   /usr/share/dbus-1/system.d/net.seilent.MicroSet.conf \
   /usr/share/dbus-1/interfaces/net.seilent.MicroSet1.xml \
@@ -92,7 +93,8 @@ done
 ou=$tmp/usr/lib/systemd/user/microset-overlay@.service
 for kv in BindsTo=gamescope-session-plus@%i.service After=gamescope-session-plus@%i.service Type=notify NoNewPrivileges=yes \
   Environment=DISPLAY=:0 Environment=QT_QPA_PLATFORM=xcb Environment=QT_QUICK_BACKEND=software \
-  Environment=QT_XCB_GL_INTEGRATION=none ExecStartPre=/usr/libexec/microset/microset-wait-x \
+  Environment=QT_XCB_GL_INTEGRATION=none Environment=MICROSET_OVERLAY_SESSION=%i \
+  ExecStartPre=/usr/libexec/microset/microset-wait-x \
   'ExecStart=/usr/bin/microset-settings --overlay' Restart=on-failure; do
   if ! grep -qxF "$kv" "$ou"; then fail "microset-overlay@.service lacks $kv"; fi
 done
@@ -150,7 +152,7 @@ for m in [("method", "Get"), ("method", "Set"), ("method", "List"), ("method", "
         rc = 1
 
 types = {"s": str, "b": bool, "u": int, "i": int, "d": (int, float), "as": list}
-for path in sorted(glob.glob(f"{root}/usr/share/microset/schema.d/*.json")):
+for path in sorted(glob.glob(f"{root}/usr/share/microset/schema.d/*.json") + glob.glob(f"{root}/usr/share/microset/schema-y700.d/*.json")):
     try:
         with open(path) as f:
             doc = json.load(f)
@@ -178,6 +180,23 @@ for path in sorted(glob.glob(f"{root}/usr/share/microset/schema.d/*.json")):
         if "min" in k and "max" in k and not k["min"] <= d <= k["max"]:
             print(f"FAIL: {path}: {key} default {d!r} out of range", file=sys.stderr)
             rc = 1
+
+with open(f"{root}/usr/share/microset/schema.d/10-microset.json") as f:
+    pm2 = json.load(f)["keys"]
+with open(f"{root}/usr/share/microset/schema-y700.d/10-microset.json") as f:
+    y700 = json.load(f)["keys"]
+dropped = ("power.", "rgb.", "audio.", "meta.")
+for key in pm2:
+    drop = key.startswith(dropped) or key == "launcher.favorites"
+    if drop and key in y700:
+        print(f"FAIL: schema-y700.d keeps {key}", file=sys.stderr)
+        rc = 1
+    elif not drop and key not in y700:
+        print(f"FAIL: schema-y700.d lacks {key}", file=sys.stderr)
+        rc = 1
+if set(y700) - set(pm2):
+    print(f"FAIL: schema-y700.d has keys the PM2 schema lacks: {sorted(set(y700) - set(pm2))}", file=sys.stderr)
+    rc = 1
 sys.exit(rc)
 PY
 

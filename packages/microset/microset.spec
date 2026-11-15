@@ -117,6 +117,9 @@ unzip -o -q -j %{SOURCE1} selawkl.ttf selawksl.ttf selawk.ttf selawksb.ttf selaw
 %cmake_install
 install -d %{buildroot}%{_datadir}/fonts/microset
 install -pm644 fonts/*.ttf %{buildroot}%{_datadir}/fonts/microset/
+install -d %{buildroot}%{_datadir}/microset/schema-y700.d
+cmake -DINPUT=schema/10-microset.json -DOUTPUT=%{buildroot}%{_datadir}/microset/schema-y700.d/10-microset.json \
+  "-DDROP=power.*;rgb.*;audio.*;launcher.favorites;meta.*" -P cmake/schemadrop.cmake
 
 %post
 %systemd_post microsetd.service
@@ -136,6 +139,8 @@ install -pm644 fonts/*.ttf %{buildroot}%{_datadir}/fonts/microset/
 %dir %{_datadir}/microset
 %dir %{_datadir}/microset/schema.d
 %{_datadir}/microset/schema.d/10-microset.json
+%dir %{_datadir}/microset/schema-y700.d
+%{_datadir}/microset/schema-y700.d/10-microset.json
 %{_unitdir}/microsetd.service
 %{_datadir}/dbus-1/system.d/net.seilent.MicroSet.conf
 %{_datadir}/dbus-1/interfaces/net.seilent.MicroSet1.xml
