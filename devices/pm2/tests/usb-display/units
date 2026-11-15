@@ -67,6 +67,7 @@ mkdir -p "$lib" "$stubs" /run/microos/hold /run/dbus "$t" "$sys/kernel/config/us
 install -m 0755 "$tree/usr/libexec/microos/microos-usb-display-arm" "$tree/usr/libexec/microos/microos-usb-display-gadget" \
   "$tree/usr/libexec/microos/microos-usb-display-link" "$lib/"
 install -m 0755 "$tree/usr/bin/microos-session" /usr/bin/microos-session
+install -m 0644 "$tree/usr/libexec/microos/microos-pad-lib" "$lib/"
 install -m 0644 "$tree/usr/lib/tmpfiles.d/microos-usb-display.conf" /usr/lib/tmpfiles.d/
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/microos-usb-display.conf
 install -m 0600 /dev/null /run/microos/hold/.lock-keys

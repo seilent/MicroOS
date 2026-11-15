@@ -16,10 +16,15 @@ within "$wait" current_up && exit 0
 settled() { current_up || [[ -z $cur_unit ]] || ! started "$cur_unit"; }
 within "$pending" settled
 current_up && exit 0
-if [[ $cur_name != recovery ]]; then
-  log "${cur_name:-no session} did not start within $wait s, switching to recovery"
-  want_put recovery fallback root || log "cannot write session-wanted"
-  systemctl start microos-session-switcher.service || log "the switch to recovery failed"
+last=$(last_resort)
+if [[ $cur_name != "$last" ]]; then
+  log "${cur_name:-no session} did not start within $wait s, switching to $last"
+  want_put "$last" fallback root || log "cannot write session-wanted"
+  systemctl start microos-session-switcher.service || log "the switch to $last failed"
+  exit 0
+fi
+if [[ $last != recovery ]]; then
+  log "$last did not start within $wait s, no other session left"
   exit 0
 fi
 put "$rundir/session-failed" "recovery $cur_serial" || log "cannot write session-failed"

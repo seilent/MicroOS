@@ -34,11 +34,12 @@ if [[ -f $attempt ]]; then
   done < "$attempt"
 fi
 if [[ $a_name == "$def" ]] && (( a_count >= 2 )); then
+  last=$(last_resort)
   target=steam
-  [[ $def != steam ]] || target=recovery
-  if [[ $target != recovery ]] && (( a_fallback >= 2 )); then
-    target=recovery
-    log "$def and steam did not come up on the last boots, recovery for this boot, the default stays $def"
+  [[ $def != steam ]] || target=$last
+  if [[ $target != "$last" ]] && (( a_fallback >= 2 )); then
+    target=$last
+    log "$def and steam did not come up on the last boots, $last for this boot, the default stays $def"
   else
     a_fallback=$(( a_fallback + 1 ))
     log "$def did not come up on the last $a_count boots, $target for this boot, the default stays $def"

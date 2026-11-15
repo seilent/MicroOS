@@ -19,10 +19,8 @@ rate=${MICROOS_SESSION_RATE_MS:-5000}
 uptime=${MICROOS_UPTIME:-/proc/uptime}
 bootid=${MICROOS_BOOT_ID:-/proc/sys/kernel/random/boot_id}
 sysfs=${MICROOS_SYSFS:-/sys}
-devroot=${MICROOS_DEV:-/dev}
-padstate=${MICROOS_PAD_STATE:-}
-pad="AYANEO Controller"
-keys="aya-keys"
+padlib=${MICROOS_PAD_LIB:-${BASH_SOURCE[0]%/*}/../libexec/microos/microos-pad-lib}
+[[ ! -r $padlib ]] || . "$padlib"
 sessions=$root/usr/lib/microos/sessions.d
 track=$rundir/user/track
 namere='^[a-z0-9][a-z0-9-]*$'
@@ -37,81 +35,6 @@ boottime_us() {
 }
 
 ms() { echo $(( $(boottime_us) / 1000 )); }
-
-pad_node() {
-  local e d real
-  for e in "$sysfs"/class/input/event*; do
-    d=$e/device
-    [[ -f $d/name && $(< "$d/name") == "$pad" ]] || continue
-    [[ $(cat "$d/id/bustype" 2> /dev/null) == 0003 && $(cat "$d/id/vendor" 2> /dev/null) == 4001 &&
-      $(cat "$d/id/product" 2> /dev/null) == 0428 ]] || continue
-    real=$(readlink -f "$e") || continue
-    [[ $real == "$sysfs"/devices/* && $real != "$sysfs"/devices/virtual/* ]] || continue
-    echo "$devroot/input/${e##*/}"
-  done
-}
-
-key_node() {
-  local e d real found=()
-  for e in "$sysfs"/class/input/event*; do
-    d=$e/device
-    [[ -f $d/name && $(< "$d/name") == "$keys" ]] || continue
-    [[ $(cat "$d/id/bustype" 2> /dev/null) == 0019 && $(cat "$d/id/vendor" 2> /dev/null) == 0001 &&
-      $(cat "$d/id/product" 2> /dev/null) == 0001 ]] || continue
-    real=$(readlink -f "$e") || continue
-    [[ $real == "$sysfs"/devices/* && $real != "$sysfs"/devices/virtual/* ]] || continue
-    [[ $(readlink -f "$d/device/driver") == "$sysfs"/bus/platform/drivers/gpio-keys ]] || continue
-    found+=("$devroot/input/${e##*/}")
-  done
-  (( ${#found[@]} != 1 )) || echo "${found[0]}"
-}
-
-pad_poll() {
-  local interval=$1 n line all
-  shift
-  if [[ -n $padstate ]]; then
-    while :; do
-      all=""
-      for n; do
-        line=$(cat "$padstate/${n##*/}" 2> /dev/null) || line=""
-        line=" $(grep -oE 'BTN_(START|SELECT|SOUTH)|KEY_PROG4' <<< "$line" | paste -sd' ') "
-        if [[ $n == "$1" ]]; then
-          all=$line
-        else
-          all=$(for k in $all; do [[ $line != *" $k "* ]] || printf ' %s' "$k"; done)" "
-        fi
-      done
-      echo $all
-      sleep "$interval"
-    done
-    return
-  fi
-  python3 - "$interval" "$sysfs" "$@" << 'EOF'
-import fcntl
-import os
-import sys
-import time
-
-fds = []
-for p in sys.argv[3:]:
-    fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
-    with open(os.path.join(sys.argv[2], "class/input", os.path.basename(p), "dev")) as f:
-        major, minor = map(int, f.read().split(":"))
-    if os.fstat(fd).st_rdev != os.makedev(major, minor):
-        sys.exit(p + " is not the device in " + sys.argv[2])
-    fds.append(fd)
-keys = ((315, "BTN_START"), (314, "BTN_SELECT"), (304, "BTN_SOUTH"), (203, "KEY_PROG4"))
-while True:
-    held = None
-    for fd in fds:
-        bits = bytearray(96)
-        fcntl.ioctl(fd, 0x80000000 | (len(bits) << 16) | (ord("E") << 8) | 0x18, bits)
-        now = {n for c, n in keys if bits[c // 8] >> (c % 8) & 1}
-        held = now if held is None else held & now
-    print(" ".join(n for _, n in keys if n in held), flush=True)
-    time.sleep(float(sys.argv[1]))
-EOF
-}
 
 unit_trusted() {
   local out frag drop p
@@ -192,6 +115,14 @@ load() {
   [[ $STOP == steam || $STOP == unit ]] || return 1
   [[ -z $INPUT_PROFILE || $INPUT_PROFILE == /* ]] || return 1
   [[ -z $CHECK || $CHECK == /usr/* ]] && [[ -z $INSTALL || $INSTALL == /usr/* ]]
+}
+
+last_resort() {
+  if load recovery; then
+    echo recovery
+  else
+    echo steam
+  fi
 }
 
 list() {
@@ -440,11 +371,13 @@ old_master() {
 }
 
 splash_off() {
+  [[ -e $rundir/splash.lock ]] || return 0
   ( exec 9< "$rundir/splash.lock" && flock -w 1 9 && rm -f "$rundir/splash-busy" ) || log "splash lock busy, splash-busy left"
 }
 
 splash_on() {
   local id
+  [[ -e $rundir/splash.lock ]] || return 0
   id=$(old_master)
   if ! ( exec 9< "$rundir/splash.lock" && flock -w 1 9 && put "$rundir/splash-busy" "$2" &&
     put "$rundir/splash-target" "$1 $2 $id" ); then
@@ -505,7 +438,8 @@ pace() {
 }
 
 switch_once() {
-  local want=$1 wwhy=$2 src=$3 serial seat target_desktop profile src_name src_stop
+  local want=$1 wwhy=$2 src=$3 serial seat target_desktop profile src_name src_stop last
+  last=$(last_resort)
   load "$want"
   read_current
   if [[ $wwhy == fallback && $want == recovery && $cur_name == recovery ]]; then
@@ -569,13 +503,15 @@ switch_once() {
     log "$want is up"
   elif [[ -e $rundir/session-pending ]]; then
     log "$want did not start, a newer request waits"
-  elif [[ $want != recovery ]]; then
-    log "$want did not start, recovery next"
-    want_put recovery fallback root || log "cannot write session-wanted"
-  else
+  elif [[ $want != "$last" ]]; then
+    log "$want did not start, $last next"
+    want_put "$last" fallback root || log "cannot write session-wanted"
+  elif [[ $last == recovery ]]; then
     log "recovery did not start, giving up"
     put "$rundir/session-failed" "recovery $serial" || log "cannot write session-failed"
     systemctl start --no-block microos-session-giveup.service || log "start of microos-session-giveup.service failed"
+  else
+    log "$want did not start, no session left to fall back to"
   fi
   if [[ -e $rundir/splash-busy ]] && splash_idle; then
     splash_off

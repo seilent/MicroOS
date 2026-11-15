@@ -81,7 +81,7 @@ guarded() {
 
 pick() {
   local c
-  fallback=recovery
+  fallback=$(last_resort)
   for c in "$@"; do
     if [[ -z $c || $c == "$name" ]] || ! load "$c" || refused "$c"; then
       continue
@@ -121,6 +121,10 @@ if [[ $act == stopped ]]; then
   pick "$(get_default)" steam
 else
   pick "$(previous)" "$(get_default)" steam
+fi
+if [[ $fallback == "$name" ]]; then
+  log "$name $act $n times in $window s, no other session left"
+  exit 0
 fi
 log "$name $act $n times in $window s, switching to $fallback"
 systemctl start --no-block "microos-session-fallback@$fallback.service" ||

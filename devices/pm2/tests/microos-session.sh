@@ -579,6 +579,7 @@ cur microdap
 rm "$run/splash.lock"
 sw steam
 [[ $r == 0 && $(current) == steam ]] && ! has "restart --no-block microos-splash-switch.service" || fail "switch without the splash lock: $(calls)"
+! grep -q "splash" "$FAKE/switch.log" || fail "switch without the splash lock logged a splash line: $(cat "$FAKE/switch.log")"
 rm -f "$sd/microemu.conf" "$root/usr/share/wayland-sessions/microemu.desktop"
 
 reset
@@ -1344,6 +1345,54 @@ wait $!
 has "start microos-session-switcher.service" || fail "watch did not switch when a queued start ended without the unit up: $(calls)"
 unset FAKE_RUN_SWITCH
 
+mv "$sd/recovery.conf" "$tmp/recovery.conf"
+reset
+cur steam
+touch "$FAKE/never/$(unit_of microdap)"
+sw microdap
+[[ $(current) == steam && $(ustate steam) == active ]] || fail "without recovery a failed target did not fall back to steam: $(current)"
+[[ $(cut -d' ' -f1,4 "$run/session-previous") == "microdap fallback" ]] || fail "session-previous without recovery: $(cat "$run/session-previous")"
+! has "start --no-block microos-session-giveup.service" || fail "giveup without recovery after steam started"
+reset
+cur microdap
+touch "$FAKE/never/$(unit_of steam)"
+sw steam
+[[ $(count "restart sddm.service") == 1 && ! -e $run/session-pending ]] || fail "a failed steam without recovery was asked for again: $(calls)"
+! has "start --no-block microos-session-giveup.service" && [[ ! -e $run/session-failed ]] || fail "giveup after a failed steam without recovery: $(calls)"
+grep -q "steam did not start, no session left to fall back to" "$FAKE/switch.log" || fail "failed steam without recovery line: $(cat "$FAKE/switch.log")"
+reset
+echo microdap > "$FAKE/default"
+cur microdap
+for _ in 1 2 3; do "$TRACK" stop microdap 2> /dev/null; done
+has "start --no-block microos-session-fallback@steam.service" || fail "the tracker without recovery did not fall back to steam: $(calls)"
+reset
+cur steam
+for _ in 1 2 3; do "$TRACK" stop steam 2> "$tmp/out"; done
+! hasre 'microos-session-(switch|fallback)|giveup' || fail "the tracker asked for a failing steam again without recovery: $(calls)"
+grep -q "steam stopped 3 times in 600 s, no other session left" "$tmp/out" || fail "tracker line without recovery: $(cat "$tmp/out")"
+reset
+cur microdap
+echo inactive > "$FAKE/units/$(unit_of microdap)"
+touch "$FAKE/never/$(unit_of microdap)"
+export FAKE_RUN_SWITCH=1
+"$libexec/microos-session-watch" 2> /dev/null || true
+[[ $(current) == steam && $(ustate steam) == active ]] || fail "watch without recovery did not switch to steam: $(current)"
+! has "start --no-block microos-session-giveup.service" || fail "watch without recovery gave up although steam started"
+reset
+cur steam
+echo inactive > "$FAKE/units/$(unit_of steam)"
+touch "$FAKE/never/$(unit_of steam)"
+"$libexec/microos-session-watch" 2> "$tmp/out" || true
+! hasre 'microos-session-switcher|giveup' && [[ ! -e $run/session-failed ]] || fail "watch without recovery acted on a failing steam: $(calls)"
+grep -q "steam did not start within 2 s, no other session left" "$tmp/out" || fail "watch line without recovery: $(cat "$tmp/out")"
+unset FAKE_RUN_SWITCH
+reset
+printf 'name=steam\ncount=2\n' > "$state/session/attempt"
+"$libexec/microos-session-boot" 2> /dev/null
+[[ $(current) == steam && $(< "$state/session/attempt") == $'name=steam\ncount=2\nfallback=1\ntarget=steam' ]] ||
+  fail "steam default with count 2 without recovery: $(current) $(< "$state/session/attempt")"
+mv "$tmp/recovery.conf" "$sd/recovery.conf"
+
 hot() {
   local k=$1
   shift
@@ -1603,6 +1652,12 @@ PATH=$tmp/padbin:$PATH "$padt" deck-uhid keyboard > "$tmp/out" 2>&1 || r=$?
 r=0
 "$padt" > /dev/null 2>&1 || r=$?
 [[ $r == 2 ]] || fail "pad target without targets: exit $r"
+
+( . "$session"; declare -F pad_node key_node pad_poll > /dev/null && [[ $pad == "AYANEO Controller" && $keys == aya-keys ]] ) ||
+  fail "the session lib did not load microos-pad-lib beside it"
+( MICROOS_PAD_LIB=$tmp/none; . "$session"; ! declare -F pad_node key_node pad_poll > /dev/null ) ||
+  fail "the session lib defined pad code without microos-pad-lib"
+out=$(MICROOS_PAD_LIB=$tmp/none "$session" list) && cut -f1 <<< "$out" | grep -qx steam || fail "list without microos-pad-lib: $out"
 
 step_up=$tmp/uptime-step
 set_step() { echo "$1 0" > "$step_up.new" && mv -f "$step_up.new" "$step_up"; }
