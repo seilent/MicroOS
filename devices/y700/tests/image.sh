@@ -145,6 +145,7 @@ kept=(
   /usr/lib/systemd/journald.conf.d/10-microos.conf
   /usr/lib/systemd/logind.conf.d/50-microos.conf
   /usr/lib/systemd/sleep.conf.d/50-microos.conf
+  /usr/lib/systemd/system.conf.d/50-microos.conf
   /usr/lib/systemd/system-preset/50-microos.preset
   /usr/lib/systemd/system-preset/60-microos-steam.preset
   /usr/lib/systemd/system/emergency.service.d/10-microos.conf
@@ -359,12 +360,18 @@ grep -qxF 'SUBSYSTEM=="hidraw", KERNELS=="000[356]:28DE:*", MODE="0660", TAG+="u
 compgen -G "/usr/lib/modules/$kver/kernel/drivers/hid/hid-steam.ko*" >/dev/null || fail "hid-steam module missing"
 [[ $(< /usr/lib/udev/rules.d/90-microos-usb-console.rules) == \
   'SUBSYSTEM=="tty", KERNEL=="ttyGS0", ENV{SYSTEMD_WANTS}+="serial-getty@ttyGS0.service"' ]] || fail "90-microos-usb-console.rules"
-[[ $(< /usr/lib/tmpfiles.d/microos.conf) == $'d /run/microos 0755 root root -\nd /var/home/micro 0700 micro micro -\nd /var/lib/microos 0755 root root -\nd /var/cache/libX11 0755 root root -\nd /var/cache/libX11/compose 0755 root root -' ]] \
+[[ $(< /usr/lib/tmpfiles.d/microos.conf) == $'d /run/microos 0755 root root -\nd /var/home/micro 0700 micro micro -\nd /var/lib/microos 0755 root root -\nd /var/cache/libX11 0755 root root -\nd /var/cache/libX11/compose 0755 root root -\nw /sys/power/pm_freeze_timeout - - - - 5000' ]] \
   || fail "tmpfiles microos.conf"
 [[ $(< /usr/lib/systemd/sleep.conf.d/50-microos.conf) == $'[Sleep]\nAllowHibernation=no\nAllowSuspendThenHibernate=no\nAllowHybridSleep=no\nMemorySleepMode=s2idle' ]] \
   || fail "sleep.conf.d 50-microos.conf"
 last=$(systemd-analyze cat-config systemd/sleep.conf | awk -F= '/^MemorySleepMode=/ { v = $2 } END { print v }')
 [[ $last == s2idle ]] || fail "effective MemorySleepMode is $last"
+[[ $(< /usr/lib/systemd/system.conf.d/50-microos.conf) == $'[Manager]\nRuntimeWatchdogSec=30s\nRebootWatchdogSec=30s' ]] \
+  || fail "system.conf.d 50-microos.conf"
+for k in RuntimeWatchdogSec RebootWatchdogSec; do
+  last=$(systemd-analyze cat-config systemd/system.conf | awk -F= -v k="$k" '$1 == k { v = $2 } END { print v }')
+  [[ $last == 30s ]] || fail "effective $k is $last"
+done
 for f in microos-sleep-log microos-wake-reason; do
   [[ $(stat -c %a "/usr/lib/systemd/system-sleep/$f") == 755 ]] || fail "system-sleep/$f is not 755"
 done
@@ -610,6 +617,8 @@ for p in microos_efi boot_b boot_a; do
 done
 rm -rf "${unpack:?}"
 lsinitrd -f usr/lib/systemd/system/microos-guard.service "$img" | grep -qx 'TimeoutStartSec=180' || fail "microos-guard.service timeout"
+[[ $(lsinitrd -f usr/lib/systemd/system.conf.d/50-microos.conf "$img") == $'[Manager]\nRuntimeWatchdogSec=30s\nRebootWatchdogSec=30s' ]] \
+  || fail "initramfs system.conf.d 50-microos.conf"
 [[ $(lsinitrd -f etc/cmdline.d/90-microos.conf "$img") == 'rd.shell=0 rd.emergency=reboot rd.timeout=90' ]] || fail "initramfs cmdline.d/90-microos.conf"
 [[ $(lsinitrd -f usr/lib/systemd/system/initrd-switch-root.service.d/10-microos.conf "$img") == \
   $'[Service]\nExecStart=\nExecStart=systemctl --no-block switch-root /sysroot /usr/lib/systemd/systemd' ]] || fail "initramfs switch-root drop-in"
