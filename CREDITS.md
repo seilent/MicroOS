@@ -55,23 +55,29 @@ Projects MicroOS builds, with their authors and license.
 | `glaze` in the `hyprland` stack, `glaze-devel` | [stephenberry/glaze](https://github.com/stephenberry/glaze) `v7.2.0` `b518eec7a2` | Stephen Berry | MIT |
 | `hyprgrass` | [horriblename/hyprgrass](https://github.com/horriblename/hyprgrass) `hl-0.57.0` `8ca1af717d` | Ching Pei Yang | BSD-3-Clause; `LICENSE.aosp` Apache-2.0 |
 | `hyprgrass` wf-touch subproject | [WayfireWM/wf-touch](https://github.com/WayfireWM/wf-touch) `8974eb0f6a` | Wayfire | MIT |
+| `audioreach-topology` m4 macros | [Linaro audioreach-topology](https://git.codelinaro.org/linaro/qcomlt/audioreach-topology) `1d4c4e337d` | Linaro Ltd | BSD-3-Clause |
 | `wvkbd` | [jjsullivan5196/wvkbd](https://github.com/jjsullivan5196/wvkbd) `v0.21` `f7e9ea3a75` | John Sullivan | GPL-3.0-only; MIT for Wayland's `os-compatibility` (Kristian Høgsberg, Intel and Wayland contributors) and `wld` (Michael Forney); HPND-sell-variant for the `wlr-layer-shell` description (Drew DeVault) |
 
-`gamescope-session` carries my PM2 `device-quirks` entry, `steamos-manager` carries my five patches, `gamescope`
-carries Fedora's packaging patches, five of mine and an OGC patch backported by me (`0003` to `0008`, `0006` from
-OGC), `mangohud` carries ten upstream MangoHud patches, five of them backported by me, and five of mine, `plymouth`
-carries Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine, `es-de` carries my launch path
-escape patch, `inputplumber` carries three of mine and my polkit rule, `wvkbd` carries two of mine, and `lsfg-vk` and
-the lsfg-vk layer in `microos-android-guestos` are my fork's `microos-layer` branch (`PATCHES.md` in each package);
-the others are built as is. License texts in `packages/gamescope/`, `packages/gamescope-session/`, `packages/es-de/`,
-`packages/hexagonrpc/`, `packages/inputplumber/`, `packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and
-`packages/steamos-manager/`.
+`gamescope-session` carries my PM2 `device-quirks` entry, `gamescope-session-y700` the same upstream with my Y700
+`device-quirks` entry and my startup timeout patch, `steamos-manager` carries my five patches, `gamescope` carries
+Fedora's packaging patches, six of mine and an OGC patch backported by me (`0003` to `0009`, `0006` from OGC),
+`mangohud` carries ten upstream MangoHud patches, five of them backported by me, and five of mine, `plymouth` carries
+Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine, `es-de` carries my launch path escape
+patch, `inputplumber` carries three of mine and my polkit rule, `wvkbd` carries two of mine, `audioreach-topology`
+carries my legacy TDM module and subgraph and my Y700 topology, and `lsfg-vk` and the lsfg-vk layer in
+`microos-android-guestos` are my fork's `microos-layer` branch (`PATCHES.md` in each package); the others are built as
+is. License texts in `packages/audioreach-topology/`, `packages/gamescope/`, `packages/gamescope-session/`,
+`packages/gamescope-session-y700/`, `packages/es-de/`, `packages/hexagonrpc/`, `packages/inputplumber/`,
+`packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and `packages/steamos-manager/`.
 
 
 ## Kernel
 
-Linux 7.2.12 from [kernel.org](https://www.kernel.org/), GPL-2.0-only WITH Linux-syscall-note. Patches and their
-origins in `packages/kernel-pm2/PATCHES.md`.
+Pocket MICRO 2: Linux 7.2.12 from [kernel.org](https://www.kernel.org/), GPL-2.0-only WITH Linux-syscall-note. Patches
+and their origins in `packages/kernel-pm2/PATCHES.md`.
+
+Legion Y700: Linux 7.4-rc2 from [kernel.org](https://www.kernel.org/), GPL-2.0-only WITH Linux-syscall-note. Patches
+and their origins in `packages/kernel-y700/PATCHES.md`.
 
 | What | Origin | Author | License |
 |---|---|---|---|
@@ -104,6 +110,7 @@ Retroid kernel is [lineageos-on-retroid/android_kernel_retroid_sm8250_ack](https
 |---|---|---|---|
 | Base image | [Fedora bootc](https://gitlab.com/fedora/bootc/base-images) `registry.fedoraproject.org/fedora-bootc:44` | Fedora Project | per package (Fedora 44) |
 | bootc | [bootc-dev/bootc](https://github.com/bootc-dev/bootc), Fedora `bootc` | bootc contributors | Apache-2.0 OR MIT |
+| AVB test key `usr/share/microos/avb/testkey_rsa4096.pem` (Y700) | [AOSP external/avb](https://android.googlesource.com/platform/external/avb) `test/data/testkey_rsa4096.pem` | The Android Open Source Project | Apache-2.0 |
 | OSTree | [ostreedev/ostree](https://github.com/ostreedev/ostree), Fedora `ostree` | OSTree contributors | LGPL-2.0-or-later |
 | bootc-image-builder | [osbuild/bootc-image-builder](https://github.com/osbuild/bootc-image-builder) `quay.io/centos-bootc/bootc-image-builder` | osbuild contributors | Apache-2.0 |
 | PM2 UCM layout and the `Speakers Volume` remap | [alsa-ucm-conf](https://github.com/alsa-project/alsa-ucm-conf) `Qualcomm/sm8250/HiFi.conf` `f4f0a97eb3`, `codecs/wsa883x/init.conf` `489b9a1406` | Srinivas Kandagatla (Linaro) | BSD-3-Clause |
