@@ -27,5 +27,6 @@
 0050-dt-bindings-usb-Add-GPIO-controlled-USB-2.0-port-mul.patch
 0051-usb-roles-Add-GPIO-controlled-USB-2.0-port-multiplex.patch
 0053-usb-typec-ucsi-debugfs-Fix-GET-commands-on-UCSI-2.0.patch
+0054-usb-dwc3-qcom-Defer-the-VBUS-override-while-suspende.patch
 0060-serial-qcom-geni-Clear-pending-IRQs-while-suspended.patch
 0070-power-supply-qcom_battmgr-Invert-the-battery-current.patch

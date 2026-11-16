@@ -1,0 +1,151 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Mon, 16 Nov 2026 14:04:56 +0900
+Subject: [PATCH] usb: dwc3: qcom: Defer the VBUS override while suspended
+
+A role switch can reach dwc3_qcom_set_role_notifier() while the system
+sleeps: a UCSI connector change is handled from the system workqueue,
+which keeps running during s2idle, and the Type-C stack passes the new
+data role to the controller. With the device left active,
+pm_runtime_resume_and_get() returns success without resuming anything,
+as runtime PM is disabled, and the notifier writes the QSCRATCH
+registers after dwc3_qcom_suspend() turned their clocks off. A USB-C
+plug during s2idle on the Lenovo Legion Y700 2025 resets the board this
+way.
+
+While suspended, keep the new role and the VBUS override it needs,
+apply the override in dwc3_qcom_resume() and warn about the role
+change. This also covers a device that went into the sleep runtime
+suspended, where pm_runtime_resume_and_get() fails and the role was
+dropped. A mutex keeps the check and the register writes from racing
+with suspend and resume.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ drivers/usb/dwc3/dwc3-qcom.c | 56 +++++++++++++++++++++++++++---------
+ 1 file changed, 42 insertions(+), 14 deletions(-)
+
+diff --git a/drivers/usb/dwc3/dwc3-qcom.c b/drivers/usb/dwc3/dwc3-qcom.c
+index a2608416e..71fdaa6d8 100644
+--- a/drivers/usb/dwc3/dwc3-qcom.c
++++ b/drivers/usb/dwc3/dwc3-qcom.c
+@@ -10,6 +10,7 @@
+ #include <linux/irq.h>
+ #include <linux/of_clk.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/kernel.h>
+ #include <linux/interconnect.h>
+ #include <linux/platform_device.h>
+@@ -79,12 +80,15 @@ struct dwc3_qcom {
+ 	u8			num_ports;
+ 
+ 	enum usb_dr_mode	mode;
++	struct mutex		lock;
+ 	bool			is_suspended;
+ 	bool			pm_suspended;
+ 	struct icc_path		*icc_path_ddr;
+ 	struct icc_path		*icc_path_apps;
+ 
+ 	enum usb_role		current_role;
++	bool			vbus_pending;
++	bool			vbus_override;
+ };
+ 
+ #define to_dwc3_qcom(d) container_of((d), struct dwc3_qcom, dwc)
+@@ -348,7 +352,11 @@ static int dwc3_qcom_suspend(struct dwc3_qcom *qcom, bool wakeup)
+ 		if (!(val & PWR_EVNT_LPM_IN_L2_MASK))
+ 			dev_err(qcom->dev, "port-%d HS-PHY not in L2\n", i + 1);
+ 	}
+-	clk_bulk_disable_unprepare(qcom->num_clocks, qcom->clks);
++
++	scoped_guard(mutex, &qcom->lock) {
++		clk_bulk_disable_unprepare(qcom->num_clocks, qcom->clks);
++		qcom->is_suspended = true;
++	}
+ 
+ 	ret = dwc3_qcom_interconnect_disable(qcom);
+ 	if (ret)
+@@ -364,8 +372,6 @@ static int dwc3_qcom_suspend(struct dwc3_qcom *qcom, bool wakeup)
+ 		dwc3_qcom_enable_interrupts(qcom);
+ 	}
+ 
+-	qcom->is_suspended = true;
+-
+ 	return 0;
+ }
+ 
+@@ -395,7 +401,13 @@ static int dwc3_qcom_resume(struct dwc3_qcom *qcom, bool wakeup)
+ 				  PWR_EVNT_LPM_IN_L2_MASK | PWR_EVNT_LPM_OUT_L2_MASK);
+ 	}
+ 
+-	qcom->is_suspended = false;
++	scoped_guard(mutex, &qcom->lock) {
++		if (qcom->vbus_pending) {
++			dwc3_qcom_vbus_override_enable(qcom, qcom->vbus_override);
++			qcom->vbus_pending = false;
++		}
++		qcom->is_suspended = false;
++	}
+ 
+ 	return 0;
+ }
+@@ -561,22 +573,34 @@ static int dwc3_qcom_setup_irq(struct dwc3_qcom *qcom, struct platform_device *p
+ static void dwc3_qcom_set_role_notifier(struct dwc3 *dwc, enum usb_role next_role)
+ {
+ 	struct dwc3_qcom *qcom = to_dwc3_qcom(dwc);
++	bool enable = qcom->current_role != USB_ROLE_DEVICE;
++	int ret;
+ 
+ 	if (qcom->current_role == next_role)
+ 		return;
+ 
+-	if (pm_runtime_resume_and_get(qcom->dev)) {
+-		dev_dbg(qcom->dev, "Failed to resume device\n");
+-		return;
++	ret = pm_runtime_resume_and_get(qcom->dev);
++
++	scoped_guard(mutex, &qcom->lock) {
++		if (ret && !qcom->is_suspended) {
++			dev_dbg(qcom->dev, "Failed to resume device\n");
++			return;
++		}
++
++		if (qcom->is_suspended) {
++			dev_warn(qcom->dev, "role change to %s while suspended\n",
++				 usb_role_string(next_role));
++			qcom->vbus_override = enable;
++			qcom->vbus_pending = true;
++		} else {
++			dwc3_qcom_vbus_override_enable(qcom, enable);
++		}
+ 	}
+ 
+-	if (qcom->current_role == USB_ROLE_DEVICE)
+-		dwc3_qcom_vbus_override_enable(qcom, false);
+-	else if (qcom->current_role != USB_ROLE_DEVICE)
+-		dwc3_qcom_vbus_override_enable(qcom, true);
+-
+-	pm_runtime_mark_last_busy(qcom->dev);
+-	pm_runtime_put_sync(qcom->dev);
++	if (!ret) {
++		pm_runtime_mark_last_busy(qcom->dev);
++		pm_runtime_put_sync(qcom->dev);
++	}
+ 
+ 	/*
+ 	 * Current role changes via usb_role_switch_set_role callback protected
+@@ -624,6 +648,10 @@ static int dwc3_qcom_probe(struct platform_device *pdev)
+ 
+ 	qcom->dev = &pdev->dev;
+ 
++	ret = devm_mutex_init(dev, &qcom->lock);
++	if (ret)
++		return ret;
++
+ 	qcom->resets = devm_reset_control_array_get_optional_exclusive(dev);
+ 	if (IS_ERR(qcom->resets)) {
+ 		return dev_err_probe(&pdev->dev, PTR_ERR(qcom->resets),
+-- 
+2.43.0
+
