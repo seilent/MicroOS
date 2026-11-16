@@ -212,7 +212,7 @@ jobs:
 
       - name: Restore ccache
         if: >-
-          (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && (startsWith(matrix.package, 'kernel-') || contains(fromJSON('["microset","hyprland"]'), matrix.package))
+          (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && (startsWith(matrix.package, 'kernel-') || contains(fromJSON('["microset","hyprland","hyprsunset","hyprpicker","xdg-desktop-portal-hyprland"]'), matrix.package))
           && steps.local.outputs.skip != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
@@ -223,7 +223,7 @@ jobs:
       - name: Build
         if: (steps.check.outputs.build == 'true' || steps.verify.outputs.build == 'true') && steps.local.outputs.skip != 'true'
         env:
-          CACHE: ${{ (startsWith(matrix.package, 'kernel-') || contains(fromJSON('["microset","hyprland"]'), matrix.package)) && format('{0}/ccache', runner.temp) || '' }}
+          CACHE: ${{ (startsWith(matrix.package, 'kernel-') || contains(fromJSON('["microset","hyprland","hyprsunset","hyprpicker","xdg-desktop-portal-hyprland"]'), matrix.package)) && format('{0}/ccache', runner.temp) || '' }}
         run: PKG_CCACHE="$CACHE" just pkg "$PKG"
 
       - name: Save

@@ -20,6 +20,10 @@ own=(
   hyprland/aquamarine
   hyprland/hyprcursor
   hyprgrass/hyprgrass
+  hyprsunset/hyprsunset
+  hyprpicker/hyprpicker
+  xdg-desktop-portal-hyprland/xdg-desktop-portal-hyprland
+  microos-fonts/microos-fonts
 )
 
 own_rpm() {
@@ -188,5 +192,5 @@ dnf -y install \
   unzip \
   "${rpms[@]}"
 
-printf '[main]\nexcludepkgs=hyprland,hyprutils,hyprlang,hyprgraphics,hyprwire,hyprcursor,aquamarine,hyprgrass,udis86\n' \
+printf '[main]\nexcludepkgs=hyprland,hyprutils,hyprlang,hyprgraphics,hyprwire,hyprcursor,aquamarine,hyprgrass,hyprsunset,hyprpicker,xdg-desktop-portal-hyprland,udis86\n' \
   > /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf

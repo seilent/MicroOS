@@ -55,6 +55,15 @@ Projects MicroOS builds, with their authors and license.
 | `glaze` in the `hyprland` stack, `glaze-devel` | [stephenberry/glaze](https://github.com/stephenberry/glaze) `v7.2.0` `b518eec7a2` | Stephen Berry | MIT |
 | `hyprgrass` | [horriblename/hyprgrass](https://github.com/horriblename/hyprgrass) `hl-0.57.0` `8ca1af717d` | Ching Pei Yang | BSD-3-Clause; `LICENSE.aosp` Apache-2.0 |
 | `hyprgrass` wf-touch subproject | [WayfireWM/wf-touch](https://github.com/WayfireWM/wf-touch) `8974eb0f6a` | Wayfire | MIT |
+| `hyprsunset` | [hyprwm/hyprsunset](https://github.com/hyprwm/hyprsunset) `v0.4.0` `25f704346e` | Hypr Development | BSD-3-Clause |
+| `hyprpicker` | [hyprwm/hyprpicker](https://github.com/hyprwm/hyprpicker) `v0.4.8` `838147963f` | Hypr Development | BSD-3-Clause |
+| `xdg-desktop-portal-hyprland` | [hyprwm/xdg-desktop-portal-hyprland](https://github.com/hyprwm/xdg-desktop-portal-hyprland) `v1.4.1` `cc8e5ef8fb` | Hypr Development | BSD-3-Clause |
+| Material Symbols (Outlined, Rounded, Sharp) in `microos-fonts` | [google/material-design-icons](https://github.com/google/material-design-icons) `10ecc14790` | Google | Apache-2.0 |
+| Google Sans Flex in `microos-fonts` | [google/fonts](https://github.com/google/fonts) `cc39c4c2c3` `ofl/googlesansflex` | The Google Sans Flex Authors | OFL-1.1 |
+| Space Grotesk in `microos-fonts` | [google/fonts](https://github.com/google/fonts) `cc39c4c2c3` `ofl/spacegrotesk` | The Space Grotesk Project Authors | OFL-1.1 |
+| Readex Pro in `microos-fonts` | [google/fonts](https://github.com/google/fonts) `cc39c4c2c3` `ofl/readexpro` | The Readex Pro Project Authors | OFL-1.1 |
+| Rubik in `microos-fonts` | [google/fonts](https://github.com/google/fonts) `cc39c4c2c3` `ofl/rubik` | The Rubik Project Authors | OFL-1.1 |
+| JetBrains Mono Nerd Font in `microos-fonts` | [ryanoasis/nerd-fonts](https://github.com/ryanoasis/nerd-fonts) `v3.4.0`, JetBrains Mono `2.304` patched | The JetBrains Mono Project Authors, Ryan L McIntyre and Nerd Fonts contributors | OFL-1.1 (JetBrains Mono); MIT (Nerd Fonts patcher) |
 | `audioreach-topology` m4 macros | [Linaro audioreach-topology](https://git.codelinaro.org/linaro/qcomlt/audioreach-topology) `1d4c4e337d` | Linaro Ltd | BSD-3-Clause |
 | `wvkbd` | [jjsullivan5196/wvkbd](https://github.com/jjsullivan5196/wvkbd) `v0.21` `f7e9ea3a75` | John Sullivan | GPL-3.0-only; MIT for Wayland's `os-compatibility` (Kristian Høgsberg, Intel and Wayland contributors) and `wld` (Michael Forney); HPND-sell-variant for the `wlr-layer-shell` description (Drew DeVault) |
 

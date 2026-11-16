@@ -1,0 +1,8 @@
+FROM localhost/microos-pkg-builder
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+      cmake gcc-c++ pkgconf-pkg-config \
+      hyprwayland-scanner-devel qt6-qtbase-devel \
+      wayland-devel wayland-protocols-devel pipewire-devel \
+      libdrm-devel libuuid-devel mesa-libgbm-devel sdbus-cpp-devel pixman-devel \
+ && dnf clean all

@@ -1,0 +1,8 @@
+FROM localhost/microos-pkg-builder
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+      cmake gcc-c++ pkgconf-pkg-config \
+      hyprwayland-scanner-devel \
+      wayland-devel wayland-protocols-devel libxkbcommon-devel \
+      cairo-devel pango-devel libjpeg-turbo-devel pixman-devel \
+ && dnf clean all
