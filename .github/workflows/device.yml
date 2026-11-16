@@ -53,7 +53,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y podman skopeo
+          sudo apt-get install -y podman skopeo binutils
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
         with:
@@ -158,6 +158,20 @@ jobs:
             push_tag=dev-$short
             final_tag=dev-$short
             channel=false
+            branch=branch-$GITHUB_REF_NAME
+            if [[ $DEVICE == y700 && $GITHUB_REF == refs/heads/y700-* && ${#branch} -le 128 && $branch =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ ]]; then
+              rc=0
+              git ls-remote --exit-code https://github.com/seilent/microos-y700 "refs/heads/$GITHUB_REF_NAME" > /dev/null || rc=$?
+              if [[ $branch == branch-y700-fallback || $branch == branch-y700-gate-rebuild ]]; then
+                echo "::warning::$IMAGE:$branch is kept by hand, not published from here"
+              elif (( rc == 0 )); then
+                echo "::warning::$GITHUB_REF_NAME is a live microos-y700 branch, $IMAGE:$branch stays its own"
+              elif (( rc != 2 )); then
+                echo "::warning::git ls-remote of microos-y700 failed rc $rc, $IMAGE:$branch not published"
+              else
+                final_tag=$branch
+              fi
+            fi
           fi
           {
             echo "short=$short"
@@ -167,6 +181,17 @@ jobs:
             echo "version=$(date -u +%Y%m%d).$short"
           } >> "$GITHUB_OUTPUT"
           echo "$push_tag $final_tag"
+
+      - name: Stub
+        if: inputs.device == 'y700'
+        run: |
+          ctx=$RUNNER_TEMP/ctx
+          "$ctx/tests/stub.sh"
+          d=$ctx/system_files/usr/lib/microos/stub
+          mkdir -p "$d"
+          MICROOS_STUB_CONF=$ctx/system_files/usr/lib/microos/stub.conf "$ctx/build/y700-stub/pack" --preset-free --prefix "$d/stub-preset-free.bin"
+          cp "$ctx/system_files/usr/lib/microos/stub.conf" "$d/stub-preset-free.conf"
+          sha256sum "$d"/*
 
       - name: Build
         id: build
@@ -214,17 +239,20 @@ jobs:
           $PODMAN image inspect --format '{{.Size}}' "$IMAGE:$TAG" | awk '{ printf "image %.2f GB\n", $1 / 1e9 }'
 
       - name: InputPlumber config
+        if: inputs.device == 'pm2'
         run: |
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" -v "$RUNNER_TEMP/pkgs/inputplumber:/rpms:ro" \
             registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install cpio python3-jsonschema python3-pyyaml && /repo/tests/inputplumber-config.sh /rpms'
 
       - name: steamos-manager config
+        if: inputs.device == 'pm2'
         run: |
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$FEDORA" \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install python3 && /repo/tests/steamos-manager-config.sh'
 
       - name: Repo test key
+        if: inputs.device == 'pm2'
         id: testkey
         run: |
           sum=$({ git ls-files -s -- tests system_files build packages devices .github/workflows/image.yml .github/workflows/device.yml \
@@ -234,37 +262,40 @@ jobs:
 
       - name: Repo test cache
         id: testcache
+        if: inputs.device == 'pm2'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: ${{ runner.temp }}/testok
           key: repo-tests-${{ steps.testkey.outputs.sum }}-${{ steps.testkey.outputs.week }}
 
       - name: Repo tests passed earlier
-        if: steps.testcache.outputs.cache-hit == 'true'
+        if: inputs.device == 'pm2' && steps.testcache.outputs.cache-hit == 'true'
         run: echo "::notice::EQ chains and the repo script tests passed for key ${{ steps.testkey.outputs.sum }}, skipped"
 
       - name: EQ chains
-        if: steps.testcache.outputs.cache-hit != 'true'
+        if: inputs.device == 'pm2' && steps.testcache.outputs.cache-hit != 'true'
         run: |
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$FEDORA" \
             sh -c '/repo/build/pin-pipewire.sh /repo/packages/pipewire-aptx/SOURCE.env pulseaudio-utils python3-gobject python3-numpy dbus-daemon gcc-c++ ladspa-devel util-linux && /repo/tests/audio-eq.sh'
 
       - name: Steam module on Python 3.13
+        if: inputs.device == 'pm2'
         run: |
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$PYTHON313" python3 /repo/tests/steam-compat/module.py
 
       - name: Proton hook on Python 3.13
+        if: inputs.device == 'pm2'
         run: |
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$PYTHON313" python3 /repo/tests/proton-hook/hook.py
 
       - name: Android guest cmd
-        if: steps.testcache.outputs.cache-hit != 'true'
+        if: inputs.device == 'pm2' && steps.testcache.outputs.cache-hit != 'true'
         run: |
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$FEDORA" \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install mksh diffutils && /repo/tests/microos-android-cmd.sh --inner'
 
       - name: Repo tests
-        if: steps.testcache.outputs.cache-hit != 'true'
+        if: inputs.device == 'pm2' && steps.testcache.outputs.cache-hit != 'true'
         run: |
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx:/repo:ro" "$FEDORA" \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install python3-gobject python3-evdev dbus-daemon util-linux systemd-udev && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh && /repo/tests/steam-compat.sh && /repo/tests/proton-hook.sh && /repo/tests/lsfg-detect.sh && /repo/tests/abl.sh && /repo/tests/desktop-home.sh && /repo/tests/desktop-ready.sh'
@@ -272,10 +303,12 @@ jobs:
           date -u > "$RUNNER_TEMP/testok/passed"
 
       - name: USB display units
+        if: inputs.device == 'pm2'
         run: |
           "$RUNNER_TEMP/ctx/tests/usb-display-units.sh"
 
       - name: Test
+        if: inputs.device == 'pm2'
         env:
           TAG: ${{ steps.version.outputs.push_tag }}
         run: |
@@ -296,6 +329,23 @@ jobs:
           $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-seed.sh
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-libs.sh
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/lsfg-vk:/lsfg-vk:ro" "$IMAGE:$TAG" /tests/lsfg-loader.sh /lsfg-vk
+
+      - name: Test
+        if: inputs.device == 'y700'
+        env:
+          TAG: ${{ steps.version.outputs.push_tag }}
+        run: |
+          git fetch --no-tags --depth=1 origin main
+          PKG_HASH_BASE=FETCH_HEAD tests/pkg-hash.sh
+          "$RUNNER_TEMP/ctx/tests/android-return.sh"
+          $PODMAN run --rm -e "MICROOS_IMAGE=$IMAGE" -e "MICROOS_DEVICE=$DEVICE" -e MICROOS_REPO=/repo -v "$PWD:/repo:ro" \
+            -v "$RUNNER_TEMP/ctx/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/seed-rpm:ro" "$IMAGE:$TAG" /tests/image.sh
+          for t in bootimg bootimg-update bootok stub-lib etc-carry groups guard slot update usb-console bdaddr session steam-launcher steam-seed vpad sleep-gate sleep-hooks; do
+            $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" "/tests/$t.sh"
+          done
+          $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" \
+            sh -c 'dnf -yq --setopt=install_weak_deps=False install dbus-daemon && /tests/powerkey.sh && /tests/gameidle.sh'
+          $PODMAN run --rm -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-libs.sh
 
       - name: Source RPMs
         env:
@@ -323,6 +373,51 @@ jobs:
           digest=$(cat "$RUNNER_TEMP/digest")
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "$IMAGE:$TAG $digest"
+
+      - name: Layer xattrs
+        if: inputs.device == 'y700'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          auth=$RUNNER_TEMP/skopeo-auth.json
+          oci=$RUNNER_TEMP/pushed
+          trap 'rm -rf "${oci:?}" "${auth:?}"' EXIT
+          skopeo login --authfile "$auth" ghcr.io -u "$GH_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          skopeo copy --quiet --authfile "$auth" "docker://$IMAGE@$DIGEST" "oci:$oci"
+          [[ $(jq -r '.manifests[0].digest' "$oci/index.json") == "$DIGEST" ]] || { echo "::error::oci copy is not $DIGEST"; exit 1; }
+          python3 - "$oci" "$DIGEST" <<'PY'
+          import json, subprocess, sys, tarfile
+          oci, digest = sys.argv[1:]
+          blob = lambda d: f"{oci}/blobs/sha256/{d.split(':', 1)[1]}"
+          layers = json.load(open(blob(digest)))["layers"]
+          bad = []
+          for layer in layers:
+              kind = layer["mediaType"]
+              path = blob(layer["digest"])
+              if kind.endswith("+zstd"):
+                  proc = subprocess.Popen(["zstd", "-dc", path], stdout=subprocess.PIPE)
+                  t = tarfile.open(fileobj=proc.stdout, mode="r|")
+              elif kind.endswith(("+gzip", ".tar.gzip", ".tar")):
+                  proc = None
+                  t = tarfile.open(path, "r|*")
+              else:
+                  print(f"::error::layer {layer['digest']} has media type {kind}, not tar, gzip or zstd")
+                  sys.exit(1)
+              with t:
+                  for m in t:
+                      bad += [f"{layer['digest']} {m.name} {k}" for k in m.pax_headers
+                              if k.startswith(("SCHILY.xattr.user.overlay.", "SCHILY.xattr.trusted.overlay."))]
+              if proc and proc.wait() != 0:
+                  print(f"::error::zstd failed on layer {layer['digest']}")
+                  sys.exit(1)
+          if bad:
+              print("\n".join(bad[:20]))
+              print(f"::error::{len(bad)} overlay xattrs in the layers of {digest}")
+              sys.exit(1)
+          print(f"{len(layers)} layers, no overlay xattrs")
+          PY
 
       - name: Seed layer
         env:
@@ -431,7 +526,7 @@ jobs:
           while read -r f sum; do
             (( $(jobs -rp | wc -l) < 8 )) || wait -n
             { oras blob fetch --output "$cache/$f" "$IMAGE@sha256:$sum" > /dev/null 2>&1 || rm -f "$cache/$f"; } &
-          done < <(awk 'NR == FNR { need[$1] = 1; next } ($1 in need) && $2 ~ /^[0-9a-f]{64}$/ { print $1, $2 }' \
+          done < <(awk 'NR == FNR { need[$1] = 1; next } ($1 in need) && NF == 3 && $2 ~ /^[0-9a-f]{64}$/ { print $1, $2 }' \
             "$RUNNER_TEMP/need" "$RUNNER_TEMP/prev.SOURCES")
           wait
           echo "::notice::$(find "$cache" -name '*.src.rpm' | wc -l) of $(wc -l < "$RUNNER_TEMP/need") source rpms from $IMAGE:testing in $((SECONDS - start)) s"
@@ -441,8 +536,12 @@ jobs:
           MICROOS_SOURCE_CACHE: ${{ env.MODE == 'full' && format('{0}/cache', runner.temp) || '' }}
         run: |
           start=$SECONDS
+          mkdir -p "$RUNNER_TEMP/srpms/pkgs"
           build/source-artifact.sh "$RUNNER_TEMP/srpms/srpms.tsv" "$RUNNER_TEMP/source" "$MODE" "$RUNNER_TEMP/srpms/pkgs"
           echo "$((SECONDS - start)) s"
+          unsigned=$(awk '$4 == "unsigned" { print "- `" $1 "` " $3 }' "$RUNNER_TEMP/source/SOURCES")
+          [[ -z $unsigned ]] || printf '### Unsigned source rpms\n\nNo signed copy on koji, each checked against its koji rpm record.\n\n%s\n' \
+            "$unsigned" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attach
         id: attach
@@ -495,7 +594,8 @@ jobs:
         run: |
           cosign verify --key "$PUBKEY" "$IMAGE@$ART" > /dev/null
           . "packages/$KERNEL/SOURCE.env"
-          names=$(printf '%s\n' "microos-$SHORT.tar.gz" "linux-$KERNEL_VERSION.tar.xz")
+          if [[ -n ${KERNEL_URL:-} ]]; then linux=${KERNEL_URL##*/}; else linux=linux-${KERNEL_TAG#v}.tar.gz; fi
+          names=$(printf '%s\n' "microos-$SHORT.tar.gz" "$linux")
           if [[ $MODE == full ]]; then
             names+=$'\n'$(awk -F'\t' '$2 != "(none)" && ($3 != "MicroOS" || ($1 != "microos-kernel" && $1 != "microos-steam-seed")) { print $2 }' \
               "$RUNNER_TEMP/srpms/srpms.tsv" | sort -u)
@@ -516,7 +616,7 @@ jobs:
 
   publish:
     needs: [image, source]
-    if: needs.image.outputs.channel == 'true'
+    if: needs.image.outputs.final_tag != needs.image.outputs.push_tag
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
@@ -544,9 +644,9 @@ jobs:
           GH_ACTOR: ${{ github.actor }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          head=$(git ls-remote --exit-code "https://github.com/$GITHUB_REPOSITORY" refs/heads/main | cut -f1)
+          head=$(git ls-remote --exit-code "https://github.com/$GITHUB_REPOSITORY" "refs/heads/$GITHUB_REF_NAME" | cut -f1)
           if [[ $head != "$GITHUB_SHA" ]]; then
-            echo "::notice::main is at $head, not $GITHUB_SHA; $IMAGE:$TAG stays"
+            echo "::notice::$GITHUB_REF_NAME is at $head, not $GITHUB_SHA; $IMAGE:$TAG stays"
             exit 0
           fi
           label() { skopeo inspect --no-creds --format '{{index .Labels "org.opencontainers.image.version"}}' "$1"; }

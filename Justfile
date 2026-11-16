@@ -81,6 +81,30 @@ pkg name:
 kernel name:
     PKG_CCACHE="${XDG_CACHE_HOME:-$HOME/.cache}/microos-ccache/$1" just pkg "$1"
 
+kernel-dev:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . packages/kernel-y700/SOURCE.env
+    tree=${KERNEL_DEV_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/microos-kernel-dev}/$KERNEL_TAG
+    ccache=${XDG_CACHE_HOME:-$HOME/.cache}/microos-ccache/kernel-y700
+    out=out/pkg/kernel-dev
+    tag=localhost/microos-pkg/kernel-dev:$(build/pkg-hash.sh kernel-y700)
+    mkdir -p "$tree" "$ccache"
+    podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -t {{builder}} -f build/pkg.Containerfile build
+    rm -rf "$out"
+    mkdir -p "$out"
+    podman run --rm --memory=14g --cpus=8 -v "$ccache:/ccache:Z" -e CCACHE_DIR=/ccache \
+      -v "$tree:/kdev:Z" -e MICROOS_KERNEL_DEV=/kdev \
+      -v "$PWD/packages/kernel-y700:/src:ro,Z" -v "$PWD/$out:/out:Z" \
+      {{builder}} /src/build.sh /out
+    podman run --rm --memory=14g --cpus=8 --security-opt apparmor=unconfined \
+      -v "$PWD/tests:/tests:ro,Z" -v "$PWD/$out:/out:ro,Z" \
+      {{builder}} /tests/pkg-kernel-y700.sh /out
+    podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -f build/pkg-wrap.Containerfile \
+      --label microos.dirty=1 -t "$tag" "$out"
+    echo "$tag"
+    echo "dtbs: $tree/obj/arch/arm64/boot/dts/qcom"
+
 pkg-push name:
     #!/usr/bin/env bash
     set -euo pipefail

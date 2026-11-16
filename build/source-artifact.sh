@@ -49,10 +49,20 @@ short=${sha::7}
 git -C "$root" archive --format=tar.gz --prefix=microos/ -o "$out/microos-$short.tar.gz" HEAD
 printf '%s %s\n' "microos-$short.tar.gz" "$repo/tree/$sha" > "$tmp/origins"
 
-kernel=linux-$KERNEL_VERSION.tar.xz
-curl -fsSL --retry 5 --retry-all-errors -o "$out/$kernel" "$KERNEL_URL"
-[[ $(sha256sum < "$out/$kernel" | cut -d' ' -f1) == "$KERNEL_SHA256" ]] || fail "$kernel sha256 mismatch"
-printf '%s %s\n' "$kernel" "$KERNEL_URL" >> "$tmp/origins"
+if [[ -n ${KERNEL_URL:-} ]]; then
+  kernel=${KERNEL_URL##*/}
+  curl -fsSL --retry 5 --retry-all-errors -o "$out/$kernel" "$KERNEL_URL"
+  [[ $(sha256sum < "$out/$kernel" | cut -d' ' -f1) == "$KERNEL_SHA256" ]] || fail "$kernel sha256 mismatch"
+  printf '%s %s\n' "$kernel" "$KERNEL_URL" >> "$tmp/origins"
+else
+  kernel=linux-${KERNEL_TAG#v}.tar.gz
+  git init -q "$tmp/linux"
+  git -C "$tmp/linux" fetch -q --depth 1 "$KERNEL_GIT" "refs/tags/$KERNEL_TAG" || fail "fetch of $KERNEL_TAG failed"
+  [[ $(git -C "$tmp/linux" rev-parse 'FETCH_HEAD^{commit}') == "$KERNEL_COMMIT" ]] || fail "$KERNEL_TAG is not $KERNEL_COMMIT"
+  git -C "$tmp/linux" archive --format=tar.gz --prefix="linux-${KERNEL_TAG#v}/" -o "$out/$kernel" "$KERNEL_COMMIT"
+  rm -rf "${tmp:?}/linux"
+  printf '%s %s\n' "$kernel" "$KERNEL_GIT/tag/?h=$KERNEL_TAG" >> "$tmp/origins"
+fi
 
 if [[ $mode == full ]]; then
   sort -u "$tmp/own" | while read -r f path url; do
@@ -61,31 +71,86 @@ if [[ $mode == full ]]; then
   done
   awk -F'\t' '$3 != "MicroOS" && $2 != "(none)" { print $2 }' "$tsv" | sort -u > "$tmp/srpms"
   [[ -s $tmp/srpms ]] || fail "no source rpms in $tsv"
-  get=()
+  get=() fetched=() unsigned=()
   while read -r f; do
     [[ $f =~ $nevra && $f != *..* ]] || fail "bad source rpm name $f"
-    url=$koji/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}/data/signed/$key/src/$f
     if [[ -n ${MICROOS_SOURCE_CACHE:-} && -s $MICROOS_SOURCE_CACHE/$f ]]; then
       ln "$MICROOS_SOURCE_CACHE/$f" "$out/$f" 2> /dev/null || cp "$MICROOS_SOURCE_CACHE/$f" "$out/$f"
     else
-      get+=(-o "$out/$f" "$url")
+      get+=(-o "$out/$f" "$koji/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}/data/signed/$key/src/$f")
+      fetched+=("$f")
     fi
-    printf '%s %s\n' "$f" "$url" >> "$tmp/origins"
   done < "$tmp/srpms"
-  echo "source-artifact: $(( $(wc -l < "$tmp/srpms") - ${#get[@]} / 2 )) source rpms from the cache, $(( ${#get[@]} / 2 )) from koji"
+  echo "source-artifact: $(( $(wc -l < "$tmp/srpms") - ${#fetched[@]} )) source rpms from the cache, ${#fetched[@]} from koji"
   if (( ${#get[@]} )); then
-    curl -fsSLg --retry 5 --retry-all-errors --parallel --parallel-max 8 "${get[@]}" || fail "source rpm download failed"
+    curl -fsSLg --retry 5 --parallel --parallel-max 8 "${get[@]}" || true
   fi
+  for f in "${fetched[@]}"; do
+    [[ ! -s $out/$f ]] || continue
+    rm -f "$out/$f"
+    [[ $f =~ $nevra ]]
+    base=$koji/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}
+    code=$(curl -sILg -o /dev/null -w '%{http_code}' --retry 5 --retry-all-errors "$base/data/signed/$key/src/$f") || code=000
+    if [[ $code == 200 ]]; then
+      curl -fsSLg --retry 5 --retry-all-errors -o "$out/$f" "$base/data/signed/$key/src/$f" || fail "$f: signed download failed"
+      continue
+    fi
+    [[ $code == 404 ]] || fail "$f: the signed copy answered $code"
+    curl -fsSLg --retry 5 --retry-all-errors -o "$out/$f" "$base/src/$f" || fail "$f: no signed copy and the unsigned download failed"
+    unsigned+=("$f")
+  done
+  : > "$tmp/signed"
   while read -r f; do
     [[ -s $out/$f ]] || fail "$f missing"
+    [[ $f =~ $nevra ]]
+    base=$koji/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}/${BASH_REMATCH[3]}
+    if [[ " ${unsigned[*]} " == *" $f "* ]]; then
+      printf '%s %s unsigned\n' "$f" "$base/src/$f" >> "$tmp/origins"
+    else
+      printf '%s %s\n' "$f" "$base/data/signed/$key/src/$f" >> "$tmp/origins"
+      echo "$f" >> "$tmp/signed"
+    fi
   done < "$tmp/srpms"
-  podman run --rm -v "$out:/src:ro" "$fedora" sh -c 'cd /src && rpm -K -- *.src.rpm' > "$tmp/rpmk" \
-    || { grep -v ': digests signatures OK$' "$tmp/rpmk" >&2; fail "rpm -K failed"; }
-  [[ $(grep -c ': digests signatures OK$' "$tmp/rpmk") == "$(wc -l < "$tmp/srpms")" ]] || fail "rpm -K did not pass every source rpm"
+  mapfile -t signed < "$tmp/signed"
+  if (( ${#signed[@]} )); then
+    podman run --rm -v "$out:/src:ro" "$fedora" sh -c 'cd /src && rpm -K -- "$@"' sh "${signed[@]}" > "$tmp/rpmk" \
+      || { grep -v ': digests signatures OK$' "$tmp/rpmk" >&2; fail "rpm -K failed"; }
+    [[ $(grep -c ': digests signatures OK$' "$tmp/rpmk") == "${#signed[@]}" ]] || fail "rpm -K did not pass every signed source rpm"
+  fi
+  if (( ${#unsigned[@]} )); then
+    echo "source-artifact: no signed copy on koji, checked against its rpm records: ${unsigned[*]}"
+    podman run --rm -v "$out:/src:ro" "$fedora" sh -c 'cd /src && rpm -K --nosignature -- "$@"' sh "${unsigned[@]}" > "$tmp/rpmk" \
+      || { cat "$tmp/rpmk" >&2; fail "rpm -K --nosignature failed"; }
+    [[ $(grep -c ': digests OK$' "$tmp/rpmk") == "${#unsigned[@]}" ]] || fail "rpm -K --nosignature did not pass every unsigned source rpm"
+    podman run --rm -v "$out:/src:ro" "$fedora" sh -c 'cd /src && for f; do printf "%s %s\n" "$f" "$(rpm -qp --qf "%{SIGMD5} %{SHA256HEADER}" -- "$f")"; done' \
+      sh "${unsigned[@]}" > "$tmp/got" || fail "rpm -qp failed on the unsigned source rpms"
+    python3 - "$tmp/got" "$out" << 'EOF' || fail "unsigned source rpms differ from koji's rpm records"
+import os, socket, sys, time, xmlrpc.client
+socket.setdefaulttimeout(60)
+hub = xmlrpc.client.ServerProxy("https://koji.fedoraproject.org/kojihub")
+def rpm(nvra):
+    for n in range(3):
+        try:
+            return hub.getRPM(nvra) or {}
+        except (OSError, xmlrpc.client.ProtocolError):
+            if n == 2:
+                raise
+            time.sleep(10)
+bad = 0
+for line in open(sys.argv[1]):
+    f, md5, sha = line.split()
+    r = rpm(f.removesuffix(".rpm"))
+    size = os.path.getsize(os.path.join(sys.argv[2], f))
+    if r.get("payloadhash") != md5 or r.get("sha256header") not in (None, sha) or r.get("size") != size:
+        print(f"{f}: koji {r.get('payloadhash')} {r.get('sha256header')} {r.get('size')}, file {md5} {sha} {size}", file=sys.stderr)
+        bad = 1
+sys.exit(bad)
+EOF
+  fi
 fi
 
-sort "$tmp/origins" | while read -r f url; do
-  printf '%s %s %s\n' "$f" "$(sha256sum < "$out/$f" | cut -d' ' -f1)" "$url"
+sort "$tmp/origins" | while read -r f url flag; do
+  printf '%s %s %s%s\n' "$f" "$(sha256sum < "$out/$f" | cut -d' ' -f1)" "$url" "${flag:+ $flag}"
 done > "$tmp/SOURCES"
 [[ $(find "$out" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort) == "$(cut -d' ' -f1 "$tmp/SOURCES")" ]] || fail "files in $out differ from SOURCES"
 mv "$tmp/SOURCES" "$out/SOURCES"

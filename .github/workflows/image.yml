@@ -33,3 +33,15 @@ jobs:
     secrets:
       SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
       SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+
+  y700:
+    needs: packages
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/device.yml
+    with:
+      device: y700
+    secrets:
+      SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
+      SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
