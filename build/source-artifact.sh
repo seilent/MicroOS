@@ -57,7 +57,9 @@ if [[ -n ${KERNEL_URL:-} ]]; then
 else
   kernel=linux-${KERNEL_TAG#v}.tar.gz
   git init -q "$tmp/linux"
-  git -C "$tmp/linux" fetch -q --depth 1 "$KERNEL_GIT" "refs/tags/$KERNEL_TAG" || fail "fetch of $KERNEL_TAG failed"
+  git -C "$tmp/linux" fetch -q --depth 1 "$KERNEL_GIT" "refs/tags/$KERNEL_TAG" \
+    || git -C "$tmp/linux" fetch -q --depth 1 https://github.com/torvalds/linux.git "refs/tags/$KERNEL_TAG" \
+    || fail "fetch of $KERNEL_TAG failed"
   [[ $(git -C "$tmp/linux" rev-parse 'FETCH_HEAD^{commit}') == "$KERNEL_COMMIT" ]] || fail "$KERNEL_TAG is not $KERNEL_COMMIT"
   git -C "$tmp/linux" archive --format=tar.gz --prefix="linux-${KERNEL_TAG#v}/" -o "$out/$kernel" "$KERNEL_COMMIT"
   rm -rf "${tmp:?}/linux"
