@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+import subprocess
+import sys
+
+if len(sys.argv) < 3:
+    raise SystemExit("usage: gen-abl-sink <out.dtsi> <soc.dtb>...")
+
+labels = []
+seen = set()
+for dtb in sys.argv[2:]:
+    out = subprocess.run(["fdtget", "-p", dtb, "/__symbols__"], capture_output=True, text=True, check=True).stdout
+    for name in out.split():
+        if name not in seen:
+            seen.add(name)
+            labels.append(name)
+
+lines = ["// SPDX-License-Identifier: BSD-3-Clause", "", "/ {", "\tabl-overlay-sink {"]
+for i, name in enumerate(labels):
+    lines += [f"\t\t{name} {{", f"\t\t\tphandle = <0x{0x7fff0001 + i:x}>;", "\t\t};", ""]
+lines[-1:] = ["\t};", "", "\t__symbols__ {"]
+for name in labels:
+    lines.append(f'\t\t{name} = "/abl-overlay-sink/{name}";')
+lines += ["\t};", "};"]
+open(sys.argv[1], "w").write("\n".join(lines) + "\n")
+print(len(labels))

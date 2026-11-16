@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-bootimg-build
+die() { echo "$me: $*" >&2; exit 1; }
+usage="usage: $me --root <deployment root> --kernel <vmlinuz> --initrd <img> --dtb <dtb> --options <options> --sysroot <sysroot> --out <file> [--id] [--test <case>] [--maxcpus <n>] [--slot-a] [--root-missing]"
+cases=" 1 once noguard bootloader panic emergency wdhang gptdump "
+
+root="" kernel="" initrd="" dtb="" options="" sysroot="" out="" idonly=0 test="" maxcpus="" slota=0 rootmissing=0
+while (( $# )); do
+  case $1 in
+    --root) root=${2:?$usage}; shift 2 ;;
+    --kernel) kernel=${2:?$usage}; shift 2 ;;
+    --initrd) initrd=${2:?$usage}; shift 2 ;;
+    --dtb) dtb=${2:?$usage}; shift 2 ;;
+    --options) options=${2?$usage}; shift 2 ;;
+    --sysroot) sysroot=${2:?$usage}; shift 2 ;;
+    --out) out=${2:?$usage}; shift 2 ;;
+    --id) idonly=1; shift ;;
+    --test) test=${2:?$usage}; shift 2 ;;
+    --maxcpus) maxcpus=${2:?$usage}; shift 2 ;;
+    --slot-a) slota=1; shift ;;
+    --root-missing) rootmissing=1; shift ;;
+    *) die "$usage" ;;
+  esac
+done
+[[ -n $root && -n $kernel && -n $initrd && -n $dtb && -n $sysroot ]] || die "$usage"
+(( idonly )) || [[ -n $out ]] || die "$usage"
+[[ -z $test || $cases == *" $test "* ]] || die "--test $test is not one of$cases"
+[[ -z $maxcpus || $maxcpus =~ ^[1-8]$ ]] || die "--maxcpus $maxcpus is not 1 to 8"
+
+conf=$root/usr/lib/microos/bootimg.conf
+[[ -r $conf ]] || die "missing $conf"
+. "$conf"
+[[ $MICROOS_DTB_MODE == separate || $MICROOS_DTB_MODE == append ]] || die "MICROOS_DTB_MODE '$MICROOS_DTB_MODE' is not separate or append"
+
+if [[ -n ${MICROOS_OS_PATCH_LEVEL:-} ]]; then
+  [[ $MICROOS_OS_PATCH_LEVEL =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "MICROOS_OS_PATCH_LEVEL '$MICROOS_OS_PATCH_LEVEL' is not YYYY-MM-DD"
+  patch=$MICROOS_OS_PATCH_LEVEL
+else
+  vfile=$root/usr/lib/microos/version
+  [[ -r $vfile ]] || die "missing $vfile"
+  version=$(sed -n 's/^IMAGE_VERSION=//p' "$vfile" | head -1 | tr -d "\"'")
+  [[ $version =~ ^([0-9]{4})([0-9]{2})[0-9]{2}\.[0-9a-z]+$ ]] || die "bad IMAGE_VERSION '$version' in $vfile"
+  patch=${BASH_REMATCH[1]}-${BASH_REMATCH[2]}
+fi
+
+bootlink=""
+set -f
+for w in $options; do
+  if [[ $w == ostree=* ]]; then
+    bootlink=${w#ostree=}
+    break
+  fi
+done
+set +f
+[[ -n $bootlink ]] || die "no ostree= in the options"
+target=$(realpath -e "$sysroot$bootlink") || die "$bootlink does not resolve under $sysroot"
+deploy=${target##*/}
+[[ $deploy =~ ^[0-9a-f]{64}\.[0-9]+$ ]] || die "$bootlink resolves to $target, not a deployment"
+
+cmdline=$(microos_cmdline "$options" "$deploy") || die "cannot build the cmdline"
+read -ra words <<< "$cmdline"
+if (( rootmissing )); then
+  found=0
+  for i in "${!words[@]}"; do
+    if [[ ${words[i]} == root=* ]]; then
+      words[i]=root=PARTLABEL=microos_missing
+      found=1
+    fi
+  done
+  (( found )) || die "--root-missing needs a root= in the options"
+fi
+[[ -z $test ]] || words+=("microos.test=$test")
+[[ -z $maxcpus ]] || words+=("maxcpus=$maxcpus")
+(( ! slota )) || words+=(initcall_blacklist=msm_drm_register)
+cmdline="${words[*]}"
+idlen=$(( ${#cmdline} + 24 ))
+if (( slota && idlen > MICROOS_CMDLINE_MAX )); then
+  kept=()
+  for w in "${words[@]}"; do
+    [[ $w == cpuidle.off=1 ]] || kept+=("$w")
+  done
+  cmdline="${kept[*]}"
+fi
+
+id=$(microos_bootimg_id "$cmdline" "$kernel" "$initrd" "$dtb" "$patch") || die "cannot compute the id"
+if (( idonly )); then
+  echo "$id"
+  exit 0
+fi
+cmdline+=" microos.id=${id:0:12}"
+(( ${#cmdline} <= MICROOS_CMDLINE_MAX )) || die "cmdline is ${#cmdline} bytes, the limit is $MICROOS_CMDLINE_MAX"
+
+[[ $(od -An -tx1 -j56 -N4 "$kernel" | tr -d ' \n') == 41524d64 ]] || die "$kernel is not a raw arm64 Image"
+[[ $(od -An -tx1 -N4 "$dtb" | tr -d ' \n') == d00dfeed ]] || die "$dtb is not a DTB"
+key=$root/usr/share/microos/avb/testkey_rsa4096.pem
+[[ -r $key ]] || die "missing $key"
+
+read -ra args <<< "$MICROOS_BOOTIMG_ARGS"
+page="" osv=""
+for i in "${!args[@]}"; do
+  [[ ${args[i]} != --pagesize ]] || page=${args[i + 1]:-}
+  [[ ${args[i]} != --os_version ]] || osv=${args[i + 1]:-}
+done
+[[ $page =~ ^[0-9]+$ ]] || die "no --pagesize in MICROOS_BOOTIMG_ARGS"
+[[ $osv =~ ^[0-9]+(\.[0-9]+)*$ ]] || die "no --os_version in MICROOS_BOOTIMG_ARGS"
+isize=$(od -An -tu8 -j16 -N8 --endian=little "$kernel" | tr -d ' \n')
+rsize=$(stat -c %s "$initrd")
+ram=$(( (rsize + page - 1) / page * page ))
+(( isize + ram < MICROOS_ABL_BUDGET )) ||
+  die "kernel image_size $isize plus ramdisk $ram is $((isize + ram)), the ABL budget is $MICROOS_ABL_BUDGET"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+gzip -n -9 -c "$kernel" > "$work/kernel"
+dtbargs=()
+if [[ $MICROOS_DTB_MODE == separate ]]; then
+  dtbargs=(--dtb "$dtb")
+else
+  cat "$dtb" >> "$work/kernel"
+fi
+
+"${MKBOOTIMG:-/usr/bin/mkbootimg}" "${args[@]}" --os_patch_level "$patch" "${dtbargs[@]}" \
+  --kernel "$work/kernel" --ramdisk "$initrd" --cmdline "$cmdline" --output "$work/boot.img" >&2
+"${AVBTOOL:-/usr/bin/avbtool}" add_hash_footer --image "$work/boot.img" --partition_name boot \
+  --partition_size "$MICROOS_AVB_PARTITION_SIZE" --algorithm SHA256_RSA4096 --key "$key" \
+  --rollback_index "$MICROOS_AVB_ROLLBACK" --salt "$id" --prop "com.android.build.boot.os_version:${osv%%.*}" \
+  --prop "com.android.build.boot.security_patch:$patch" >&2
+[[ $(stat -c %s "$work/boot.img") == "$MICROOS_AVB_PARTITION_SIZE" ]] || die "boot image is not $MICROOS_AVB_PARTITION_SIZE bytes"
+mv -f "$work/boot.img" "$out"
+echo "$id"

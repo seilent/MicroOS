@@ -1,0 +1,11 @@
+#!/bin/sh
+tty=${MICROOS_USB_TTY:-/dev/ttyGS0}
+/usr/libexec/microos/microos-usb-console start || exit 0
+i=0
+while [ ! -c "$tty" ] && [ "$i" -lt 40 ]; do
+  sleep 0.5
+  i=$((i + 1))
+done
+[ -c "$tty" ] || exit 0
+stty -F "$tty" raw -echo 2> /dev/null
+exec journalctl -b -f -o short-monotonic --no-pager > "$tty"

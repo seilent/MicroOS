@@ -1,0 +1,49 @@
+#!/bin/sh
+set -u
+
+dev=${MICROOS_EFI_DEV:-/dev/disk/by-partlabel/microos_efi}
+dir=${MICROOS_EFI_DIR:-}
+mnt=/run/microos-initrd-log
+
+if [ -n "$dir" ]; then
+  efi=$dir
+else
+  [ -b "$dev" ] || exit 0
+  mkdir -p "$mnt"
+  mountpoint -q "$mnt" || timeout 30 mount -t vfat -o umask=0077 "$dev" "$mnt" || exit 0
+  efi=$mnt
+fi
+
+logs=$efi/logs
+mkdir -p "$logs" || exit 0
+n=0
+for f in "$logs"/initrd-*.txt; do
+  [ -e "$f" ] || continue
+  k=${f##*/initrd-}
+  k=${k%.txt}
+  case $k in
+    ''|*[!0-9]*) continue ;;
+  esac
+  [ "$k" -le "$n" ] || n=$k
+done
+n=$((n + 1))
+{
+  echo "initrd $(cat /etc/microos-initrd-id 2> /dev/null)"
+  cat /proc/cmdline 2> /dev/null
+  echo "== dmesg"
+  dmesg 2> /dev/null
+  echo "== journal"
+  timeout 30 journalctl -b -o short-monotonic --no-pager 2> /dev/null
+} > "$logs/initrd-$n.txt"
+for f in "$logs"/initrd-*.txt; do
+  [ -e "$f" ] || continue
+  k=${f##*/initrd-}
+  k=${k%.txt}
+  case $k in
+    ''|*[!0-9]*) continue ;;
+  esac
+  [ "$k" -gt $((n - 8)) ] || rm -f "$f"
+done
+sync
+[ -n "$dir" ] || umount "$mnt"
+exit 0

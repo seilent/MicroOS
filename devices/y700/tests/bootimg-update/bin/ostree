@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+s=$FAKE_STATE/status.json
+echo "ostree $*" >> "$FAKE_STATE/ostree.log"
+case "$*" in
+  "admin status --json") cat "$s" ;;
+  "admin lock-finalization --unlock") ;;
+  "admin finalize-staged")
+    jq '(.deployments[] | .staged) = false' "$s" > "$s.new" && mv -f "$s.new" "$s"
+    if [[ -f $FAKE_STATE/staged.conf ]]; then
+      mv -f "$FAKE_STATE/staged.conf" "$MICROOS_SYSROOT/boot/loader/entries/ostree-3-default.conf"
+    fi
+    ;;
+  *) exit 1 ;;
+esac

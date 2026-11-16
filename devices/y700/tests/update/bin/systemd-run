@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_DIR/run.calls"
+while [[ $1 == -* ]]; do
+  if [[ $1 == -p ]]; then
+    shift 2
+  else
+    shift
+  fi
+done
+exec "$@"

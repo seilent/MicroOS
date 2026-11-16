@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "bootctl $*" >> "$FAKE_STATE/events"
+exit "${FAKE_BOOTCTL_RC:-0}"

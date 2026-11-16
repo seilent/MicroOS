@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 00:02:44 +0900
+Subject: [PATCH] drm/panel: novatek-nt36523: Remove the panel when probe fails
+
+nt36523_probe() adds the panel to the registry before it attaches to the
+DSI hosts. When an attach fails, for instance with -EPROBE_DEFER, probe
+returns with the panel still registered while the memory holding it is
+released with the device resources. The next probe attempt then adds
+the panel again.
+
+Add the panel with devm_drm_panel_add() so it is removed on every probe
+failure and on unbind, and drop the remove callback that only did that.
+On unbind the DSI links are now detached before the panel is removed,
+the reverse of the probe order.
+
+Fixes: 0993234a0045 ("drm/panel: Add driver for Novatek NT36523")
+Signed-off-by: seilent <github@seilent.net>
+---
+ drivers/gpu/drm/panel/panel-novatek-nt36523.c | 12 +++---------
+ 1 file changed, 3 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/gpu/drm/panel/panel-novatek-nt36523.c b/drivers/gpu/drm/panel/panel-novatek-nt36523.c
+index 34b9123d3..4fa508f06 100644
+--- a/drivers/gpu/drm/panel/panel-novatek-nt36523.c
++++ b/drivers/gpu/drm/panel/panel-novatek-nt36523.c
+@@ -1048,13 +1048,6 @@ static int nt36523_unprepare(struct drm_panel *panel)
+ 	return 0;
+ }
+ 
+-static void nt36523_remove(struct mipi_dsi_device *dsi)
+-{
+-	struct panel_info *pinfo = mipi_dsi_get_drvdata(dsi);
+-
+-	drm_panel_remove(&pinfo->panel);
+-}
+-
+ static int nt36523_get_modes(struct drm_panel *panel,
+ 			       struct drm_connector *connector)
+ {
+@@ -1226,7 +1219,9 @@ static int nt36523_probe(struct mipi_dsi_device *dsi)
+ 			return dev_err_probe(dev, ret, "Failed to get backlight\n");
+ 	}
+ 
+-	drm_panel_add(&pinfo->panel);
++	ret = devm_drm_panel_add(dev, &pinfo->panel);
++	if (ret)
++		return dev_err_probe(dev, ret, "Failed to add panel\n");
+ 
+ 	for (i = 0; i < DSI_NUM_MIN + pinfo->desc->is_dual_dsi; i++) {
+ 		pinfo->dsi[i]->lanes = pinfo->desc->lanes;
+@@ -1260,7 +1255,6 @@ MODULE_DEVICE_TABLE(of, nt36523_of_match);
+ 
+ static struct mipi_dsi_driver nt36523_driver = {
+ 	.probe = nt36523_probe,
+-	.remove = nt36523_remove,
+ 	.driver = {
+ 		.name = "panel-novatek-nt36523",
+ 		.of_match_table = nt36523_of_match,
+-- 
+2.55.0
+

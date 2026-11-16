@@ -1,0 +1,12 @@
+[Unit]
+Description=Grow the root filesystem to its partition
+ConditionPathExists=/run/ostree-booted
+After=local-fs.target
+RequiresMountsFor=/var
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-grow-root
+
+[Install]
+WantedBy=multi-user.target

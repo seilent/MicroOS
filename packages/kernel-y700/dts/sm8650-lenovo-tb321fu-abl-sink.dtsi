@@ -1,0 +1,8203 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+/ {
+	abl-overlay-sink {
+		ipa_smmu_11ad {
+			phandle = <0x7fff0001>;
+		};
+
+		ipa_smmu_uc {
+			phandle = <0x7fff0002>;
+		};
+
+		ipa_smmu_wlan {
+			phandle = <0x7fff0003>;
+		};
+
+		ipa_smmu_ap {
+			phandle = <0x7fff0004>;
+		};
+
+		ipa_hw {
+			phandle = <0x7fff0005>;
+		};
+
+		non_secure_cb_group {
+			phandle = <0x7fff0006>;
+		};
+
+		msm_cvp {
+			phandle = <0x7fff0007>;
+		};
+
+		nfc_enable_suspend {
+			phandle = <0x7fff0008>;
+		};
+
+		nfc_enable_active {
+			phandle = <0x7fff0009>;
+		};
+
+		nfc_int_suspend {
+			phandle = <0x7fff000a>;
+		};
+
+		nfc_int_active {
+			phandle = <0x7fff000b>;
+		};
+
+		msm_fastrpc {
+			phandle = <0x7fff000c>;
+		};
+
+		slimbus {
+			phandle = <0x7fff000d>;
+		};
+
+		bluetooth {
+			phandle = <0x7fff000e>;
+		};
+
+		bt_en_sleep {
+			phandle = <0x7fff000f>;
+		};
+
+		msm_vidc {
+			phandle = <0x7fff0010>;
+		};
+
+		audio_prm {
+			phandle = <0x7fff0011>;
+		};
+
+		audio_gpr {
+			phandle = <0x7fff0012>;
+		};
+
+		lpass_audio_hw_vote {
+			phandle = <0x7fff0013>;
+		};
+
+		lpass_core_hw_vote {
+			phandle = <0x7fff0014>;
+		};
+
+		pineapple_snd {
+			phandle = <0x7fff0015>;
+		};
+
+		swr3 {
+			phandle = <0x7fff0016>;
+		};
+
+		wsa2_macro {
+			phandle = <0x7fff0017>;
+		};
+
+		swr0 {
+			phandle = <0x7fff0018>;
+		};
+
+		wsa_macro {
+			phandle = <0x7fff0019>;
+		};
+
+		swr1 {
+			phandle = <0x7fff001a>;
+		};
+
+		rx_macro {
+			phandle = <0x7fff001b>;
+		};
+
+		tx_macro {
+			phandle = <0x7fff001c>;
+		};
+
+		swr2 {
+			phandle = <0x7fff001d>;
+		};
+
+		va_macro {
+			phandle = <0x7fff001e>;
+		};
+
+		lpass_cdc {
+			phandle = <0x7fff001f>;
+		};
+
+		lpi_tlmm {
+			phandle = <0x7fff0020>;
+		};
+
+		msm_audio_ion_cma {
+			phandle = <0x7fff0021>;
+		};
+
+		msm_audio_ion {
+			phandle = <0x7fff0022>;
+		};
+
+		spf_core_platform {
+			phandle = <0x7fff0023>;
+		};
+
+		adsp_notify {
+			phandle = <0x7fff0024>;
+		};
+
+		adsp_loader {
+			phandle = <0x7fff0025>;
+		};
+
+		audio_pkt_core_platform {
+			phandle = <0x7fff0026>;
+		};
+
+		stub_codec {
+			phandle = <0x7fff0027>;
+		};
+
+		msm_mmrm_test {
+			phandle = <0x7fff0028>;
+		};
+
+		msm_mmrm {
+			phandle = <0x7fff0029>;
+		};
+
+		smmu_sde_sec {
+			phandle = <0x7fff002a>;
+		};
+
+		smmu_sde_unsec {
+			phandle = <0x7fff002b>;
+		};
+
+		sde_rscc {
+			phandle = <0x7fff002c>;
+		};
+
+		sde_dp {
+			phandle = <0x7fff002d>;
+		};
+
+		qcom_msmhdcp {
+			phandle = <0x7fff002e>;
+		};
+
+		ext_disp_audio_codec {
+			phandle = <0x7fff002f>;
+		};
+
+		ext_disp {
+			phandle = <0x7fff0030>;
+		};
+
+		dsi_pll_codes_data {
+			phandle = <0x7fff0031>;
+		};
+
+		mdss_dsi_phy1 {
+			phandle = <0x7fff0032>;
+		};
+
+		mdss_dsi_phy0 {
+			phandle = <0x7fff0033>;
+		};
+
+		mdss_dsi1 {
+			phandle = <0x7fff0034>;
+		};
+
+		mdss_dsi0 {
+			phandle = <0x7fff0035>;
+		};
+
+		mdss_mdp {
+			phandle = <0x7fff0036>;
+		};
+
+		cam_jpeg_dma0 {
+			phandle = <0x7fff0037>;
+		};
+
+		cam_jpeg_enc0 {
+			phandle = <0x7fff0038>;
+		};
+
+		cre {
+			phandle = <0x7fff0039>;
+		};
+
+		cam_bps {
+			phandle = <0x7fff003a>;
+		};
+
+		cam_ipe0 {
+			phandle = <0x7fff003b>;
+		};
+
+		cam_icp {
+			phandle = <0x7fff003c>;
+		};
+
+		cam_csiphy_tpg15 {
+			phandle = <0x7fff003d>;
+		};
+
+		cam_csiphy_tpg14 {
+			phandle = <0x7fff003e>;
+		};
+
+		cam_csiphy_tpg13 {
+			phandle = <0x7fff003f>;
+		};
+
+		cam_vfe_lite1 {
+			phandle = <0x7fff0040>;
+		};
+
+		cam_csid_lite1 {
+			phandle = <0x7fff0041>;
+		};
+
+		cam_vfe_lite0 {
+			phandle = <0x7fff0042>;
+		};
+
+		cam_csid_lite0 {
+			phandle = <0x7fff0043>;
+		};
+
+		cam_vfe2 {
+			phandle = <0x7fff0044>;
+		};
+
+		cam_csid2 {
+			phandle = <0x7fff0045>;
+		};
+
+		cam_vfe1 {
+			phandle = <0x7fff0046>;
+		};
+
+		cam_csid1 {
+			phandle = <0x7fff0047>;
+		};
+
+		cam_vfe0 {
+			phandle = <0x7fff0048>;
+		};
+
+		cam_csid0 {
+			phandle = <0x7fff0049>;
+		};
+
+		cam_sfe2 {
+			phandle = <0x7fff004a>;
+		};
+
+		cam_sfe1 {
+			phandle = <0x7fff004b>;
+		};
+
+		cam_sfe0 {
+			phandle = <0x7fff004c>;
+		};
+
+		icp0_all_rd {
+			phandle = <0x7fff004d>;
+		};
+
+		rt_cdm4_all_rd {
+			phandle = <0x7fff004e>;
+		};
+
+		rt_cdm3_all_rd {
+			phandle = <0x7fff004f>;
+		};
+
+		rt_cdm2_all_rd {
+			phandle = <0x7fff0050>;
+		};
+
+		rt_cdm1_all_rd {
+			phandle = <0x7fff0051>;
+		};
+
+		rt_cdm0_all_rd {
+			phandle = <0x7fff0052>;
+		};
+
+		ipe0_in_rd {
+			phandle = <0x7fff0053>;
+		};
+
+		ipe0_ref_rd {
+			phandle = <0x7fff0054>;
+		};
+
+		jpeg_dma1_all_rd {
+			phandle = <0x7fff0055>;
+		};
+
+		jpeg_enc1_all_rd {
+			phandle = <0x7fff0056>;
+		};
+
+		jpeg_dma0_all_rd {
+			phandle = <0x7fff0057>;
+		};
+
+		jpeg_enc0_all_rd {
+			phandle = <0x7fff0058>;
+		};
+
+		bps0_all_rd {
+			phandle = <0x7fff0059>;
+		};
+
+		cre0_all_rd {
+			phandle = <0x7fff005a>;
+		};
+
+		jpeg_dma1_all_wr {
+			phandle = <0x7fff005b>;
+		};
+
+		jpeg_enc1_all_wr {
+			phandle = <0x7fff005c>;
+		};
+
+		jpeg_dma0_all_wr {
+			phandle = <0x7fff005d>;
+		};
+
+		jpeg_enc0_all_wr {
+			phandle = <0x7fff005e>;
+		};
+
+		cre0_all_wr {
+			phandle = <0x7fff005f>;
+		};
+
+		bps0_all_wr {
+			phandle = <0x7fff0060>;
+		};
+
+		ipe0_all_wr {
+			phandle = <0x7fff0061>;
+		};
+
+		custom1_rd {
+			phandle = <0x7fff0062>;
+		};
+
+		custom0_all_rd {
+			phandle = <0x7fff0063>;
+		};
+
+		sfe2_all_rd {
+			phandle = <0x7fff0064>;
+		};
+
+		sfe1_all_rd {
+			phandle = <0x7fff0065>;
+		};
+
+		sfe0_all_rd {
+			phandle = <0x7fff0066>;
+		};
+
+		ife2_stats_wr {
+			phandle = <0x7fff0067>;
+		};
+
+		ife1_stats_wr {
+			phandle = <0x7fff0068>;
+		};
+
+		ife0_stats_wr {
+			phandle = <0x7fff0069>;
+		};
+
+		ife3_rdi_stats_pixel_raw_wr {
+			phandle = <0x7fff006a>;
+		};
+
+		ife4_rdi_stats_pixel_raw_wr {
+			phandle = <0x7fff006b>;
+		};
+
+		ife2_pdaf_linear_wr {
+			phandle = <0x7fff006c>;
+		};
+
+		ife1_pdaf_linear_wr {
+			phandle = <0x7fff006d>;
+		};
+
+		ife0_pdaf_linear_wr {
+			phandle = <0x7fff006e>;
+		};
+
+		custom1_wr {
+			phandle = <0x7fff006f>;
+		};
+
+		custom0_wr {
+			phandle = <0x7fff0070>;
+		};
+
+		sfe2_all_wr {
+			phandle = <0x7fff0071>;
+		};
+
+		sfe1_all_wr {
+			phandle = <0x7fff0072>;
+		};
+
+		sfe0_all_wr {
+			phandle = <0x7fff0073>;
+		};
+
+		ife2_rdi_pixel_raw_wr {
+			phandle = <0x7fff0074>;
+		};
+
+		ife1_rdi_pixel_raw_wr {
+			phandle = <0x7fff0075>;
+		};
+
+		ife0_rdi_pixel_raw_wr {
+			phandle = <0x7fff0076>;
+		};
+
+		ife2_ubwc_wr {
+			phandle = <0x7fff0077>;
+		};
+
+		ife1_ubwc_wr {
+			phandle = <0x7fff0078>;
+		};
+
+		ife0_ubwc_wr {
+			phandle = <0x7fff0079>;
+		};
+
+		level1_nrt0_rd {
+			phandle = <0x7fff007a>;
+		};
+
+		level1_nrt1_rd {
+			phandle = <0x7fff007b>;
+		};
+
+		level1_nrt3_rd {
+			phandle = <0x7fff007c>;
+		};
+
+		level1_nrt1_wr {
+			phandle = <0x7fff007d>;
+		};
+
+		level1_nrt2_wr {
+			phandle = <0x7fff007e>;
+		};
+
+		level1_rt0_rd {
+			phandle = <0x7fff007f>;
+		};
+
+		level1_rt4_wr {
+			phandle = <0x7fff0080>;
+		};
+
+		level1_rt3_wr {
+			phandle = <0x7fff0081>;
+		};
+
+		level1_rt2_wr {
+			phandle = <0x7fff0082>;
+		};
+
+		level1_rt1_wr {
+			phandle = <0x7fff0083>;
+		};
+
+		level2_icp_rd {
+			phandle = <0x7fff0084>;
+		};
+
+		level2_nrt_rd {
+			phandle = <0x7fff0085>;
+		};
+
+		level2_nrt_wr {
+			phandle = <0x7fff0086>;
+		};
+
+		level2_rt_rd {
+			phandle = <0x7fff0087>;
+		};
+
+		level2_rt_wr {
+			phandle = <0x7fff0088>;
+		};
+
+		level3_nrt1_rd_wr_sum {
+			phandle = <0x7fff0089>;
+		};
+
+		level3_nrt0_rd_wr_sum {
+			phandle = <0x7fff008a>;
+		};
+
+		level3_rt_rd_wr_sum {
+			phandle = <0x7fff008b>;
+		};
+
+		cre_iova_mem_map {
+			phandle = <0x7fff008c>;
+		};
+
+		rt_cdm_iova_mem_map {
+			phandle = <0x7fff008d>;
+		};
+
+		icp_iova_mem_map {
+			phandle = <0x7fff008e>;
+		};
+
+		jpeg_iova_mem_map {
+			phandle = <0x7fff008f>;
+		};
+
+		ife_iova_mem_map {
+			phandle = <0x7fff0090>;
+		};
+
+		i2c_freq_1Mhz_cci2 {
+			phandle = <0x7fff0091>;
+		};
+
+		i2c_freq_custom_cci2 {
+			phandle = <0x7fff0092>;
+		};
+
+		i2c_freq_400Khz_cci2 {
+			phandle = <0x7fff0093>;
+		};
+
+		i2c_freq_100Khz_cci2 {
+			phandle = <0x7fff0094>;
+		};
+
+		cam_cci2 {
+			phandle = <0x7fff0095>;
+		};
+
+		i2c_freq_1Mhz_cci1 {
+			phandle = <0x7fff0096>;
+		};
+
+		i2c_freq_custom_cci1 {
+			phandle = <0x7fff0097>;
+		};
+
+		i2c_freq_400Khz_cci1 {
+			phandle = <0x7fff0098>;
+		};
+
+		i2c_freq_100Khz_cci1 {
+			phandle = <0x7fff0099>;
+		};
+
+		cam_cci1 {
+			phandle = <0x7fff009a>;
+		};
+
+		i2c_freq_1Mhz_cci0 {
+			phandle = <0x7fff009b>;
+		};
+
+		i2c_freq_custom_cci0 {
+			phandle = <0x7fff009c>;
+		};
+
+		i2c_freq_400Khz_cci0 {
+			phandle = <0x7fff009d>;
+		};
+
+		i2c_freq_100Khz_cci0 {
+			phandle = <0x7fff009e>;
+		};
+
+		cam_cci0 {
+			phandle = <0x7fff009f>;
+		};
+
+		cam_csiphy5 {
+			phandle = <0x7fff00a0>;
+		};
+
+		cam_csiphy4 {
+			phandle = <0x7fff00a1>;
+		};
+
+		cam_csiphy3 {
+			phandle = <0x7fff00a2>;
+		};
+
+		cam_csiphy2 {
+			phandle = <0x7fff00a3>;
+		};
+
+		cam_csiphy1 {
+			phandle = <0x7fff00a4>;
+		};
+
+		cam_csiphy0 {
+			phandle = <0x7fff00a5>;
+		};
+
+		cam_sensor_ponv_rear_suspend {
+			phandle = <0x7fff00a6>;
+		};
+
+		cam_sensor_ponv_rear_active {
+			phandle = <0x7fff00a7>;
+		};
+
+		cam_sensor_ponv_front_suspend {
+			phandle = <0x7fff00a8>;
+		};
+
+		cam_sensor_ponv_front_active {
+			phandle = <0x7fff00a9>;
+		};
+
+		cam_sensor_suspend_rst7 {
+			phandle = <0x7fff00aa>;
+		};
+
+		cam_sensor_active_rst7 {
+			phandle = <0x7fff00ab>;
+		};
+
+		cam_sensor_suspend_rst6 {
+			phandle = <0x7fff00ac>;
+		};
+
+		cam_sensor_active_rst6 {
+			phandle = <0x7fff00ad>;
+		};
+
+		cam_sensor_suspend_rst5 {
+			phandle = <0x7fff00ae>;
+		};
+
+		cam_sensor_active_rst5 {
+			phandle = <0x7fff00af>;
+		};
+
+		cam_sensor_suspend_rst4 {
+			phandle = <0x7fff00b0>;
+		};
+
+		cam_sensor_active_rst4 {
+			phandle = <0x7fff00b1>;
+		};
+
+		cam_sensor_suspend_rst3 {
+			phandle = <0x7fff00b2>;
+		};
+
+		cam_sensor_active_rst3 {
+			phandle = <0x7fff00b3>;
+		};
+
+		cam_sensor_suspend_rst2 {
+			phandle = <0x7fff00b4>;
+		};
+
+		cam_sensor_active_rst2 {
+			phandle = <0x7fff00b5>;
+		};
+
+		cam_sensor_suspend_rst1 {
+			phandle = <0x7fff00b6>;
+		};
+
+		cam_sensor_active_rst1 {
+			phandle = <0x7fff00b7>;
+		};
+
+		cam_sensor_suspend_rst0 {
+			phandle = <0x7fff00b8>;
+		};
+
+		cam_sensor_active_rst0 {
+			phandle = <0x7fff00b9>;
+		};
+
+		cam_sensor_mclk7_suspend {
+			phandle = <0x7fff00ba>;
+		};
+
+		cam_sensor_mclk7_active {
+			phandle = <0x7fff00bb>;
+		};
+
+		cam_sensor_mclk6_suspend {
+			phandle = <0x7fff00bc>;
+		};
+
+		cam_sensor_mclk6_active {
+			phandle = <0x7fff00bd>;
+		};
+
+		cam_sensor_mclk5_suspend {
+			phandle = <0x7fff00be>;
+		};
+
+		cam_sensor_mclk5_active {
+			phandle = <0x7fff00bf>;
+		};
+
+		cam_sensor_mclk4_suspend {
+			phandle = <0x7fff00c0>;
+		};
+
+		cam_sensor_mclk4_active {
+			phandle = <0x7fff00c1>;
+		};
+
+		cam_sensor_mclk3_suspend {
+			phandle = <0x7fff00c2>;
+		};
+
+		cam_sensor_mclk3_active {
+			phandle = <0x7fff00c3>;
+		};
+
+		cam_sensor_mclk2_suspend {
+			phandle = <0x7fff00c4>;
+		};
+
+		cam_sensor_mclk2_active {
+			phandle = <0x7fff00c5>;
+		};
+
+		cam_sensor_mclk1_suspend {
+			phandle = <0x7fff00c6>;
+		};
+
+		cam_sensor_mclk1_active {
+			phandle = <0x7fff00c7>;
+		};
+
+		cam_sensor_mclk0_suspend {
+			phandle = <0x7fff00c8>;
+		};
+
+		cam_sensor_mclk0_active {
+			phandle = <0x7fff00c9>;
+		};
+
+		cci_i2c_scl5_suspend {
+			phandle = <0x7fff00ca>;
+		};
+
+		cci_i2c_scl5_active {
+			phandle = <0x7fff00cb>;
+		};
+
+		cci_i2c_sda5_suspend {
+			phandle = <0x7fff00cc>;
+		};
+
+		cci_i2c_sda5_active {
+			phandle = <0x7fff00cd>;
+		};
+
+		cci_i2c_scl4_suspend {
+			phandle = <0x7fff00ce>;
+		};
+
+		cci_i2c_scl4_active {
+			phandle = <0x7fff00cf>;
+		};
+
+		cci_i2c_sda4_suspend {
+			phandle = <0x7fff00d0>;
+		};
+
+		cci_i2c_sda4_active {
+			phandle = <0x7fff00d1>;
+		};
+
+		cci_i2c_scl3_suspend {
+			phandle = <0x7fff00d2>;
+		};
+
+		cci_i2c_scl3_active {
+			phandle = <0x7fff00d3>;
+		};
+
+		cci_i2c_sda3_suspend {
+			phandle = <0x7fff00d4>;
+		};
+
+		cci_i2c_sda3_active {
+			phandle = <0x7fff00d5>;
+		};
+
+		cci_i2c_scl2_suspend {
+			phandle = <0x7fff00d6>;
+		};
+
+		cci_i2c_scl2_active {
+			phandle = <0x7fff00d7>;
+		};
+
+		cci_i2c_sda2_suspend {
+			phandle = <0x7fff00d8>;
+		};
+
+		cci_i2c_sda2_active {
+			phandle = <0x7fff00d9>;
+		};
+
+		cci_i2c_scl1_suspend {
+			phandle = <0x7fff00da>;
+		};
+
+		cci_i2c_scl1_active {
+			phandle = <0x7fff00db>;
+		};
+
+		cci_i2c_sda1_suspend {
+			phandle = <0x7fff00dc>;
+		};
+
+		cci_i2c_sda1_active {
+			phandle = <0x7fff00dd>;
+		};
+
+		cci_i2c_scl0_suspend {
+			phandle = <0x7fff00de>;
+		};
+
+		cci_i2c_scl0_active {
+			phandle = <0x7fff00df>;
+		};
+
+		cci_i2c_sda0_suspend {
+			phandle = <0x7fff00e0>;
+		};
+
+		cci_i2c_sda0_active {
+			phandle = <0x7fff00e1>;
+		};
+
+		msm_hw_fence {
+			phandle = <0x7fff00e2>;
+		};
+
+		ubwcp {
+			phandle = <0x7fff00e3>;
+		};
+
+		ipclite_cam {
+			phandle = <0x7fff00e4>;
+		};
+
+		ipclite_cvp {
+			phandle = <0x7fff00e5>;
+		};
+
+		ipclite_cdsp {
+			phandle = <0x7fff00e6>;
+		};
+
+		ipclite_apss {
+			phandle = <0x7fff00e7>;
+		};
+
+		ipcc_compute_l0 {
+			phandle = <0x7fff00e8>;
+		};
+
+		funnel_gfx_in_cx_dbgc {
+			phandle = <0x7fff00e9>;
+		};
+
+		funnel_gfx_in_gx_dbgc {
+			phandle = <0x7fff00ea>;
+		};
+
+		gx_dbgc_out_funnel_gfx {
+			phandle = <0x7fff00eb>;
+		};
+
+		coresight_gx_dgbc {
+			phandle = <0x7fff00ec>;
+		};
+
+		cx_dbgc_out_funnel_gfx {
+			phandle = <0x7fff00ed>;
+		};
+
+		coresight_cx_dgbc {
+			phandle = <0x7fff00ee>;
+		};
+
+		gmu {
+			phandle = <0x7fff00ef>;
+		};
+
+		gfx3d_secure {
+			phandle = <0x7fff00f0>;
+		};
+
+		gfx3d_lpac {
+			phandle = <0x7fff00f1>;
+		};
+
+		gfx3d_user {
+			phandle = <0x7fff00f2>;
+		};
+
+		kgsl_msm_iommu {
+			phandle = <0x7fff00f3>;
+		};
+
+		chosen {
+			phandle = <0x7fff00f4>;
+		};
+
+		aliases {
+			phandle = <0x7fff00f5>;
+		};
+
+		reserved_memory {
+			phandle = <0x7fff00f6>;
+		};
+
+		gunyah_hyp_mem {
+			phandle = <0x7fff00f7>;
+		};
+
+		cpusys_vm_mem {
+			phandle = <0x7fff00f8>;
+		};
+
+		xbl_aop_merged_mem {
+			phandle = <0x7fff00f9>;
+		};
+
+		aop_cmd_db_mem {
+			phandle = <0x7fff00fa>;
+		};
+
+		aop_tme_uefi_merged_mem {
+			phandle = <0x7fff00fb>;
+		};
+
+		chipinfo_mem {
+			phandle = <0x7fff00fc>;
+		};
+
+		smem_mem {
+			phandle = <0x7fff00fd>;
+		};
+
+		adsp_mhi_mem {
+			phandle = <0x7fff00fe>;
+		};
+
+		pvmfw_mem {
+			phandle = <0x7fff00ff>;
+		};
+
+		global_sync_mem {
+			phandle = <0x7fff0100>;
+		};
+
+		tz_stat_mem {
+			phandle = <0x7fff0101>;
+		};
+
+		qdss_mem {
+			phandle = <0x7fff0102>;
+		};
+
+		qlink_logging_mem {
+			phandle = <0x7fff0103>;
+		};
+
+		mpss_dsm_mem {
+			phandle = <0x7fff0104>;
+		};
+
+		mpss_dsm_mem_2 {
+			phandle = <0x7fff0105>;
+		};
+
+		mpss_mem {
+			phandle = <0x7fff0106>;
+		};
+
+		q6_mpss_dtb_mem {
+			phandle = <0x7fff0107>;
+		};
+
+		ipa_fw_mem {
+			phandle = <0x7fff0108>;
+		};
+
+		ipa_gsi_mem {
+			phandle = <0x7fff0109>;
+		};
+
+		qseecom_mem {
+			phandle = <0x7fff010a>;
+		};
+
+		qseecom_ta_mem {
+			phandle = <0x7fff010b>;
+		};
+
+		qmc_dma_mem {
+			phandle = <0x7fff010c>;
+		};
+
+		non_secure_display_memory {
+			phandle = <0x7fff010d>;
+		};
+
+		gpu_micro_code_mem {
+			phandle = <0x7fff010e>;
+		};
+
+		spss_region_mem {
+			phandle = <0x7fff010f>;
+		};
+
+		spu_tz_shared_mem {
+			phandle = <0x7fff0110>;
+		};
+
+		spu_modem_shared_mem {
+			phandle = <0x7fff0111>;
+		};
+
+		camera_mem {
+			phandle = <0x7fff0112>;
+		};
+
+		video_mem {
+			phandle = <0x7fff0113>;
+		};
+
+		cvp_mem {
+			phandle = <0x7fff0114>;
+		};
+
+		cdsp_mem {
+			phandle = <0x7fff0115>;
+		};
+
+		q6_cdsp_dtb_mem {
+			phandle = <0x7fff0116>;
+		};
+
+		q6_adsp_dtb_mem {
+			phandle = <0x7fff0117>;
+		};
+
+		adsp_slpi_mem {
+			phandle = <0x7fff0118>;
+		};
+
+		tz_merged_mem {
+			phandle = <0x7fff0119>;
+		};
+
+		hwfence_shbuf {
+			phandle = <0x7fff011a>;
+		};
+
+		vm_comm_mem {
+			phandle = <0x7fff011b>;
+		};
+
+		trust_ui_vm_mem {
+			phandle = <0x7fff011c>;
+		};
+
+		oem_vm_mem {
+			phandle = <0x7fff011d>;
+		};
+
+		llcc_lpi_mem {
+			phandle = <0x7fff011e>;
+		};
+
+		va_md_mem {
+			phandle = <0x7fff011f>;
+		};
+
+		sp_mem {
+			phandle = <0x7fff0120>;
+		};
+
+		cdsp_eva_mem {
+			phandle = <0x7fff0121>;
+		};
+
+		adsp_mem_heap {
+			phandle = <0x7fff0122>;
+		};
+
+		system_cma {
+			phandle = <0x7fff0123>;
+		};
+
+		cdsp_secure_heap_cma {
+			phandle = <0x7fff0124>;
+		};
+
+		kinfo_mem {
+			phandle = <0x7fff0125>;
+		};
+
+		dump_mem {
+			phandle = <0x7fff0126>;
+		};
+
+		firmware {
+			phandle = <0x7fff0127>;
+		};
+
+		CPU0 {
+			phandle = <0x7fff0128>;
+		};
+
+		L2_0 {
+			phandle = <0x7fff0129>;
+		};
+
+		L3_0 {
+			phandle = <0x7fff012a>;
+		};
+
+		CPU1 {
+			phandle = <0x7fff012b>;
+		};
+
+		CPU2 {
+			phandle = <0x7fff012c>;
+		};
+
+		L2_2 {
+			phandle = <0x7fff012d>;
+		};
+
+		CPU3 {
+			phandle = <0x7fff012e>;
+		};
+
+		L2_3 {
+			phandle = <0x7fff012f>;
+		};
+
+		CPU4 {
+			phandle = <0x7fff0130>;
+		};
+
+		L2_4 {
+			phandle = <0x7fff0131>;
+		};
+
+		CPU5 {
+			phandle = <0x7fff0132>;
+		};
+
+		L2_5 {
+			phandle = <0x7fff0133>;
+		};
+
+		CPU6 {
+			phandle = <0x7fff0134>;
+		};
+
+		L2_6 {
+			phandle = <0x7fff0135>;
+		};
+
+		CPU7 {
+			phandle = <0x7fff0136>;
+		};
+
+		L2_7 {
+			phandle = <0x7fff0137>;
+		};
+
+		SILVER_OFF_CL0 {
+			phandle = <0x7fff0138>;
+		};
+
+		GOLD_OFF_CL1 {
+			phandle = <0x7fff0139>;
+		};
+
+		GOLD_OFF_CL2 {
+			phandle = <0x7fff013a>;
+		};
+
+		GOLD_OFF_CL3 {
+			phandle = <0x7fff013b>;
+		};
+
+		CLUSTER_PWR_DN {
+			phandle = <0x7fff013c>;
+		};
+
+		APSS_OFF {
+			phandle = <0x7fff013d>;
+		};
+
+		soc {
+			phandle = <0x7fff013e>;
+		};
+
+		CPU_PD0 {
+			phandle = <0x7fff013f>;
+		};
+
+		CPU_PD1 {
+			phandle = <0x7fff0140>;
+		};
+
+		CPU_PD2 {
+			phandle = <0x7fff0141>;
+		};
+
+		CPU_PD3 {
+			phandle = <0x7fff0142>;
+		};
+
+		CPU_PD4 {
+			phandle = <0x7fff0143>;
+		};
+
+		CPU_PD5 {
+			phandle = <0x7fff0144>;
+		};
+
+		CPU_PD6 {
+			phandle = <0x7fff0145>;
+		};
+
+		CPU_PD7 {
+			phandle = <0x7fff0146>;
+		};
+
+		CLUSTER_PD {
+			phandle = <0x7fff0147>;
+		};
+
+		slimbam {
+			phandle = <0x7fff0148>;
+		};
+
+		slim_msm {
+			phandle = <0x7fff0149>;
+		};
+
+		intc {
+			phandle = <0x7fff014a>;
+		};
+
+		gic_its {
+			phandle = <0x7fff014b>;
+		};
+
+		arch_timer {
+			phandle = <0x7fff014c>;
+		};
+
+		memtimer {
+			phandle = <0x7fff014d>;
+		};
+
+		cpu_pmu {
+			phandle = <0x7fff014e>;
+		};
+
+		pcie_crm_hw_0_bcm_voter {
+			phandle = <0x7fff014f>;
+		};
+
+		pcie_crm_hw_1_bcm_voter {
+			phandle = <0x7fff0150>;
+		};
+
+		clk_virt {
+			phandle = <0x7fff0151>;
+		};
+
+		mc_virt {
+			phandle = <0x7fff0152>;
+		};
+
+		config_noc {
+			phandle = <0x7fff0153>;
+		};
+
+		cnoc_main {
+			phandle = <0x7fff0154>;
+		};
+
+		system_noc {
+			phandle = <0x7fff0155>;
+		};
+
+		pcie_noc {
+			phandle = <0x7fff0156>;
+		};
+
+		aggre1_noc {
+			phandle = <0x7fff0157>;
+		};
+
+		aggre2_noc {
+			phandle = <0x7fff0158>;
+		};
+
+		mmss_noc {
+			phandle = <0x7fff0159>;
+		};
+
+		gem_noc {
+			phandle = <0x7fff015a>;
+		};
+
+		nsp_noc {
+			phandle = <0x7fff015b>;
+		};
+
+		lpass_ag_noc {
+			phandle = <0x7fff015c>;
+		};
+
+		lpass_lpiaon_noc {
+			phandle = <0x7fff015d>;
+		};
+
+		lpass_lpicx_noc {
+			phandle = <0x7fff015e>;
+		};
+
+		pdc {
+			phandle = <0x7fff015f>;
+		};
+
+		pcie_pdc {
+			phandle = <0x7fff0160>;
+		};
+
+		tlmm {
+			phandle = <0x7fff0161>;
+		};
+
+		qupv3_se10_2uart_pins {
+			phandle = <0x7fff0162>;
+		};
+
+		qupv3_se10_2uart_tx_active {
+			phandle = <0x7fff0163>;
+		};
+
+		qupv3_se10_2uart_rx_active {
+			phandle = <0x7fff0164>;
+		};
+
+		vib_reset_r {
+			phandle = <0x7fff0165>;
+		};
+
+		vib_reset_l {
+			phandle = <0x7fff0166>;
+		};
+
+		tp_reset_gpio {
+			phandle = <0x7fff0167>;
+		};
+
+		qupv3_se15_2uart_pins {
+			phandle = <0x7fff0168>;
+		};
+
+		qupv3_se15_2uart_tx_active {
+			phandle = <0x7fff0169>;
+		};
+
+		qupv3_se15_2uart_rx_active {
+			phandle = <0x7fff016a>;
+		};
+
+		qupv3_se15_2uart_sleep {
+			phandle = <0x7fff016b>;
+		};
+
+		trigout_a {
+			phandle = <0x7fff016c>;
+		};
+
+		pcie0_perst_default {
+			phandle = <0x7fff016d>;
+		};
+
+		pcie0_clkreq_default {
+			phandle = <0x7fff016e>;
+		};
+
+		pcie0_wake_default {
+			phandle = <0x7fff016f>;
+		};
+
+		pcie0_clkreq_sleep {
+			phandle = <0x7fff0170>;
+		};
+
+		pcie1_perst_default {
+			phandle = <0x7fff0171>;
+		};
+
+		pcie1_clkreq_default {
+			phandle = <0x7fff0172>;
+		};
+
+		pcie1_wake_default {
+			phandle = <0x7fff0173>;
+		};
+
+		pcie1_clkreq_sleep {
+			phandle = <0x7fff0174>;
+		};
+
+		qupv3_se14_4uart_pins {
+			phandle = <0x7fff0175>;
+		};
+
+		qupv3_se14_default_cts {
+			phandle = <0x7fff0176>;
+		};
+
+		qupv3_se14_default_rts {
+			phandle = <0x7fff0177>;
+		};
+
+		qupv3_se14_default_tx {
+			phandle = <0x7fff0178>;
+		};
+
+		qupv3_se14_default_rx {
+			phandle = <0x7fff0179>;
+		};
+
+		qupv3_se14_cts {
+			phandle = <0x7fff017a>;
+		};
+
+		qupv3_se14_rts {
+			phandle = <0x7fff017b>;
+		};
+
+		qupv3_se14_tx {
+			phandle = <0x7fff017c>;
+		};
+
+		qupv3_se14_rx {
+			phandle = <0x7fff017d>;
+		};
+
+		qupv3_se0_i2c_pins {
+			phandle = <0x7fff017e>;
+		};
+
+		qupv3_se0_i2c_sda_active {
+			phandle = <0x7fff017f>;
+		};
+
+		qupv3_se0_i2c_scl_active {
+			phandle = <0x7fff0180>;
+		};
+
+		qupv3_se0_i2c_sleep {
+			phandle = <0x7fff0181>;
+		};
+
+		qupv3_se0_i3c_pins {
+			phandle = <0x7fff0182>;
+		};
+
+		qupv3_se0_i3c_sda_active {
+			phandle = <0x7fff0183>;
+		};
+
+		qupv3_se0_i3c_scl_active {
+			phandle = <0x7fff0184>;
+		};
+
+		qupv3_se0_i3c_sda_sleep {
+			phandle = <0x7fff0185>;
+		};
+
+		qupv3_se0_i3c_scl_sleep {
+			phandle = <0x7fff0186>;
+		};
+
+		qupv3_se0_i3c_disable {
+			phandle = <0x7fff0187>;
+		};
+
+		qupv3_se0_spi_pins {
+			phandle = <0x7fff0188>;
+		};
+
+		qupv3_se0_spi_miso_active {
+			phandle = <0x7fff0189>;
+		};
+
+		qupv3_se0_spi_mosi_active {
+			phandle = <0x7fff018a>;
+		};
+
+		qupv3_se0_spi_clk_active {
+			phandle = <0x7fff018b>;
+		};
+
+		qupv3_se0_spi_cs_active {
+			phandle = <0x7fff018c>;
+		};
+
+		qupv3_se0_spi_sleep {
+			phandle = <0x7fff018d>;
+		};
+
+		qupv3_se1_i2c_pins {
+			phandle = <0x7fff018e>;
+		};
+
+		qupv3_se1_i2c_sda_active {
+			phandle = <0x7fff018f>;
+		};
+
+		qupv3_se1_i2c_scl_active {
+			phandle = <0x7fff0190>;
+		};
+
+		qupv3_se1_i2c_sleep {
+			phandle = <0x7fff0191>;
+		};
+
+		qupv3_se1_spi_pins {
+			phandle = <0x7fff0192>;
+		};
+
+		qupv3_se1_spi_miso_active {
+			phandle = <0x7fff0193>;
+		};
+
+		qupv3_se1_spi_mosi_active {
+			phandle = <0x7fff0194>;
+		};
+
+		qupv3_se1_spi_clk_active {
+			phandle = <0x7fff0195>;
+		};
+
+		qupv3_se1_spi_cs_active {
+			phandle = <0x7fff0196>;
+		};
+
+		qupv3_se1_spi_sleep {
+			phandle = <0x7fff0197>;
+		};
+
+		qupv3_se2_i2c_pins {
+			phandle = <0x7fff0198>;
+		};
+
+		qupv3_se2_i2c_sda_active {
+			phandle = <0x7fff0199>;
+		};
+
+		qupv3_se2_i2c_scl_active {
+			phandle = <0x7fff019a>;
+		};
+
+		qupv3_se2_i2c_sleep {
+			phandle = <0x7fff019b>;
+		};
+
+		qupv3_se2_spi_pins {
+			phandle = <0x7fff019c>;
+		};
+
+		qupv3_se2_spi_miso_active {
+			phandle = <0x7fff019d>;
+		};
+
+		qupv3_se2_spi_mosi_active {
+			phandle = <0x7fff019e>;
+		};
+
+		qupv3_se2_spi_clk_active {
+			phandle = <0x7fff019f>;
+		};
+
+		qupv3_se2_spi_cs_active {
+			phandle = <0x7fff01a0>;
+		};
+
+		qupv3_se2_spi_sleep {
+			phandle = <0x7fff01a1>;
+		};
+
+		qupv3_se3_i2c_pins {
+			phandle = <0x7fff01a2>;
+		};
+
+		qupv3_se3_i2c_sda_active {
+			phandle = <0x7fff01a3>;
+		};
+
+		qupv3_se3_i2c_scl_active {
+			phandle = <0x7fff01a4>;
+		};
+
+		qupv3_se3_i2c_sleep {
+			phandle = <0x7fff01a5>;
+		};
+
+		qupv3_se3_spi_pins {
+			phandle = <0x7fff01a6>;
+		};
+
+		qupv3_se3_spi_miso_active {
+			phandle = <0x7fff01a7>;
+		};
+
+		qupv3_se3_spi_mosi_active {
+			phandle = <0x7fff01a8>;
+		};
+
+		qupv3_se3_spi_clk_active {
+			phandle = <0x7fff01a9>;
+		};
+
+		qupv3_se3_spi_cs_active {
+			phandle = <0x7fff01aa>;
+		};
+
+		qupv3_se3_spi_sleep {
+			phandle = <0x7fff01ab>;
+		};
+
+		qupv3_se4_i2c_pins {
+			phandle = <0x7fff01ac>;
+		};
+
+		qupv3_se4_i2c_sda_active {
+			phandle = <0x7fff01ad>;
+		};
+
+		qupv3_se4_i2c_scl_active {
+			phandle = <0x7fff01ae>;
+		};
+
+		qupv3_se4_i2c_sleep {
+			phandle = <0x7fff01af>;
+		};
+
+		qupv3_se4_i3c_pins {
+			phandle = <0x7fff01b0>;
+		};
+
+		qupv3_se4_i3c_sda_active {
+			phandle = <0x7fff01b1>;
+		};
+
+		qupv3_se4_i3c_scl_active {
+			phandle = <0x7fff01b2>;
+		};
+
+		qupv3_se4_i3c_sda_sleep {
+			phandle = <0x7fff01b3>;
+		};
+
+		qupv3_se4_i3c_scl_sleep {
+			phandle = <0x7fff01b4>;
+		};
+
+		qupv3_se4_i3c_disable {
+			phandle = <0x7fff01b5>;
+		};
+
+		qupv3_se4_spi_pins {
+			phandle = <0x7fff01b6>;
+		};
+
+		qupv3_se4_spi_miso_active {
+			phandle = <0x7fff01b7>;
+		};
+
+		qupv3_se4_spi_mosi_active {
+			phandle = <0x7fff01b8>;
+		};
+
+		qupv3_se4_spi_clk_active {
+			phandle = <0x7fff01b9>;
+		};
+
+		qupv3_se4_spi_cs_active {
+			phandle = <0x7fff01ba>;
+		};
+
+		qupv3_se4_spi_sleep {
+			phandle = <0x7fff01bb>;
+		};
+
+		qupv3_se5_i2c_pins {
+			phandle = <0x7fff01bc>;
+		};
+
+		qupv3_se5_i2c_sda_active {
+			phandle = <0x7fff01bd>;
+		};
+
+		qupv3_se5_i2c_scl_active {
+			phandle = <0x7fff01be>;
+		};
+
+		qupv3_se5_i2c_sleep {
+			phandle = <0x7fff01bf>;
+		};
+
+		qupv3_se5_spi_pins {
+			phandle = <0x7fff01c0>;
+		};
+
+		qupv3_se5_spi_miso_active {
+			phandle = <0x7fff01c1>;
+		};
+
+		qupv3_se5_spi_mosi_active {
+			phandle = <0x7fff01c2>;
+		};
+
+		qupv3_se5_spi_clk_active {
+			phandle = <0x7fff01c3>;
+		};
+
+		qupv3_se5_spi_cs_active {
+			phandle = <0x7fff01c4>;
+		};
+
+		qupv3_se5_spi_sleep {
+			phandle = <0x7fff01c5>;
+		};
+
+		qupv3_se6_i2c_pins {
+			phandle = <0x7fff01c6>;
+		};
+
+		qupv3_se6_i2c_sda_active {
+			phandle = <0x7fff01c7>;
+		};
+
+		qupv3_se6_i2c_scl_active {
+			phandle = <0x7fff01c8>;
+		};
+
+		qupv3_se6_i2c_sleep {
+			phandle = <0x7fff01c9>;
+		};
+
+		qupv3_se6_spi_pins {
+			phandle = <0x7fff01ca>;
+		};
+
+		qupv3_se6_spi_miso_active {
+			phandle = <0x7fff01cb>;
+		};
+
+		qupv3_se6_spi_mosi_active {
+			phandle = <0x7fff01cc>;
+		};
+
+		qupv3_se6_spi_clk_active {
+			phandle = <0x7fff01cd>;
+		};
+
+		qupv3_se6_spi_cs_active {
+			phandle = <0x7fff01ce>;
+		};
+
+		qupv3_se6_spi_sleep {
+			phandle = <0x7fff01cf>;
+		};
+
+		qupv3_se7_i2c_pins {
+			phandle = <0x7fff01d0>;
+		};
+
+		qupv3_se7_i2c_sda_active {
+			phandle = <0x7fff01d1>;
+		};
+
+		qupv3_se7_i2c_scl_active {
+			phandle = <0x7fff01d2>;
+		};
+
+		qupv3_se7_i2c_sleep {
+			phandle = <0x7fff01d3>;
+		};
+
+		qupv3_se7_spi_pins {
+			phandle = <0x7fff01d4>;
+		};
+
+		qupv3_se7_spi_miso_active {
+			phandle = <0x7fff01d5>;
+		};
+
+		qupv3_se7_spi_mosi_active {
+			phandle = <0x7fff01d6>;
+		};
+
+		qupv3_se7_spi_clk_active {
+			phandle = <0x7fff01d7>;
+		};
+
+		qupv3_se7_spi_cs_active {
+			phandle = <0x7fff01d8>;
+		};
+
+		qupv3_se7_spi_sleep {
+			phandle = <0x7fff01d9>;
+		};
+
+		qupv3_se8_i2c_pins {
+			phandle = <0x7fff01da>;
+		};
+
+		qupv3_se8_i2c_sda_active {
+			phandle = <0x7fff01db>;
+		};
+
+		qupv3_se8_i2c_scl_active {
+			phandle = <0x7fff01dc>;
+		};
+
+		qupv3_se8_i2c_sleep {
+			phandle = <0x7fff01dd>;
+		};
+
+		qupv3_se8_spi_pins {
+			phandle = <0x7fff01de>;
+		};
+
+		qupv3_se8_spi_miso_active {
+			phandle = <0x7fff01df>;
+		};
+
+		qupv3_se8_spi_mosi_active {
+			phandle = <0x7fff01e0>;
+		};
+
+		qupv3_se8_spi_clk_active {
+			phandle = <0x7fff01e1>;
+		};
+
+		qupv3_se8_spi_cs_active {
+			phandle = <0x7fff01e2>;
+		};
+
+		qupv3_se8_spi_sleep {
+			phandle = <0x7fff01e3>;
+		};
+
+		qupv3_se8_i3c_pins {
+			phandle = <0x7fff01e4>;
+		};
+
+		qupv3_se8_i3c_sda_active {
+			phandle = <0x7fff01e5>;
+		};
+
+		qupv3_se8_i3c_scl_active {
+			phandle = <0x7fff01e6>;
+		};
+
+		qupv3_se8_i3c_sda_sleep {
+			phandle = <0x7fff01e7>;
+		};
+
+		qupv3_se8_i3c_scl_sleep {
+			phandle = <0x7fff01e8>;
+		};
+
+		qupv3_se8_i3c_disable {
+			phandle = <0x7fff01e9>;
+		};
+
+		qupv3_se9_i2c_pins {
+			phandle = <0x7fff01ea>;
+		};
+
+		qupv3_se9_i2c_sda_active {
+			phandle = <0x7fff01eb>;
+		};
+
+		qupv3_se9_i2c_scl_active {
+			phandle = <0x7fff01ec>;
+		};
+
+		qupv3_se9_i2c_sleep {
+			phandle = <0x7fff01ed>;
+		};
+
+		qupv3_se9_spi_pins {
+			phandle = <0x7fff01ee>;
+		};
+
+		qupv3_se9_spi_miso_active {
+			phandle = <0x7fff01ef>;
+		};
+
+		qupv3_se9_spi_mosi_active {
+			phandle = <0x7fff01f0>;
+		};
+
+		qupv3_se9_spi_clk_active {
+			phandle = <0x7fff01f1>;
+		};
+
+		qupv3_se9_spi_cs_active {
+			phandle = <0x7fff01f2>;
+		};
+
+		qupv3_se9_spi_sleep {
+			phandle = <0x7fff01f3>;
+		};
+
+		qupv3_se10_i2c_pins {
+			phandle = <0x7fff01f4>;
+		};
+
+		qupv3_se10_i2c_sda_active {
+			phandle = <0x7fff01f5>;
+		};
+
+		qupv3_se10_i2c_scl_active {
+			phandle = <0x7fff01f6>;
+		};
+
+		qupv3_se10_i2c_sleep {
+			phandle = <0x7fff01f7>;
+		};
+
+		qupv3_se10_spi_pins {
+			phandle = <0x7fff01f8>;
+		};
+
+		qupv3_se10_spi_miso_active {
+			phandle = <0x7fff01f9>;
+		};
+
+		qupv3_se10_spi_mosi_active {
+			phandle = <0x7fff01fa>;
+		};
+
+		qupv3_se10_spi_clk_active {
+			phandle = <0x7fff01fb>;
+		};
+
+		qupv3_se10_spi_cs_active {
+			phandle = <0x7fff01fc>;
+		};
+
+		qupv3_se10_spi_sleep {
+			phandle = <0x7fff01fd>;
+		};
+
+		qupv3_se10_i3c_pins {
+			phandle = <0x7fff01fe>;
+		};
+
+		qupv3_se10_i3c_sda_active {
+			phandle = <0x7fff01ff>;
+		};
+
+		qupv3_se10_i3c_scl_active {
+			phandle = <0x7fff0200>;
+		};
+
+		qupv3_se10_i3c_sda_sleep {
+			phandle = <0x7fff0201>;
+		};
+
+		qupv3_se10_i3c_scl_sleep {
+			phandle = <0x7fff0202>;
+		};
+
+		qupv3_se10_i3c_disable {
+			phandle = <0x7fff0203>;
+		};
+
+		qupv3_se11_i2c_pins {
+			phandle = <0x7fff0204>;
+		};
+
+		qupv3_se11_i2c_sda_active {
+			phandle = <0x7fff0205>;
+		};
+
+		qupv3_se11_i2c_scl_active {
+			phandle = <0x7fff0206>;
+		};
+
+		qupv3_se11_i2c_sleep {
+			phandle = <0x7fff0207>;
+		};
+
+		qupv3_se11_spi_pins {
+			phandle = <0x7fff0208>;
+		};
+
+		qupv3_se11_spi_miso_active {
+			phandle = <0x7fff0209>;
+		};
+
+		qupv3_se11_spi_mosi_active {
+			phandle = <0x7fff020a>;
+		};
+
+		qupv3_se11_spi_clk_active {
+			phandle = <0x7fff020b>;
+		};
+
+		qupv3_se11_spi_cs_active {
+			phandle = <0x7fff020c>;
+		};
+
+		qupv3_se11_spi_sleep {
+			phandle = <0x7fff020d>;
+		};
+
+		qupv3_se11_i3c_pins {
+			phandle = <0x7fff020e>;
+		};
+
+		qupv3_se11_i3c_sda_active {
+			phandle = <0x7fff020f>;
+		};
+
+		qupv3_se11_i3c_scl_active {
+			phandle = <0x7fff0210>;
+		};
+
+		qupv3_se11_i3c_sda_sleep {
+			phandle = <0x7fff0211>;
+		};
+
+		qupv3_se11_i3c_scl_sleep {
+			phandle = <0x7fff0212>;
+		};
+
+		qupv3_se11_i3c_disable {
+			phandle = <0x7fff0213>;
+		};
+
+		qupv3_se12_i2c_pins {
+			phandle = <0x7fff0214>;
+		};
+
+		qupv3_se12_i2c_sda_active {
+			phandle = <0x7fff0215>;
+		};
+
+		qupv3_se12_i2c_scl_active {
+			phandle = <0x7fff0216>;
+		};
+
+		qupv3_se12_i2c_sleep {
+			phandle = <0x7fff0217>;
+		};
+
+		qupv3_se12_spi_pins {
+			phandle = <0x7fff0218>;
+		};
+
+		qupv3_se12_spi_miso_active {
+			phandle = <0x7fff0219>;
+		};
+
+		qupv3_se12_spi_mosi_active {
+			phandle = <0x7fff021a>;
+		};
+
+		qupv3_se12_spi_clk_active {
+			phandle = <0x7fff021b>;
+		};
+
+		qupv3_se12_spi_cs_active {
+			phandle = <0x7fff021c>;
+		};
+
+		qupv3_se12_spi_sleep {
+			phandle = <0x7fff021d>;
+		};
+
+		qupv3_se13_i2c_pins {
+			phandle = <0x7fff021e>;
+		};
+
+		qupv3_se13_i2c_sda_active {
+			phandle = <0x7fff021f>;
+		};
+
+		qupv3_se13_i2c_scl_active {
+			phandle = <0x7fff0220>;
+		};
+
+		qupv3_se13_i2c_sleep {
+			phandle = <0x7fff0221>;
+		};
+
+		qupv3_se13_spi_pins {
+			phandle = <0x7fff0222>;
+		};
+
+		qupv3_se13_spi_miso_active {
+			phandle = <0x7fff0223>;
+		};
+
+		qupv3_se13_spi_mosi_active {
+			phandle = <0x7fff0224>;
+		};
+
+		qupv3_se13_spi_clk_active {
+			phandle = <0x7fff0225>;
+		};
+
+		qupv3_se13_spi_cs_active {
+			phandle = <0x7fff0226>;
+		};
+
+		qupv3_se13_spi_sleep {
+			phandle = <0x7fff0227>;
+		};
+
+		qupv3_se13_q2spi_pins {
+			phandle = <0x7fff0228>;
+		};
+
+		qupv3_se13_q2spi_default {
+			phandle = <0x7fff0229>;
+		};
+
+		qupv3_se13_q2spi_miso_default {
+			phandle = <0x7fff022a>;
+		};
+
+		qupv3_se13_q2spi_miso_active {
+			phandle = <0x7fff022b>;
+		};
+
+		qupv3_se13_q2spi_mosi_active {
+			phandle = <0x7fff022c>;
+		};
+
+		qupv3_se13_q2spi_clk_active {
+			phandle = <0x7fff022d>;
+		};
+
+		qupv3_se13_q2spi_doorbell_active {
+			phandle = <0x7fff022e>;
+		};
+
+		qupv3_se13_q2spi_doorbell_sleep {
+			phandle = <0x7fff022f>;
+		};
+
+		qupv3_se13_q2spi_miso_sleep {
+			phandle = <0x7fff0230>;
+		};
+
+		qupv3_hub_i2c0_pins {
+			phandle = <0x7fff0231>;
+		};
+
+		qupv3_hub_i2c0_sda_active {
+			phandle = <0x7fff0232>;
+		};
+
+		qupv3_hub_i2c0_scl_active {
+			phandle = <0x7fff0233>;
+		};
+
+		qupv3_hub_i2c0_sleep {
+			phandle = <0x7fff0234>;
+		};
+
+		qupv3_hub_i2c1_pins {
+			phandle = <0x7fff0235>;
+		};
+
+		qupv3_hub_i2c1_sda_active {
+			phandle = <0x7fff0236>;
+		};
+
+		qupv3_hub_i2c1_scl_active {
+			phandle = <0x7fff0237>;
+		};
+
+		qupv3_hub_i2c1_sleep {
+			phandle = <0x7fff0238>;
+		};
+
+		qupv3_hub_i2c2_pins {
+			phandle = <0x7fff0239>;
+		};
+
+		qupv3_hub_i2c2_sda_active {
+			phandle = <0x7fff023a>;
+		};
+
+		qupv3_hub_i2c2_scl_active {
+			phandle = <0x7fff023b>;
+		};
+
+		qupv3_hub_i2c2_sleep {
+			phandle = <0x7fff023c>;
+		};
+
+		qupv3_hub_i2c3_pins {
+			phandle = <0x7fff023d>;
+		};
+
+		qupv3_hub_i2c3_sda_active {
+			phandle = <0x7fff023e>;
+		};
+
+		qupv3_hub_i2c3_scl_active {
+			phandle = <0x7fff023f>;
+		};
+
+		qupv3_hub_i2c3_sleep {
+			phandle = <0x7fff0240>;
+		};
+
+		qupv3_hub_i2c4_pins {
+			phandle = <0x7fff0241>;
+		};
+
+		qupv3_hub_i2c4_sda_active {
+			phandle = <0x7fff0242>;
+		};
+
+		qupv3_hub_i2c4_scl_active {
+			phandle = <0x7fff0243>;
+		};
+
+		qupv3_hub_i2c4_sleep {
+			phandle = <0x7fff0244>;
+		};
+
+		qupv3_hub_i2c5_pins {
+			phandle = <0x7fff0245>;
+		};
+
+		qupv3_hub_i2c5_sda_active {
+			phandle = <0x7fff0246>;
+		};
+
+		qupv3_hub_i2c5_scl_active {
+			phandle = <0x7fff0247>;
+		};
+
+		qupv3_hub_i2c5_sleep {
+			phandle = <0x7fff0248>;
+		};
+
+		qupv3_hub_i2c6_pins {
+			phandle = <0x7fff0249>;
+		};
+
+		qupv3_hub_i2c6_sda_active {
+			phandle = <0x7fff024a>;
+		};
+
+		qupv3_hub_i2c6_scl_active {
+			phandle = <0x7fff024b>;
+		};
+
+		qupv3_hub_i2c6_sleep {
+			phandle = <0x7fff024c>;
+		};
+
+		qupv3_hub_i2c7_pins {
+			phandle = <0x7fff024d>;
+		};
+
+		qupv3_hub_i2c7_sda_active {
+			phandle = <0x7fff024e>;
+		};
+
+		qupv3_hub_i2c7_scl_active {
+			phandle = <0x7fff024f>;
+		};
+
+		qupv3_hub_i2c7_sleep {
+			phandle = <0x7fff0250>;
+		};
+
+		qupv3_hub_i2c8_pins {
+			phandle = <0x7fff0251>;
+		};
+
+		qupv3_hub_i2c8_sda_active {
+			phandle = <0x7fff0252>;
+		};
+
+		qupv3_hub_i2c8_scl_active {
+			phandle = <0x7fff0253>;
+		};
+
+		qupv3_hub_i2c8_sleep {
+			phandle = <0x7fff0254>;
+		};
+
+		qupv3_hub_i2c9_pins {
+			phandle = <0x7fff0255>;
+		};
+
+		qupv3_hub_i2c9_sda_active {
+			phandle = <0x7fff0256>;
+		};
+
+		qupv3_hub_i2c9_scl_active {
+			phandle = <0x7fff0257>;
+		};
+
+		qupv3_hub_i2c9_sleep {
+			phandle = <0x7fff0258>;
+		};
+
+		aux0_pcm_clk_sleep {
+			phandle = <0x7fff0259>;
+		};
+
+		aux0_pcm_clk_active {
+			phandle = <0x7fff025a>;
+		};
+
+		aux0_pcm_ws_sleep {
+			phandle = <0x7fff025b>;
+		};
+
+		aux0_pcm_ws_active {
+			phandle = <0x7fff025c>;
+		};
+
+		aux0_pcm_din_sleep {
+			phandle = <0x7fff025d>;
+		};
+
+		aux0_pcm_din_active {
+			phandle = <0x7fff025e>;
+		};
+
+		aux0_pcm_dout_sleep {
+			phandle = <0x7fff025f>;
+		};
+
+		aux0_pcm_dout_active {
+			phandle = <0x7fff0260>;
+		};
+
+		aux1_pcm_clk_sleep {
+			phandle = <0x7fff0261>;
+		};
+
+		aux1_pcm_clk_active {
+			phandle = <0x7fff0262>;
+		};
+
+		aux1_pcm_ws_sleep {
+			phandle = <0x7fff0263>;
+		};
+
+		aux1_pcm_ws_active {
+			phandle = <0x7fff0264>;
+		};
+
+		aux1_pcm_din_sleep {
+			phandle = <0x7fff0265>;
+		};
+
+		aux1_pcm_din_active {
+			phandle = <0x7fff0266>;
+		};
+
+		aux1_pcm_dout_sleep {
+			phandle = <0x7fff0267>;
+		};
+
+		aux1_pcm_dout_active {
+			phandle = <0x7fff0268>;
+		};
+
+		tdm0_clk_sleep {
+			phandle = <0x7fff0269>;
+		};
+
+		tdm0_clk_active {
+			phandle = <0x7fff026a>;
+		};
+
+		tdm0_ws_sleep {
+			phandle = <0x7fff026b>;
+		};
+
+		tdm0_ws_active {
+			phandle = <0x7fff026c>;
+		};
+
+		tdm0_din_sleep {
+			phandle = <0x7fff026d>;
+		};
+
+		tdm0_din_active {
+			phandle = <0x7fff026e>;
+		};
+
+		tdm0_dout_sleep {
+			phandle = <0x7fff026f>;
+		};
+
+		tdm0_dout_active {
+			phandle = <0x7fff0270>;
+		};
+
+		tdm1_clk_sleep {
+			phandle = <0x7fff0271>;
+		};
+
+		tdm1_clk_active {
+			phandle = <0x7fff0272>;
+		};
+
+		tdm1_ws_sleep {
+			phandle = <0x7fff0273>;
+		};
+
+		tdm1_ws_active {
+			phandle = <0x7fff0274>;
+		};
+
+		tdm1_din_sleep {
+			phandle = <0x7fff0275>;
+		};
+
+		tdm1_din_active {
+			phandle = <0x7fff0276>;
+		};
+
+		tdm1_dout_sleep {
+			phandle = <0x7fff0277>;
+		};
+
+		tdm1_dout_active {
+			phandle = <0x7fff0278>;
+		};
+
+		i2s0_sck_sleep {
+			phandle = <0x7fff0279>;
+		};
+
+		i2s0_sck_active {
+			phandle = <0x7fff027a>;
+		};
+
+		i2s0_ws_sleep {
+			phandle = <0x7fff027b>;
+		};
+
+		i2s0_ws_active {
+			phandle = <0x7fff027c>;
+		};
+
+		i2s0_sd0_sleep {
+			phandle = <0x7fff027d>;
+		};
+
+		i2s0_sd0_active {
+			phandle = <0x7fff027e>;
+		};
+
+		i2s0_sd1_sleep {
+			phandle = <0x7fff027f>;
+		};
+
+		i2s0_sd1_active {
+			phandle = <0x7fff0280>;
+		};
+
+		i2s1_sck_sleep {
+			phandle = <0x7fff0281>;
+		};
+
+		i2s1_sck_active {
+			phandle = <0x7fff0282>;
+		};
+
+		i2s1_ws_sleep {
+			phandle = <0x7fff0283>;
+		};
+
+		i2s1_ws_active {
+			phandle = <0x7fff0284>;
+		};
+
+		i2s1_sd0_sleep {
+			phandle = <0x7fff0285>;
+		};
+
+		i2s1_sd0_active {
+			phandle = <0x7fff0286>;
+		};
+
+		i2s1_sd1_sleep {
+			phandle = <0x7fff0287>;
+		};
+
+		i2s1_sd1_active {
+			phandle = <0x7fff0288>;
+		};
+
+		sdc2_on {
+			phandle = <0x7fff0289>;
+		};
+
+		sdc2_off {
+			phandle = <0x7fff028a>;
+		};
+
+		wcd939x_reset_active {
+			phandle = <0x7fff028b>;
+		};
+
+		wcd939x_reset_sleep {
+			phandle = <0x7fff028c>;
+		};
+
+		spkr_13_sd_n_sleep {
+			phandle = <0x7fff028d>;
+		};
+
+		spkr_13_sd_n_active {
+			phandle = <0x7fff028e>;
+		};
+
+		usb_phy_ps {
+			phandle = <0x7fff028f>;
+		};
+
+		usb3phy_portselect_default {
+			phandle = <0x7fff0290>;
+		};
+
+		usb3phy_portselect_gpio {
+			phandle = <0x7fff0291>;
+		};
+
+		ts_active {
+			phandle = <0x7fff0292>;
+		};
+
+		ts_reset_suspend {
+			phandle = <0x7fff0293>;
+		};
+
+		ts_int_suspend {
+			phandle = <0x7fff0294>;
+		};
+
+		ts_release {
+			phandle = <0x7fff0295>;
+		};
+
+		qca_intn_wol_sig {
+			phandle = <0x7fff0296>;
+		};
+
+		vendor_hooks {
+			phandle = <0x7fff0297>;
+		};
+
+		logbuf {
+			phandle = <0x7fff0298>;
+		};
+
+		apps_rsc {
+			phandle = <0x7fff0299>;
+		};
+
+		apps_rsc_drv2 {
+			phandle = <0x7fff029a>;
+		};
+
+		apps_bcm_voter {
+			phandle = <0x7fff029b>;
+		};
+
+		rpmhcc {
+			phandle = <0x7fff029c>;
+		};
+
+		dcvs_fp {
+			phandle = <0x7fff029d>;
+		};
+
+		VDD_LPI_CX_LEVEL {
+			phandle = <0x7fff029e>;
+		};
+
+		S4D_LEVEL {
+			phandle = <0x7fff029f>;
+		};
+
+		pm_v6d_s4_level {
+			phandle = <0x7fff02a0>;
+		};
+
+		VDD_GFX_LEVEL {
+			phandle = <0x7fff02a1>;
+		};
+
+		S5D_LEVEL {
+			phandle = <0x7fff02a2>;
+		};
+
+		pm_v6d_s5_level {
+			phandle = <0x7fff02a3>;
+		};
+
+		VDD_LPI_MX_LEVEL {
+			phandle = <0x7fff02a4>;
+		};
+
+		L2D_LEVEL {
+			phandle = <0x7fff02a5>;
+		};
+
+		pm_v6d_l2_level {
+			phandle = <0x7fff02a6>;
+		};
+
+		VDD_NSP2_LEVEL {
+			phandle = <0x7fff02a7>;
+		};
+
+		S1G_LEVEL {
+			phandle = <0x7fff02a8>;
+		};
+
+		pm_v6g_s1_level {
+			phandle = <0x7fff02a9>;
+		};
+
+		VDD_EBI_LEVEL {
+			phandle = <0x7fff02aa>;
+		};
+
+		S4G_LEVEL {
+			phandle = <0x7fff02ab>;
+		};
+
+		pm_v6g_s4_level {
+			phandle = <0x7fff02ac>;
+		};
+
+		VDD_MODEM_LEVEL {
+			phandle = <0x7fff02ad>;
+		};
+
+		S5G_LEVEL {
+			phandle = <0x7fff02ae>;
+		};
+
+		pm_v6g_s5_level {
+			phandle = <0x7fff02af>;
+		};
+
+		VDD_CX_LEVEL {
+			phandle = <0x7fff02b0>;
+		};
+
+		S8I_LEVEL {
+			phandle = <0x7fff02b1>;
+		};
+
+		pm_v8_s8_level {
+			phandle = <0x7fff02b2>;
+		};
+
+		VDD_CX_LEVEL_AO {
+			phandle = <0x7fff02b3>;
+		};
+
+		S8I_LEVEL_AO {
+			phandle = <0x7fff02b4>;
+		};
+
+		pm_v8_s8_level_ao {
+			phandle = <0x7fff02b5>;
+		};
+
+		VDD_CX_MMCX_SUPPLY_LEVEL {
+			phandle = <0x7fff02b6>;
+		};
+
+		VDD_MMCX_LEVEL {
+			phandle = <0x7fff02b7>;
+		};
+
+		VDD_MM_LEVEL {
+			phandle = <0x7fff02b8>;
+		};
+
+		S1I_LEVEL {
+			phandle = <0x7fff02b9>;
+		};
+
+		pm_v8_s1_level {
+			phandle = <0x7fff02ba>;
+		};
+
+		VDD_MMCX_LEVEL_AO {
+			phandle = <0x7fff02bb>;
+		};
+
+		VDD_MM_LEVEL_AO {
+			phandle = <0x7fff02bc>;
+		};
+
+		S1I_LEVEL_AO {
+			phandle = <0x7fff02bd>;
+		};
+
+		pm_v8_s1_level_ao {
+			phandle = <0x7fff02be>;
+		};
+
+		VDD_MXA_LEVEL {
+			phandle = <0x7fff02bf>;
+		};
+
+		S3I_LEVEL {
+			phandle = <0x7fff02c0>;
+		};
+
+		pm_v8_s3_level {
+			phandle = <0x7fff02c1>;
+		};
+
+		VDD_MXA_LEVEL_AO {
+			phandle = <0x7fff02c2>;
+		};
+
+		S3I_LEVEL_AO {
+			phandle = <0x7fff02c3>;
+		};
+
+		pm_v8_s3_level_ao {
+			phandle = <0x7fff02c4>;
+		};
+
+		VDD_MXC_LEVEL {
+			phandle = <0x7fff02c5>;
+		};
+
+		S3D_LEVEL {
+			phandle = <0x7fff02c6>;
+		};
+
+		pm_v6d_s3_level {
+			phandle = <0x7fff02c7>;
+		};
+
+		VDD_MXC_LEVEL_AO {
+			phandle = <0x7fff02c8>;
+		};
+
+		S3D_LEVEL_AO {
+			phandle = <0x7fff02c9>;
+		};
+
+		pm_v6d_s3_level_ao {
+			phandle = <0x7fff02ca>;
+		};
+
+		VDD_MXC_MMCX_VOTER_LEVEL {
+			phandle = <0x7fff02cb>;
+		};
+
+		VDD_MXC_MM_VOTER_LEVEL {
+			phandle = <0x7fff02cc>;
+		};
+
+		VDD_MM_MXC_VOTER_LEVEL {
+			phandle = <0x7fff02cd>;
+		};
+
+		VDD_MXC_GFX_VOTER_LEVEL {
+			phandle = <0x7fff02ce>;
+		};
+
+		VDD_GFX_MXC_VOTER_LEVEL {
+			phandle = <0x7fff02cf>;
+		};
+
+		VDD_NSP1_LEVEL {
+			phandle = <0x7fff02d0>;
+		};
+
+		S6I_LEVEL {
+			phandle = <0x7fff02d1>;
+		};
+
+		pm_v8_s6_level {
+			phandle = <0x7fff02d2>;
+		};
+
+		L1B {
+			phandle = <0x7fff02d3>;
+		};
+
+		pm_humu_l1 {
+			phandle = <0x7fff02d4>;
+		};
+
+		L2B {
+			phandle = <0x7fff02d5>;
+		};
+
+		pm_humu_l2 {
+			phandle = <0x7fff02d6>;
+		};
+
+		L5B {
+			phandle = <0x7fff02d7>;
+		};
+
+		pm_humu_l5 {
+			phandle = <0x7fff02d8>;
+		};
+
+		L6B {
+			phandle = <0x7fff02d9>;
+		};
+
+		pm_humu_l6 {
+			phandle = <0x7fff02da>;
+		};
+
+		L7B {
+			phandle = <0x7fff02db>;
+		};
+
+		pm_humu_l7 {
+			phandle = <0x7fff02dc>;
+		};
+
+		L8B {
+			phandle = <0x7fff02dd>;
+		};
+
+		pm_humu_l8 {
+			phandle = <0x7fff02de>;
+		};
+
+		L9B {
+			phandle = <0x7fff02df>;
+		};
+
+		pm_humu_l9 {
+			phandle = <0x7fff02e0>;
+		};
+
+		L10B {
+			phandle = <0x7fff02e1>;
+		};
+
+		pm_humu_l10 {
+			phandle = <0x7fff02e2>;
+		};
+
+		L11B {
+			phandle = <0x7fff02e3>;
+		};
+
+		pm_humu_l11 {
+			phandle = <0x7fff02e4>;
+		};
+
+		L12B {
+			phandle = <0x7fff02e5>;
+		};
+
+		pm_humu_l12 {
+			phandle = <0x7fff02e6>;
+		};
+
+		L13B {
+			phandle = <0x7fff02e7>;
+		};
+
+		pm_humu_l13 {
+			phandle = <0x7fff02e8>;
+		};
+
+		L14B {
+			phandle = <0x7fff02e9>;
+		};
+
+		pm_humu_l14 {
+			phandle = <0x7fff02ea>;
+		};
+
+		L15B {
+			phandle = <0x7fff02eb>;
+		};
+
+		pm_humu_l15 {
+			phandle = <0x7fff02ec>;
+		};
+
+		L16B {
+			phandle = <0x7fff02ed>;
+		};
+
+		pm_humu_l16 {
+			phandle = <0x7fff02ee>;
+		};
+
+		L17B {
+			phandle = <0x7fff02ef>;
+		};
+
+		pm_humu_l17 {
+			phandle = <0x7fff02f0>;
+		};
+
+		BOB1 {
+			phandle = <0x7fff02f1>;
+		};
+
+		pm_humu_bob1 {
+			phandle = <0x7fff02f2>;
+		};
+
+		BOB2 {
+			phandle = <0x7fff02f3>;
+		};
+
+		pm_humu_bob2 {
+			phandle = <0x7fff02f4>;
+		};
+
+		S1C {
+			phandle = <0x7fff02f5>;
+		};
+
+		pm_v6c_s1 {
+			phandle = <0x7fff02f6>;
+		};
+
+		S2C {
+			phandle = <0x7fff02f7>;
+		};
+
+		pm_v6c_s2 {
+			phandle = <0x7fff02f8>;
+		};
+
+		S3C {
+			phandle = <0x7fff02f9>;
+		};
+
+		pm_v6c_s3 {
+			phandle = <0x7fff02fa>;
+		};
+
+		S4C {
+			phandle = <0x7fff02fb>;
+		};
+
+		pm_v6c_s4 {
+			phandle = <0x7fff02fc>;
+		};
+
+		S5C {
+			phandle = <0x7fff02fd>;
+		};
+
+		pm_v6c_s5 {
+			phandle = <0x7fff02fe>;
+		};
+
+		S6C {
+			phandle = <0x7fff02ff>;
+		};
+
+		pm_v6c_s6 {
+			phandle = <0x7fff0300>;
+		};
+
+		L1C {
+			phandle = <0x7fff0301>;
+		};
+
+		pm_v6c_l1 {
+			phandle = <0x7fff0302>;
+		};
+
+		L2C {
+			phandle = <0x7fff0303>;
+		};
+
+		pm_v6c_l2 {
+			phandle = <0x7fff0304>;
+		};
+
+		L3C {
+			phandle = <0x7fff0305>;
+		};
+
+		pm_v6c_l3 {
+			phandle = <0x7fff0306>;
+		};
+
+		L1D {
+			phandle = <0x7fff0307>;
+		};
+
+		pm_v6d_l1 {
+			phandle = <0x7fff0308>;
+		};
+
+		L3D {
+			phandle = <0x7fff0309>;
+		};
+
+		pm_v6d_l3 {
+			phandle = <0x7fff030a>;
+		};
+
+		L2E {
+			phandle = <0x7fff030b>;
+		};
+
+		pm_v6e_l2 {
+			phandle = <0x7fff030c>;
+		};
+
+		L3E {
+			phandle = <0x7fff030d>;
+		};
+
+		pm_v6e_l3 {
+			phandle = <0x7fff030e>;
+		};
+
+		S3G {
+			phandle = <0x7fff030f>;
+		};
+
+		pm_v6g_s3 {
+			phandle = <0x7fff0310>;
+		};
+
+		L1G {
+			phandle = <0x7fff0311>;
+		};
+
+		pm_v6g_l1 {
+			phandle = <0x7fff0312>;
+		};
+
+		L2G {
+			phandle = <0x7fff0313>;
+		};
+
+		pm_v6g_l2 {
+			phandle = <0x7fff0314>;
+		};
+
+		L3G {
+			phandle = <0x7fff0315>;
+		};
+
+		pm_v6g_l3 {
+			phandle = <0x7fff0316>;
+		};
+
+		S4I {
+			phandle = <0x7fff0317>;
+		};
+
+		pm_v8_s4 {
+			phandle = <0x7fff0318>;
+		};
+
+		S5I {
+			phandle = <0x7fff0319>;
+		};
+
+		pm_v8_s5 {
+			phandle = <0x7fff031a>;
+		};
+
+		L1I {
+			phandle = <0x7fff031b>;
+		};
+
+		pm_v8_l1 {
+			phandle = <0x7fff031c>;
+		};
+
+		L1I_AO {
+			phandle = <0x7fff031d>;
+		};
+
+		pm_v8_l1_ao {
+			phandle = <0x7fff031e>;
+		};
+
+		L2I {
+			phandle = <0x7fff031f>;
+		};
+
+		pm_v8_l2 {
+			phandle = <0x7fff0320>;
+		};
+
+		L3I {
+			phandle = <0x7fff0321>;
+		};
+
+		pm_v8_l3 {
+			phandle = <0x7fff0322>;
+		};
+
+		L3I_AO {
+			phandle = <0x7fff0323>;
+		};
+
+		pm_v8_l3_ao {
+			phandle = <0x7fff0324>;
+		};
+
+		L1K {
+			phandle = <0x7fff0325>;
+		};
+
+		pmr_nalojr_l1 {
+			phandle = <0x7fff0326>;
+		};
+
+		L2K {
+			phandle = <0x7fff0327>;
+		};
+
+		pmr_nalojr_l2 {
+			phandle = <0x7fff0328>;
+		};
+
+		L3K {
+			phandle = <0x7fff0329>;
+		};
+
+		pmr_nalojr_l3 {
+			phandle = <0x7fff032a>;
+		};
+
+		L4K {
+			phandle = <0x7fff032b>;
+		};
+
+		pmr_nalojr_l4 {
+			phandle = <0x7fff032c>;
+		};
+
+		L5K {
+			phandle = <0x7fff032d>;
+		};
+
+		pmr_nalojr_l5 {
+			phandle = <0x7fff032e>;
+		};
+
+		L6K {
+			phandle = <0x7fff032f>;
+		};
+
+		pmr_nalojr_l6 {
+			phandle = <0x7fff0330>;
+		};
+
+		L7K {
+			phandle = <0x7fff0331>;
+		};
+
+		pmr_nalojr_l7 {
+			phandle = <0x7fff0332>;
+		};
+
+		L1M {
+			phandle = <0x7fff0333>;
+		};
+
+		pm8010m_l1 {
+			phandle = <0x7fff0334>;
+		};
+
+		L2M {
+			phandle = <0x7fff0335>;
+		};
+
+		pm8010m_l2 {
+			phandle = <0x7fff0336>;
+		};
+
+		L3M {
+			phandle = <0x7fff0337>;
+		};
+
+		pm8010m_l3 {
+			phandle = <0x7fff0338>;
+		};
+
+		L4M {
+			phandle = <0x7fff0339>;
+		};
+
+		pm8010m_l4 {
+			phandle = <0x7fff033a>;
+		};
+
+		L5M {
+			phandle = <0x7fff033b>;
+		};
+
+		pm8010m_l5 {
+			phandle = <0x7fff033c>;
+		};
+
+		L6M {
+			phandle = <0x7fff033d>;
+		};
+
+		pm8010m_l6 {
+			phandle = <0x7fff033e>;
+		};
+
+		L7M {
+			phandle = <0x7fff033f>;
+		};
+
+		pm8010m_l7 {
+			phandle = <0x7fff0340>;
+		};
+
+		L1N {
+			phandle = <0x7fff0341>;
+		};
+
+		pm8010n_l1 {
+			phandle = <0x7fff0342>;
+		};
+
+		L2N {
+			phandle = <0x7fff0343>;
+		};
+
+		pm8010n_l2 {
+			phandle = <0x7fff0344>;
+		};
+
+		L3N {
+			phandle = <0x7fff0345>;
+		};
+
+		pm8010n_l3 {
+			phandle = <0x7fff0346>;
+		};
+
+		L4N {
+			phandle = <0x7fff0347>;
+		};
+
+		pm8010n_l4 {
+			phandle = <0x7fff0348>;
+		};
+
+		L5N {
+			phandle = <0x7fff0349>;
+		};
+
+		pm8010n_l5 {
+			phandle = <0x7fff034a>;
+		};
+
+		L6N {
+			phandle = <0x7fff034b>;
+		};
+
+		pm8010n_l6 {
+			phandle = <0x7fff034c>;
+		};
+
+		L7N {
+			phandle = <0x7fff034d>;
+		};
+
+		pm8010n_l7 {
+			phandle = <0x7fff034e>;
+		};
+
+		cam_rsc {
+			phandle = <0x7fff034f>;
+		};
+
+		cam_rsc_drv0 {
+			phandle = <0x7fff0350>;
+		};
+
+		cam_bcm_voter0 {
+			phandle = <0x7fff0351>;
+		};
+
+		cam_rsc_drv1 {
+			phandle = <0x7fff0352>;
+		};
+
+		cam_bcm_voter1 {
+			phandle = <0x7fff0353>;
+		};
+
+		cam_rsc_drv2 {
+			phandle = <0x7fff0354>;
+		};
+
+		cam_bcm_voter2 {
+			phandle = <0x7fff0355>;
+		};
+
+		disp_rsc {
+			phandle = <0x7fff0356>;
+		};
+
+		disp_rsc_drv0 {
+			phandle = <0x7fff0357>;
+		};
+
+		disp_bcm_voter {
+			phandle = <0x7fff0358>;
+		};
+
+		cam_crm {
+			phandle = <0x7fff0359>;
+		};
+
+		pcie_crm {
+			phandle = <0x7fff035a>;
+		};
+
+		spss_pas {
+			phandle = <0x7fff035b>;
+		};
+
+		spss_utils {
+			phandle = <0x7fff035c>;
+		};
+
+		xo_board {
+			phandle = <0x7fff035d>;
+		};
+
+		sleep_clk {
+			phandle = <0x7fff035e>;
+		};
+
+		pcie_0_pipe_clk {
+			phandle = <0x7fff035f>;
+		};
+
+		pcie_1_phy_aux_clk {
+			phandle = <0x7fff0360>;
+		};
+
+		pcie_1_pipe_clk {
+			phandle = <0x7fff0361>;
+		};
+
+		ufs_phy_rx_symbol_0_clk {
+			phandle = <0x7fff0362>;
+		};
+
+		ufs_phy_rx_symbol_1_clk {
+			phandle = <0x7fff0363>;
+		};
+
+		ufs_phy_tx_symbol_0_clk {
+			phandle = <0x7fff0364>;
+		};
+
+		usb3_phy_wrapper_gcc_usb30_pipe_clk {
+			phandle = <0x7fff0365>;
+		};
+
+		camcc_crmc {
+			phandle = <0x7fff0366>;
+		};
+
+		camcc {
+			phandle = <0x7fff0367>;
+		};
+
+		dispcc {
+			phandle = <0x7fff0368>;
+		};
+
+		gcc {
+			phandle = <0x7fff0369>;
+		};
+
+		gpucc {
+			phandle = <0x7fff036a>;
+		};
+
+		tcsrcc {
+			phandle = <0x7fff036b>;
+		};
+
+		videocc {
+			phandle = <0x7fff036c>;
+		};
+
+		apsscc {
+			phandle = <0x7fff036d>;
+		};
+
+		mccc {
+			phandle = <0x7fff036e>;
+		};
+
+		debugcc {
+			phandle = <0x7fff036f>;
+		};
+
+		cpufreq_hw {
+			phandle = <0x7fff0370>;
+		};
+
+		sdhc2_opp_table {
+			phandle = <0x7fff0371>;
+		};
+
+		sdhc_2 {
+			phandle = <0x7fff0372>;
+		};
+
+		ufsphy_mem {
+			phandle = <0x7fff0373>;
+		};
+
+		ice_cfg {
+			phandle = <0x7fff0374>;
+		};
+
+		ufshc_mem {
+			phandle = <0x7fff0375>;
+		};
+
+		thermal_zones {
+			phandle = <0x7fff0376>;
+		};
+
+		cpu2_emerg0 {
+			phandle = <0x7fff0377>;
+		};
+
+		cpu2_emerg0_1 {
+			phandle = <0x7fff0378>;
+		};
+
+		cpu2_emerg1 {
+			phandle = <0x7fff0379>;
+		};
+
+		cpu2_emerg1_1 {
+			phandle = <0x7fff037a>;
+		};
+
+		cpu3_emerg0 {
+			phandle = <0x7fff037b>;
+		};
+
+		cpu3_emerg0_1 {
+			phandle = <0x7fff037c>;
+		};
+
+		cpu3_emerg1 {
+			phandle = <0x7fff037d>;
+		};
+
+		cpu3_emerg1_1 {
+			phandle = <0x7fff037e>;
+		};
+
+		cpu4_emerg0 {
+			phandle = <0x7fff037f>;
+		};
+
+		cpu4_emerg0_1 {
+			phandle = <0x7fff0380>;
+		};
+
+		cpu4_emerg1 {
+			phandle = <0x7fff0381>;
+		};
+
+		cpu4_emerg1_1 {
+			phandle = <0x7fff0382>;
+		};
+
+		cpu5_emerg0 {
+			phandle = <0x7fff0383>;
+		};
+
+		cpu5_emerg0_1 {
+			phandle = <0x7fff0384>;
+		};
+
+		cpu5_emerg1 {
+			phandle = <0x7fff0385>;
+		};
+
+		cpu5_emerg1_1 {
+			phandle = <0x7fff0386>;
+		};
+
+		cpu6_emerg0 {
+			phandle = <0x7fff0387>;
+		};
+
+		cpu6_emerg0_1 {
+			phandle = <0x7fff0388>;
+		};
+
+		cpu6_emerg1 {
+			phandle = <0x7fff0389>;
+		};
+
+		cpu6_emerg1_1 {
+			phandle = <0x7fff038a>;
+		};
+
+		cpu7_emerg0 {
+			phandle = <0x7fff038b>;
+		};
+
+		cpu7_emerg0_1 {
+			phandle = <0x7fff038c>;
+		};
+
+		cpu7_mon_trip1 {
+			phandle = <0x7fff038d>;
+		};
+
+		cpu7_emerg1 {
+			phandle = <0x7fff038e>;
+		};
+
+		cpu7_emerg1_1 {
+			phandle = <0x7fff038f>;
+		};
+
+		cpu7_emerg2 {
+			phandle = <0x7fff0390>;
+		};
+
+		cpu7_emerg2_1 {
+			phandle = <0x7fff0391>;
+		};
+
+		cpu0_emerg {
+			phandle = <0x7fff0392>;
+		};
+
+		cpu0_emerg1 {
+			phandle = <0x7fff0393>;
+		};
+
+		cpu1_emerg {
+			phandle = <0x7fff0394>;
+		};
+
+		cpu1_emerg1 {
+			phandle = <0x7fff0395>;
+		};
+
+		ddr_config0 {
+			phandle = <0x7fff0396>;
+		};
+
+		gpu0_tj_cfg {
+			phandle = <0x7fff0397>;
+		};
+
+		gpu1_tj_cfg {
+			phandle = <0x7fff0398>;
+		};
+
+		gpu2_tj_cfg {
+			phandle = <0x7fff0399>;
+		};
+
+		gpu3_tj_cfg {
+			phandle = <0x7fff039a>;
+		};
+
+		gpu4_tj_cfg {
+			phandle = <0x7fff039b>;
+		};
+
+		gpu5_tj_cfg {
+			phandle = <0x7fff039c>;
+		};
+
+		gpu6_tj_cfg {
+			phandle = <0x7fff039d>;
+		};
+
+		gpu7_tj_cfg {
+			phandle = <0x7fff039e>;
+		};
+
+		mdmss0_config0 {
+			phandle = <0x7fff039f>;
+		};
+
+		mdmss0_config1 {
+			phandle = <0x7fff03a0>;
+		};
+
+		mdmss1_config0 {
+			phandle = <0x7fff03a1>;
+		};
+
+		mdmss1_config1 {
+			phandle = <0x7fff03a2>;
+		};
+
+		mdmss2_config0 {
+			phandle = <0x7fff03a3>;
+		};
+
+		mdmss2_config1 {
+			phandle = <0x7fff03a4>;
+		};
+
+		mdmss3_config0 {
+			phandle = <0x7fff03a5>;
+		};
+
+		mdmss3_config1 {
+			phandle = <0x7fff03a6>;
+		};
+
+		spmi_bus {
+			phandle = <0x7fff03a7>;
+		};
+
+		spmi0_bus {
+			phandle = <0x7fff03a8>;
+		};
+
+		spmi1_bus {
+			phandle = <0x7fff03a9>;
+		};
+
+		spmi0_debug_bus {
+			phandle = <0x7fff03aa>;
+		};
+
+		tcsr_mutex_block {
+			phandle = <0x7fff03ab>;
+		};
+
+		tcsr_mutex {
+			phandle = <0x7fff03ac>;
+		};
+
+		tcsr {
+			phandle = <0x7fff03ad>;
+		};
+
+		qcom_tzlog {
+			phandle = <0x7fff03ae>;
+		};
+
+		qcom_qseecom {
+			phandle = <0x7fff03af>;
+		};
+
+		qcom_cedev {
+			phandle = <0x7fff03b0>;
+		};
+
+		qcom_rng {
+			phandle = <0x7fff03b1>;
+		};
+
+		eud {
+			phandle = <0x7fff03b2>;
+		};
+
+		ipcc_mproc {
+			phandle = <0x7fff03b3>;
+		};
+
+		aoss_qmp {
+			phandle = <0x7fff03b4>;
+		};
+
+		qmp_aop {
+			phandle = <0x7fff03b5>;
+		};
+
+		qmp_tme {
+			phandle = <0x7fff03b6>;
+		};
+
+		adsp_smp2p_out {
+			phandle = <0x7fff03b7>;
+		};
+
+		adsp_smp2p_in {
+			phandle = <0x7fff03b8>;
+		};
+
+		sleepstate_smp2p_out {
+			phandle = <0x7fff03b9>;
+		};
+
+		sleepstate_smp2p_in {
+			phandle = <0x7fff03ba>;
+		};
+
+		smp2p_rdbg2_out {
+			phandle = <0x7fff03bb>;
+		};
+
+		smp2p_rdbg2_in {
+			phandle = <0x7fff03bc>;
+		};
+
+		cdsp_smp2p_out {
+			phandle = <0x7fff03bd>;
+		};
+
+		cdsp_smp2p_in {
+			phandle = <0x7fff03be>;
+		};
+
+		smp2p_rdbg5_out {
+			phandle = <0x7fff03bf>;
+		};
+
+		smp2p_rdbg5_in {
+			phandle = <0x7fff03c0>;
+		};
+
+		modem_smp2p_out {
+			phandle = <0x7fff03c1>;
+		};
+
+		modem_smp2p_in {
+			phandle = <0x7fff03c2>;
+		};
+
+		smp2p_ipa_1_out {
+			phandle = <0x7fff03c3>;
+		};
+
+		smp2p_ipa_1_in {
+			phandle = <0x7fff03c4>;
+		};
+
+		adsp_sleepmon {
+			phandle = <0x7fff03c5>;
+		};
+
+		adsp_pas {
+			phandle = <0x7fff03c6>;
+		};
+
+		glink_edge {
+			phandle = <0x7fff03c7>;
+		};
+
+		modem_pas {
+			phandle = <0x7fff03c8>;
+		};
+
+		cdsp_pas {
+			phandle = <0x7fff03c9>;
+		};
+
+		msm_cdsp_rm {
+			phandle = <0x7fff03ca>;
+		};
+
+		trust_ui_vm_vblk0_ring {
+			phandle = <0x7fff03cb>;
+		};
+
+		trust_ui_vm_vblk1_ring {
+			phandle = <0x7fff03cc>;
+		};
+
+		trust_ui_vm_swiotlb {
+			phandle = <0x7fff03cd>;
+		};
+
+		trust_ui_vm {
+			phandle = <0x7fff03ce>;
+		};
+
+		oem_vm_vblk0_ring {
+			phandle = <0x7fff03cf>;
+		};
+
+		oem_vm_swiotlb {
+			phandle = <0x7fff03d0>;
+		};
+
+		oem_vm {
+			phandle = <0x7fff03d1>;
+		};
+
+		trust_ui_vm_virt_be0 {
+			phandle = <0x7fff03d2>;
+		};
+
+		trust_ui_vm_virt_be1 {
+			phandle = <0x7fff03d3>;
+		};
+
+		gh_secure_vm_loader0 {
+			phandle = <0x7fff03d4>;
+		};
+
+		oem_vm_virt_be0 {
+			phandle = <0x7fff03d5>;
+		};
+
+		battery_charger {
+			phandle = <0x7fff03d6>;
+		};
+
+		ucsi {
+			phandle = <0x7fff03d7>;
+		};
+
+		altmode {
+			phandle = <0x7fff03d8>;
+		};
+
+		pmic_glink_debug {
+			phandle = <0x7fff03d9>;
+		};
+
+		pm8550b_glink_debug {
+			phandle = <0x7fff03da>;
+		};
+
+		pmic_glink_adc {
+			phandle = <0x7fff03db>;
+		};
+
+		msm_gpu {
+			phandle = <0x7fff03dc>;
+		};
+
+		mmio_sram {
+			phandle = <0x7fff03dd>;
+		};
+
+		cpu_scp_lpri {
+			phandle = <0x7fff03de>;
+		};
+
+		cpucp {
+			phandle = <0x7fff03df>;
+		};
+
+		scmi {
+			phandle = <0x7fff03e0>;
+		};
+
+		scmi_memlat {
+			phandle = <0x7fff03e1>;
+		};
+
+		scmi_plh {
+			phandle = <0x7fff03e2>;
+		};
+
+		scmi_pmu {
+			phandle = <0x7fff03e3>;
+		};
+
+		scmi_c1dcvs {
+			phandle = <0x7fff03e4>;
+		};
+
+		cpucp_log {
+			phandle = <0x7fff03e5>;
+		};
+
+		qcom_c1dcvs {
+			phandle = <0x7fff03e6>;
+		};
+
+		qcom_mpam {
+			phandle = <0x7fff03e7>;
+		};
+
+		qcom_dynpf {
+			phandle = <0x7fff03e8>;
+		};
+
+		qcom_cpufreq_stats {
+			phandle = <0x7fff03e9>;
+		};
+
+		llcc_pmu {
+			phandle = <0x7fff03ea>;
+		};
+
+		qcom_pmu {
+			phandle = <0x7fff03eb>;
+		};
+
+		ddr_freq_table {
+			phandle = <0x7fff03ec>;
+		};
+
+		llcc_freq_table {
+			phandle = <0x7fff03ed>;
+		};
+
+		ddrqos_freq_table {
+			phandle = <0x7fff03ee>;
+		};
+
+		qcom_dcvs {
+			phandle = <0x7fff03ef>;
+		};
+
+		qcom_l3_dcvs_hw {
+			phandle = <0x7fff03f0>;
+		};
+
+		l3_dcvs_sp {
+			phandle = <0x7fff03f1>;
+		};
+
+		qcom_ddr_dcvs_hw {
+			phandle = <0x7fff03f2>;
+		};
+
+		ddr_dcvs_sp {
+			phandle = <0x7fff03f3>;
+		};
+
+		ddr_dcvs_fp {
+			phandle = <0x7fff03f4>;
+		};
+
+		qcom_llcc_dcvs_hw {
+			phandle = <0x7fff03f5>;
+		};
+
+		llcc_dcvs_sp {
+			phandle = <0x7fff03f6>;
+		};
+
+		llcc_dcvs_fp {
+			phandle = <0x7fff03f7>;
+		};
+
+		qcom_ddrqos_dcvs_hw {
+			phandle = <0x7fff03f8>;
+		};
+
+		ddrqos_dcvs_sp {
+			phandle = <0x7fff03f9>;
+		};
+
+		qcom_memlat {
+			phandle = <0x7fff03fa>;
+		};
+
+		ddrqos_gold_lat {
+			phandle = <0x7fff03fb>;
+		};
+
+		ddrqos_prime_lat {
+			phandle = <0x7fff03fc>;
+		};
+
+		ddrqos_prime_latfloor {
+			phandle = <0x7fff03fd>;
+		};
+
+		qcom_llcc_l3_vote {
+			phandle = <0x7fff03fe>;
+		};
+
+		bwmon_llcc {
+			phandle = <0x7fff03ff>;
+		};
+
+		bwmon_ddr {
+			phandle = <0x7fff0400>;
+		};
+
+		qfprom {
+			phandle = <0x7fff0401>;
+		};
+
+		gpu_speed_bin {
+			phandle = <0x7fff0402>;
+		};
+
+		ipcc_self_ping_apss {
+			phandle = <0x7fff0403>;
+		};
+
+		ipcc_self_ping_cdsp {
+			phandle = <0x7fff0404>;
+		};
+
+		ipcc_self_ping_adsp {
+			phandle = <0x7fff0405>;
+		};
+
+		ipcc_self_ping_slpi {
+			phandle = <0x7fff0406>;
+		};
+
+		cam_cc_bps_gdsc {
+			phandle = <0x7fff0407>;
+		};
+
+		cam_cc_camss_top_gdsc {
+			phandle = <0x7fff0408>;
+		};
+
+		cam_cc_ife_0_gdsc {
+			phandle = <0x7fff0409>;
+		};
+
+		cam_cc_ife_1_gdsc {
+			phandle = <0x7fff040a>;
+		};
+
+		cam_cc_ife_2_gdsc {
+			phandle = <0x7fff040b>;
+		};
+
+		cam_cc_ipe_0_gdsc {
+			phandle = <0x7fff040c>;
+		};
+
+		cam_cc_sbi_gdsc {
+			phandle = <0x7fff040d>;
+		};
+
+		cam_cc_sfe_0_gdsc {
+			phandle = <0x7fff040e>;
+		};
+
+		cam_cc_sfe_1_gdsc {
+			phandle = <0x7fff040f>;
+		};
+
+		cam_cc_sfe_2_gdsc {
+			phandle = <0x7fff0410>;
+		};
+
+		cam_cc_titan_top_gdsc {
+			phandle = <0x7fff0411>;
+		};
+
+		disp_cc_mdss_core_gdsc {
+			phandle = <0x7fff0412>;
+		};
+
+		mdss_0_disp_cc_mdss_core_gdsc {
+			phandle = <0x7fff0413>;
+		};
+
+		disp_cc_mdss_core_int2_gdsc {
+			phandle = <0x7fff0414>;
+		};
+
+		mdss_0_disp_cc_mdss_core_int2_gdsc {
+			phandle = <0x7fff0415>;
+		};
+
+		mdss_1_disp_cc_mdss_core_gdsc {
+			phandle = <0x7fff0416>;
+		};
+
+		mdss_1_disp_cc_mdss_core_int2_gdsc {
+			phandle = <0x7fff0417>;
+		};
+
+		gcc_apcs_gdsc_vote_ctrl {
+			phandle = <0x7fff0418>;
+		};
+
+		gcc_apcs_gdsc_sleep_ctrl {
+			phandle = <0x7fff0419>;
+		};
+
+		apss_ubwcp_pwr_ctrl {
+			phandle = <0x7fff041a>;
+		};
+
+		gcc_pcie_0_gdsc {
+			phandle = <0x7fff041b>;
+		};
+
+		gcc_pcie_0_phy_gdsc {
+			phandle = <0x7fff041c>;
+		};
+
+		gcc_pcie_1_gdsc {
+			phandle = <0x7fff041d>;
+		};
+
+		gcc_pcie_1_phy_gdsc {
+			phandle = <0x7fff041e>;
+		};
+
+		gcc_pcie_2_gdsc {
+			phandle = <0x7fff041f>;
+		};
+
+		gcc_pcie_2_phy_gdsc {
+			phandle = <0x7fff0420>;
+		};
+
+		gcc_ufs_mem_phy_gdsc {
+			phandle = <0x7fff0421>;
+		};
+
+		gcc_ufs_phy_gdsc {
+			phandle = <0x7fff0422>;
+		};
+
+		gcc_usb30_prim_gdsc {
+			phandle = <0x7fff0423>;
+		};
+
+		gcc_usb3_phy_gdsc {
+			phandle = <0x7fff0424>;
+		};
+
+		gcc_usb30_sec_gdsc {
+			phandle = <0x7fff0425>;
+		};
+
+		gcc_usb3_sec_phy_gdsc {
+			phandle = <0x7fff0426>;
+		};
+
+		gpu_cc_cx_gdsc_hw_ctrl {
+			phandle = <0x7fff0427>;
+		};
+
+		gpu_cc_cx_gdsc {
+			phandle = <0x7fff0428>;
+		};
+
+		gpu_cc_gx_domain_addr {
+			phandle = <0x7fff0429>;
+		};
+
+		gpu_cc_gx_sw_reset {
+			phandle = <0x7fff042a>;
+		};
+
+		gpu_cc_gx_acd_reset {
+			phandle = <0x7fff042b>;
+		};
+
+		gpu_cc_gx_acd_iroot_reset {
+			phandle = <0x7fff042c>;
+		};
+
+		gpu_cc_gx_gdsc {
+			phandle = <0x7fff042d>;
+		};
+
+		gx_clkctl_gx_gdsc {
+			phandle = <0x7fff042e>;
+		};
+
+		video_cc_mvs0_gdsc {
+			phandle = <0x7fff042f>;
+		};
+
+		video_cc_mvs0c_gdsc {
+			phandle = <0x7fff0430>;
+		};
+
+		video_cc_mvs1_gdsc {
+			phandle = <0x7fff0431>;
+		};
+
+		video_cc_mvs1c_gdsc {
+			phandle = <0x7fff0432>;
+		};
+
+		kgsl_smmu {
+			phandle = <0x7fff0433>;
+		};
+
+		gpu_qtb {
+			phandle = <0x7fff0434>;
+		};
+
+		ubwcp_smmu {
+			phandle = <0x7fff0435>;
+		};
+
+		ubwcp_qtb {
+			phandle = <0x7fff0436>;
+		};
+
+		apps_smmu {
+			phandle = <0x7fff0437>;
+		};
+
+		anoc_1_qtb {
+			phandle = <0x7fff0438>;
+		};
+
+		anoc_2_qtb {
+			phandle = <0x7fff0439>;
+		};
+
+		cam_hf_qtb {
+			phandle = <0x7fff043a>;
+		};
+
+		nsp_qtb {
+			phandle = <0x7fff043b>;
+		};
+
+		lpass_qtb {
+			phandle = <0x7fff043c>;
+		};
+
+		pcie_qtb {
+			phandle = <0x7fff043d>;
+		};
+
+		sf_qtb {
+			phandle = <0x7fff043e>;
+		};
+
+		mdp_hf_qtb {
+			phandle = <0x7fff043f>;
+		};
+
+		dcc {
+			phandle = <0x7fff0440>;
+		};
+
+		gpi_dma1 {
+			phandle = <0x7fff0441>;
+		};
+
+		qupv3_1 {
+			phandle = <0x7fff0442>;
+		};
+
+		qupv3_se0_i2c {
+			phandle = <0x7fff0443>;
+		};
+
+		qupv3_se0_spi {
+			phandle = <0x7fff0444>;
+		};
+
+		i3c0 {
+			phandle = <0x7fff0445>;
+		};
+
+		qupv3_se1_i2c {
+			phandle = <0x7fff0446>;
+		};
+
+		qupv3_se1_spi {
+			phandle = <0x7fff0447>;
+		};
+
+		qupv3_se2_i2c {
+			phandle = <0x7fff0448>;
+		};
+
+		qupv3_se2_spi {
+			phandle = <0x7fff0449>;
+		};
+
+		qupv3_se3_i2c {
+			phandle = <0x7fff044a>;
+		};
+
+		wcd_usbss {
+			phandle = <0x7fff044b>;
+		};
+
+		qupv3_se3_spi {
+			phandle = <0x7fff044c>;
+		};
+
+		qupv3_se4_i2c {
+			phandle = <0x7fff044d>;
+		};
+
+		qupv3_se4_spi {
+			phandle = <0x7fff044e>;
+		};
+
+		i3c1 {
+			phandle = <0x7fff044f>;
+		};
+
+		qupv3_se5_i2c {
+			phandle = <0x7fff0450>;
+		};
+
+		qupv3_se5_spi {
+			phandle = <0x7fff0451>;
+		};
+
+		qupv3_se6_i2c {
+			phandle = <0x7fff0452>;
+		};
+
+		fsa4480_sub {
+			phandle = <0x7fff0453>;
+		};
+
+		fsa4480 {
+			phandle = <0x7fff0454>;
+		};
+
+		qupv3_se6_spi {
+			phandle = <0x7fff0455>;
+		};
+
+		qupv3_se7_i2c {
+			phandle = <0x7fff0456>;
+		};
+
+		qupv3_se7_spi {
+			phandle = <0x7fff0457>;
+		};
+
+		gpi_dma2 {
+			phandle = <0x7fff0458>;
+		};
+
+		qupv3_2 {
+			phandle = <0x7fff0459>;
+		};
+
+		qupv3_se8_i2c {
+			phandle = <0x7fff045a>;
+		};
+
+		qupv3_se8_spi {
+			phandle = <0x7fff045b>;
+		};
+
+		i3c2 {
+			phandle = <0x7fff045c>;
+		};
+
+		qupv3_se9_i2c {
+			phandle = <0x7fff045d>;
+		};
+
+		qupv3_se9_spi {
+			phandle = <0x7fff045e>;
+		};
+
+		qupv3_se10_i2c {
+			phandle = <0x7fff045f>;
+		};
+
+		qupv3_se10_uart {
+			phandle = <0x7fff0460>;
+		};
+
+		qupv3_se10_spi {
+			phandle = <0x7fff0461>;
+		};
+
+		i3c3 {
+			phandle = <0x7fff0462>;
+		};
+
+		i3c4 {
+			phandle = <0x7fff0463>;
+		};
+
+		qupv3_se11_i2c {
+			phandle = <0x7fff0464>;
+		};
+
+		qupv3_se11_spi {
+			phandle = <0x7fff0465>;
+		};
+
+		qupv3_se12_i2c {
+			phandle = <0x7fff0466>;
+		};
+
+		qupv3_se12_spi {
+			phandle = <0x7fff0467>;
+		};
+
+		qupv3_se13_i2c {
+			phandle = <0x7fff0468>;
+		};
+
+		qupv3_se13_spi {
+			phandle = <0x7fff0469>;
+		};
+
+		qupv3_se13_q2spi {
+			phandle = <0x7fff046a>;
+		};
+
+		qupv3_se14_4uart {
+			phandle = <0x7fff046b>;
+		};
+
+		qupv3_se15_2uart {
+			phandle = <0x7fff046c>;
+		};
+
+		qupv3_0_i2c_hub {
+			phandle = <0x7fff046d>;
+		};
+
+		qupv3_hub_i2c0 {
+			phandle = <0x7fff046e>;
+		};
+
+		qupv3_hub_i2c1 {
+			phandle = <0x7fff046f>;
+		};
+
+		qupv3_hub_i2c2 {
+			phandle = <0x7fff0470>;
+		};
+
+		qupv3_hub_i2c3 {
+			phandle = <0x7fff0471>;
+		};
+
+		qupv3_hub_i2c4 {
+			phandle = <0x7fff0472>;
+		};
+
+		qupv3_hub_i2c5 {
+			phandle = <0x7fff0473>;
+		};
+
+		qupv3_hub_i2c6 {
+			phandle = <0x7fff0474>;
+		};
+
+		qupv3_hub_i2c7 {
+			phandle = <0x7fff0475>;
+		};
+
+		qupv3_hub_i2c8 {
+			phandle = <0x7fff0476>;
+		};
+
+		qupv3_hub_i2c9 {
+			phandle = <0x7fff0477>;
+		};
+
+		usb0 {
+			phandle = <0x7fff0478>;
+		};
+
+		eusb2_phy0 {
+			phandle = <0x7fff0479>;
+		};
+
+		usb_qmp_dp_phy {
+			phandle = <0x7fff047a>;
+		};
+
+		stm {
+			phandle = <0x7fff047b>;
+		};
+
+		stm_out_funnel_in0 {
+			phandle = <0x7fff047c>;
+		};
+
+		audio_etm0_out_funnel_lpass_lpi {
+			phandle = <0x7fff047d>;
+		};
+
+		tpdm_ddr_lpi {
+			phandle = <0x7fff047e>;
+		};
+
+		tpdm_ddr_lpi_out_funnel_ddr_lpi {
+			phandle = <0x7fff047f>;
+		};
+
+		tpdm_lpass_lpi {
+			phandle = <0x7fff0480>;
+		};
+
+		tpdm_lpass_lpi_out_funnel_lpass_lpi_1 {
+			phandle = <0x7fff0481>;
+		};
+
+		lpass_stm {
+			phandle = <0x7fff0482>;
+		};
+
+		lpass_stm_out_funnel_lpass_lpi_1 {
+			phandle = <0x7fff0483>;
+		};
+
+		funnel_lpass_lpi_1 {
+			phandle = <0x7fff0484>;
+		};
+
+		funnel_lpass_lpi_1_in_lpass_stm {
+			phandle = <0x7fff0485>;
+		};
+
+		funnel_lpass_lpi_1_in_tpdm_lpass_lpi {
+			phandle = <0x7fff0486>;
+		};
+
+		funnel_lpass_lpi_1_out_funnel_lpass_lpi_0 {
+			phandle = <0x7fff0487>;
+		};
+
+		funnel_lpass_lpi_0 {
+			phandle = <0x7fff0488>;
+		};
+
+		funnel_lpass_lpi_in_audio_etm0 {
+			phandle = <0x7fff0489>;
+		};
+
+		funnel_lpass_lpi_0_in_funnel_lpass_lpi_1 {
+			phandle = <0x7fff048a>;
+		};
+
+		funnel_lpass_lpi_out_funnel_aoss {
+			phandle = <0x7fff048b>;
+		};
+
+		tpdm_swao_prio0 {
+			phandle = <0x7fff048c>;
+		};
+
+		tpdm_swao_prio0_out_tpda_aoss {
+			phandle = <0x7fff048d>;
+		};
+
+		tpdm_swao_prio1 {
+			phandle = <0x7fff048e>;
+		};
+
+		tpdm_swao_prio1_out_tpda_aoss {
+			phandle = <0x7fff048f>;
+		};
+
+		tpdm_swao_prio2 {
+			phandle = <0x7fff0490>;
+		};
+
+		tpdm_swao_prio2_out_tpda_aoss {
+			phandle = <0x7fff0491>;
+		};
+
+		tpdm_swao_prio3 {
+			phandle = <0x7fff0492>;
+		};
+
+		tpdm_swao_prio3_out_tpda_aoss {
+			phandle = <0x7fff0493>;
+		};
+
+		tpdm_swao {
+			phandle = <0x7fff0494>;
+		};
+
+		tpdm_swao_out_tpda_aoss {
+			phandle = <0x7fff0495>;
+		};
+
+		tpdm_lpass {
+			phandle = <0x7fff0496>;
+		};
+
+		tpdm_lpass_out_funnel_lpass {
+			phandle = <0x7fff0497>;
+		};
+
+		tpdm_ddr_ch02 {
+			phandle = <0x7fff0498>;
+		};
+
+		tpdm_ddr_ch02_out_funnel_ddr_ch02 {
+			phandle = <0x7fff0499>;
+		};
+
+		tpdm_ddr_ch13 {
+			phandle = <0x7fff049a>;
+		};
+
+		tpdm_ddr_ch13_out_funnel_ddr_ch13 {
+			phandle = <0x7fff049b>;
+		};
+
+		tpdm_ddr0 {
+			phandle = <0x7fff049c>;
+		};
+
+		tpdm_ddr0_out_funnel_ddr_dl0 {
+			phandle = <0x7fff049d>;
+		};
+
+		tpdm_ddr1 {
+			phandle = <0x7fff049e>;
+		};
+
+		tpdm_ddr1_out_funnel_ddr_dl0 {
+			phandle = <0x7fff049f>;
+		};
+
+		tpdm_video {
+			phandle = <0x7fff04a0>;
+		};
+
+		tpdm_video_out_funnel_video {
+			phandle = <0x7fff04a1>;
+		};
+
+		tpdm_mdss {
+			phandle = <0x7fff04a2>;
+		};
+
+		tpdm_mdss_out_funnel_multimedia {
+			phandle = <0x7fff04a3>;
+		};
+
+		tpdm_dl_mm {
+			phandle = <0x7fff04a4>;
+		};
+
+		tpdm_dl_mm_out_funnel_multimedia {
+			phandle = <0x7fff04a5>;
+		};
+
+		tpdm_rdpm0 {
+			phandle = <0x7fff04a6>;
+		};
+
+		tpdm_rdpm0_out_funnel_dl_west {
+			phandle = <0x7fff04a7>;
+		};
+
+		tpdm_rdpm1 {
+			phandle = <0x7fff04a8>;
+		};
+
+		tpdm_rdpm1_out_funnel_dl_west {
+			phandle = <0x7fff04a9>;
+		};
+
+		tpdm_rdpm2 {
+			phandle = <0x7fff04aa>;
+		};
+
+		tpdm_rdpm2_out_funnel_dl_west {
+			phandle = <0x7fff04ab>;
+		};
+
+		tpdm_spare {
+			phandle = <0x7fff04ac>;
+		};
+
+		tpdm_spare_out_funnel_dl_west {
+			phandle = <0x7fff04ad>;
+		};
+
+		tpdm_gfx {
+			phandle = <0x7fff04ae>;
+		};
+
+		tpdm_gfx_out_funnel_gfx_dl {
+			phandle = <0x7fff04af>;
+		};
+
+		tpdm_prng {
+			phandle = <0x7fff04b0>;
+		};
+
+		tpdm_prng_out_tpda_dl_center_21 {
+			phandle = <0x7fff04b1>;
+		};
+
+		tpdm_qm {
+			phandle = <0x7fff04b2>;
+		};
+
+		tpdm_qm_out_tpda_dl_center_22 {
+			phandle = <0x7fff04b3>;
+		};
+
+		tpdm_trace_noc {
+			phandle = <0x7fff04b4>;
+		};
+
+		tpdm_trace_noc_out_trace_noc {
+			phandle = <0x7fff04b5>;
+		};
+
+		tpdm_gcc {
+			phandle = <0x7fff04b6>;
+		};
+
+		tpdm_gcc_out_tpda_dl_center_23 {
+			phandle = <0x7fff04b7>;
+		};
+
+		tpdm_vsense {
+			phandle = <0x7fff04b8>;
+		};
+
+		tpdm_vsense_out_tpda_dl_center_24 {
+			phandle = <0x7fff04b9>;
+		};
+
+		tpdm_ipa {
+			phandle = <0x7fff04ba>;
+		};
+
+		tpdm_ipa_out_tpda_dl_center_26 {
+			phandle = <0x7fff04bb>;
+		};
+
+		tpdm_dl_ct {
+			phandle = <0x7fff04bc>;
+		};
+
+		tpdm_dl_ct_out_tpda_dl_center_29 {
+			phandle = <0x7fff04bd>;
+		};
+
+		tpdm_ipcc {
+			phandle = <0x7fff04be>;
+		};
+
+		tpdm_ipcc_out_tpda_dl_center_30 {
+			phandle = <0x7fff04bf>;
+		};
+
+		tpdm_dcc {
+			phandle = <0x7fff04c0>;
+		};
+
+		tpdm_dcc_out_tpda_qdss {
+			phandle = <0x7fff04c1>;
+		};
+
+		tpdm_spdm {
+			phandle = <0x7fff04c2>;
+		};
+
+		tpdm_spdm_out_tpda_qdss {
+			phandle = <0x7fff04c3>;
+		};
+
+		tpdm_ddrss_llcc0 {
+			phandle = <0x7fff04c4>;
+		};
+
+		tpdm_ddrss_llcc0_out_tpda_ddr {
+			phandle = <0x7fff04c5>;
+		};
+
+		tpdm_ddrss_llcc1 {
+			phandle = <0x7fff04c6>;
+		};
+
+		tpdm_ddrss_llcc1_out_tpda_ddr {
+			phandle = <0x7fff04c7>;
+		};
+
+		tpdm_ddrss_llcc2 {
+			phandle = <0x7fff04c8>;
+		};
+
+		tpdm_ddrss_llcc2_out_tpda_ddr {
+			phandle = <0x7fff04c9>;
+		};
+
+		tpdm_ddrss_llcc3 {
+			phandle = <0x7fff04ca>;
+		};
+
+		tpdm_ddrss_llcc3_out_tpda_ddr {
+			phandle = <0x7fff04cb>;
+		};
+
+		tpdm_titan {
+			phandle = <0x7fff04cc>;
+		};
+
+		tpdm_titan_out_tpda_titan {
+			phandle = <0x7fff04cd>;
+		};
+
+		tpdm_tmess_prng {
+			phandle = <0x7fff04ce>;
+		};
+
+		tpdm_tmess_prng_out_tpda_tmess {
+			phandle = <0x7fff04cf>;
+		};
+
+		tpdm_tmess0 {
+			phandle = <0x7fff04d0>;
+		};
+
+		tpdm_tmess0_out_tpda_tmess {
+			phandle = <0x7fff04d1>;
+		};
+
+		tpdm_tmess1 {
+			phandle = <0x7fff04d2>;
+		};
+
+		tpdm_tmess1_out_tpda_tmess {
+			phandle = <0x7fff04d3>;
+		};
+
+		tpdm_turing {
+			phandle = <0x7fff04d4>;
+		};
+
+		tpdm_turing_out_tpda_turing {
+			phandle = <0x7fff04d5>;
+		};
+
+		tpdm_turing_llm {
+			phandle = <0x7fff04d6>;
+		};
+
+		tpdm_turing_llm_out_tpda_turing {
+			phandle = <0x7fff04d7>;
+		};
+
+		tpdm_turing_llm2 {
+			phandle = <0x7fff04d8>;
+		};
+
+		tpdm_turing_llm2_out_tpda_turing {
+			phandle = <0x7fff04d9>;
+		};
+
+		tpdm_dpm1 {
+			phandle = <0x7fff04da>;
+		};
+
+		tpdm_dpm1_out_tpda_turing {
+			phandle = <0x7fff04db>;
+		};
+
+		tpdm_dmp2 {
+			phandle = <0x7fff04dc>;
+		};
+
+		tpdm_dmp2_out_tpda_turing {
+			phandle = <0x7fff04dd>;
+		};
+
+		tpdm_sdcc4 {
+			phandle = <0x7fff04de>;
+		};
+
+		tpdm_sdcc4_out_tpda_dl_south {
+			phandle = <0x7fff04df>;
+		};
+
+		tpdm_ufs {
+			phandle = <0x7fff04e0>;
+		};
+
+		tpdm_ufs_out_tpda_dl_south {
+			phandle = <0x7fff04e1>;
+		};
+
+		tpdm_dl_south {
+			phandle = <0x7fff04e2>;
+		};
+
+		tpdm_dl_south_out_tpda_dl_south {
+			phandle = <0x7fff04e3>;
+		};
+
+		tpdm_llm_silver {
+			phandle = <0x7fff04e4>;
+		};
+
+		tpdm_llm_silver_out_tpda_apss {
+			phandle = <0x7fff04e5>;
+		};
+
+		tpdm_llm_gold {
+			phandle = <0x7fff04e6>;
+		};
+
+		tpdm_llm_gold_out_tpda_apss {
+			phandle = <0x7fff04e7>;
+		};
+
+		tpdm_llm_ext {
+			phandle = <0x7fff04e8>;
+		};
+
+		tpdm_llm_ext_out_tpda_apss {
+			phandle = <0x7fff04e9>;
+		};
+
+		tpdm_llm_gold_apc {
+			phandle = <0x7fff04ea>;
+		};
+
+		tpdm_llm_gold_apc_out_tpda_apss {
+			phandle = <0x7fff04eb>;
+		};
+
+		tpdm_apss_ubwcp {
+			phandle = <0x7fff04ec>;
+		};
+
+		tpdm_apss_ubwcp_out_tpda_apss {
+			phandle = <0x7fff04ed>;
+		};
+
+		tpdm_apss_apc2 {
+			phandle = <0x7fff04ee>;
+		};
+
+		tpdm_apss_apc2_out_tpda_apss {
+			phandle = <0x7fff04ef>;
+		};
+
+		tpdm_apss0 {
+			phandle = <0x7fff04f0>;
+		};
+
+		tpdm_apss_0_out_tpda_apss {
+			phandle = <0x7fff04f1>;
+		};
+
+		tpdm_apss1 {
+			phandle = <0x7fff04f2>;
+		};
+
+		tpdm_apss1_out_tpda_apss {
+			phandle = <0x7fff04f3>;
+		};
+
+		tpdm_apss2 {
+			phandle = <0x7fff04f4>;
+		};
+
+		tpdm_apss2_out_tpda_apss {
+			phandle = <0x7fff04f5>;
+		};
+
+		tpdm_modem0 {
+			phandle = <0x7fff04f6>;
+		};
+
+		tpdm_modem0_out_tpda_modem {
+			phandle = <0x7fff04f7>;
+		};
+
+		tpdm_modem1 {
+			phandle = <0x7fff04f8>;
+		};
+
+		tpdm_modem1_out_tpda_modem {
+			phandle = <0x7fff04f9>;
+		};
+
+		tpdm_modem_rscc {
+			phandle = <0x7fff04fa>;
+		};
+
+		tpdm_modem_rscc_out_funnel_modem_q6 {
+			phandle = <0x7fff04fb>;
+		};
+
+		trace_noc {
+			phandle = <0x7fff04fc>;
+		};
+
+		trace_noc_in_tpdm_trace_noc {
+			phandle = <0x7fff04fd>;
+		};
+
+		trace_noc_out_funnel_in1 {
+			phandle = <0x7fff04fe>;
+		};
+
+		funnel_ddr_lpi {
+			phandle = <0x7fff04ff>;
+		};
+
+		funnel_ddr_lpi_in_tpdm_ddr_lpi {
+			phandle = <0x7fff0500>;
+		};
+
+		funnel_ddr_out_funnel_aoss {
+			phandle = <0x7fff0501>;
+		};
+
+		funnel_gfx {
+			phandle = <0x7fff0502>;
+		};
+
+		funnel_gfx_out_funnel_gfx_dl {
+			phandle = <0x7fff0503>;
+		};
+
+		funnel_gfx_dl {
+			phandle = <0x7fff0504>;
+		};
+
+		funnel_gfx_dl_in_tpdm_gfx {
+			phandle = <0x7fff0505>;
+		};
+
+		funnel_gfx_dl_in_funnel_gfx {
+			phandle = <0x7fff0506>;
+		};
+
+		funnel_gfx_dl_out_tpda_dl_center_19 {
+			phandle = <0x7fff0507>;
+		};
+
+		funnel_gfx_dl_out_funnel_dl_center {
+			phandle = <0x7fff0508>;
+		};
+
+		funnel_video {
+			phandle = <0x7fff0509>;
+		};
+
+		funnel_video_in_tpdm_video {
+			phandle = <0x7fff050a>;
+		};
+
+		funnel_video_out_funnel_multimedia {
+			phandle = <0x7fff050b>;
+		};
+
+		tpda_titan {
+			phandle = <0x7fff050c>;
+		};
+
+		tpda_titan_in_tpdm_titan {
+			phandle = <0x7fff050d>;
+		};
+
+		tpda_titan_out_funnel_titan {
+			phandle = <0x7fff050e>;
+		};
+
+		funnel_titan {
+			phandle = <0x7fff050f>;
+		};
+
+		funnel_titan_in_tpda_titan {
+			phandle = <0x7fff0510>;
+		};
+
+		funnel_titan_out_funnel_multimedia {
+			phandle = <0x7fff0511>;
+		};
+
+		tpda_tmess {
+			phandle = <0x7fff0512>;
+		};
+
+		tpda_tmess_in_tpdm_tmess_prng {
+			phandle = <0x7fff0513>;
+		};
+
+		tpda_tmess_in_tpdm_tmess0 {
+			phandle = <0x7fff0514>;
+		};
+
+		tpda_tmess_in_tpdm_tmess1 {
+			phandle = <0x7fff0515>;
+		};
+
+		tpda_tmess_out_funnel_tmess {
+			phandle = <0x7fff0516>;
+		};
+
+		funnel_tmess {
+			phandle = <0x7fff0517>;
+		};
+
+		funnel_tmess_in_tpda_tmess {
+			phandle = <0x7fff0518>;
+		};
+
+		funnel_tmess_out_funnel_multimedia {
+			phandle = <0x7fff0519>;
+		};
+
+		funnel_multimedia {
+			phandle = <0x7fff051a>;
+		};
+
+		funnel_multimedia_in_funnel_video {
+			phandle = <0x7fff051b>;
+		};
+
+		funnel_multimedia_in_tpdm_mdss {
+			phandle = <0x7fff051c>;
+		};
+
+		funnel_multimedia_in_tpdm_dl_mm {
+			phandle = <0x7fff051d>;
+		};
+
+		funnel_multimedia_in_funnel_titan {
+			phandle = <0x7fff051e>;
+		};
+
+		funnel_multimedia_in_funnel_tmess {
+			phandle = <0x7fff051f>;
+		};
+
+		funnel_multimedia_out_funnel_dl_west {
+			phandle = <0x7fff0520>;
+		};
+
+		funnel_lpass {
+			phandle = <0x7fff0521>;
+		};
+
+		funnel_lpass_in_tpdm_lpass {
+			phandle = <0x7fff0522>;
+		};
+
+		funnel_lpass_out_tpda_dl_center {
+			phandle = <0x7fff0523>;
+		};
+
+		funnel_ddr_ch02 {
+			phandle = <0x7fff0524>;
+		};
+
+		funnel_ddr_ch02_in_tpdm_ddr_ch02 {
+			phandle = <0x7fff0525>;
+		};
+
+		funnel_ddr_ch02_out_funnel_ddr_dl0 {
+			phandle = <0x7fff0526>;
+		};
+
+		funnel_ddr_ch13 {
+			phandle = <0x7fff0527>;
+		};
+
+		funnel_ddr_ch13_in_tpdm_ddr_ch13 {
+			phandle = <0x7fff0528>;
+		};
+
+		funnel_ddr_ch13_out_funnel_ddr_dl0 {
+			phandle = <0x7fff0529>;
+		};
+
+		tpda_ddr {
+			phandle = <0x7fff052a>;
+		};
+
+		tpda_ddr_in_tpdm_ddrss_llcc0 {
+			phandle = <0x7fff052b>;
+		};
+
+		tpda_ddr_in_tpdm_ddrss_llcc1 {
+			phandle = <0x7fff052c>;
+		};
+
+		tpda_ddr_in_tpdm_ddrss_llcc2 {
+			phandle = <0x7fff052d>;
+		};
+
+		tpda_ddr_in_tpdm_ddrss_llcc3 {
+			phandle = <0x7fff052e>;
+		};
+
+		tpda_ddr_out_funnel_ddr_dl1 {
+			phandle = <0x7fff052f>;
+		};
+
+		gladiator {
+			phandle = <0x7fff0530>;
+		};
+
+		gladiator_out_funnel_ddr_dl1 {
+			phandle = <0x7fff0531>;
+		};
+
+		funnel_ddr_dl1 {
+			phandle = <0x7fff0532>;
+		};
+
+		funnel_ddr_dl1_in_tpda_ddr {
+			phandle = <0x7fff0533>;
+		};
+
+		funnel_ddr_dl1_in_gladiator {
+			phandle = <0x7fff0534>;
+		};
+
+		funnel_ddr_dl1_out_funnel_ddr_dl0 {
+			phandle = <0x7fff0535>;
+		};
+
+		funnel_ddr_dl0 {
+			phandle = <0x7fff0536>;
+		};
+
+		funnel_ddr_dl0_in_funnel_ddr_ch02 {
+			phandle = <0x7fff0537>;
+		};
+
+		funnel_ddr_dl0_in_funnel_ddr_ch13 {
+			phandle = <0x7fff0538>;
+		};
+
+		funnel_ddr_dl0_in_tpdm_ddr0 {
+			phandle = <0x7fff0539>;
+		};
+
+		funnel_ddr_dl0_in_tpdm_ddr1 {
+			phandle = <0x7fff053a>;
+		};
+
+		funnel_ddr_dl0_in_funnel_ddr_dl1 {
+			phandle = <0x7fff053b>;
+		};
+
+		funnel_ddr_dl0_out_tpda_dl_center_4 {
+			phandle = <0x7fff053c>;
+		};
+
+		funnel_ddr_dl0_out_tpda_dl_center_5 {
+			phandle = <0x7fff053d>;
+		};
+
+		funnel_ddr_dl0_out_tpda_dl_center_6 {
+			phandle = <0x7fff053e>;
+		};
+
+		funnel_ddr_dl0_out_tpda_dl_center_7 {
+			phandle = <0x7fff053f>;
+		};
+
+		funnel_ddr_dl0_out_funnel_dl_center {
+			phandle = <0x7fff0540>;
+		};
+
+		tpda_turing {
+			phandle = <0x7fff0541>;
+		};
+
+		tpda_turing_in_tpdm_turing {
+			phandle = <0x7fff0542>;
+		};
+
+		tpda_turing_in_tpdm_turing_llm {
+			phandle = <0x7fff0543>;
+		};
+
+		tpda_turing_in_tpdm_turing_llm2 {
+			phandle = <0x7fff0544>;
+		};
+
+		tpda_turing_in_tpdm_dpm1 {
+			phandle = <0x7fff0545>;
+		};
+
+		tpda_turing_in_tpdm_dmp2 {
+			phandle = <0x7fff0546>;
+		};
+
+		tpda_turing_out_funnel_turing {
+			phandle = <0x7fff0547>;
+		};
+
+		turing_etm0 {
+			phandle = <0x7fff0548>;
+		};
+
+		turing_etm0_out_funnel_turing_dup {
+			phandle = <0x7fff0549>;
+		};
+
+		funnel_turing_dup {
+			phandle = <0x7fff054a>;
+		};
+
+		funnel_turing_dup_in_turing_etm0 {
+			phandle = <0x7fff054b>;
+		};
+
+		funnel_turing_dup_out_funnel_turing {
+			phandle = <0x7fff054c>;
+		};
+
+		funnel_turing {
+			phandle = <0x7fff054d>;
+		};
+
+		funnel_turing_in_tpda_turing {
+			phandle = <0x7fff054e>;
+		};
+
+		funnel_turing_in_funnel_turing_dup {
+			phandle = <0x7fff054f>;
+		};
+
+		funnel_turing_out_funnel_dl_center {
+			phandle = <0x7fff0550>;
+		};
+
+		funnel_dl_west {
+			phandle = <0x7fff0551>;
+		};
+
+		funnel_dl_west_in_funnel_multimedia {
+			phandle = <0x7fff0552>;
+		};
+
+		funnel_dl_west_in_tpdm_rdpm0 {
+			phandle = <0x7fff0553>;
+		};
+
+		funnel_dl_west_in_tpdm_rdpm1 {
+			phandle = <0x7fff0554>;
+		};
+
+		funnel_dl_west_in_tpdm_rdpm2 {
+			phandle = <0x7fff0555>;
+		};
+
+		funnel_dl_west_in_tpdm_spare {
+			phandle = <0x7fff0556>;
+		};
+
+		funnel_dl_west_out_tpda_dl_center_8 {
+			phandle = <0x7fff0557>;
+		};
+
+		funnel_dl_west_out_tpda_dl_center_9 {
+			phandle = <0x7fff0558>;
+		};
+
+		funnel_dl_west_out_tpda_dl_center_11 {
+			phandle = <0x7fff0559>;
+		};
+
+		funnel_dl_west_out_tpda_dl_center_13 {
+			phandle = <0x7fff055a>;
+		};
+
+		funnel_dl_west_out_tpda_dl_center_14 {
+			phandle = <0x7fff055b>;
+		};
+
+		funnel_dl_west_out_tpda_dl_center_15 {
+			phandle = <0x7fff055c>;
+		};
+
+		funnel_dl_west_out_tpda_dl_center_16 {
+			phandle = <0x7fff055d>;
+		};
+
+		funnel_dl_west_out_funnel_dl_center {
+			phandle = <0x7fff055e>;
+		};
+
+		tpda_dl_south {
+			phandle = <0x7fff055f>;
+		};
+
+		tpda_dl_south_in_tpdm_sdcc4 {
+			phandle = <0x7fff0560>;
+		};
+
+		tpda_dl_south_in_tpdm_ufs {
+			phandle = <0x7fff0561>;
+		};
+
+		tpda_dl_south_in_tpdm_dl_south {
+			phandle = <0x7fff0562>;
+		};
+
+		tpda_dl_south_out_funnel_dl_south {
+			phandle = <0x7fff0563>;
+		};
+
+		funnel_dl_south {
+			phandle = <0x7fff0564>;
+		};
+
+		funnel_dl_south_in_tpda_dl_south {
+			phandle = <0x7fff0565>;
+		};
+
+		funnel_dl_south_out_funnel_in1 {
+			phandle = <0x7fff0566>;
+		};
+
+		modem_etm0_out_funnel_modem_q6_dup {
+			phandle = <0x7fff0567>;
+		};
+
+		modem2_etm0_out_funnel_modem {
+			phandle = <0x7fff0568>;
+		};
+
+		modem_diag {
+			phandle = <0x7fff0569>;
+		};
+
+		modem_diag_out_funnel_modem_q6 {
+			phandle = <0x7fff056a>;
+		};
+
+		tpda_modem {
+			phandle = <0x7fff056b>;
+		};
+
+		tpda_modem_in_tpdm_modem0 {
+			phandle = <0x7fff056c>;
+		};
+
+		tpda_modem_in_tpdm_modem1 {
+			phandle = <0x7fff056d>;
+		};
+
+		tpda_modem_out_funnel_modem_dl {
+			phandle = <0x7fff056e>;
+		};
+
+		funnel_modem_q6_dup {
+			phandle = <0x7fff056f>;
+		};
+
+		funnel_modem_q6_dup_in_modem_etm0 {
+			phandle = <0x7fff0570>;
+		};
+
+		funnel_modem_q6_dup_out_funnel_modem_q6 {
+			phandle = <0x7fff0571>;
+		};
+
+		funnel_modem_q6 {
+			phandle = <0x7fff0572>;
+		};
+
+		funnel_modem_q6_in_funnel_modem_q6_dup {
+			phandle = <0x7fff0573>;
+		};
+
+		funnel_modem_q6_in_modem_diag {
+			phandle = <0x7fff0574>;
+		};
+
+		funnel_modem_q6_in_tpdm_modem_rscc {
+			phandle = <0x7fff0575>;
+		};
+
+		funnel_modem_q6_out_funnel_modem_dl {
+			phandle = <0x7fff0576>;
+		};
+
+		funnel_modem_dl {
+			phandle = <0x7fff0577>;
+		};
+
+		funnel_modem_dl_in_tpda_modem {
+			phandle = <0x7fff0578>;
+		};
+
+		funnel_modem_in_modem2_etm0 {
+			phandle = <0x7fff0579>;
+		};
+
+		funnel_modem_dl_in_funnel_modem_q6 {
+			phandle = <0x7fff057a>;
+		};
+
+		funnel_modem_dl_out_funnel_in1 {
+			phandle = <0x7fff057b>;
+		};
+
+		tpda_apss {
+			phandle = <0x7fff057c>;
+		};
+
+		tpda_apss_in_tpdm_llm_silver {
+			phandle = <0x7fff057d>;
+		};
+
+		tpda_apss_in_tpdm_llm_gold {
+			phandle = <0x7fff057e>;
+		};
+
+		tpda_apss_in_tpdm_llm_ext {
+			phandle = <0x7fff057f>;
+		};
+
+		tpda_apss_in_tpdm_llm_gold_apc {
+			phandle = <0x7fff0580>;
+		};
+
+		tpda_apss_in_tpdm_apss_ubwcp {
+			phandle = <0x7fff0581>;
+		};
+
+		tpda_apss_in_tpdm_apss_apc2 {
+			phandle = <0x7fff0582>;
+		};
+
+		tpda_apss_in_tpdm_apss_0 {
+			phandle = <0x7fff0583>;
+		};
+
+		tpda_apss_in_tpdm_apss1 {
+			phandle = <0x7fff0584>;
+		};
+
+		tpda_apss_in_tpdm_apss2 {
+			phandle = <0x7fff0585>;
+		};
+
+		tpda_apss_out_funnel_apss {
+			phandle = <0x7fff0586>;
+		};
+
+		funnel_apss {
+			phandle = <0x7fff0587>;
+		};
+
+		funnel_apss_in_tpda_apss {
+			phandle = <0x7fff0588>;
+		};
+
+		funnel_apss_in_funnel_ete {
+			phandle = <0x7fff0589>;
+		};
+
+		funnel_apss_out_funnel_in1 {
+			phandle = <0x7fff058a>;
+		};
+
+		tpda_dl_center {
+			phandle = <0x7fff058b>;
+		};
+
+		tpda_dl_center_in_funnel_lpass {
+			phandle = <0x7fff058c>;
+		};
+
+		tpda_dl_center_4_in_funnel_ddr_dl0 {
+			phandle = <0x7fff058d>;
+		};
+
+		tpda_dl_center_5_in_funnel_ddr_dl0 {
+			phandle = <0x7fff058e>;
+		};
+
+		tpda_dl_center_6_in_funnel_ddr_dl0 {
+			phandle = <0x7fff058f>;
+		};
+
+		tpda_dl_center_7_in_funnel_ddr_dl0 {
+			phandle = <0x7fff0590>;
+		};
+
+		tpda_dl_center_8_in_funnel_dl_west {
+			phandle = <0x7fff0591>;
+		};
+
+		tpda_dl_center_9_in_funnel_dl_west {
+			phandle = <0x7fff0592>;
+		};
+
+		tpda_dl_center_11_in_funnel_dl_west {
+			phandle = <0x7fff0593>;
+		};
+
+		tpda_dl_center_13_in_funnel_dl_west {
+			phandle = <0x7fff0594>;
+		};
+
+		tpda_dl_center_14_in_funnel_dl_west {
+			phandle = <0x7fff0595>;
+		};
+
+		tpda_dl_center_15_in_funnel_dl_west {
+			phandle = <0x7fff0596>;
+		};
+
+		tpda_dl_center_16_in_funnel_dl_west {
+			phandle = <0x7fff0597>;
+		};
+
+		tpda_dl_center_19_in_funnel_gfx_dl {
+			phandle = <0x7fff0598>;
+		};
+
+		tpda_dl_center_21_in_tpdm_prng {
+			phandle = <0x7fff0599>;
+		};
+
+		tpda_dl_center_22_in_tpdm_qm {
+			phandle = <0x7fff059a>;
+		};
+
+		tpda_dl_center_23_in_tpdm_gcc {
+			phandle = <0x7fff059b>;
+		};
+
+		tpda_dl_center_24_in_tpdm_vsense {
+			phandle = <0x7fff059c>;
+		};
+
+		tpda_dl_center_26_in_tpdm_ipa {
+			phandle = <0x7fff059d>;
+		};
+
+		tpda_dl_center_29_in_tpdm_dl_ct {
+			phandle = <0x7fff059e>;
+		};
+
+		tpda_dl_center_30_in_tpdm_ipcc {
+			phandle = <0x7fff059f>;
+		};
+
+		tpda_dl_center_out_funnel_dl_center {
+			phandle = <0x7fff05a0>;
+		};
+
+		funnel_dl_center {
+			phandle = <0x7fff05a1>;
+		};
+
+		funnel_dl_center_in_tpda_dl_center {
+			phandle = <0x7fff05a2>;
+		};
+
+		funnel_dl_center_in_funnel_ddr_dl0 {
+			phandle = <0x7fff05a3>;
+		};
+
+		funnel_dl_center_in_funnel_dl_west {
+			phandle = <0x7fff05a4>;
+		};
+
+		funnel_dl_center_in_funnel_gfx_dl {
+			phandle = <0x7fff05a5>;
+		};
+
+		funnel_dl_center_in_funnel_turing {
+			phandle = <0x7fff05a6>;
+		};
+
+		funnel_dl_center_out_funnel_in1 {
+			phandle = <0x7fff05a7>;
+		};
+
+		tpda_qdss {
+			phandle = <0x7fff05a8>;
+		};
+
+		tpda_qdss_in_tpdm_dcc {
+			phandle = <0x7fff05a9>;
+		};
+
+		tpda_qdss_in_tpdm_spdm {
+			phandle = <0x7fff05aa>;
+		};
+
+		tpda_qdss_out_funnel_in0 {
+			phandle = <0x7fff05ab>;
+		};
+
+		funnel_in0 {
+			phandle = <0x7fff05ac>;
+		};
+
+		funnel_in0_in_tpda_qdss {
+			phandle = <0x7fff05ad>;
+		};
+
+		funnel_in0_in_stm {
+			phandle = <0x7fff05ae>;
+		};
+
+		funnel_in0_out_funnel_qdss {
+			phandle = <0x7fff05af>;
+		};
+
+		funnel_qdss {
+			phandle = <0x7fff05b0>;
+		};
+
+		funnel_qdss_in_funnel_in0 {
+			phandle = <0x7fff05b1>;
+		};
+
+		funnel_qdss_in_funnel_in1 {
+			phandle = <0x7fff05b2>;
+		};
+
+		funnel_qdss_out_funnel_aoss {
+			phandle = <0x7fff05b3>;
+		};
+
+		tpda_aoss {
+			phandle = <0x7fff05b4>;
+		};
+
+		tpda_aoss_in_tpdm_swao_prio0 {
+			phandle = <0x7fff05b5>;
+		};
+
+		tpda_aoss_in_tpdm_swao_prio1 {
+			phandle = <0x7fff05b6>;
+		};
+
+		tpda_aoss_in_tpdm_swao_prio2 {
+			phandle = <0x7fff05b7>;
+		};
+
+		tpda_aoss_in_tpdm_swao_prio3 {
+			phandle = <0x7fff05b8>;
+		};
+
+		tpda_aoss_in_tpdm_swao {
+			phandle = <0x7fff05b9>;
+		};
+
+		tpda_aoss_out_funnel_aoss {
+			phandle = <0x7fff05ba>;
+		};
+
+		funnel_aoss {
+			phandle = <0x7fff05bb>;
+		};
+
+		funnel_aoss_in_funnel_ddr {
+			phandle = <0x7fff05bc>;
+		};
+
+		funnel_aoss_in_funnel_lpass_lpi {
+			phandle = <0x7fff05bd>;
+		};
+
+		funnel_aoss_in_tpda_aoss {
+			phandle = <0x7fff05be>;
+		};
+
+		funnel_aoss_in_funnel_qdss {
+			phandle = <0x7fff05bf>;
+		};
+
+		funnel_aoss_out_tmc_etf {
+			phandle = <0x7fff05c0>;
+		};
+
+		tmc_etf {
+			phandle = <0x7fff05c1>;
+		};
+
+		tmc_etf_in_funnel_aoss {
+			phandle = <0x7fff05c2>;
+		};
+
+		tmc_etf_out_replicator_swao {
+			phandle = <0x7fff05c3>;
+		};
+
+		replicator_swao {
+			phandle = <0x7fff05c4>;
+		};
+
+		replicator_swao_in_tmc_etf {
+			phandle = <0x7fff05c5>;
+		};
+
+		replicator_swao_out_replicator_qdss {
+			phandle = <0x7fff05c6>;
+		};
+
+		replicator_swao_out_eud {
+			phandle = <0x7fff05c7>;
+		};
+
+		replicator_qdss {
+			phandle = <0x7fff05c8>;
+		};
+
+		replicator_qdss_in_replicator_swao {
+			phandle = <0x7fff05c9>;
+		};
+
+		replicator_qdss_out_replicator_etr {
+			phandle = <0x7fff05ca>;
+		};
+
+		replicator_etr {
+			phandle = <0x7fff05cb>;
+		};
+
+		replicator_etr_in_replicator_qdss {
+			phandle = <0x7fff05cc>;
+		};
+
+		replicator_etr_out_tmc_etr {
+			phandle = <0x7fff05cd>;
+		};
+
+		replicator_etr_out_replicator_dummy {
+			phandle = <0x7fff05ce>;
+		};
+
+		replicator_dummy_in_replicator_etr {
+			phandle = <0x7fff05cf>;
+		};
+
+		replicator_dummy_out_tmc_modem {
+			phandle = <0x7fff05d0>;
+		};
+
+		replicator_dummy_out_tmc_etr1 {
+			phandle = <0x7fff05d1>;
+		};
+
+		tmc_modem {
+			phandle = <0x7fff05d2>;
+		};
+
+		tmc_modem_in_replicator_dummy {
+			phandle = <0x7fff05d3>;
+		};
+
+		tmc_etr {
+			phandle = <0x7fff05d4>;
+		};
+
+		tmc_etr_in_replicator_etr {
+			phandle = <0x7fff05d5>;
+		};
+
+		tmc_etr1 {
+			phandle = <0x7fff05d6>;
+		};
+
+		tmc_etr1_in_replicator_dummy {
+			phandle = <0x7fff05d7>;
+		};
+
+		csr {
+			phandle = <0x7fff05d8>;
+		};
+
+		swao_csr {
+			phandle = <0x7fff05d9>;
+		};
+
+		ete0_out_funnel_ete {
+			phandle = <0x7fff05da>;
+		};
+
+		ete1_out_funnel_ete {
+			phandle = <0x7fff05db>;
+		};
+
+		ete2_out_funnel_ete {
+			phandle = <0x7fff05dc>;
+		};
+
+		ete3_out_funnel_ete {
+			phandle = <0x7fff05dd>;
+		};
+
+		ete4_out_funnel_ete {
+			phandle = <0x7fff05de>;
+		};
+
+		ete5_out_funnel_ete {
+			phandle = <0x7fff05df>;
+		};
+
+		ete6_out_funnel_ete {
+			phandle = <0x7fff05e0>;
+		};
+
+		ete7_out_funnel_ete {
+			phandle = <0x7fff05e1>;
+		};
+
+		funnel_ete_out_funnel_apss {
+			phandle = <0x7fff05e2>;
+		};
+
+		funnel_ete_in_ete0 {
+			phandle = <0x7fff05e3>;
+		};
+
+		funnel_ete_in_ete1 {
+			phandle = <0x7fff05e4>;
+		};
+
+		funnel_ete_in_ete2 {
+			phandle = <0x7fff05e5>;
+		};
+
+		funnel_ete_in_ete3 {
+			phandle = <0x7fff05e6>;
+		};
+
+		funnel_ete_in_ete4 {
+			phandle = <0x7fff05e7>;
+		};
+
+		funnel_ete_in_ete5 {
+			phandle = <0x7fff05e8>;
+		};
+
+		funnel_ete_in_ete6 {
+			phandle = <0x7fff05e9>;
+		};
+
+		funnel_ete_in_ete7 {
+			phandle = <0x7fff05ea>;
+		};
+
+		funnel_in1 {
+			phandle = <0x7fff05eb>;
+		};
+
+		funnel_in1_in_funnel_dl_center {
+			phandle = <0x7fff05ec>;
+		};
+
+		funnel_in1_in_funnel_dl_south {
+			phandle = <0x7fff05ed>;
+		};
+
+		funnel_in1_in_trace_noc {
+			phandle = <0x7fff05ee>;
+		};
+
+		funnel_in1_in_funnel_apss {
+			phandle = <0x7fff05ef>;
+		};
+
+		funnel_in1_in_funnel_modem_dl {
+			phandle = <0x7fff05f0>;
+		};
+
+		funnel_in1_out_funnel_qdss {
+			phandle = <0x7fff05f1>;
+		};
+
+		dummy_eud {
+			phandle = <0x7fff05f2>;
+		};
+
+		eud_in_replicator_swao {
+			phandle = <0x7fff05f3>;
+		};
+
+		qdss_cti {
+			phandle = <0x7fff05f4>;
+		};
+
+		cti0 {
+			phandle = <0x7fff05f5>;
+		};
+
+		dlmm_cti0 {
+			phandle = <0x7fff05f6>;
+		};
+
+		ddr_dl_0_cti_0 {
+			phandle = <0x7fff05f7>;
+		};
+
+		ddr_dl_1_cti_0 {
+			phandle = <0x7fff05f8>;
+		};
+
+		ddr_ch02_dl_cti_0 {
+			phandle = <0x7fff05f9>;
+		};
+
+		ddr_ch13_dl_cti_0 {
+			phandle = <0x7fff05fa>;
+		};
+
+		ddrss_shrm2 {
+			phandle = <0x7fff05fb>;
+		};
+
+		ddr_dl2_lpi {
+			phandle = <0x7fff05fc>;
+		};
+
+		lpass_dl_cti {
+			phandle = <0x7fff05fd>;
+		};
+
+		lpass_lpi_cti1 {
+			phandle = <0x7fff05fe>;
+		};
+
+		lpass_lpi_cti3 {
+			phandle = <0x7fff05ff>;
+		};
+
+		lpass_ssc_sdc {
+			phandle = <0x7fff0600>;
+		};
+
+		lpass_q6_cti {
+			phandle = <0x7fff0601>;
+		};
+
+		apss_pe0 {
+			phandle = <0x7fff0602>;
+		};
+
+		apss_pe1 {
+			phandle = <0x7fff0603>;
+		};
+
+		apss_pe2 {
+			phandle = <0x7fff0604>;
+		};
+
+		apss_pe3 {
+			phandle = <0x7fff0605>;
+		};
+
+		apss_pe4 {
+			phandle = <0x7fff0606>;
+		};
+
+		apss_pe5 {
+			phandle = <0x7fff0607>;
+		};
+
+		apss_pe6 {
+			phandle = <0x7fff0608>;
+		};
+
+		apss_pe7 {
+			phandle = <0x7fff0609>;
+		};
+
+		apss_cluster {
+			phandle = <0x7fff060a>;
+		};
+
+		apss_cti0 {
+			phandle = <0x7fff060b>;
+		};
+
+		apss_cti1 {
+			phandle = <0x7fff060c>;
+		};
+
+		apss_cti2 {
+			phandle = <0x7fff060d>;
+		};
+
+		riscv_cti {
+			phandle = <0x7fff060e>;
+		};
+
+		riscv_sifive_cti {
+			phandle = <0x7fff060f>;
+		};
+
+		apss_atb_cti {
+			phandle = <0x7fff0610>;
+		};
+
+		gpu_isdb_cti {
+			phandle = <0x7fff0611>;
+		};
+
+		gpu_cortex_m3 {
+			phandle = <0x7fff0612>;
+		};
+
+		gpu_dl {
+			phandle = <0x7fff0613>;
+		};
+
+		iris_dl_cti {
+			phandle = <0x7fff0614>;
+		};
+
+		mdss_dl_cti {
+			phandle = <0x7fff0615>;
+		};
+
+		turing_dl_cti_0 {
+			phandle = <0x7fff0616>;
+		};
+
+		turing_q6_cti {
+			phandle = <0x7fff0617>;
+		};
+
+		camera_dl {
+			phandle = <0x7fff0618>;
+		};
+
+		swao_cti {
+			phandle = <0x7fff0619>;
+		};
+
+		aop_rvss {
+			phandle = <0x7fff061a>;
+		};
+
+		mss_q6_cti {
+			phandle = <0x7fff061b>;
+		};
+
+		mss_vq6_cti {
+			phandle = <0x7fff061c>;
+		};
+
+		modem_tp_cti {
+			phandle = <0x7fff061d>;
+		};
+
+		tmess_cti_3 {
+			phandle = <0x7fff061e>;
+		};
+
+		tmess_cti_2 {
+			phandle = <0x7fff061f>;
+		};
+
+		tmess_cti_1 {
+			phandle = <0x7fff0620>;
+		};
+
+		tmess_cti_0 {
+			phandle = <0x7fff0621>;
+		};
+
+		tmess_cti_4 {
+			phandle = <0x7fff0622>;
+		};
+
+		tmess_cpu {
+			phandle = <0x7fff0623>;
+		};
+
+		ipcb_tgu {
+			phandle = <0x7fff0624>;
+		};
+
+		spmi_tgu0 {
+			phandle = <0x7fff0625>;
+		};
+
+		spmi_tgu1 {
+			phandle = <0x7fff0626>;
+		};
+
+		pcie0 {
+			phandle = <0x7fff0627>;
+		};
+
+		pcie0_rp {
+			phandle = <0x7fff0628>;
+		};
+
+		pcie0_msi {
+			phandle = <0x7fff0629>;
+		};
+
+		pcie1 {
+			phandle = <0x7fff062a>;
+		};
+
+		pcie1_rp {
+			phandle = <0x7fff062b>;
+		};
+
+		pcie1_msi {
+			phandle = <0x7fff062c>;
+		};
+
+		tsens0 {
+			phandle = <0x7fff062d>;
+		};
+
+		tsens1 {
+			phandle = <0x7fff062e>;
+		};
+
+		tsens2 {
+			phandle = <0x7fff062f>;
+		};
+
+		cpu0_pause {
+			phandle = <0x7fff0630>;
+		};
+
+		cpu1_pause {
+			phandle = <0x7fff0631>;
+		};
+
+		cpu2_pause {
+			phandle = <0x7fff0632>;
+		};
+
+		cpu3_pause {
+			phandle = <0x7fff0633>;
+		};
+
+		cpu4_pause {
+			phandle = <0x7fff0634>;
+		};
+
+		cpu5_pause {
+			phandle = <0x7fff0635>;
+		};
+
+		cpu6_pause {
+			phandle = <0x7fff0636>;
+		};
+
+		cpu7_pause {
+			phandle = <0x7fff0637>;
+		};
+
+		APC2_pause {
+			phandle = <0x7fff0638>;
+		};
+
+		APC1_pause {
+			phandle = <0x7fff0639>;
+		};
+
+		cpu0_hotplug {
+			phandle = <0x7fff063a>;
+		};
+
+		cpu1_hotplug {
+			phandle = <0x7fff063b>;
+		};
+
+		cpu2_hotplug {
+			phandle = <0x7fff063c>;
+		};
+
+		cpu3_hotplug {
+			phandle = <0x7fff063d>;
+		};
+
+		cpu4_hotplug {
+			phandle = <0x7fff063e>;
+		};
+
+		cpu5_hotplug {
+			phandle = <0x7fff063f>;
+		};
+
+		cpu6_hotplug {
+			phandle = <0x7fff0640>;
+		};
+
+		cpu7_hotplug {
+			phandle = <0x7fff0641>;
+		};
+
+		apc1_cluster {
+			phandle = <0x7fff0642>;
+		};
+
+		ddr_cdev {
+			phandle = <0x7fff0643>;
+		};
+
+		qmi_tmd {
+			phandle = <0x7fff0644>;
+		};
+
+		cdsp_sw {
+			phandle = <0x7fff0645>;
+		};
+
+		cdsp_sw_hvx {
+			phandle = <0x7fff0646>;
+		};
+
+		cdsp_sw_hmx {
+			phandle = <0x7fff0647>;
+		};
+
+		cdsp_hw {
+			phandle = <0x7fff0648>;
+		};
+
+		modem_bcl {
+			phandle = <0x7fff0649>;
+		};
+
+		modem_lte_dsc {
+			phandle = <0x7fff064a>;
+		};
+
+		modem_nr_dsc {
+			phandle = <0x7fff064b>;
+		};
+
+		modem_nr_scg_dsc {
+			phandle = <0x7fff064c>;
+		};
+
+		sdr0_lte_dsc {
+			phandle = <0x7fff064d>;
+		};
+
+		sdr0_nr_dsc {
+			phandle = <0x7fff064e>;
+		};
+
+		pa_lte_sdr0_dsc {
+			phandle = <0x7fff064f>;
+		};
+
+		pa_nr_sdr0_dsc {
+			phandle = <0x7fff0650>;
+		};
+
+		pa_nr_sdr0_scg_dsc {
+			phandle = <0x7fff0651>;
+		};
+
+		mmw0_dsc {
+			phandle = <0x7fff0652>;
+		};
+
+		mmw1_dsc {
+			phandle = <0x7fff0653>;
+		};
+
+		mmw2_dsc {
+			phandle = <0x7fff0654>;
+		};
+
+		mmw3_dsc {
+			phandle = <0x7fff0655>;
+		};
+
+		qmi_wlan {
+			phandle = <0x7fff0656>;
+		};
+
+		modem_bw_backoff {
+			phandle = <0x7fff0657>;
+		};
+
+		modem_vdd {
+			phandle = <0x7fff0658>;
+		};
+
+		modem_nr_scg_sub1_dsc {
+			phandle = <0x7fff0659>;
+		};
+
+		modem_lte_sub1_dsc {
+			phandle = <0x7fff065a>;
+		};
+
+		modem_nr_sub1_dsc {
+			phandle = <0x7fff065b>;
+		};
+
+		pa_nr_sdr0_sub1_dsc {
+			phandle = <0x7fff065c>;
+		};
+
+		pa_lte_sdr0_sub1_dsc {
+			phandle = <0x7fff065d>;
+		};
+
+		pa_nr_sdr0_scg_sub1_dsc {
+			phandle = <0x7fff065e>;
+		};
+
+		mmw0_sub1_dsc {
+			phandle = <0x7fff065f>;
+		};
+
+		mmw1_sub1_dsc {
+			phandle = <0x7fff0660>;
+		};
+
+		mmw2_sub1_dsc {
+			phandle = <0x7fff0661>;
+		};
+
+		mmw3_sub1_dsc {
+			phandle = <0x7fff0662>;
+		};
+
+		display_fps {
+			phandle = <0x7fff0663>;
+		};
+
+		limits_stat {
+			phandle = <0x7fff0664>;
+		};
+
+		qmi_sensor {
+			phandle = <0x7fff0665>;
+		};
+
+		hypervisor {
+			phandle = <0x7fff0666>;
+		};
+
+		gh_watchdog {
+			phandle = <0x7fff0667>;
+		};
+	};
+
+	__symbols__ {
+		ipa_smmu_11ad = "/abl-overlay-sink/ipa_smmu_11ad";
+		ipa_smmu_uc = "/abl-overlay-sink/ipa_smmu_uc";
+		ipa_smmu_wlan = "/abl-overlay-sink/ipa_smmu_wlan";
+		ipa_smmu_ap = "/abl-overlay-sink/ipa_smmu_ap";
+		ipa_hw = "/abl-overlay-sink/ipa_hw";
+		non_secure_cb_group = "/abl-overlay-sink/non_secure_cb_group";
+		msm_cvp = "/abl-overlay-sink/msm_cvp";
+		nfc_enable_suspend = "/abl-overlay-sink/nfc_enable_suspend";
+		nfc_enable_active = "/abl-overlay-sink/nfc_enable_active";
+		nfc_int_suspend = "/abl-overlay-sink/nfc_int_suspend";
+		nfc_int_active = "/abl-overlay-sink/nfc_int_active";
+		msm_fastrpc = "/abl-overlay-sink/msm_fastrpc";
+		slimbus = "/abl-overlay-sink/slimbus";
+		bluetooth = "/abl-overlay-sink/bluetooth";
+		bt_en_sleep = "/abl-overlay-sink/bt_en_sleep";
+		msm_vidc = "/abl-overlay-sink/msm_vidc";
+		audio_prm = "/abl-overlay-sink/audio_prm";
+		audio_gpr = "/abl-overlay-sink/audio_gpr";
+		lpass_audio_hw_vote = "/abl-overlay-sink/lpass_audio_hw_vote";
+		lpass_core_hw_vote = "/abl-overlay-sink/lpass_core_hw_vote";
+		pineapple_snd = "/abl-overlay-sink/pineapple_snd";
+		swr3 = "/abl-overlay-sink/swr3";
+		wsa2_macro = "/abl-overlay-sink/wsa2_macro";
+		swr0 = "/abl-overlay-sink/swr0";
+		wsa_macro = "/abl-overlay-sink/wsa_macro";
+		swr1 = "/abl-overlay-sink/swr1";
+		rx_macro = "/abl-overlay-sink/rx_macro";
+		tx_macro = "/abl-overlay-sink/tx_macro";
+		swr2 = "/abl-overlay-sink/swr2";
+		va_macro = "/abl-overlay-sink/va_macro";
+		lpass_cdc = "/abl-overlay-sink/lpass_cdc";
+		lpi_tlmm = "/abl-overlay-sink/lpi_tlmm";
+		msm_audio_ion_cma = "/abl-overlay-sink/msm_audio_ion_cma";
+		msm_audio_ion = "/abl-overlay-sink/msm_audio_ion";
+		spf_core_platform = "/abl-overlay-sink/spf_core_platform";
+		adsp_notify = "/abl-overlay-sink/adsp_notify";
+		adsp_loader = "/abl-overlay-sink/adsp_loader";
+		audio_pkt_core_platform = "/abl-overlay-sink/audio_pkt_core_platform";
+		stub_codec = "/abl-overlay-sink/stub_codec";
+		msm_mmrm_test = "/abl-overlay-sink/msm_mmrm_test";
+		msm_mmrm = "/abl-overlay-sink/msm_mmrm";
+		smmu_sde_sec = "/abl-overlay-sink/smmu_sde_sec";
+		smmu_sde_unsec = "/abl-overlay-sink/smmu_sde_unsec";
+		sde_rscc = "/abl-overlay-sink/sde_rscc";
+		sde_dp = "/abl-overlay-sink/sde_dp";
+		qcom_msmhdcp = "/abl-overlay-sink/qcom_msmhdcp";
+		ext_disp_audio_codec = "/abl-overlay-sink/ext_disp_audio_codec";
+		ext_disp = "/abl-overlay-sink/ext_disp";
+		dsi_pll_codes_data = "/abl-overlay-sink/dsi_pll_codes_data";
+		mdss_dsi_phy1 = "/abl-overlay-sink/mdss_dsi_phy1";
+		mdss_dsi_phy0 = "/abl-overlay-sink/mdss_dsi_phy0";
+		mdss_dsi1 = "/abl-overlay-sink/mdss_dsi1";
+		mdss_dsi0 = "/abl-overlay-sink/mdss_dsi0";
+		mdss_mdp = "/abl-overlay-sink/mdss_mdp";
+		cam_jpeg_dma0 = "/abl-overlay-sink/cam_jpeg_dma0";
+		cam_jpeg_enc0 = "/abl-overlay-sink/cam_jpeg_enc0";
+		cre = "/abl-overlay-sink/cre";
+		cam_bps = "/abl-overlay-sink/cam_bps";
+		cam_ipe0 = "/abl-overlay-sink/cam_ipe0";
+		cam_icp = "/abl-overlay-sink/cam_icp";
+		cam_csiphy_tpg15 = "/abl-overlay-sink/cam_csiphy_tpg15";
+		cam_csiphy_tpg14 = "/abl-overlay-sink/cam_csiphy_tpg14";
+		cam_csiphy_tpg13 = "/abl-overlay-sink/cam_csiphy_tpg13";
+		cam_vfe_lite1 = "/abl-overlay-sink/cam_vfe_lite1";
+		cam_csid_lite1 = "/abl-overlay-sink/cam_csid_lite1";
+		cam_vfe_lite0 = "/abl-overlay-sink/cam_vfe_lite0";
+		cam_csid_lite0 = "/abl-overlay-sink/cam_csid_lite0";
+		cam_vfe2 = "/abl-overlay-sink/cam_vfe2";
+		cam_csid2 = "/abl-overlay-sink/cam_csid2";
+		cam_vfe1 = "/abl-overlay-sink/cam_vfe1";
+		cam_csid1 = "/abl-overlay-sink/cam_csid1";
+		cam_vfe0 = "/abl-overlay-sink/cam_vfe0";
+		cam_csid0 = "/abl-overlay-sink/cam_csid0";
+		cam_sfe2 = "/abl-overlay-sink/cam_sfe2";
+		cam_sfe1 = "/abl-overlay-sink/cam_sfe1";
+		cam_sfe0 = "/abl-overlay-sink/cam_sfe0";
+		icp0_all_rd = "/abl-overlay-sink/icp0_all_rd";
+		rt_cdm4_all_rd = "/abl-overlay-sink/rt_cdm4_all_rd";
+		rt_cdm3_all_rd = "/abl-overlay-sink/rt_cdm3_all_rd";
+		rt_cdm2_all_rd = "/abl-overlay-sink/rt_cdm2_all_rd";
+		rt_cdm1_all_rd = "/abl-overlay-sink/rt_cdm1_all_rd";
+		rt_cdm0_all_rd = "/abl-overlay-sink/rt_cdm0_all_rd";
+		ipe0_in_rd = "/abl-overlay-sink/ipe0_in_rd";
+		ipe0_ref_rd = "/abl-overlay-sink/ipe0_ref_rd";
+		jpeg_dma1_all_rd = "/abl-overlay-sink/jpeg_dma1_all_rd";
+		jpeg_enc1_all_rd = "/abl-overlay-sink/jpeg_enc1_all_rd";
+		jpeg_dma0_all_rd = "/abl-overlay-sink/jpeg_dma0_all_rd";
+		jpeg_enc0_all_rd = "/abl-overlay-sink/jpeg_enc0_all_rd";
+		bps0_all_rd = "/abl-overlay-sink/bps0_all_rd";
+		cre0_all_rd = "/abl-overlay-sink/cre0_all_rd";
+		jpeg_dma1_all_wr = "/abl-overlay-sink/jpeg_dma1_all_wr";
+		jpeg_enc1_all_wr = "/abl-overlay-sink/jpeg_enc1_all_wr";
+		jpeg_dma0_all_wr = "/abl-overlay-sink/jpeg_dma0_all_wr";
+		jpeg_enc0_all_wr = "/abl-overlay-sink/jpeg_enc0_all_wr";
+		cre0_all_wr = "/abl-overlay-sink/cre0_all_wr";
+		bps0_all_wr = "/abl-overlay-sink/bps0_all_wr";
+		ipe0_all_wr = "/abl-overlay-sink/ipe0_all_wr";
+		custom1_rd = "/abl-overlay-sink/custom1_rd";
+		custom0_all_rd = "/abl-overlay-sink/custom0_all_rd";
+		sfe2_all_rd = "/abl-overlay-sink/sfe2_all_rd";
+		sfe1_all_rd = "/abl-overlay-sink/sfe1_all_rd";
+		sfe0_all_rd = "/abl-overlay-sink/sfe0_all_rd";
+		ife2_stats_wr = "/abl-overlay-sink/ife2_stats_wr";
+		ife1_stats_wr = "/abl-overlay-sink/ife1_stats_wr";
+		ife0_stats_wr = "/abl-overlay-sink/ife0_stats_wr";
+		ife3_rdi_stats_pixel_raw_wr = "/abl-overlay-sink/ife3_rdi_stats_pixel_raw_wr";
+		ife4_rdi_stats_pixel_raw_wr = "/abl-overlay-sink/ife4_rdi_stats_pixel_raw_wr";
+		ife2_pdaf_linear_wr = "/abl-overlay-sink/ife2_pdaf_linear_wr";
+		ife1_pdaf_linear_wr = "/abl-overlay-sink/ife1_pdaf_linear_wr";
+		ife0_pdaf_linear_wr = "/abl-overlay-sink/ife0_pdaf_linear_wr";
+		custom1_wr = "/abl-overlay-sink/custom1_wr";
+		custom0_wr = "/abl-overlay-sink/custom0_wr";
+		sfe2_all_wr = "/abl-overlay-sink/sfe2_all_wr";
+		sfe1_all_wr = "/abl-overlay-sink/sfe1_all_wr";
+		sfe0_all_wr = "/abl-overlay-sink/sfe0_all_wr";
+		ife2_rdi_pixel_raw_wr = "/abl-overlay-sink/ife2_rdi_pixel_raw_wr";
+		ife1_rdi_pixel_raw_wr = "/abl-overlay-sink/ife1_rdi_pixel_raw_wr";
+		ife0_rdi_pixel_raw_wr = "/abl-overlay-sink/ife0_rdi_pixel_raw_wr";
+		ife2_ubwc_wr = "/abl-overlay-sink/ife2_ubwc_wr";
+		ife1_ubwc_wr = "/abl-overlay-sink/ife1_ubwc_wr";
+		ife0_ubwc_wr = "/abl-overlay-sink/ife0_ubwc_wr";
+		level1_nrt0_rd = "/abl-overlay-sink/level1_nrt0_rd";
+		level1_nrt1_rd = "/abl-overlay-sink/level1_nrt1_rd";
+		level1_nrt3_rd = "/abl-overlay-sink/level1_nrt3_rd";
+		level1_nrt1_wr = "/abl-overlay-sink/level1_nrt1_wr";
+		level1_nrt2_wr = "/abl-overlay-sink/level1_nrt2_wr";
+		level1_rt0_rd = "/abl-overlay-sink/level1_rt0_rd";
+		level1_rt4_wr = "/abl-overlay-sink/level1_rt4_wr";
+		level1_rt3_wr = "/abl-overlay-sink/level1_rt3_wr";
+		level1_rt2_wr = "/abl-overlay-sink/level1_rt2_wr";
+		level1_rt1_wr = "/abl-overlay-sink/level1_rt1_wr";
+		level2_icp_rd = "/abl-overlay-sink/level2_icp_rd";
+		level2_nrt_rd = "/abl-overlay-sink/level2_nrt_rd";
+		level2_nrt_wr = "/abl-overlay-sink/level2_nrt_wr";
+		level2_rt_rd = "/abl-overlay-sink/level2_rt_rd";
+		level2_rt_wr = "/abl-overlay-sink/level2_rt_wr";
+		level3_nrt1_rd_wr_sum = "/abl-overlay-sink/level3_nrt1_rd_wr_sum";
+		level3_nrt0_rd_wr_sum = "/abl-overlay-sink/level3_nrt0_rd_wr_sum";
+		level3_rt_rd_wr_sum = "/abl-overlay-sink/level3_rt_rd_wr_sum";
+		cre_iova_mem_map = "/abl-overlay-sink/cre_iova_mem_map";
+		rt_cdm_iova_mem_map = "/abl-overlay-sink/rt_cdm_iova_mem_map";
+		icp_iova_mem_map = "/abl-overlay-sink/icp_iova_mem_map";
+		jpeg_iova_mem_map = "/abl-overlay-sink/jpeg_iova_mem_map";
+		ife_iova_mem_map = "/abl-overlay-sink/ife_iova_mem_map";
+		i2c_freq_1Mhz_cci2 = "/abl-overlay-sink/i2c_freq_1Mhz_cci2";
+		i2c_freq_custom_cci2 = "/abl-overlay-sink/i2c_freq_custom_cci2";
+		i2c_freq_400Khz_cci2 = "/abl-overlay-sink/i2c_freq_400Khz_cci2";
+		i2c_freq_100Khz_cci2 = "/abl-overlay-sink/i2c_freq_100Khz_cci2";
+		cam_cci2 = "/abl-overlay-sink/cam_cci2";
+		i2c_freq_1Mhz_cci1 = "/abl-overlay-sink/i2c_freq_1Mhz_cci1";
+		i2c_freq_custom_cci1 = "/abl-overlay-sink/i2c_freq_custom_cci1";
+		i2c_freq_400Khz_cci1 = "/abl-overlay-sink/i2c_freq_400Khz_cci1";
+		i2c_freq_100Khz_cci1 = "/abl-overlay-sink/i2c_freq_100Khz_cci1";
+		cam_cci1 = "/abl-overlay-sink/cam_cci1";
+		i2c_freq_1Mhz_cci0 = "/abl-overlay-sink/i2c_freq_1Mhz_cci0";
+		i2c_freq_custom_cci0 = "/abl-overlay-sink/i2c_freq_custom_cci0";
+		i2c_freq_400Khz_cci0 = "/abl-overlay-sink/i2c_freq_400Khz_cci0";
+		i2c_freq_100Khz_cci0 = "/abl-overlay-sink/i2c_freq_100Khz_cci0";
+		cam_cci0 = "/abl-overlay-sink/cam_cci0";
+		cam_csiphy5 = "/abl-overlay-sink/cam_csiphy5";
+		cam_csiphy4 = "/abl-overlay-sink/cam_csiphy4";
+		cam_csiphy3 = "/abl-overlay-sink/cam_csiphy3";
+		cam_csiphy2 = "/abl-overlay-sink/cam_csiphy2";
+		cam_csiphy1 = "/abl-overlay-sink/cam_csiphy1";
+		cam_csiphy0 = "/abl-overlay-sink/cam_csiphy0";
+		cam_sensor_ponv_rear_suspend = "/abl-overlay-sink/cam_sensor_ponv_rear_suspend";
+		cam_sensor_ponv_rear_active = "/abl-overlay-sink/cam_sensor_ponv_rear_active";
+		cam_sensor_ponv_front_suspend = "/abl-overlay-sink/cam_sensor_ponv_front_suspend";
+		cam_sensor_ponv_front_active = "/abl-overlay-sink/cam_sensor_ponv_front_active";
+		cam_sensor_suspend_rst7 = "/abl-overlay-sink/cam_sensor_suspend_rst7";
+		cam_sensor_active_rst7 = "/abl-overlay-sink/cam_sensor_active_rst7";
+		cam_sensor_suspend_rst6 = "/abl-overlay-sink/cam_sensor_suspend_rst6";
+		cam_sensor_active_rst6 = "/abl-overlay-sink/cam_sensor_active_rst6";
+		cam_sensor_suspend_rst5 = "/abl-overlay-sink/cam_sensor_suspend_rst5";
+		cam_sensor_active_rst5 = "/abl-overlay-sink/cam_sensor_active_rst5";
+		cam_sensor_suspend_rst4 = "/abl-overlay-sink/cam_sensor_suspend_rst4";
+		cam_sensor_active_rst4 = "/abl-overlay-sink/cam_sensor_active_rst4";
+		cam_sensor_suspend_rst3 = "/abl-overlay-sink/cam_sensor_suspend_rst3";
+		cam_sensor_active_rst3 = "/abl-overlay-sink/cam_sensor_active_rst3";
+		cam_sensor_suspend_rst2 = "/abl-overlay-sink/cam_sensor_suspend_rst2";
+		cam_sensor_active_rst2 = "/abl-overlay-sink/cam_sensor_active_rst2";
+		cam_sensor_suspend_rst1 = "/abl-overlay-sink/cam_sensor_suspend_rst1";
+		cam_sensor_active_rst1 = "/abl-overlay-sink/cam_sensor_active_rst1";
+		cam_sensor_suspend_rst0 = "/abl-overlay-sink/cam_sensor_suspend_rst0";
+		cam_sensor_active_rst0 = "/abl-overlay-sink/cam_sensor_active_rst0";
+		cam_sensor_mclk7_suspend = "/abl-overlay-sink/cam_sensor_mclk7_suspend";
+		cam_sensor_mclk7_active = "/abl-overlay-sink/cam_sensor_mclk7_active";
+		cam_sensor_mclk6_suspend = "/abl-overlay-sink/cam_sensor_mclk6_suspend";
+		cam_sensor_mclk6_active = "/abl-overlay-sink/cam_sensor_mclk6_active";
+		cam_sensor_mclk5_suspend = "/abl-overlay-sink/cam_sensor_mclk5_suspend";
+		cam_sensor_mclk5_active = "/abl-overlay-sink/cam_sensor_mclk5_active";
+		cam_sensor_mclk4_suspend = "/abl-overlay-sink/cam_sensor_mclk4_suspend";
+		cam_sensor_mclk4_active = "/abl-overlay-sink/cam_sensor_mclk4_active";
+		cam_sensor_mclk3_suspend = "/abl-overlay-sink/cam_sensor_mclk3_suspend";
+		cam_sensor_mclk3_active = "/abl-overlay-sink/cam_sensor_mclk3_active";
+		cam_sensor_mclk2_suspend = "/abl-overlay-sink/cam_sensor_mclk2_suspend";
+		cam_sensor_mclk2_active = "/abl-overlay-sink/cam_sensor_mclk2_active";
+		cam_sensor_mclk1_suspend = "/abl-overlay-sink/cam_sensor_mclk1_suspend";
+		cam_sensor_mclk1_active = "/abl-overlay-sink/cam_sensor_mclk1_active";
+		cam_sensor_mclk0_suspend = "/abl-overlay-sink/cam_sensor_mclk0_suspend";
+		cam_sensor_mclk0_active = "/abl-overlay-sink/cam_sensor_mclk0_active";
+		cci_i2c_scl5_suspend = "/abl-overlay-sink/cci_i2c_scl5_suspend";
+		cci_i2c_scl5_active = "/abl-overlay-sink/cci_i2c_scl5_active";
+		cci_i2c_sda5_suspend = "/abl-overlay-sink/cci_i2c_sda5_suspend";
+		cci_i2c_sda5_active = "/abl-overlay-sink/cci_i2c_sda5_active";
+		cci_i2c_scl4_suspend = "/abl-overlay-sink/cci_i2c_scl4_suspend";
+		cci_i2c_scl4_active = "/abl-overlay-sink/cci_i2c_scl4_active";
+		cci_i2c_sda4_suspend = "/abl-overlay-sink/cci_i2c_sda4_suspend";
+		cci_i2c_sda4_active = "/abl-overlay-sink/cci_i2c_sda4_active";
+		cci_i2c_scl3_suspend = "/abl-overlay-sink/cci_i2c_scl3_suspend";
+		cci_i2c_scl3_active = "/abl-overlay-sink/cci_i2c_scl3_active";
+		cci_i2c_sda3_suspend = "/abl-overlay-sink/cci_i2c_sda3_suspend";
+		cci_i2c_sda3_active = "/abl-overlay-sink/cci_i2c_sda3_active";
+		cci_i2c_scl2_suspend = "/abl-overlay-sink/cci_i2c_scl2_suspend";
+		cci_i2c_scl2_active = "/abl-overlay-sink/cci_i2c_scl2_active";
+		cci_i2c_sda2_suspend = "/abl-overlay-sink/cci_i2c_sda2_suspend";
+		cci_i2c_sda2_active = "/abl-overlay-sink/cci_i2c_sda2_active";
+		cci_i2c_scl1_suspend = "/abl-overlay-sink/cci_i2c_scl1_suspend";
+		cci_i2c_scl1_active = "/abl-overlay-sink/cci_i2c_scl1_active";
+		cci_i2c_sda1_suspend = "/abl-overlay-sink/cci_i2c_sda1_suspend";
+		cci_i2c_sda1_active = "/abl-overlay-sink/cci_i2c_sda1_active";
+		cci_i2c_scl0_suspend = "/abl-overlay-sink/cci_i2c_scl0_suspend";
+		cci_i2c_scl0_active = "/abl-overlay-sink/cci_i2c_scl0_active";
+		cci_i2c_sda0_suspend = "/abl-overlay-sink/cci_i2c_sda0_suspend";
+		cci_i2c_sda0_active = "/abl-overlay-sink/cci_i2c_sda0_active";
+		msm_hw_fence = "/abl-overlay-sink/msm_hw_fence";
+		ubwcp = "/abl-overlay-sink/ubwcp";
+		ipclite_cam = "/abl-overlay-sink/ipclite_cam";
+		ipclite_cvp = "/abl-overlay-sink/ipclite_cvp";
+		ipclite_cdsp = "/abl-overlay-sink/ipclite_cdsp";
+		ipclite_apss = "/abl-overlay-sink/ipclite_apss";
+		ipcc_compute_l0 = "/abl-overlay-sink/ipcc_compute_l0";
+		funnel_gfx_in_cx_dbgc = "/abl-overlay-sink/funnel_gfx_in_cx_dbgc";
+		funnel_gfx_in_gx_dbgc = "/abl-overlay-sink/funnel_gfx_in_gx_dbgc";
+		gx_dbgc_out_funnel_gfx = "/abl-overlay-sink/gx_dbgc_out_funnel_gfx";
+		coresight_gx_dgbc = "/abl-overlay-sink/coresight_gx_dgbc";
+		cx_dbgc_out_funnel_gfx = "/abl-overlay-sink/cx_dbgc_out_funnel_gfx";
+		coresight_cx_dgbc = "/abl-overlay-sink/coresight_cx_dgbc";
+		gmu = "/abl-overlay-sink/gmu";
+		gfx3d_secure = "/abl-overlay-sink/gfx3d_secure";
+		gfx3d_lpac = "/abl-overlay-sink/gfx3d_lpac";
+		gfx3d_user = "/abl-overlay-sink/gfx3d_user";
+		kgsl_msm_iommu = "/abl-overlay-sink/kgsl_msm_iommu";
+		chosen = "/abl-overlay-sink/chosen";
+		aliases = "/abl-overlay-sink/aliases";
+		reserved_memory = "/abl-overlay-sink/reserved_memory";
+		gunyah_hyp_mem = "/abl-overlay-sink/gunyah_hyp_mem";
+		cpusys_vm_mem = "/abl-overlay-sink/cpusys_vm_mem";
+		xbl_aop_merged_mem = "/abl-overlay-sink/xbl_aop_merged_mem";
+		aop_cmd_db_mem = "/abl-overlay-sink/aop_cmd_db_mem";
+		aop_tme_uefi_merged_mem = "/abl-overlay-sink/aop_tme_uefi_merged_mem";
+		chipinfo_mem = "/abl-overlay-sink/chipinfo_mem";
+		smem_mem = "/abl-overlay-sink/smem_mem";
+		adsp_mhi_mem = "/abl-overlay-sink/adsp_mhi_mem";
+		pvmfw_mem = "/abl-overlay-sink/pvmfw_mem";
+		global_sync_mem = "/abl-overlay-sink/global_sync_mem";
+		tz_stat_mem = "/abl-overlay-sink/tz_stat_mem";
+		qdss_mem = "/abl-overlay-sink/qdss_mem";
+		qlink_logging_mem = "/abl-overlay-sink/qlink_logging_mem";
+		mpss_dsm_mem = "/abl-overlay-sink/mpss_dsm_mem";
+		mpss_dsm_mem_2 = "/abl-overlay-sink/mpss_dsm_mem_2";
+		mpss_mem = "/abl-overlay-sink/mpss_mem";
+		q6_mpss_dtb_mem = "/abl-overlay-sink/q6_mpss_dtb_mem";
+		ipa_fw_mem = "/abl-overlay-sink/ipa_fw_mem";
+		ipa_gsi_mem = "/abl-overlay-sink/ipa_gsi_mem";
+		qseecom_mem = "/abl-overlay-sink/qseecom_mem";
+		qseecom_ta_mem = "/abl-overlay-sink/qseecom_ta_mem";
+		qmc_dma_mem = "/abl-overlay-sink/qmc_dma_mem";
+		non_secure_display_memory = "/abl-overlay-sink/non_secure_display_memory";
+		gpu_micro_code_mem = "/abl-overlay-sink/gpu_micro_code_mem";
+		spss_region_mem = "/abl-overlay-sink/spss_region_mem";
+		spu_tz_shared_mem = "/abl-overlay-sink/spu_tz_shared_mem";
+		spu_modem_shared_mem = "/abl-overlay-sink/spu_modem_shared_mem";
+		camera_mem = "/abl-overlay-sink/camera_mem";
+		video_mem = "/abl-overlay-sink/video_mem";
+		cvp_mem = "/abl-overlay-sink/cvp_mem";
+		cdsp_mem = "/abl-overlay-sink/cdsp_mem";
+		q6_cdsp_dtb_mem = "/abl-overlay-sink/q6_cdsp_dtb_mem";
+		q6_adsp_dtb_mem = "/abl-overlay-sink/q6_adsp_dtb_mem";
+		adsp_slpi_mem = "/abl-overlay-sink/adsp_slpi_mem";
+		tz_merged_mem = "/abl-overlay-sink/tz_merged_mem";
+		hwfence_shbuf = "/abl-overlay-sink/hwfence_shbuf";
+		vm_comm_mem = "/abl-overlay-sink/vm_comm_mem";
+		trust_ui_vm_mem = "/abl-overlay-sink/trust_ui_vm_mem";
+		oem_vm_mem = "/abl-overlay-sink/oem_vm_mem";
+		llcc_lpi_mem = "/abl-overlay-sink/llcc_lpi_mem";
+		va_md_mem = "/abl-overlay-sink/va_md_mem";
+		sp_mem = "/abl-overlay-sink/sp_mem";
+		cdsp_eva_mem = "/abl-overlay-sink/cdsp_eva_mem";
+		adsp_mem_heap = "/abl-overlay-sink/adsp_mem_heap";
+		system_cma = "/abl-overlay-sink/system_cma";
+		cdsp_secure_heap_cma = "/abl-overlay-sink/cdsp_secure_heap_cma";
+		kinfo_mem = "/abl-overlay-sink/kinfo_mem";
+		dump_mem = "/abl-overlay-sink/dump_mem";
+		firmware = "/abl-overlay-sink/firmware";
+		CPU0 = "/abl-overlay-sink/CPU0";
+		L2_0 = "/abl-overlay-sink/L2_0";
+		L3_0 = "/abl-overlay-sink/L3_0";
+		CPU1 = "/abl-overlay-sink/CPU1";
+		CPU2 = "/abl-overlay-sink/CPU2";
+		L2_2 = "/abl-overlay-sink/L2_2";
+		CPU3 = "/abl-overlay-sink/CPU3";
+		L2_3 = "/abl-overlay-sink/L2_3";
+		CPU4 = "/abl-overlay-sink/CPU4";
+		L2_4 = "/abl-overlay-sink/L2_4";
+		CPU5 = "/abl-overlay-sink/CPU5";
+		L2_5 = "/abl-overlay-sink/L2_5";
+		CPU6 = "/abl-overlay-sink/CPU6";
+		L2_6 = "/abl-overlay-sink/L2_6";
+		CPU7 = "/abl-overlay-sink/CPU7";
+		L2_7 = "/abl-overlay-sink/L2_7";
+		SILVER_OFF_CL0 = "/abl-overlay-sink/SILVER_OFF_CL0";
+		GOLD_OFF_CL1 = "/abl-overlay-sink/GOLD_OFF_CL1";
+		GOLD_OFF_CL2 = "/abl-overlay-sink/GOLD_OFF_CL2";
+		GOLD_OFF_CL3 = "/abl-overlay-sink/GOLD_OFF_CL3";
+		CLUSTER_PWR_DN = "/abl-overlay-sink/CLUSTER_PWR_DN";
+		APSS_OFF = "/abl-overlay-sink/APSS_OFF";
+		soc = "/abl-overlay-sink/soc";
+		CPU_PD0 = "/abl-overlay-sink/CPU_PD0";
+		CPU_PD1 = "/abl-overlay-sink/CPU_PD1";
+		CPU_PD2 = "/abl-overlay-sink/CPU_PD2";
+		CPU_PD3 = "/abl-overlay-sink/CPU_PD3";
+		CPU_PD4 = "/abl-overlay-sink/CPU_PD4";
+		CPU_PD5 = "/abl-overlay-sink/CPU_PD5";
+		CPU_PD6 = "/abl-overlay-sink/CPU_PD6";
+		CPU_PD7 = "/abl-overlay-sink/CPU_PD7";
+		CLUSTER_PD = "/abl-overlay-sink/CLUSTER_PD";
+		slimbam = "/abl-overlay-sink/slimbam";
+		slim_msm = "/abl-overlay-sink/slim_msm";
+		intc = "/abl-overlay-sink/intc";
+		gic_its = "/abl-overlay-sink/gic_its";
+		arch_timer = "/abl-overlay-sink/arch_timer";
+		memtimer = "/abl-overlay-sink/memtimer";
+		cpu_pmu = "/abl-overlay-sink/cpu_pmu";
+		pcie_crm_hw_0_bcm_voter = "/abl-overlay-sink/pcie_crm_hw_0_bcm_voter";
+		pcie_crm_hw_1_bcm_voter = "/abl-overlay-sink/pcie_crm_hw_1_bcm_voter";
+		clk_virt = "/abl-overlay-sink/clk_virt";
+		mc_virt = "/abl-overlay-sink/mc_virt";
+		config_noc = "/abl-overlay-sink/config_noc";
+		cnoc_main = "/abl-overlay-sink/cnoc_main";
+		system_noc = "/abl-overlay-sink/system_noc";
+		pcie_noc = "/abl-overlay-sink/pcie_noc";
+		aggre1_noc = "/abl-overlay-sink/aggre1_noc";
+		aggre2_noc = "/abl-overlay-sink/aggre2_noc";
+		mmss_noc = "/abl-overlay-sink/mmss_noc";
+		gem_noc = "/abl-overlay-sink/gem_noc";
+		nsp_noc = "/abl-overlay-sink/nsp_noc";
+		lpass_ag_noc = "/abl-overlay-sink/lpass_ag_noc";
+		lpass_lpiaon_noc = "/abl-overlay-sink/lpass_lpiaon_noc";
+		lpass_lpicx_noc = "/abl-overlay-sink/lpass_lpicx_noc";
+		pdc = "/abl-overlay-sink/pdc";
+		pcie_pdc = "/abl-overlay-sink/pcie_pdc";
+		tlmm = "/abl-overlay-sink/tlmm";
+		qupv3_se10_2uart_pins = "/abl-overlay-sink/qupv3_se10_2uart_pins";
+		qupv3_se10_2uart_tx_active = "/abl-overlay-sink/qupv3_se10_2uart_tx_active";
+		qupv3_se10_2uart_rx_active = "/abl-overlay-sink/qupv3_se10_2uart_rx_active";
+		vib_reset_r = "/abl-overlay-sink/vib_reset_r";
+		vib_reset_l = "/abl-overlay-sink/vib_reset_l";
+		tp_reset_gpio = "/abl-overlay-sink/tp_reset_gpio";
+		qupv3_se15_2uart_pins = "/abl-overlay-sink/qupv3_se15_2uart_pins";
+		qupv3_se15_2uart_tx_active = "/abl-overlay-sink/qupv3_se15_2uart_tx_active";
+		qupv3_se15_2uart_rx_active = "/abl-overlay-sink/qupv3_se15_2uart_rx_active";
+		qupv3_se15_2uart_sleep = "/abl-overlay-sink/qupv3_se15_2uart_sleep";
+		trigout_a = "/abl-overlay-sink/trigout_a";
+		pcie0_perst_default = "/abl-overlay-sink/pcie0_perst_default";
+		pcie0_clkreq_default = "/abl-overlay-sink/pcie0_clkreq_default";
+		pcie0_wake_default = "/abl-overlay-sink/pcie0_wake_default";
+		pcie0_clkreq_sleep = "/abl-overlay-sink/pcie0_clkreq_sleep";
+		pcie1_perst_default = "/abl-overlay-sink/pcie1_perst_default";
+		pcie1_clkreq_default = "/abl-overlay-sink/pcie1_clkreq_default";
+		pcie1_wake_default = "/abl-overlay-sink/pcie1_wake_default";
+		pcie1_clkreq_sleep = "/abl-overlay-sink/pcie1_clkreq_sleep";
+		qupv3_se14_4uart_pins = "/abl-overlay-sink/qupv3_se14_4uart_pins";
+		qupv3_se14_default_cts = "/abl-overlay-sink/qupv3_se14_default_cts";
+		qupv3_se14_default_rts = "/abl-overlay-sink/qupv3_se14_default_rts";
+		qupv3_se14_default_tx = "/abl-overlay-sink/qupv3_se14_default_tx";
+		qupv3_se14_default_rx = "/abl-overlay-sink/qupv3_se14_default_rx";
+		qupv3_se14_cts = "/abl-overlay-sink/qupv3_se14_cts";
+		qupv3_se14_rts = "/abl-overlay-sink/qupv3_se14_rts";
+		qupv3_se14_tx = "/abl-overlay-sink/qupv3_se14_tx";
+		qupv3_se14_rx = "/abl-overlay-sink/qupv3_se14_rx";
+		qupv3_se0_i2c_pins = "/abl-overlay-sink/qupv3_se0_i2c_pins";
+		qupv3_se0_i2c_sda_active = "/abl-overlay-sink/qupv3_se0_i2c_sda_active";
+		qupv3_se0_i2c_scl_active = "/abl-overlay-sink/qupv3_se0_i2c_scl_active";
+		qupv3_se0_i2c_sleep = "/abl-overlay-sink/qupv3_se0_i2c_sleep";
+		qupv3_se0_i3c_pins = "/abl-overlay-sink/qupv3_se0_i3c_pins";
+		qupv3_se0_i3c_sda_active = "/abl-overlay-sink/qupv3_se0_i3c_sda_active";
+		qupv3_se0_i3c_scl_active = "/abl-overlay-sink/qupv3_se0_i3c_scl_active";
+		qupv3_se0_i3c_sda_sleep = "/abl-overlay-sink/qupv3_se0_i3c_sda_sleep";
+		qupv3_se0_i3c_scl_sleep = "/abl-overlay-sink/qupv3_se0_i3c_scl_sleep";
+		qupv3_se0_i3c_disable = "/abl-overlay-sink/qupv3_se0_i3c_disable";
+		qupv3_se0_spi_pins = "/abl-overlay-sink/qupv3_se0_spi_pins";
+		qupv3_se0_spi_miso_active = "/abl-overlay-sink/qupv3_se0_spi_miso_active";
+		qupv3_se0_spi_mosi_active = "/abl-overlay-sink/qupv3_se0_spi_mosi_active";
+		qupv3_se0_spi_clk_active = "/abl-overlay-sink/qupv3_se0_spi_clk_active";
+		qupv3_se0_spi_cs_active = "/abl-overlay-sink/qupv3_se0_spi_cs_active";
+		qupv3_se0_spi_sleep = "/abl-overlay-sink/qupv3_se0_spi_sleep";
+		qupv3_se1_i2c_pins = "/abl-overlay-sink/qupv3_se1_i2c_pins";
+		qupv3_se1_i2c_sda_active = "/abl-overlay-sink/qupv3_se1_i2c_sda_active";
+		qupv3_se1_i2c_scl_active = "/abl-overlay-sink/qupv3_se1_i2c_scl_active";
+		qupv3_se1_i2c_sleep = "/abl-overlay-sink/qupv3_se1_i2c_sleep";
+		qupv3_se1_spi_pins = "/abl-overlay-sink/qupv3_se1_spi_pins";
+		qupv3_se1_spi_miso_active = "/abl-overlay-sink/qupv3_se1_spi_miso_active";
+		qupv3_se1_spi_mosi_active = "/abl-overlay-sink/qupv3_se1_spi_mosi_active";
+		qupv3_se1_spi_clk_active = "/abl-overlay-sink/qupv3_se1_spi_clk_active";
+		qupv3_se1_spi_cs_active = "/abl-overlay-sink/qupv3_se1_spi_cs_active";
+		qupv3_se1_spi_sleep = "/abl-overlay-sink/qupv3_se1_spi_sleep";
+		qupv3_se2_i2c_pins = "/abl-overlay-sink/qupv3_se2_i2c_pins";
+		qupv3_se2_i2c_sda_active = "/abl-overlay-sink/qupv3_se2_i2c_sda_active";
+		qupv3_se2_i2c_scl_active = "/abl-overlay-sink/qupv3_se2_i2c_scl_active";
+		qupv3_se2_i2c_sleep = "/abl-overlay-sink/qupv3_se2_i2c_sleep";
+		qupv3_se2_spi_pins = "/abl-overlay-sink/qupv3_se2_spi_pins";
+		qupv3_se2_spi_miso_active = "/abl-overlay-sink/qupv3_se2_spi_miso_active";
+		qupv3_se2_spi_mosi_active = "/abl-overlay-sink/qupv3_se2_spi_mosi_active";
+		qupv3_se2_spi_clk_active = "/abl-overlay-sink/qupv3_se2_spi_clk_active";
+		qupv3_se2_spi_cs_active = "/abl-overlay-sink/qupv3_se2_spi_cs_active";
+		qupv3_se2_spi_sleep = "/abl-overlay-sink/qupv3_se2_spi_sleep";
+		qupv3_se3_i2c_pins = "/abl-overlay-sink/qupv3_se3_i2c_pins";
+		qupv3_se3_i2c_sda_active = "/abl-overlay-sink/qupv3_se3_i2c_sda_active";
+		qupv3_se3_i2c_scl_active = "/abl-overlay-sink/qupv3_se3_i2c_scl_active";
+		qupv3_se3_i2c_sleep = "/abl-overlay-sink/qupv3_se3_i2c_sleep";
+		qupv3_se3_spi_pins = "/abl-overlay-sink/qupv3_se3_spi_pins";
+		qupv3_se3_spi_miso_active = "/abl-overlay-sink/qupv3_se3_spi_miso_active";
+		qupv3_se3_spi_mosi_active = "/abl-overlay-sink/qupv3_se3_spi_mosi_active";
+		qupv3_se3_spi_clk_active = "/abl-overlay-sink/qupv3_se3_spi_clk_active";
+		qupv3_se3_spi_cs_active = "/abl-overlay-sink/qupv3_se3_spi_cs_active";
+		qupv3_se3_spi_sleep = "/abl-overlay-sink/qupv3_se3_spi_sleep";
+		qupv3_se4_i2c_pins = "/abl-overlay-sink/qupv3_se4_i2c_pins";
+		qupv3_se4_i2c_sda_active = "/abl-overlay-sink/qupv3_se4_i2c_sda_active";
+		qupv3_se4_i2c_scl_active = "/abl-overlay-sink/qupv3_se4_i2c_scl_active";
+		qupv3_se4_i2c_sleep = "/abl-overlay-sink/qupv3_se4_i2c_sleep";
+		qupv3_se4_i3c_pins = "/abl-overlay-sink/qupv3_se4_i3c_pins";
+		qupv3_se4_i3c_sda_active = "/abl-overlay-sink/qupv3_se4_i3c_sda_active";
+		qupv3_se4_i3c_scl_active = "/abl-overlay-sink/qupv3_se4_i3c_scl_active";
+		qupv3_se4_i3c_sda_sleep = "/abl-overlay-sink/qupv3_se4_i3c_sda_sleep";
+		qupv3_se4_i3c_scl_sleep = "/abl-overlay-sink/qupv3_se4_i3c_scl_sleep";
+		qupv3_se4_i3c_disable = "/abl-overlay-sink/qupv3_se4_i3c_disable";
+		qupv3_se4_spi_pins = "/abl-overlay-sink/qupv3_se4_spi_pins";
+		qupv3_se4_spi_miso_active = "/abl-overlay-sink/qupv3_se4_spi_miso_active";
+		qupv3_se4_spi_mosi_active = "/abl-overlay-sink/qupv3_se4_spi_mosi_active";
+		qupv3_se4_spi_clk_active = "/abl-overlay-sink/qupv3_se4_spi_clk_active";
+		qupv3_se4_spi_cs_active = "/abl-overlay-sink/qupv3_se4_spi_cs_active";
+		qupv3_se4_spi_sleep = "/abl-overlay-sink/qupv3_se4_spi_sleep";
+		qupv3_se5_i2c_pins = "/abl-overlay-sink/qupv3_se5_i2c_pins";
+		qupv3_se5_i2c_sda_active = "/abl-overlay-sink/qupv3_se5_i2c_sda_active";
+		qupv3_se5_i2c_scl_active = "/abl-overlay-sink/qupv3_se5_i2c_scl_active";
+		qupv3_se5_i2c_sleep = "/abl-overlay-sink/qupv3_se5_i2c_sleep";
+		qupv3_se5_spi_pins = "/abl-overlay-sink/qupv3_se5_spi_pins";
+		qupv3_se5_spi_miso_active = "/abl-overlay-sink/qupv3_se5_spi_miso_active";
+		qupv3_se5_spi_mosi_active = "/abl-overlay-sink/qupv3_se5_spi_mosi_active";
+		qupv3_se5_spi_clk_active = "/abl-overlay-sink/qupv3_se5_spi_clk_active";
+		qupv3_se5_spi_cs_active = "/abl-overlay-sink/qupv3_se5_spi_cs_active";
+		qupv3_se5_spi_sleep = "/abl-overlay-sink/qupv3_se5_spi_sleep";
+		qupv3_se6_i2c_pins = "/abl-overlay-sink/qupv3_se6_i2c_pins";
+		qupv3_se6_i2c_sda_active = "/abl-overlay-sink/qupv3_se6_i2c_sda_active";
+		qupv3_se6_i2c_scl_active = "/abl-overlay-sink/qupv3_se6_i2c_scl_active";
+		qupv3_se6_i2c_sleep = "/abl-overlay-sink/qupv3_se6_i2c_sleep";
+		qupv3_se6_spi_pins = "/abl-overlay-sink/qupv3_se6_spi_pins";
+		qupv3_se6_spi_miso_active = "/abl-overlay-sink/qupv3_se6_spi_miso_active";
+		qupv3_se6_spi_mosi_active = "/abl-overlay-sink/qupv3_se6_spi_mosi_active";
+		qupv3_se6_spi_clk_active = "/abl-overlay-sink/qupv3_se6_spi_clk_active";
+		qupv3_se6_spi_cs_active = "/abl-overlay-sink/qupv3_se6_spi_cs_active";
+		qupv3_se6_spi_sleep = "/abl-overlay-sink/qupv3_se6_spi_sleep";
+		qupv3_se7_i2c_pins = "/abl-overlay-sink/qupv3_se7_i2c_pins";
+		qupv3_se7_i2c_sda_active = "/abl-overlay-sink/qupv3_se7_i2c_sda_active";
+		qupv3_se7_i2c_scl_active = "/abl-overlay-sink/qupv3_se7_i2c_scl_active";
+		qupv3_se7_i2c_sleep = "/abl-overlay-sink/qupv3_se7_i2c_sleep";
+		qupv3_se7_spi_pins = "/abl-overlay-sink/qupv3_se7_spi_pins";
+		qupv3_se7_spi_miso_active = "/abl-overlay-sink/qupv3_se7_spi_miso_active";
+		qupv3_se7_spi_mosi_active = "/abl-overlay-sink/qupv3_se7_spi_mosi_active";
+		qupv3_se7_spi_clk_active = "/abl-overlay-sink/qupv3_se7_spi_clk_active";
+		qupv3_se7_spi_cs_active = "/abl-overlay-sink/qupv3_se7_spi_cs_active";
+		qupv3_se7_spi_sleep = "/abl-overlay-sink/qupv3_se7_spi_sleep";
+		qupv3_se8_i2c_pins = "/abl-overlay-sink/qupv3_se8_i2c_pins";
+		qupv3_se8_i2c_sda_active = "/abl-overlay-sink/qupv3_se8_i2c_sda_active";
+		qupv3_se8_i2c_scl_active = "/abl-overlay-sink/qupv3_se8_i2c_scl_active";
+		qupv3_se8_i2c_sleep = "/abl-overlay-sink/qupv3_se8_i2c_sleep";
+		qupv3_se8_spi_pins = "/abl-overlay-sink/qupv3_se8_spi_pins";
+		qupv3_se8_spi_miso_active = "/abl-overlay-sink/qupv3_se8_spi_miso_active";
+		qupv3_se8_spi_mosi_active = "/abl-overlay-sink/qupv3_se8_spi_mosi_active";
+		qupv3_se8_spi_clk_active = "/abl-overlay-sink/qupv3_se8_spi_clk_active";
+		qupv3_se8_spi_cs_active = "/abl-overlay-sink/qupv3_se8_spi_cs_active";
+		qupv3_se8_spi_sleep = "/abl-overlay-sink/qupv3_se8_spi_sleep";
+		qupv3_se8_i3c_pins = "/abl-overlay-sink/qupv3_se8_i3c_pins";
+		qupv3_se8_i3c_sda_active = "/abl-overlay-sink/qupv3_se8_i3c_sda_active";
+		qupv3_se8_i3c_scl_active = "/abl-overlay-sink/qupv3_se8_i3c_scl_active";
+		qupv3_se8_i3c_sda_sleep = "/abl-overlay-sink/qupv3_se8_i3c_sda_sleep";
+		qupv3_se8_i3c_scl_sleep = "/abl-overlay-sink/qupv3_se8_i3c_scl_sleep";
+		qupv3_se8_i3c_disable = "/abl-overlay-sink/qupv3_se8_i3c_disable";
+		qupv3_se9_i2c_pins = "/abl-overlay-sink/qupv3_se9_i2c_pins";
+		qupv3_se9_i2c_sda_active = "/abl-overlay-sink/qupv3_se9_i2c_sda_active";
+		qupv3_se9_i2c_scl_active = "/abl-overlay-sink/qupv3_se9_i2c_scl_active";
+		qupv3_se9_i2c_sleep = "/abl-overlay-sink/qupv3_se9_i2c_sleep";
+		qupv3_se9_spi_pins = "/abl-overlay-sink/qupv3_se9_spi_pins";
+		qupv3_se9_spi_miso_active = "/abl-overlay-sink/qupv3_se9_spi_miso_active";
+		qupv3_se9_spi_mosi_active = "/abl-overlay-sink/qupv3_se9_spi_mosi_active";
+		qupv3_se9_spi_clk_active = "/abl-overlay-sink/qupv3_se9_spi_clk_active";
+		qupv3_se9_spi_cs_active = "/abl-overlay-sink/qupv3_se9_spi_cs_active";
+		qupv3_se9_spi_sleep = "/abl-overlay-sink/qupv3_se9_spi_sleep";
+		qupv3_se10_i2c_pins = "/abl-overlay-sink/qupv3_se10_i2c_pins";
+		qupv3_se10_i2c_sda_active = "/abl-overlay-sink/qupv3_se10_i2c_sda_active";
+		qupv3_se10_i2c_scl_active = "/abl-overlay-sink/qupv3_se10_i2c_scl_active";
+		qupv3_se10_i2c_sleep = "/abl-overlay-sink/qupv3_se10_i2c_sleep";
+		qupv3_se10_spi_pins = "/abl-overlay-sink/qupv3_se10_spi_pins";
+		qupv3_se10_spi_miso_active = "/abl-overlay-sink/qupv3_se10_spi_miso_active";
+		qupv3_se10_spi_mosi_active = "/abl-overlay-sink/qupv3_se10_spi_mosi_active";
+		qupv3_se10_spi_clk_active = "/abl-overlay-sink/qupv3_se10_spi_clk_active";
+		qupv3_se10_spi_cs_active = "/abl-overlay-sink/qupv3_se10_spi_cs_active";
+		qupv3_se10_spi_sleep = "/abl-overlay-sink/qupv3_se10_spi_sleep";
+		qupv3_se10_i3c_pins = "/abl-overlay-sink/qupv3_se10_i3c_pins";
+		qupv3_se10_i3c_sda_active = "/abl-overlay-sink/qupv3_se10_i3c_sda_active";
+		qupv3_se10_i3c_scl_active = "/abl-overlay-sink/qupv3_se10_i3c_scl_active";
+		qupv3_se10_i3c_sda_sleep = "/abl-overlay-sink/qupv3_se10_i3c_sda_sleep";
+		qupv3_se10_i3c_scl_sleep = "/abl-overlay-sink/qupv3_se10_i3c_scl_sleep";
+		qupv3_se10_i3c_disable = "/abl-overlay-sink/qupv3_se10_i3c_disable";
+		qupv3_se11_i2c_pins = "/abl-overlay-sink/qupv3_se11_i2c_pins";
+		qupv3_se11_i2c_sda_active = "/abl-overlay-sink/qupv3_se11_i2c_sda_active";
+		qupv3_se11_i2c_scl_active = "/abl-overlay-sink/qupv3_se11_i2c_scl_active";
+		qupv3_se11_i2c_sleep = "/abl-overlay-sink/qupv3_se11_i2c_sleep";
+		qupv3_se11_spi_pins = "/abl-overlay-sink/qupv3_se11_spi_pins";
+		qupv3_se11_spi_miso_active = "/abl-overlay-sink/qupv3_se11_spi_miso_active";
+		qupv3_se11_spi_mosi_active = "/abl-overlay-sink/qupv3_se11_spi_mosi_active";
+		qupv3_se11_spi_clk_active = "/abl-overlay-sink/qupv3_se11_spi_clk_active";
+		qupv3_se11_spi_cs_active = "/abl-overlay-sink/qupv3_se11_spi_cs_active";
+		qupv3_se11_spi_sleep = "/abl-overlay-sink/qupv3_se11_spi_sleep";
+		qupv3_se11_i3c_pins = "/abl-overlay-sink/qupv3_se11_i3c_pins";
+		qupv3_se11_i3c_sda_active = "/abl-overlay-sink/qupv3_se11_i3c_sda_active";
+		qupv3_se11_i3c_scl_active = "/abl-overlay-sink/qupv3_se11_i3c_scl_active";
+		qupv3_se11_i3c_sda_sleep = "/abl-overlay-sink/qupv3_se11_i3c_sda_sleep";
+		qupv3_se11_i3c_scl_sleep = "/abl-overlay-sink/qupv3_se11_i3c_scl_sleep";
+		qupv3_se11_i3c_disable = "/abl-overlay-sink/qupv3_se11_i3c_disable";
+		qupv3_se12_i2c_pins = "/abl-overlay-sink/qupv3_se12_i2c_pins";
+		qupv3_se12_i2c_sda_active = "/abl-overlay-sink/qupv3_se12_i2c_sda_active";
+		qupv3_se12_i2c_scl_active = "/abl-overlay-sink/qupv3_se12_i2c_scl_active";
+		qupv3_se12_i2c_sleep = "/abl-overlay-sink/qupv3_se12_i2c_sleep";
+		qupv3_se12_spi_pins = "/abl-overlay-sink/qupv3_se12_spi_pins";
+		qupv3_se12_spi_miso_active = "/abl-overlay-sink/qupv3_se12_spi_miso_active";
+		qupv3_se12_spi_mosi_active = "/abl-overlay-sink/qupv3_se12_spi_mosi_active";
+		qupv3_se12_spi_clk_active = "/abl-overlay-sink/qupv3_se12_spi_clk_active";
+		qupv3_se12_spi_cs_active = "/abl-overlay-sink/qupv3_se12_spi_cs_active";
+		qupv3_se12_spi_sleep = "/abl-overlay-sink/qupv3_se12_spi_sleep";
+		qupv3_se13_i2c_pins = "/abl-overlay-sink/qupv3_se13_i2c_pins";
+		qupv3_se13_i2c_sda_active = "/abl-overlay-sink/qupv3_se13_i2c_sda_active";
+		qupv3_se13_i2c_scl_active = "/abl-overlay-sink/qupv3_se13_i2c_scl_active";
+		qupv3_se13_i2c_sleep = "/abl-overlay-sink/qupv3_se13_i2c_sleep";
+		qupv3_se13_spi_pins = "/abl-overlay-sink/qupv3_se13_spi_pins";
+		qupv3_se13_spi_miso_active = "/abl-overlay-sink/qupv3_se13_spi_miso_active";
+		qupv3_se13_spi_mosi_active = "/abl-overlay-sink/qupv3_se13_spi_mosi_active";
+		qupv3_se13_spi_clk_active = "/abl-overlay-sink/qupv3_se13_spi_clk_active";
+		qupv3_se13_spi_cs_active = "/abl-overlay-sink/qupv3_se13_spi_cs_active";
+		qupv3_se13_spi_sleep = "/abl-overlay-sink/qupv3_se13_spi_sleep";
+		qupv3_se13_q2spi_pins = "/abl-overlay-sink/qupv3_se13_q2spi_pins";
+		qupv3_se13_q2spi_default = "/abl-overlay-sink/qupv3_se13_q2spi_default";
+		qupv3_se13_q2spi_miso_default = "/abl-overlay-sink/qupv3_se13_q2spi_miso_default";
+		qupv3_se13_q2spi_miso_active = "/abl-overlay-sink/qupv3_se13_q2spi_miso_active";
+		qupv3_se13_q2spi_mosi_active = "/abl-overlay-sink/qupv3_se13_q2spi_mosi_active";
+		qupv3_se13_q2spi_clk_active = "/abl-overlay-sink/qupv3_se13_q2spi_clk_active";
+		qupv3_se13_q2spi_doorbell_active = "/abl-overlay-sink/qupv3_se13_q2spi_doorbell_active";
+		qupv3_se13_q2spi_doorbell_sleep = "/abl-overlay-sink/qupv3_se13_q2spi_doorbell_sleep";
+		qupv3_se13_q2spi_miso_sleep = "/abl-overlay-sink/qupv3_se13_q2spi_miso_sleep";
+		qupv3_hub_i2c0_pins = "/abl-overlay-sink/qupv3_hub_i2c0_pins";
+		qupv3_hub_i2c0_sda_active = "/abl-overlay-sink/qupv3_hub_i2c0_sda_active";
+		qupv3_hub_i2c0_scl_active = "/abl-overlay-sink/qupv3_hub_i2c0_scl_active";
+		qupv3_hub_i2c0_sleep = "/abl-overlay-sink/qupv3_hub_i2c0_sleep";
+		qupv3_hub_i2c1_pins = "/abl-overlay-sink/qupv3_hub_i2c1_pins";
+		qupv3_hub_i2c1_sda_active = "/abl-overlay-sink/qupv3_hub_i2c1_sda_active";
+		qupv3_hub_i2c1_scl_active = "/abl-overlay-sink/qupv3_hub_i2c1_scl_active";
+		qupv3_hub_i2c1_sleep = "/abl-overlay-sink/qupv3_hub_i2c1_sleep";
+		qupv3_hub_i2c2_pins = "/abl-overlay-sink/qupv3_hub_i2c2_pins";
+		qupv3_hub_i2c2_sda_active = "/abl-overlay-sink/qupv3_hub_i2c2_sda_active";
+		qupv3_hub_i2c2_scl_active = "/abl-overlay-sink/qupv3_hub_i2c2_scl_active";
+		qupv3_hub_i2c2_sleep = "/abl-overlay-sink/qupv3_hub_i2c2_sleep";
+		qupv3_hub_i2c3_pins = "/abl-overlay-sink/qupv3_hub_i2c3_pins";
+		qupv3_hub_i2c3_sda_active = "/abl-overlay-sink/qupv3_hub_i2c3_sda_active";
+		qupv3_hub_i2c3_scl_active = "/abl-overlay-sink/qupv3_hub_i2c3_scl_active";
+		qupv3_hub_i2c3_sleep = "/abl-overlay-sink/qupv3_hub_i2c3_sleep";
+		qupv3_hub_i2c4_pins = "/abl-overlay-sink/qupv3_hub_i2c4_pins";
+		qupv3_hub_i2c4_sda_active = "/abl-overlay-sink/qupv3_hub_i2c4_sda_active";
+		qupv3_hub_i2c4_scl_active = "/abl-overlay-sink/qupv3_hub_i2c4_scl_active";
+		qupv3_hub_i2c4_sleep = "/abl-overlay-sink/qupv3_hub_i2c4_sleep";
+		qupv3_hub_i2c5_pins = "/abl-overlay-sink/qupv3_hub_i2c5_pins";
+		qupv3_hub_i2c5_sda_active = "/abl-overlay-sink/qupv3_hub_i2c5_sda_active";
+		qupv3_hub_i2c5_scl_active = "/abl-overlay-sink/qupv3_hub_i2c5_scl_active";
+		qupv3_hub_i2c5_sleep = "/abl-overlay-sink/qupv3_hub_i2c5_sleep";
+		qupv3_hub_i2c6_pins = "/abl-overlay-sink/qupv3_hub_i2c6_pins";
+		qupv3_hub_i2c6_sda_active = "/abl-overlay-sink/qupv3_hub_i2c6_sda_active";
+		qupv3_hub_i2c6_scl_active = "/abl-overlay-sink/qupv3_hub_i2c6_scl_active";
+		qupv3_hub_i2c6_sleep = "/abl-overlay-sink/qupv3_hub_i2c6_sleep";
+		qupv3_hub_i2c7_pins = "/abl-overlay-sink/qupv3_hub_i2c7_pins";
+		qupv3_hub_i2c7_sda_active = "/abl-overlay-sink/qupv3_hub_i2c7_sda_active";
+		qupv3_hub_i2c7_scl_active = "/abl-overlay-sink/qupv3_hub_i2c7_scl_active";
+		qupv3_hub_i2c7_sleep = "/abl-overlay-sink/qupv3_hub_i2c7_sleep";
+		qupv3_hub_i2c8_pins = "/abl-overlay-sink/qupv3_hub_i2c8_pins";
+		qupv3_hub_i2c8_sda_active = "/abl-overlay-sink/qupv3_hub_i2c8_sda_active";
+		qupv3_hub_i2c8_scl_active = "/abl-overlay-sink/qupv3_hub_i2c8_scl_active";
+		qupv3_hub_i2c8_sleep = "/abl-overlay-sink/qupv3_hub_i2c8_sleep";
+		qupv3_hub_i2c9_pins = "/abl-overlay-sink/qupv3_hub_i2c9_pins";
+		qupv3_hub_i2c9_sda_active = "/abl-overlay-sink/qupv3_hub_i2c9_sda_active";
+		qupv3_hub_i2c9_scl_active = "/abl-overlay-sink/qupv3_hub_i2c9_scl_active";
+		qupv3_hub_i2c9_sleep = "/abl-overlay-sink/qupv3_hub_i2c9_sleep";
+		aux0_pcm_clk_sleep = "/abl-overlay-sink/aux0_pcm_clk_sleep";
+		aux0_pcm_clk_active = "/abl-overlay-sink/aux0_pcm_clk_active";
+		aux0_pcm_ws_sleep = "/abl-overlay-sink/aux0_pcm_ws_sleep";
+		aux0_pcm_ws_active = "/abl-overlay-sink/aux0_pcm_ws_active";
+		aux0_pcm_din_sleep = "/abl-overlay-sink/aux0_pcm_din_sleep";
+		aux0_pcm_din_active = "/abl-overlay-sink/aux0_pcm_din_active";
+		aux0_pcm_dout_sleep = "/abl-overlay-sink/aux0_pcm_dout_sleep";
+		aux0_pcm_dout_active = "/abl-overlay-sink/aux0_pcm_dout_active";
+		aux1_pcm_clk_sleep = "/abl-overlay-sink/aux1_pcm_clk_sleep";
+		aux1_pcm_clk_active = "/abl-overlay-sink/aux1_pcm_clk_active";
+		aux1_pcm_ws_sleep = "/abl-overlay-sink/aux1_pcm_ws_sleep";
+		aux1_pcm_ws_active = "/abl-overlay-sink/aux1_pcm_ws_active";
+		aux1_pcm_din_sleep = "/abl-overlay-sink/aux1_pcm_din_sleep";
+		aux1_pcm_din_active = "/abl-overlay-sink/aux1_pcm_din_active";
+		aux1_pcm_dout_sleep = "/abl-overlay-sink/aux1_pcm_dout_sleep";
+		aux1_pcm_dout_active = "/abl-overlay-sink/aux1_pcm_dout_active";
+		tdm0_clk_sleep = "/abl-overlay-sink/tdm0_clk_sleep";
+		tdm0_clk_active = "/abl-overlay-sink/tdm0_clk_active";
+		tdm0_ws_sleep = "/abl-overlay-sink/tdm0_ws_sleep";
+		tdm0_ws_active = "/abl-overlay-sink/tdm0_ws_active";
+		tdm0_din_sleep = "/abl-overlay-sink/tdm0_din_sleep";
+		tdm0_din_active = "/abl-overlay-sink/tdm0_din_active";
+		tdm0_dout_sleep = "/abl-overlay-sink/tdm0_dout_sleep";
+		tdm0_dout_active = "/abl-overlay-sink/tdm0_dout_active";
+		tdm1_clk_sleep = "/abl-overlay-sink/tdm1_clk_sleep";
+		tdm1_clk_active = "/abl-overlay-sink/tdm1_clk_active";
+		tdm1_ws_sleep = "/abl-overlay-sink/tdm1_ws_sleep";
+		tdm1_ws_active = "/abl-overlay-sink/tdm1_ws_active";
+		tdm1_din_sleep = "/abl-overlay-sink/tdm1_din_sleep";
+		tdm1_din_active = "/abl-overlay-sink/tdm1_din_active";
+		tdm1_dout_sleep = "/abl-overlay-sink/tdm1_dout_sleep";
+		tdm1_dout_active = "/abl-overlay-sink/tdm1_dout_active";
+		i2s0_sck_sleep = "/abl-overlay-sink/i2s0_sck_sleep";
+		i2s0_sck_active = "/abl-overlay-sink/i2s0_sck_active";
+		i2s0_ws_sleep = "/abl-overlay-sink/i2s0_ws_sleep";
+		i2s0_ws_active = "/abl-overlay-sink/i2s0_ws_active";
+		i2s0_sd0_sleep = "/abl-overlay-sink/i2s0_sd0_sleep";
+		i2s0_sd0_active = "/abl-overlay-sink/i2s0_sd0_active";
+		i2s0_sd1_sleep = "/abl-overlay-sink/i2s0_sd1_sleep";
+		i2s0_sd1_active = "/abl-overlay-sink/i2s0_sd1_active";
+		i2s1_sck_sleep = "/abl-overlay-sink/i2s1_sck_sleep";
+		i2s1_sck_active = "/abl-overlay-sink/i2s1_sck_active";
+		i2s1_ws_sleep = "/abl-overlay-sink/i2s1_ws_sleep";
+		i2s1_ws_active = "/abl-overlay-sink/i2s1_ws_active";
+		i2s1_sd0_sleep = "/abl-overlay-sink/i2s1_sd0_sleep";
+		i2s1_sd0_active = "/abl-overlay-sink/i2s1_sd0_active";
+		i2s1_sd1_sleep = "/abl-overlay-sink/i2s1_sd1_sleep";
+		i2s1_sd1_active = "/abl-overlay-sink/i2s1_sd1_active";
+		sdc2_on = "/abl-overlay-sink/sdc2_on";
+		sdc2_off = "/abl-overlay-sink/sdc2_off";
+		wcd939x_reset_active = "/abl-overlay-sink/wcd939x_reset_active";
+		wcd939x_reset_sleep = "/abl-overlay-sink/wcd939x_reset_sleep";
+		spkr_13_sd_n_sleep = "/abl-overlay-sink/spkr_13_sd_n_sleep";
+		spkr_13_sd_n_active = "/abl-overlay-sink/spkr_13_sd_n_active";
+		usb_phy_ps = "/abl-overlay-sink/usb_phy_ps";
+		usb3phy_portselect_default = "/abl-overlay-sink/usb3phy_portselect_default";
+		usb3phy_portselect_gpio = "/abl-overlay-sink/usb3phy_portselect_gpio";
+		ts_active = "/abl-overlay-sink/ts_active";
+		ts_reset_suspend = "/abl-overlay-sink/ts_reset_suspend";
+		ts_int_suspend = "/abl-overlay-sink/ts_int_suspend";
+		ts_release = "/abl-overlay-sink/ts_release";
+		qca_intn_wol_sig = "/abl-overlay-sink/qca_intn_wol_sig";
+		vendor_hooks = "/abl-overlay-sink/vendor_hooks";
+		logbuf = "/abl-overlay-sink/logbuf";
+		apps_rsc = "/abl-overlay-sink/apps_rsc";
+		apps_rsc_drv2 = "/abl-overlay-sink/apps_rsc_drv2";
+		apps_bcm_voter = "/abl-overlay-sink/apps_bcm_voter";
+		rpmhcc = "/abl-overlay-sink/rpmhcc";
+		dcvs_fp = "/abl-overlay-sink/dcvs_fp";
+		VDD_LPI_CX_LEVEL = "/abl-overlay-sink/VDD_LPI_CX_LEVEL";
+		S4D_LEVEL = "/abl-overlay-sink/S4D_LEVEL";
+		pm_v6d_s4_level = "/abl-overlay-sink/pm_v6d_s4_level";
+		VDD_GFX_LEVEL = "/abl-overlay-sink/VDD_GFX_LEVEL";
+		S5D_LEVEL = "/abl-overlay-sink/S5D_LEVEL";
+		pm_v6d_s5_level = "/abl-overlay-sink/pm_v6d_s5_level";
+		VDD_LPI_MX_LEVEL = "/abl-overlay-sink/VDD_LPI_MX_LEVEL";
+		L2D_LEVEL = "/abl-overlay-sink/L2D_LEVEL";
+		pm_v6d_l2_level = "/abl-overlay-sink/pm_v6d_l2_level";
+		VDD_NSP2_LEVEL = "/abl-overlay-sink/VDD_NSP2_LEVEL";
+		S1G_LEVEL = "/abl-overlay-sink/S1G_LEVEL";
+		pm_v6g_s1_level = "/abl-overlay-sink/pm_v6g_s1_level";
+		VDD_EBI_LEVEL = "/abl-overlay-sink/VDD_EBI_LEVEL";
+		S4G_LEVEL = "/abl-overlay-sink/S4G_LEVEL";
+		pm_v6g_s4_level = "/abl-overlay-sink/pm_v6g_s4_level";
+		VDD_MODEM_LEVEL = "/abl-overlay-sink/VDD_MODEM_LEVEL";
+		S5G_LEVEL = "/abl-overlay-sink/S5G_LEVEL";
+		pm_v6g_s5_level = "/abl-overlay-sink/pm_v6g_s5_level";
+		VDD_CX_LEVEL = "/abl-overlay-sink/VDD_CX_LEVEL";
+		S8I_LEVEL = "/abl-overlay-sink/S8I_LEVEL";
+		pm_v8_s8_level = "/abl-overlay-sink/pm_v8_s8_level";
+		VDD_CX_LEVEL_AO = "/abl-overlay-sink/VDD_CX_LEVEL_AO";
+		S8I_LEVEL_AO = "/abl-overlay-sink/S8I_LEVEL_AO";
+		pm_v8_s8_level_ao = "/abl-overlay-sink/pm_v8_s8_level_ao";
+		VDD_CX_MMCX_SUPPLY_LEVEL = "/abl-overlay-sink/VDD_CX_MMCX_SUPPLY_LEVEL";
+		VDD_MMCX_LEVEL = "/abl-overlay-sink/VDD_MMCX_LEVEL";
+		VDD_MM_LEVEL = "/abl-overlay-sink/VDD_MM_LEVEL";
+		S1I_LEVEL = "/abl-overlay-sink/S1I_LEVEL";
+		pm_v8_s1_level = "/abl-overlay-sink/pm_v8_s1_level";
+		VDD_MMCX_LEVEL_AO = "/abl-overlay-sink/VDD_MMCX_LEVEL_AO";
+		VDD_MM_LEVEL_AO = "/abl-overlay-sink/VDD_MM_LEVEL_AO";
+		S1I_LEVEL_AO = "/abl-overlay-sink/S1I_LEVEL_AO";
+		pm_v8_s1_level_ao = "/abl-overlay-sink/pm_v8_s1_level_ao";
+		VDD_MXA_LEVEL = "/abl-overlay-sink/VDD_MXA_LEVEL";
+		S3I_LEVEL = "/abl-overlay-sink/S3I_LEVEL";
+		pm_v8_s3_level = "/abl-overlay-sink/pm_v8_s3_level";
+		VDD_MXA_LEVEL_AO = "/abl-overlay-sink/VDD_MXA_LEVEL_AO";
+		S3I_LEVEL_AO = "/abl-overlay-sink/S3I_LEVEL_AO";
+		pm_v8_s3_level_ao = "/abl-overlay-sink/pm_v8_s3_level_ao";
+		VDD_MXC_LEVEL = "/abl-overlay-sink/VDD_MXC_LEVEL";
+		S3D_LEVEL = "/abl-overlay-sink/S3D_LEVEL";
+		pm_v6d_s3_level = "/abl-overlay-sink/pm_v6d_s3_level";
+		VDD_MXC_LEVEL_AO = "/abl-overlay-sink/VDD_MXC_LEVEL_AO";
+		S3D_LEVEL_AO = "/abl-overlay-sink/S3D_LEVEL_AO";
+		pm_v6d_s3_level_ao = "/abl-overlay-sink/pm_v6d_s3_level_ao";
+		VDD_MXC_MMCX_VOTER_LEVEL = "/abl-overlay-sink/VDD_MXC_MMCX_VOTER_LEVEL";
+		VDD_MXC_MM_VOTER_LEVEL = "/abl-overlay-sink/VDD_MXC_MM_VOTER_LEVEL";
+		VDD_MM_MXC_VOTER_LEVEL = "/abl-overlay-sink/VDD_MM_MXC_VOTER_LEVEL";
+		VDD_MXC_GFX_VOTER_LEVEL = "/abl-overlay-sink/VDD_MXC_GFX_VOTER_LEVEL";
+		VDD_GFX_MXC_VOTER_LEVEL = "/abl-overlay-sink/VDD_GFX_MXC_VOTER_LEVEL";
+		VDD_NSP1_LEVEL = "/abl-overlay-sink/VDD_NSP1_LEVEL";
+		S6I_LEVEL = "/abl-overlay-sink/S6I_LEVEL";
+		pm_v8_s6_level = "/abl-overlay-sink/pm_v8_s6_level";
+		L1B = "/abl-overlay-sink/L1B";
+		pm_humu_l1 = "/abl-overlay-sink/pm_humu_l1";
+		L2B = "/abl-overlay-sink/L2B";
+		pm_humu_l2 = "/abl-overlay-sink/pm_humu_l2";
+		L5B = "/abl-overlay-sink/L5B";
+		pm_humu_l5 = "/abl-overlay-sink/pm_humu_l5";
+		L6B = "/abl-overlay-sink/L6B";
+		pm_humu_l6 = "/abl-overlay-sink/pm_humu_l6";
+		L7B = "/abl-overlay-sink/L7B";
+		pm_humu_l7 = "/abl-overlay-sink/pm_humu_l7";
+		L8B = "/abl-overlay-sink/L8B";
+		pm_humu_l8 = "/abl-overlay-sink/pm_humu_l8";
+		L9B = "/abl-overlay-sink/L9B";
+		pm_humu_l9 = "/abl-overlay-sink/pm_humu_l9";
+		L10B = "/abl-overlay-sink/L10B";
+		pm_humu_l10 = "/abl-overlay-sink/pm_humu_l10";
+		L11B = "/abl-overlay-sink/L11B";
+		pm_humu_l11 = "/abl-overlay-sink/pm_humu_l11";
+		L12B = "/abl-overlay-sink/L12B";
+		pm_humu_l12 = "/abl-overlay-sink/pm_humu_l12";
+		L13B = "/abl-overlay-sink/L13B";
+		pm_humu_l13 = "/abl-overlay-sink/pm_humu_l13";
+		L14B = "/abl-overlay-sink/L14B";
+		pm_humu_l14 = "/abl-overlay-sink/pm_humu_l14";
+		L15B = "/abl-overlay-sink/L15B";
+		pm_humu_l15 = "/abl-overlay-sink/pm_humu_l15";
+		L16B = "/abl-overlay-sink/L16B";
+		pm_humu_l16 = "/abl-overlay-sink/pm_humu_l16";
+		L17B = "/abl-overlay-sink/L17B";
+		pm_humu_l17 = "/abl-overlay-sink/pm_humu_l17";
+		BOB1 = "/abl-overlay-sink/BOB1";
+		pm_humu_bob1 = "/abl-overlay-sink/pm_humu_bob1";
+		BOB2 = "/abl-overlay-sink/BOB2";
+		pm_humu_bob2 = "/abl-overlay-sink/pm_humu_bob2";
+		S1C = "/abl-overlay-sink/S1C";
+		pm_v6c_s1 = "/abl-overlay-sink/pm_v6c_s1";
+		S2C = "/abl-overlay-sink/S2C";
+		pm_v6c_s2 = "/abl-overlay-sink/pm_v6c_s2";
+		S3C = "/abl-overlay-sink/S3C";
+		pm_v6c_s3 = "/abl-overlay-sink/pm_v6c_s3";
+		S4C = "/abl-overlay-sink/S4C";
+		pm_v6c_s4 = "/abl-overlay-sink/pm_v6c_s4";
+		S5C = "/abl-overlay-sink/S5C";
+		pm_v6c_s5 = "/abl-overlay-sink/pm_v6c_s5";
+		S6C = "/abl-overlay-sink/S6C";
+		pm_v6c_s6 = "/abl-overlay-sink/pm_v6c_s6";
+		L1C = "/abl-overlay-sink/L1C";
+		pm_v6c_l1 = "/abl-overlay-sink/pm_v6c_l1";
+		L2C = "/abl-overlay-sink/L2C";
+		pm_v6c_l2 = "/abl-overlay-sink/pm_v6c_l2";
+		L3C = "/abl-overlay-sink/L3C";
+		pm_v6c_l3 = "/abl-overlay-sink/pm_v6c_l3";
+		L1D = "/abl-overlay-sink/L1D";
+		pm_v6d_l1 = "/abl-overlay-sink/pm_v6d_l1";
+		L3D = "/abl-overlay-sink/L3D";
+		pm_v6d_l3 = "/abl-overlay-sink/pm_v6d_l3";
+		L2E = "/abl-overlay-sink/L2E";
+		pm_v6e_l2 = "/abl-overlay-sink/pm_v6e_l2";
+		L3E = "/abl-overlay-sink/L3E";
+		pm_v6e_l3 = "/abl-overlay-sink/pm_v6e_l3";
+		S3G = "/abl-overlay-sink/S3G";
+		pm_v6g_s3 = "/abl-overlay-sink/pm_v6g_s3";
+		L1G = "/abl-overlay-sink/L1G";
+		pm_v6g_l1 = "/abl-overlay-sink/pm_v6g_l1";
+		L2G = "/abl-overlay-sink/L2G";
+		pm_v6g_l2 = "/abl-overlay-sink/pm_v6g_l2";
+		L3G = "/abl-overlay-sink/L3G";
+		pm_v6g_l3 = "/abl-overlay-sink/pm_v6g_l3";
+		S4I = "/abl-overlay-sink/S4I";
+		pm_v8_s4 = "/abl-overlay-sink/pm_v8_s4";
+		S5I = "/abl-overlay-sink/S5I";
+		pm_v8_s5 = "/abl-overlay-sink/pm_v8_s5";
+		L1I = "/abl-overlay-sink/L1I";
+		pm_v8_l1 = "/abl-overlay-sink/pm_v8_l1";
+		L1I_AO = "/abl-overlay-sink/L1I_AO";
+		pm_v8_l1_ao = "/abl-overlay-sink/pm_v8_l1_ao";
+		L2I = "/abl-overlay-sink/L2I";
+		pm_v8_l2 = "/abl-overlay-sink/pm_v8_l2";
+		L3I = "/abl-overlay-sink/L3I";
+		pm_v8_l3 = "/abl-overlay-sink/pm_v8_l3";
+		L3I_AO = "/abl-overlay-sink/L3I_AO";
+		pm_v8_l3_ao = "/abl-overlay-sink/pm_v8_l3_ao";
+		L1K = "/abl-overlay-sink/L1K";
+		pmr_nalojr_l1 = "/abl-overlay-sink/pmr_nalojr_l1";
+		L2K = "/abl-overlay-sink/L2K";
+		pmr_nalojr_l2 = "/abl-overlay-sink/pmr_nalojr_l2";
+		L3K = "/abl-overlay-sink/L3K";
+		pmr_nalojr_l3 = "/abl-overlay-sink/pmr_nalojr_l3";
+		L4K = "/abl-overlay-sink/L4K";
+		pmr_nalojr_l4 = "/abl-overlay-sink/pmr_nalojr_l4";
+		L5K = "/abl-overlay-sink/L5K";
+		pmr_nalojr_l5 = "/abl-overlay-sink/pmr_nalojr_l5";
+		L6K = "/abl-overlay-sink/L6K";
+		pmr_nalojr_l6 = "/abl-overlay-sink/pmr_nalojr_l6";
+		L7K = "/abl-overlay-sink/L7K";
+		pmr_nalojr_l7 = "/abl-overlay-sink/pmr_nalojr_l7";
+		L1M = "/abl-overlay-sink/L1M";
+		pm8010m_l1 = "/abl-overlay-sink/pm8010m_l1";
+		L2M = "/abl-overlay-sink/L2M";
+		pm8010m_l2 = "/abl-overlay-sink/pm8010m_l2";
+		L3M = "/abl-overlay-sink/L3M";
+		pm8010m_l3 = "/abl-overlay-sink/pm8010m_l3";
+		L4M = "/abl-overlay-sink/L4M";
+		pm8010m_l4 = "/abl-overlay-sink/pm8010m_l4";
+		L5M = "/abl-overlay-sink/L5M";
+		pm8010m_l5 = "/abl-overlay-sink/pm8010m_l5";
+		L6M = "/abl-overlay-sink/L6M";
+		pm8010m_l6 = "/abl-overlay-sink/pm8010m_l6";
+		L7M = "/abl-overlay-sink/L7M";
+		pm8010m_l7 = "/abl-overlay-sink/pm8010m_l7";
+		L1N = "/abl-overlay-sink/L1N";
+		pm8010n_l1 = "/abl-overlay-sink/pm8010n_l1";
+		L2N = "/abl-overlay-sink/L2N";
+		pm8010n_l2 = "/abl-overlay-sink/pm8010n_l2";
+		L3N = "/abl-overlay-sink/L3N";
+		pm8010n_l3 = "/abl-overlay-sink/pm8010n_l3";
+		L4N = "/abl-overlay-sink/L4N";
+		pm8010n_l4 = "/abl-overlay-sink/pm8010n_l4";
+		L5N = "/abl-overlay-sink/L5N";
+		pm8010n_l5 = "/abl-overlay-sink/pm8010n_l5";
+		L6N = "/abl-overlay-sink/L6N";
+		pm8010n_l6 = "/abl-overlay-sink/pm8010n_l6";
+		L7N = "/abl-overlay-sink/L7N";
+		pm8010n_l7 = "/abl-overlay-sink/pm8010n_l7";
+		cam_rsc = "/abl-overlay-sink/cam_rsc";
+		cam_rsc_drv0 = "/abl-overlay-sink/cam_rsc_drv0";
+		cam_bcm_voter0 = "/abl-overlay-sink/cam_bcm_voter0";
+		cam_rsc_drv1 = "/abl-overlay-sink/cam_rsc_drv1";
+		cam_bcm_voter1 = "/abl-overlay-sink/cam_bcm_voter1";
+		cam_rsc_drv2 = "/abl-overlay-sink/cam_rsc_drv2";
+		cam_bcm_voter2 = "/abl-overlay-sink/cam_bcm_voter2";
+		disp_rsc = "/abl-overlay-sink/disp_rsc";
+		disp_rsc_drv0 = "/abl-overlay-sink/disp_rsc_drv0";
+		disp_bcm_voter = "/abl-overlay-sink/disp_bcm_voter";
+		cam_crm = "/abl-overlay-sink/cam_crm";
+		pcie_crm = "/abl-overlay-sink/pcie_crm";
+		spss_pas = "/abl-overlay-sink/spss_pas";
+		spss_utils = "/abl-overlay-sink/spss_utils";
+		xo_board = "/abl-overlay-sink/xo_board";
+		sleep_clk = "/abl-overlay-sink/sleep_clk";
+		pcie_0_pipe_clk = "/abl-overlay-sink/pcie_0_pipe_clk";
+		pcie_1_phy_aux_clk = "/abl-overlay-sink/pcie_1_phy_aux_clk";
+		pcie_1_pipe_clk = "/abl-overlay-sink/pcie_1_pipe_clk";
+		ufs_phy_rx_symbol_0_clk = "/abl-overlay-sink/ufs_phy_rx_symbol_0_clk";
+		ufs_phy_rx_symbol_1_clk = "/abl-overlay-sink/ufs_phy_rx_symbol_1_clk";
+		ufs_phy_tx_symbol_0_clk = "/abl-overlay-sink/ufs_phy_tx_symbol_0_clk";
+		usb3_phy_wrapper_gcc_usb30_pipe_clk = "/abl-overlay-sink/usb3_phy_wrapper_gcc_usb30_pipe_clk";
+		camcc_crmc = "/abl-overlay-sink/camcc_crmc";
+		camcc = "/abl-overlay-sink/camcc";
+		dispcc = "/abl-overlay-sink/dispcc";
+		gcc = "/abl-overlay-sink/gcc";
+		gpucc = "/abl-overlay-sink/gpucc";
+		tcsrcc = "/abl-overlay-sink/tcsrcc";
+		videocc = "/abl-overlay-sink/videocc";
+		apsscc = "/abl-overlay-sink/apsscc";
+		mccc = "/abl-overlay-sink/mccc";
+		debugcc = "/abl-overlay-sink/debugcc";
+		cpufreq_hw = "/abl-overlay-sink/cpufreq_hw";
+		sdhc2_opp_table = "/abl-overlay-sink/sdhc2_opp_table";
+		sdhc_2 = "/abl-overlay-sink/sdhc_2";
+		ufsphy_mem = "/abl-overlay-sink/ufsphy_mem";
+		ice_cfg = "/abl-overlay-sink/ice_cfg";
+		ufshc_mem = "/abl-overlay-sink/ufshc_mem";
+		thermal_zones = "/abl-overlay-sink/thermal_zones";
+		cpu2_emerg0 = "/abl-overlay-sink/cpu2_emerg0";
+		cpu2_emerg0_1 = "/abl-overlay-sink/cpu2_emerg0_1";
+		cpu2_emerg1 = "/abl-overlay-sink/cpu2_emerg1";
+		cpu2_emerg1_1 = "/abl-overlay-sink/cpu2_emerg1_1";
+		cpu3_emerg0 = "/abl-overlay-sink/cpu3_emerg0";
+		cpu3_emerg0_1 = "/abl-overlay-sink/cpu3_emerg0_1";
+		cpu3_emerg1 = "/abl-overlay-sink/cpu3_emerg1";
+		cpu3_emerg1_1 = "/abl-overlay-sink/cpu3_emerg1_1";
+		cpu4_emerg0 = "/abl-overlay-sink/cpu4_emerg0";
+		cpu4_emerg0_1 = "/abl-overlay-sink/cpu4_emerg0_1";
+		cpu4_emerg1 = "/abl-overlay-sink/cpu4_emerg1";
+		cpu4_emerg1_1 = "/abl-overlay-sink/cpu4_emerg1_1";
+		cpu5_emerg0 = "/abl-overlay-sink/cpu5_emerg0";
+		cpu5_emerg0_1 = "/abl-overlay-sink/cpu5_emerg0_1";
+		cpu5_emerg1 = "/abl-overlay-sink/cpu5_emerg1";
+		cpu5_emerg1_1 = "/abl-overlay-sink/cpu5_emerg1_1";
+		cpu6_emerg0 = "/abl-overlay-sink/cpu6_emerg0";
+		cpu6_emerg0_1 = "/abl-overlay-sink/cpu6_emerg0_1";
+		cpu6_emerg1 = "/abl-overlay-sink/cpu6_emerg1";
+		cpu6_emerg1_1 = "/abl-overlay-sink/cpu6_emerg1_1";
+		cpu7_emerg0 = "/abl-overlay-sink/cpu7_emerg0";
+		cpu7_emerg0_1 = "/abl-overlay-sink/cpu7_emerg0_1";
+		cpu7_mon_trip1 = "/abl-overlay-sink/cpu7_mon_trip1";
+		cpu7_emerg1 = "/abl-overlay-sink/cpu7_emerg1";
+		cpu7_emerg1_1 = "/abl-overlay-sink/cpu7_emerg1_1";
+		cpu7_emerg2 = "/abl-overlay-sink/cpu7_emerg2";
+		cpu7_emerg2_1 = "/abl-overlay-sink/cpu7_emerg2_1";
+		cpu0_emerg = "/abl-overlay-sink/cpu0_emerg";
+		cpu0_emerg1 = "/abl-overlay-sink/cpu0_emerg1";
+		cpu1_emerg = "/abl-overlay-sink/cpu1_emerg";
+		cpu1_emerg1 = "/abl-overlay-sink/cpu1_emerg1";
+		ddr_config0 = "/abl-overlay-sink/ddr_config0";
+		gpu0_tj_cfg = "/abl-overlay-sink/gpu0_tj_cfg";
+		gpu1_tj_cfg = "/abl-overlay-sink/gpu1_tj_cfg";
+		gpu2_tj_cfg = "/abl-overlay-sink/gpu2_tj_cfg";
+		gpu3_tj_cfg = "/abl-overlay-sink/gpu3_tj_cfg";
+		gpu4_tj_cfg = "/abl-overlay-sink/gpu4_tj_cfg";
+		gpu5_tj_cfg = "/abl-overlay-sink/gpu5_tj_cfg";
+		gpu6_tj_cfg = "/abl-overlay-sink/gpu6_tj_cfg";
+		gpu7_tj_cfg = "/abl-overlay-sink/gpu7_tj_cfg";
+		mdmss0_config0 = "/abl-overlay-sink/mdmss0_config0";
+		mdmss0_config1 = "/abl-overlay-sink/mdmss0_config1";
+		mdmss1_config0 = "/abl-overlay-sink/mdmss1_config0";
+		mdmss1_config1 = "/abl-overlay-sink/mdmss1_config1";
+		mdmss2_config0 = "/abl-overlay-sink/mdmss2_config0";
+		mdmss2_config1 = "/abl-overlay-sink/mdmss2_config1";
+		mdmss3_config0 = "/abl-overlay-sink/mdmss3_config0";
+		mdmss3_config1 = "/abl-overlay-sink/mdmss3_config1";
+		spmi_bus = "/abl-overlay-sink/spmi_bus";
+		spmi0_bus = "/abl-overlay-sink/spmi0_bus";
+		spmi1_bus = "/abl-overlay-sink/spmi1_bus";
+		spmi0_debug_bus = "/abl-overlay-sink/spmi0_debug_bus";
+		tcsr_mutex_block = "/abl-overlay-sink/tcsr_mutex_block";
+		tcsr_mutex = "/abl-overlay-sink/tcsr_mutex";
+		tcsr = "/abl-overlay-sink/tcsr";
+		qcom_tzlog = "/abl-overlay-sink/qcom_tzlog";
+		qcom_qseecom = "/abl-overlay-sink/qcom_qseecom";
+		qcom_cedev = "/abl-overlay-sink/qcom_cedev";
+		qcom_rng = "/abl-overlay-sink/qcom_rng";
+		eud = "/abl-overlay-sink/eud";
+		ipcc_mproc = "/abl-overlay-sink/ipcc_mproc";
+		aoss_qmp = "/abl-overlay-sink/aoss_qmp";
+		qmp_aop = "/abl-overlay-sink/qmp_aop";
+		qmp_tme = "/abl-overlay-sink/qmp_tme";
+		adsp_smp2p_out = "/abl-overlay-sink/adsp_smp2p_out";
+		adsp_smp2p_in = "/abl-overlay-sink/adsp_smp2p_in";
+		sleepstate_smp2p_out = "/abl-overlay-sink/sleepstate_smp2p_out";
+		sleepstate_smp2p_in = "/abl-overlay-sink/sleepstate_smp2p_in";
+		smp2p_rdbg2_out = "/abl-overlay-sink/smp2p_rdbg2_out";
+		smp2p_rdbg2_in = "/abl-overlay-sink/smp2p_rdbg2_in";
+		cdsp_smp2p_out = "/abl-overlay-sink/cdsp_smp2p_out";
+		cdsp_smp2p_in = "/abl-overlay-sink/cdsp_smp2p_in";
+		smp2p_rdbg5_out = "/abl-overlay-sink/smp2p_rdbg5_out";
+		smp2p_rdbg5_in = "/abl-overlay-sink/smp2p_rdbg5_in";
+		modem_smp2p_out = "/abl-overlay-sink/modem_smp2p_out";
+		modem_smp2p_in = "/abl-overlay-sink/modem_smp2p_in";
+		smp2p_ipa_1_out = "/abl-overlay-sink/smp2p_ipa_1_out";
+		smp2p_ipa_1_in = "/abl-overlay-sink/smp2p_ipa_1_in";
+		adsp_sleepmon = "/abl-overlay-sink/adsp_sleepmon";
+		adsp_pas = "/abl-overlay-sink/adsp_pas";
+		glink_edge = "/abl-overlay-sink/glink_edge";
+		modem_pas = "/abl-overlay-sink/modem_pas";
+		cdsp_pas = "/abl-overlay-sink/cdsp_pas";
+		msm_cdsp_rm = "/abl-overlay-sink/msm_cdsp_rm";
+		trust_ui_vm_vblk0_ring = "/abl-overlay-sink/trust_ui_vm_vblk0_ring";
+		trust_ui_vm_vblk1_ring = "/abl-overlay-sink/trust_ui_vm_vblk1_ring";
+		trust_ui_vm_swiotlb = "/abl-overlay-sink/trust_ui_vm_swiotlb";
+		trust_ui_vm = "/abl-overlay-sink/trust_ui_vm";
+		oem_vm_vblk0_ring = "/abl-overlay-sink/oem_vm_vblk0_ring";
+		oem_vm_swiotlb = "/abl-overlay-sink/oem_vm_swiotlb";
+		oem_vm = "/abl-overlay-sink/oem_vm";
+		trust_ui_vm_virt_be0 = "/abl-overlay-sink/trust_ui_vm_virt_be0";
+		trust_ui_vm_virt_be1 = "/abl-overlay-sink/trust_ui_vm_virt_be1";
+		gh_secure_vm_loader0 = "/abl-overlay-sink/gh_secure_vm_loader0";
+		oem_vm_virt_be0 = "/abl-overlay-sink/oem_vm_virt_be0";
+		battery_charger = "/abl-overlay-sink/battery_charger";
+		ucsi = "/abl-overlay-sink/ucsi";
+		altmode = "/abl-overlay-sink/altmode";
+		pmic_glink_debug = "/abl-overlay-sink/pmic_glink_debug";
+		pm8550b_glink_debug = "/abl-overlay-sink/pm8550b_glink_debug";
+		pmic_glink_adc = "/abl-overlay-sink/pmic_glink_adc";
+		msm_gpu = "/abl-overlay-sink/msm_gpu";
+		mmio_sram = "/abl-overlay-sink/mmio_sram";
+		cpu_scp_lpri = "/abl-overlay-sink/cpu_scp_lpri";
+		cpucp = "/abl-overlay-sink/cpucp";
+		scmi = "/abl-overlay-sink/scmi";
+		scmi_memlat = "/abl-overlay-sink/scmi_memlat";
+		scmi_plh = "/abl-overlay-sink/scmi_plh";
+		scmi_pmu = "/abl-overlay-sink/scmi_pmu";
+		scmi_c1dcvs = "/abl-overlay-sink/scmi_c1dcvs";
+		cpucp_log = "/abl-overlay-sink/cpucp_log";
+		qcom_c1dcvs = "/abl-overlay-sink/qcom_c1dcvs";
+		qcom_mpam = "/abl-overlay-sink/qcom_mpam";
+		qcom_dynpf = "/abl-overlay-sink/qcom_dynpf";
+		qcom_cpufreq_stats = "/abl-overlay-sink/qcom_cpufreq_stats";
+		llcc_pmu = "/abl-overlay-sink/llcc_pmu";
+		qcom_pmu = "/abl-overlay-sink/qcom_pmu";
+		ddr_freq_table = "/abl-overlay-sink/ddr_freq_table";
+		llcc_freq_table = "/abl-overlay-sink/llcc_freq_table";
+		ddrqos_freq_table = "/abl-overlay-sink/ddrqos_freq_table";
+		qcom_dcvs = "/abl-overlay-sink/qcom_dcvs";
+		qcom_l3_dcvs_hw = "/abl-overlay-sink/qcom_l3_dcvs_hw";
+		l3_dcvs_sp = "/abl-overlay-sink/l3_dcvs_sp";
+		qcom_ddr_dcvs_hw = "/abl-overlay-sink/qcom_ddr_dcvs_hw";
+		ddr_dcvs_sp = "/abl-overlay-sink/ddr_dcvs_sp";
+		ddr_dcvs_fp = "/abl-overlay-sink/ddr_dcvs_fp";
+		qcom_llcc_dcvs_hw = "/abl-overlay-sink/qcom_llcc_dcvs_hw";
+		llcc_dcvs_sp = "/abl-overlay-sink/llcc_dcvs_sp";
+		llcc_dcvs_fp = "/abl-overlay-sink/llcc_dcvs_fp";
+		qcom_ddrqos_dcvs_hw = "/abl-overlay-sink/qcom_ddrqos_dcvs_hw";
+		ddrqos_dcvs_sp = "/abl-overlay-sink/ddrqos_dcvs_sp";
+		qcom_memlat = "/abl-overlay-sink/qcom_memlat";
+		ddrqos_gold_lat = "/abl-overlay-sink/ddrqos_gold_lat";
+		ddrqos_prime_lat = "/abl-overlay-sink/ddrqos_prime_lat";
+		ddrqos_prime_latfloor = "/abl-overlay-sink/ddrqos_prime_latfloor";
+		qcom_llcc_l3_vote = "/abl-overlay-sink/qcom_llcc_l3_vote";
+		bwmon_llcc = "/abl-overlay-sink/bwmon_llcc";
+		bwmon_ddr = "/abl-overlay-sink/bwmon_ddr";
+		qfprom = "/abl-overlay-sink/qfprom";
+		gpu_speed_bin = "/abl-overlay-sink/gpu_speed_bin";
+		ipcc_self_ping_apss = "/abl-overlay-sink/ipcc_self_ping_apss";
+		ipcc_self_ping_cdsp = "/abl-overlay-sink/ipcc_self_ping_cdsp";
+		ipcc_self_ping_adsp = "/abl-overlay-sink/ipcc_self_ping_adsp";
+		ipcc_self_ping_slpi = "/abl-overlay-sink/ipcc_self_ping_slpi";
+		cam_cc_bps_gdsc = "/abl-overlay-sink/cam_cc_bps_gdsc";
+		cam_cc_camss_top_gdsc = "/abl-overlay-sink/cam_cc_camss_top_gdsc";
+		cam_cc_ife_0_gdsc = "/abl-overlay-sink/cam_cc_ife_0_gdsc";
+		cam_cc_ife_1_gdsc = "/abl-overlay-sink/cam_cc_ife_1_gdsc";
+		cam_cc_ife_2_gdsc = "/abl-overlay-sink/cam_cc_ife_2_gdsc";
+		cam_cc_ipe_0_gdsc = "/abl-overlay-sink/cam_cc_ipe_0_gdsc";
+		cam_cc_sbi_gdsc = "/abl-overlay-sink/cam_cc_sbi_gdsc";
+		cam_cc_sfe_0_gdsc = "/abl-overlay-sink/cam_cc_sfe_0_gdsc";
+		cam_cc_sfe_1_gdsc = "/abl-overlay-sink/cam_cc_sfe_1_gdsc";
+		cam_cc_sfe_2_gdsc = "/abl-overlay-sink/cam_cc_sfe_2_gdsc";
+		cam_cc_titan_top_gdsc = "/abl-overlay-sink/cam_cc_titan_top_gdsc";
+		disp_cc_mdss_core_gdsc = "/abl-overlay-sink/disp_cc_mdss_core_gdsc";
+		mdss_0_disp_cc_mdss_core_gdsc = "/abl-overlay-sink/mdss_0_disp_cc_mdss_core_gdsc";
+		disp_cc_mdss_core_int2_gdsc = "/abl-overlay-sink/disp_cc_mdss_core_int2_gdsc";
+		mdss_0_disp_cc_mdss_core_int2_gdsc = "/abl-overlay-sink/mdss_0_disp_cc_mdss_core_int2_gdsc";
+		mdss_1_disp_cc_mdss_core_gdsc = "/abl-overlay-sink/mdss_1_disp_cc_mdss_core_gdsc";
+		mdss_1_disp_cc_mdss_core_int2_gdsc = "/abl-overlay-sink/mdss_1_disp_cc_mdss_core_int2_gdsc";
+		gcc_apcs_gdsc_vote_ctrl = "/abl-overlay-sink/gcc_apcs_gdsc_vote_ctrl";
+		gcc_apcs_gdsc_sleep_ctrl = "/abl-overlay-sink/gcc_apcs_gdsc_sleep_ctrl";
+		apss_ubwcp_pwr_ctrl = "/abl-overlay-sink/apss_ubwcp_pwr_ctrl";
+		gcc_pcie_0_gdsc = "/abl-overlay-sink/gcc_pcie_0_gdsc";
+		gcc_pcie_0_phy_gdsc = "/abl-overlay-sink/gcc_pcie_0_phy_gdsc";
+		gcc_pcie_1_gdsc = "/abl-overlay-sink/gcc_pcie_1_gdsc";
+		gcc_pcie_1_phy_gdsc = "/abl-overlay-sink/gcc_pcie_1_phy_gdsc";
+		gcc_pcie_2_gdsc = "/abl-overlay-sink/gcc_pcie_2_gdsc";
+		gcc_pcie_2_phy_gdsc = "/abl-overlay-sink/gcc_pcie_2_phy_gdsc";
+		gcc_ufs_mem_phy_gdsc = "/abl-overlay-sink/gcc_ufs_mem_phy_gdsc";
+		gcc_ufs_phy_gdsc = "/abl-overlay-sink/gcc_ufs_phy_gdsc";
+		gcc_usb30_prim_gdsc = "/abl-overlay-sink/gcc_usb30_prim_gdsc";
+		gcc_usb3_phy_gdsc = "/abl-overlay-sink/gcc_usb3_phy_gdsc";
+		gcc_usb30_sec_gdsc = "/abl-overlay-sink/gcc_usb30_sec_gdsc";
+		gcc_usb3_sec_phy_gdsc = "/abl-overlay-sink/gcc_usb3_sec_phy_gdsc";
+		gpu_cc_cx_gdsc_hw_ctrl = "/abl-overlay-sink/gpu_cc_cx_gdsc_hw_ctrl";
+		gpu_cc_cx_gdsc = "/abl-overlay-sink/gpu_cc_cx_gdsc";
+		gpu_cc_gx_domain_addr = "/abl-overlay-sink/gpu_cc_gx_domain_addr";
+		gpu_cc_gx_sw_reset = "/abl-overlay-sink/gpu_cc_gx_sw_reset";
+		gpu_cc_gx_acd_reset = "/abl-overlay-sink/gpu_cc_gx_acd_reset";
+		gpu_cc_gx_acd_iroot_reset = "/abl-overlay-sink/gpu_cc_gx_acd_iroot_reset";
+		gpu_cc_gx_gdsc = "/abl-overlay-sink/gpu_cc_gx_gdsc";
+		gx_clkctl_gx_gdsc = "/abl-overlay-sink/gx_clkctl_gx_gdsc";
+		video_cc_mvs0_gdsc = "/abl-overlay-sink/video_cc_mvs0_gdsc";
+		video_cc_mvs0c_gdsc = "/abl-overlay-sink/video_cc_mvs0c_gdsc";
+		video_cc_mvs1_gdsc = "/abl-overlay-sink/video_cc_mvs1_gdsc";
+		video_cc_mvs1c_gdsc = "/abl-overlay-sink/video_cc_mvs1c_gdsc";
+		kgsl_smmu = "/abl-overlay-sink/kgsl_smmu";
+		gpu_qtb = "/abl-overlay-sink/gpu_qtb";
+		ubwcp_smmu = "/abl-overlay-sink/ubwcp_smmu";
+		ubwcp_qtb = "/abl-overlay-sink/ubwcp_qtb";
+		apps_smmu = "/abl-overlay-sink/apps_smmu";
+		anoc_1_qtb = "/abl-overlay-sink/anoc_1_qtb";
+		anoc_2_qtb = "/abl-overlay-sink/anoc_2_qtb";
+		cam_hf_qtb = "/abl-overlay-sink/cam_hf_qtb";
+		nsp_qtb = "/abl-overlay-sink/nsp_qtb";
+		lpass_qtb = "/abl-overlay-sink/lpass_qtb";
+		pcie_qtb = "/abl-overlay-sink/pcie_qtb";
+		sf_qtb = "/abl-overlay-sink/sf_qtb";
+		mdp_hf_qtb = "/abl-overlay-sink/mdp_hf_qtb";
+		dcc = "/abl-overlay-sink/dcc";
+		gpi_dma1 = "/abl-overlay-sink/gpi_dma1";
+		qupv3_1 = "/abl-overlay-sink/qupv3_1";
+		qupv3_se0_i2c = "/abl-overlay-sink/qupv3_se0_i2c";
+		qupv3_se0_spi = "/abl-overlay-sink/qupv3_se0_spi";
+		i3c0 = "/abl-overlay-sink/i3c0";
+		qupv3_se1_i2c = "/abl-overlay-sink/qupv3_se1_i2c";
+		qupv3_se1_spi = "/abl-overlay-sink/qupv3_se1_spi";
+		qupv3_se2_i2c = "/abl-overlay-sink/qupv3_se2_i2c";
+		qupv3_se2_spi = "/abl-overlay-sink/qupv3_se2_spi";
+		qupv3_se3_i2c = "/abl-overlay-sink/qupv3_se3_i2c";
+		wcd_usbss = "/abl-overlay-sink/wcd_usbss";
+		qupv3_se3_spi = "/abl-overlay-sink/qupv3_se3_spi";
+		qupv3_se4_i2c = "/abl-overlay-sink/qupv3_se4_i2c";
+		qupv3_se4_spi = "/abl-overlay-sink/qupv3_se4_spi";
+		i3c1 = "/abl-overlay-sink/i3c1";
+		qupv3_se5_i2c = "/abl-overlay-sink/qupv3_se5_i2c";
+		qupv3_se5_spi = "/abl-overlay-sink/qupv3_se5_spi";
+		qupv3_se6_i2c = "/abl-overlay-sink/qupv3_se6_i2c";
+		fsa4480_sub = "/abl-overlay-sink/fsa4480_sub";
+		fsa4480 = "/abl-overlay-sink/fsa4480";
+		qupv3_se6_spi = "/abl-overlay-sink/qupv3_se6_spi";
+		qupv3_se7_i2c = "/abl-overlay-sink/qupv3_se7_i2c";
+		qupv3_se7_spi = "/abl-overlay-sink/qupv3_se7_spi";
+		gpi_dma2 = "/abl-overlay-sink/gpi_dma2";
+		qupv3_2 = "/abl-overlay-sink/qupv3_2";
+		qupv3_se8_i2c = "/abl-overlay-sink/qupv3_se8_i2c";
+		qupv3_se8_spi = "/abl-overlay-sink/qupv3_se8_spi";
+		i3c2 = "/abl-overlay-sink/i3c2";
+		qupv3_se9_i2c = "/abl-overlay-sink/qupv3_se9_i2c";
+		qupv3_se9_spi = "/abl-overlay-sink/qupv3_se9_spi";
+		qupv3_se10_i2c = "/abl-overlay-sink/qupv3_se10_i2c";
+		qupv3_se10_uart = "/abl-overlay-sink/qupv3_se10_uart";
+		qupv3_se10_spi = "/abl-overlay-sink/qupv3_se10_spi";
+		i3c3 = "/abl-overlay-sink/i3c3";
+		i3c4 = "/abl-overlay-sink/i3c4";
+		qupv3_se11_i2c = "/abl-overlay-sink/qupv3_se11_i2c";
+		qupv3_se11_spi = "/abl-overlay-sink/qupv3_se11_spi";
+		qupv3_se12_i2c = "/abl-overlay-sink/qupv3_se12_i2c";
+		qupv3_se12_spi = "/abl-overlay-sink/qupv3_se12_spi";
+		qupv3_se13_i2c = "/abl-overlay-sink/qupv3_se13_i2c";
+		qupv3_se13_spi = "/abl-overlay-sink/qupv3_se13_spi";
+		qupv3_se13_q2spi = "/abl-overlay-sink/qupv3_se13_q2spi";
+		qupv3_se14_4uart = "/abl-overlay-sink/qupv3_se14_4uart";
+		qupv3_se15_2uart = "/abl-overlay-sink/qupv3_se15_2uart";
+		qupv3_0_i2c_hub = "/abl-overlay-sink/qupv3_0_i2c_hub";
+		qupv3_hub_i2c0 = "/abl-overlay-sink/qupv3_hub_i2c0";
+		qupv3_hub_i2c1 = "/abl-overlay-sink/qupv3_hub_i2c1";
+		qupv3_hub_i2c2 = "/abl-overlay-sink/qupv3_hub_i2c2";
+		qupv3_hub_i2c3 = "/abl-overlay-sink/qupv3_hub_i2c3";
+		qupv3_hub_i2c4 = "/abl-overlay-sink/qupv3_hub_i2c4";
+		qupv3_hub_i2c5 = "/abl-overlay-sink/qupv3_hub_i2c5";
+		qupv3_hub_i2c6 = "/abl-overlay-sink/qupv3_hub_i2c6";
+		qupv3_hub_i2c7 = "/abl-overlay-sink/qupv3_hub_i2c7";
+		qupv3_hub_i2c8 = "/abl-overlay-sink/qupv3_hub_i2c8";
+		qupv3_hub_i2c9 = "/abl-overlay-sink/qupv3_hub_i2c9";
+		usb0 = "/abl-overlay-sink/usb0";
+		eusb2_phy0 = "/abl-overlay-sink/eusb2_phy0";
+		usb_qmp_dp_phy = "/abl-overlay-sink/usb_qmp_dp_phy";
+		stm = "/abl-overlay-sink/stm";
+		stm_out_funnel_in0 = "/abl-overlay-sink/stm_out_funnel_in0";
+		audio_etm0_out_funnel_lpass_lpi = "/abl-overlay-sink/audio_etm0_out_funnel_lpass_lpi";
+		tpdm_ddr_lpi = "/abl-overlay-sink/tpdm_ddr_lpi";
+		tpdm_ddr_lpi_out_funnel_ddr_lpi = "/abl-overlay-sink/tpdm_ddr_lpi_out_funnel_ddr_lpi";
+		tpdm_lpass_lpi = "/abl-overlay-sink/tpdm_lpass_lpi";
+		tpdm_lpass_lpi_out_funnel_lpass_lpi_1 = "/abl-overlay-sink/tpdm_lpass_lpi_out_funnel_lpass_lpi_1";
+		lpass_stm = "/abl-overlay-sink/lpass_stm";
+		lpass_stm_out_funnel_lpass_lpi_1 = "/abl-overlay-sink/lpass_stm_out_funnel_lpass_lpi_1";
+		funnel_lpass_lpi_1 = "/abl-overlay-sink/funnel_lpass_lpi_1";
+		funnel_lpass_lpi_1_in_lpass_stm = "/abl-overlay-sink/funnel_lpass_lpi_1_in_lpass_stm";
+		funnel_lpass_lpi_1_in_tpdm_lpass_lpi = "/abl-overlay-sink/funnel_lpass_lpi_1_in_tpdm_lpass_lpi";
+		funnel_lpass_lpi_1_out_funnel_lpass_lpi_0 = "/abl-overlay-sink/funnel_lpass_lpi_1_out_funnel_lpass_lpi_0";
+		funnel_lpass_lpi_0 = "/abl-overlay-sink/funnel_lpass_lpi_0";
+		funnel_lpass_lpi_in_audio_etm0 = "/abl-overlay-sink/funnel_lpass_lpi_in_audio_etm0";
+		funnel_lpass_lpi_0_in_funnel_lpass_lpi_1 = "/abl-overlay-sink/funnel_lpass_lpi_0_in_funnel_lpass_lpi_1";
+		funnel_lpass_lpi_out_funnel_aoss = "/abl-overlay-sink/funnel_lpass_lpi_out_funnel_aoss";
+		tpdm_swao_prio0 = "/abl-overlay-sink/tpdm_swao_prio0";
+		tpdm_swao_prio0_out_tpda_aoss = "/abl-overlay-sink/tpdm_swao_prio0_out_tpda_aoss";
+		tpdm_swao_prio1 = "/abl-overlay-sink/tpdm_swao_prio1";
+		tpdm_swao_prio1_out_tpda_aoss = "/abl-overlay-sink/tpdm_swao_prio1_out_tpda_aoss";
+		tpdm_swao_prio2 = "/abl-overlay-sink/tpdm_swao_prio2";
+		tpdm_swao_prio2_out_tpda_aoss = "/abl-overlay-sink/tpdm_swao_prio2_out_tpda_aoss";
+		tpdm_swao_prio3 = "/abl-overlay-sink/tpdm_swao_prio3";
+		tpdm_swao_prio3_out_tpda_aoss = "/abl-overlay-sink/tpdm_swao_prio3_out_tpda_aoss";
+		tpdm_swao = "/abl-overlay-sink/tpdm_swao";
+		tpdm_swao_out_tpda_aoss = "/abl-overlay-sink/tpdm_swao_out_tpda_aoss";
+		tpdm_lpass = "/abl-overlay-sink/tpdm_lpass";
+		tpdm_lpass_out_funnel_lpass = "/abl-overlay-sink/tpdm_lpass_out_funnel_lpass";
+		tpdm_ddr_ch02 = "/abl-overlay-sink/tpdm_ddr_ch02";
+		tpdm_ddr_ch02_out_funnel_ddr_ch02 = "/abl-overlay-sink/tpdm_ddr_ch02_out_funnel_ddr_ch02";
+		tpdm_ddr_ch13 = "/abl-overlay-sink/tpdm_ddr_ch13";
+		tpdm_ddr_ch13_out_funnel_ddr_ch13 = "/abl-overlay-sink/tpdm_ddr_ch13_out_funnel_ddr_ch13";
+		tpdm_ddr0 = "/abl-overlay-sink/tpdm_ddr0";
+		tpdm_ddr0_out_funnel_ddr_dl0 = "/abl-overlay-sink/tpdm_ddr0_out_funnel_ddr_dl0";
+		tpdm_ddr1 = "/abl-overlay-sink/tpdm_ddr1";
+		tpdm_ddr1_out_funnel_ddr_dl0 = "/abl-overlay-sink/tpdm_ddr1_out_funnel_ddr_dl0";
+		tpdm_video = "/abl-overlay-sink/tpdm_video";
+		tpdm_video_out_funnel_video = "/abl-overlay-sink/tpdm_video_out_funnel_video";
+		tpdm_mdss = "/abl-overlay-sink/tpdm_mdss";
+		tpdm_mdss_out_funnel_multimedia = "/abl-overlay-sink/tpdm_mdss_out_funnel_multimedia";
+		tpdm_dl_mm = "/abl-overlay-sink/tpdm_dl_mm";
+		tpdm_dl_mm_out_funnel_multimedia = "/abl-overlay-sink/tpdm_dl_mm_out_funnel_multimedia";
+		tpdm_rdpm0 = "/abl-overlay-sink/tpdm_rdpm0";
+		tpdm_rdpm0_out_funnel_dl_west = "/abl-overlay-sink/tpdm_rdpm0_out_funnel_dl_west";
+		tpdm_rdpm1 = "/abl-overlay-sink/tpdm_rdpm1";
+		tpdm_rdpm1_out_funnel_dl_west = "/abl-overlay-sink/tpdm_rdpm1_out_funnel_dl_west";
+		tpdm_rdpm2 = "/abl-overlay-sink/tpdm_rdpm2";
+		tpdm_rdpm2_out_funnel_dl_west = "/abl-overlay-sink/tpdm_rdpm2_out_funnel_dl_west";
+		tpdm_spare = "/abl-overlay-sink/tpdm_spare";
+		tpdm_spare_out_funnel_dl_west = "/abl-overlay-sink/tpdm_spare_out_funnel_dl_west";
+		tpdm_gfx = "/abl-overlay-sink/tpdm_gfx";
+		tpdm_gfx_out_funnel_gfx_dl = "/abl-overlay-sink/tpdm_gfx_out_funnel_gfx_dl";
+		tpdm_prng = "/abl-overlay-sink/tpdm_prng";
+		tpdm_prng_out_tpda_dl_center_21 = "/abl-overlay-sink/tpdm_prng_out_tpda_dl_center_21";
+		tpdm_qm = "/abl-overlay-sink/tpdm_qm";
+		tpdm_qm_out_tpda_dl_center_22 = "/abl-overlay-sink/tpdm_qm_out_tpda_dl_center_22";
+		tpdm_trace_noc = "/abl-overlay-sink/tpdm_trace_noc";
+		tpdm_trace_noc_out_trace_noc = "/abl-overlay-sink/tpdm_trace_noc_out_trace_noc";
+		tpdm_gcc = "/abl-overlay-sink/tpdm_gcc";
+		tpdm_gcc_out_tpda_dl_center_23 = "/abl-overlay-sink/tpdm_gcc_out_tpda_dl_center_23";
+		tpdm_vsense = "/abl-overlay-sink/tpdm_vsense";
+		tpdm_vsense_out_tpda_dl_center_24 = "/abl-overlay-sink/tpdm_vsense_out_tpda_dl_center_24";
+		tpdm_ipa = "/abl-overlay-sink/tpdm_ipa";
+		tpdm_ipa_out_tpda_dl_center_26 = "/abl-overlay-sink/tpdm_ipa_out_tpda_dl_center_26";
+		tpdm_dl_ct = "/abl-overlay-sink/tpdm_dl_ct";
+		tpdm_dl_ct_out_tpda_dl_center_29 = "/abl-overlay-sink/tpdm_dl_ct_out_tpda_dl_center_29";
+		tpdm_ipcc = "/abl-overlay-sink/tpdm_ipcc";
+		tpdm_ipcc_out_tpda_dl_center_30 = "/abl-overlay-sink/tpdm_ipcc_out_tpda_dl_center_30";
+		tpdm_dcc = "/abl-overlay-sink/tpdm_dcc";
+		tpdm_dcc_out_tpda_qdss = "/abl-overlay-sink/tpdm_dcc_out_tpda_qdss";
+		tpdm_spdm = "/abl-overlay-sink/tpdm_spdm";
+		tpdm_spdm_out_tpda_qdss = "/abl-overlay-sink/tpdm_spdm_out_tpda_qdss";
+		tpdm_ddrss_llcc0 = "/abl-overlay-sink/tpdm_ddrss_llcc0";
+		tpdm_ddrss_llcc0_out_tpda_ddr = "/abl-overlay-sink/tpdm_ddrss_llcc0_out_tpda_ddr";
+		tpdm_ddrss_llcc1 = "/abl-overlay-sink/tpdm_ddrss_llcc1";
+		tpdm_ddrss_llcc1_out_tpda_ddr = "/abl-overlay-sink/tpdm_ddrss_llcc1_out_tpda_ddr";
+		tpdm_ddrss_llcc2 = "/abl-overlay-sink/tpdm_ddrss_llcc2";
+		tpdm_ddrss_llcc2_out_tpda_ddr = "/abl-overlay-sink/tpdm_ddrss_llcc2_out_tpda_ddr";
+		tpdm_ddrss_llcc3 = "/abl-overlay-sink/tpdm_ddrss_llcc3";
+		tpdm_ddrss_llcc3_out_tpda_ddr = "/abl-overlay-sink/tpdm_ddrss_llcc3_out_tpda_ddr";
+		tpdm_titan = "/abl-overlay-sink/tpdm_titan";
+		tpdm_titan_out_tpda_titan = "/abl-overlay-sink/tpdm_titan_out_tpda_titan";
+		tpdm_tmess_prng = "/abl-overlay-sink/tpdm_tmess_prng";
+		tpdm_tmess_prng_out_tpda_tmess = "/abl-overlay-sink/tpdm_tmess_prng_out_tpda_tmess";
+		tpdm_tmess0 = "/abl-overlay-sink/tpdm_tmess0";
+		tpdm_tmess0_out_tpda_tmess = "/abl-overlay-sink/tpdm_tmess0_out_tpda_tmess";
+		tpdm_tmess1 = "/abl-overlay-sink/tpdm_tmess1";
+		tpdm_tmess1_out_tpda_tmess = "/abl-overlay-sink/tpdm_tmess1_out_tpda_tmess";
+		tpdm_turing = "/abl-overlay-sink/tpdm_turing";
+		tpdm_turing_out_tpda_turing = "/abl-overlay-sink/tpdm_turing_out_tpda_turing";
+		tpdm_turing_llm = "/abl-overlay-sink/tpdm_turing_llm";
+		tpdm_turing_llm_out_tpda_turing = "/abl-overlay-sink/tpdm_turing_llm_out_tpda_turing";
+		tpdm_turing_llm2 = "/abl-overlay-sink/tpdm_turing_llm2";
+		tpdm_turing_llm2_out_tpda_turing = "/abl-overlay-sink/tpdm_turing_llm2_out_tpda_turing";
+		tpdm_dpm1 = "/abl-overlay-sink/tpdm_dpm1";
+		tpdm_dpm1_out_tpda_turing = "/abl-overlay-sink/tpdm_dpm1_out_tpda_turing";
+		tpdm_dmp2 = "/abl-overlay-sink/tpdm_dmp2";
+		tpdm_dmp2_out_tpda_turing = "/abl-overlay-sink/tpdm_dmp2_out_tpda_turing";
+		tpdm_sdcc4 = "/abl-overlay-sink/tpdm_sdcc4";
+		tpdm_sdcc4_out_tpda_dl_south = "/abl-overlay-sink/tpdm_sdcc4_out_tpda_dl_south";
+		tpdm_ufs = "/abl-overlay-sink/tpdm_ufs";
+		tpdm_ufs_out_tpda_dl_south = "/abl-overlay-sink/tpdm_ufs_out_tpda_dl_south";
+		tpdm_dl_south = "/abl-overlay-sink/tpdm_dl_south";
+		tpdm_dl_south_out_tpda_dl_south = "/abl-overlay-sink/tpdm_dl_south_out_tpda_dl_south";
+		tpdm_llm_silver = "/abl-overlay-sink/tpdm_llm_silver";
+		tpdm_llm_silver_out_tpda_apss = "/abl-overlay-sink/tpdm_llm_silver_out_tpda_apss";
+		tpdm_llm_gold = "/abl-overlay-sink/tpdm_llm_gold";
+		tpdm_llm_gold_out_tpda_apss = "/abl-overlay-sink/tpdm_llm_gold_out_tpda_apss";
+		tpdm_llm_ext = "/abl-overlay-sink/tpdm_llm_ext";
+		tpdm_llm_ext_out_tpda_apss = "/abl-overlay-sink/tpdm_llm_ext_out_tpda_apss";
+		tpdm_llm_gold_apc = "/abl-overlay-sink/tpdm_llm_gold_apc";
+		tpdm_llm_gold_apc_out_tpda_apss = "/abl-overlay-sink/tpdm_llm_gold_apc_out_tpda_apss";
+		tpdm_apss_ubwcp = "/abl-overlay-sink/tpdm_apss_ubwcp";
+		tpdm_apss_ubwcp_out_tpda_apss = "/abl-overlay-sink/tpdm_apss_ubwcp_out_tpda_apss";
+		tpdm_apss_apc2 = "/abl-overlay-sink/tpdm_apss_apc2";
+		tpdm_apss_apc2_out_tpda_apss = "/abl-overlay-sink/tpdm_apss_apc2_out_tpda_apss";
+		tpdm_apss0 = "/abl-overlay-sink/tpdm_apss0";
+		tpdm_apss_0_out_tpda_apss = "/abl-overlay-sink/tpdm_apss_0_out_tpda_apss";
+		tpdm_apss1 = "/abl-overlay-sink/tpdm_apss1";
+		tpdm_apss1_out_tpda_apss = "/abl-overlay-sink/tpdm_apss1_out_tpda_apss";
+		tpdm_apss2 = "/abl-overlay-sink/tpdm_apss2";
+		tpdm_apss2_out_tpda_apss = "/abl-overlay-sink/tpdm_apss2_out_tpda_apss";
+		tpdm_modem0 = "/abl-overlay-sink/tpdm_modem0";
+		tpdm_modem0_out_tpda_modem = "/abl-overlay-sink/tpdm_modem0_out_tpda_modem";
+		tpdm_modem1 = "/abl-overlay-sink/tpdm_modem1";
+		tpdm_modem1_out_tpda_modem = "/abl-overlay-sink/tpdm_modem1_out_tpda_modem";
+		tpdm_modem_rscc = "/abl-overlay-sink/tpdm_modem_rscc";
+		tpdm_modem_rscc_out_funnel_modem_q6 = "/abl-overlay-sink/tpdm_modem_rscc_out_funnel_modem_q6";
+		trace_noc = "/abl-overlay-sink/trace_noc";
+		trace_noc_in_tpdm_trace_noc = "/abl-overlay-sink/trace_noc_in_tpdm_trace_noc";
+		trace_noc_out_funnel_in1 = "/abl-overlay-sink/trace_noc_out_funnel_in1";
+		funnel_ddr_lpi = "/abl-overlay-sink/funnel_ddr_lpi";
+		funnel_ddr_lpi_in_tpdm_ddr_lpi = "/abl-overlay-sink/funnel_ddr_lpi_in_tpdm_ddr_lpi";
+		funnel_ddr_out_funnel_aoss = "/abl-overlay-sink/funnel_ddr_out_funnel_aoss";
+		funnel_gfx = "/abl-overlay-sink/funnel_gfx";
+		funnel_gfx_out_funnel_gfx_dl = "/abl-overlay-sink/funnel_gfx_out_funnel_gfx_dl";
+		funnel_gfx_dl = "/abl-overlay-sink/funnel_gfx_dl";
+		funnel_gfx_dl_in_tpdm_gfx = "/abl-overlay-sink/funnel_gfx_dl_in_tpdm_gfx";
+		funnel_gfx_dl_in_funnel_gfx = "/abl-overlay-sink/funnel_gfx_dl_in_funnel_gfx";
+		funnel_gfx_dl_out_tpda_dl_center_19 = "/abl-overlay-sink/funnel_gfx_dl_out_tpda_dl_center_19";
+		funnel_gfx_dl_out_funnel_dl_center = "/abl-overlay-sink/funnel_gfx_dl_out_funnel_dl_center";
+		funnel_video = "/abl-overlay-sink/funnel_video";
+		funnel_video_in_tpdm_video = "/abl-overlay-sink/funnel_video_in_tpdm_video";
+		funnel_video_out_funnel_multimedia = "/abl-overlay-sink/funnel_video_out_funnel_multimedia";
+		tpda_titan = "/abl-overlay-sink/tpda_titan";
+		tpda_titan_in_tpdm_titan = "/abl-overlay-sink/tpda_titan_in_tpdm_titan";
+		tpda_titan_out_funnel_titan = "/abl-overlay-sink/tpda_titan_out_funnel_titan";
+		funnel_titan = "/abl-overlay-sink/funnel_titan";
+		funnel_titan_in_tpda_titan = "/abl-overlay-sink/funnel_titan_in_tpda_titan";
+		funnel_titan_out_funnel_multimedia = "/abl-overlay-sink/funnel_titan_out_funnel_multimedia";
+		tpda_tmess = "/abl-overlay-sink/tpda_tmess";
+		tpda_tmess_in_tpdm_tmess_prng = "/abl-overlay-sink/tpda_tmess_in_tpdm_tmess_prng";
+		tpda_tmess_in_tpdm_tmess0 = "/abl-overlay-sink/tpda_tmess_in_tpdm_tmess0";
+		tpda_tmess_in_tpdm_tmess1 = "/abl-overlay-sink/tpda_tmess_in_tpdm_tmess1";
+		tpda_tmess_out_funnel_tmess = "/abl-overlay-sink/tpda_tmess_out_funnel_tmess";
+		funnel_tmess = "/abl-overlay-sink/funnel_tmess";
+		funnel_tmess_in_tpda_tmess = "/abl-overlay-sink/funnel_tmess_in_tpda_tmess";
+		funnel_tmess_out_funnel_multimedia = "/abl-overlay-sink/funnel_tmess_out_funnel_multimedia";
+		funnel_multimedia = "/abl-overlay-sink/funnel_multimedia";
+		funnel_multimedia_in_funnel_video = "/abl-overlay-sink/funnel_multimedia_in_funnel_video";
+		funnel_multimedia_in_tpdm_mdss = "/abl-overlay-sink/funnel_multimedia_in_tpdm_mdss";
+		funnel_multimedia_in_tpdm_dl_mm = "/abl-overlay-sink/funnel_multimedia_in_tpdm_dl_mm";
+		funnel_multimedia_in_funnel_titan = "/abl-overlay-sink/funnel_multimedia_in_funnel_titan";
+		funnel_multimedia_in_funnel_tmess = "/abl-overlay-sink/funnel_multimedia_in_funnel_tmess";
+		funnel_multimedia_out_funnel_dl_west = "/abl-overlay-sink/funnel_multimedia_out_funnel_dl_west";
+		funnel_lpass = "/abl-overlay-sink/funnel_lpass";
+		funnel_lpass_in_tpdm_lpass = "/abl-overlay-sink/funnel_lpass_in_tpdm_lpass";
+		funnel_lpass_out_tpda_dl_center = "/abl-overlay-sink/funnel_lpass_out_tpda_dl_center";
+		funnel_ddr_ch02 = "/abl-overlay-sink/funnel_ddr_ch02";
+		funnel_ddr_ch02_in_tpdm_ddr_ch02 = "/abl-overlay-sink/funnel_ddr_ch02_in_tpdm_ddr_ch02";
+		funnel_ddr_ch02_out_funnel_ddr_dl0 = "/abl-overlay-sink/funnel_ddr_ch02_out_funnel_ddr_dl0";
+		funnel_ddr_ch13 = "/abl-overlay-sink/funnel_ddr_ch13";
+		funnel_ddr_ch13_in_tpdm_ddr_ch13 = "/abl-overlay-sink/funnel_ddr_ch13_in_tpdm_ddr_ch13";
+		funnel_ddr_ch13_out_funnel_ddr_dl0 = "/abl-overlay-sink/funnel_ddr_ch13_out_funnel_ddr_dl0";
+		tpda_ddr = "/abl-overlay-sink/tpda_ddr";
+		tpda_ddr_in_tpdm_ddrss_llcc0 = "/abl-overlay-sink/tpda_ddr_in_tpdm_ddrss_llcc0";
+		tpda_ddr_in_tpdm_ddrss_llcc1 = "/abl-overlay-sink/tpda_ddr_in_tpdm_ddrss_llcc1";
+		tpda_ddr_in_tpdm_ddrss_llcc2 = "/abl-overlay-sink/tpda_ddr_in_tpdm_ddrss_llcc2";
+		tpda_ddr_in_tpdm_ddrss_llcc3 = "/abl-overlay-sink/tpda_ddr_in_tpdm_ddrss_llcc3";
+		tpda_ddr_out_funnel_ddr_dl1 = "/abl-overlay-sink/tpda_ddr_out_funnel_ddr_dl1";
+		gladiator = "/abl-overlay-sink/gladiator";
+		gladiator_out_funnel_ddr_dl1 = "/abl-overlay-sink/gladiator_out_funnel_ddr_dl1";
+		funnel_ddr_dl1 = "/abl-overlay-sink/funnel_ddr_dl1";
+		funnel_ddr_dl1_in_tpda_ddr = "/abl-overlay-sink/funnel_ddr_dl1_in_tpda_ddr";
+		funnel_ddr_dl1_in_gladiator = "/abl-overlay-sink/funnel_ddr_dl1_in_gladiator";
+		funnel_ddr_dl1_out_funnel_ddr_dl0 = "/abl-overlay-sink/funnel_ddr_dl1_out_funnel_ddr_dl0";
+		funnel_ddr_dl0 = "/abl-overlay-sink/funnel_ddr_dl0";
+		funnel_ddr_dl0_in_funnel_ddr_ch02 = "/abl-overlay-sink/funnel_ddr_dl0_in_funnel_ddr_ch02";
+		funnel_ddr_dl0_in_funnel_ddr_ch13 = "/abl-overlay-sink/funnel_ddr_dl0_in_funnel_ddr_ch13";
+		funnel_ddr_dl0_in_tpdm_ddr0 = "/abl-overlay-sink/funnel_ddr_dl0_in_tpdm_ddr0";
+		funnel_ddr_dl0_in_tpdm_ddr1 = "/abl-overlay-sink/funnel_ddr_dl0_in_tpdm_ddr1";
+		funnel_ddr_dl0_in_funnel_ddr_dl1 = "/abl-overlay-sink/funnel_ddr_dl0_in_funnel_ddr_dl1";
+		funnel_ddr_dl0_out_tpda_dl_center_4 = "/abl-overlay-sink/funnel_ddr_dl0_out_tpda_dl_center_4";
+		funnel_ddr_dl0_out_tpda_dl_center_5 = "/abl-overlay-sink/funnel_ddr_dl0_out_tpda_dl_center_5";
+		funnel_ddr_dl0_out_tpda_dl_center_6 = "/abl-overlay-sink/funnel_ddr_dl0_out_tpda_dl_center_6";
+		funnel_ddr_dl0_out_tpda_dl_center_7 = "/abl-overlay-sink/funnel_ddr_dl0_out_tpda_dl_center_7";
+		funnel_ddr_dl0_out_funnel_dl_center = "/abl-overlay-sink/funnel_ddr_dl0_out_funnel_dl_center";
+		tpda_turing = "/abl-overlay-sink/tpda_turing";
+		tpda_turing_in_tpdm_turing = "/abl-overlay-sink/tpda_turing_in_tpdm_turing";
+		tpda_turing_in_tpdm_turing_llm = "/abl-overlay-sink/tpda_turing_in_tpdm_turing_llm";
+		tpda_turing_in_tpdm_turing_llm2 = "/abl-overlay-sink/tpda_turing_in_tpdm_turing_llm2";
+		tpda_turing_in_tpdm_dpm1 = "/abl-overlay-sink/tpda_turing_in_tpdm_dpm1";
+		tpda_turing_in_tpdm_dmp2 = "/abl-overlay-sink/tpda_turing_in_tpdm_dmp2";
+		tpda_turing_out_funnel_turing = "/abl-overlay-sink/tpda_turing_out_funnel_turing";
+		turing_etm0 = "/abl-overlay-sink/turing_etm0";
+		turing_etm0_out_funnel_turing_dup = "/abl-overlay-sink/turing_etm0_out_funnel_turing_dup";
+		funnel_turing_dup = "/abl-overlay-sink/funnel_turing_dup";
+		funnel_turing_dup_in_turing_etm0 = "/abl-overlay-sink/funnel_turing_dup_in_turing_etm0";
+		funnel_turing_dup_out_funnel_turing = "/abl-overlay-sink/funnel_turing_dup_out_funnel_turing";
+		funnel_turing = "/abl-overlay-sink/funnel_turing";
+		funnel_turing_in_tpda_turing = "/abl-overlay-sink/funnel_turing_in_tpda_turing";
+		funnel_turing_in_funnel_turing_dup = "/abl-overlay-sink/funnel_turing_in_funnel_turing_dup";
+		funnel_turing_out_funnel_dl_center = "/abl-overlay-sink/funnel_turing_out_funnel_dl_center";
+		funnel_dl_west = "/abl-overlay-sink/funnel_dl_west";
+		funnel_dl_west_in_funnel_multimedia = "/abl-overlay-sink/funnel_dl_west_in_funnel_multimedia";
+		funnel_dl_west_in_tpdm_rdpm0 = "/abl-overlay-sink/funnel_dl_west_in_tpdm_rdpm0";
+		funnel_dl_west_in_tpdm_rdpm1 = "/abl-overlay-sink/funnel_dl_west_in_tpdm_rdpm1";
+		funnel_dl_west_in_tpdm_rdpm2 = "/abl-overlay-sink/funnel_dl_west_in_tpdm_rdpm2";
+		funnel_dl_west_in_tpdm_spare = "/abl-overlay-sink/funnel_dl_west_in_tpdm_spare";
+		funnel_dl_west_out_tpda_dl_center_8 = "/abl-overlay-sink/funnel_dl_west_out_tpda_dl_center_8";
+		funnel_dl_west_out_tpda_dl_center_9 = "/abl-overlay-sink/funnel_dl_west_out_tpda_dl_center_9";
+		funnel_dl_west_out_tpda_dl_center_11 = "/abl-overlay-sink/funnel_dl_west_out_tpda_dl_center_11";
+		funnel_dl_west_out_tpda_dl_center_13 = "/abl-overlay-sink/funnel_dl_west_out_tpda_dl_center_13";
+		funnel_dl_west_out_tpda_dl_center_14 = "/abl-overlay-sink/funnel_dl_west_out_tpda_dl_center_14";
+		funnel_dl_west_out_tpda_dl_center_15 = "/abl-overlay-sink/funnel_dl_west_out_tpda_dl_center_15";
+		funnel_dl_west_out_tpda_dl_center_16 = "/abl-overlay-sink/funnel_dl_west_out_tpda_dl_center_16";
+		funnel_dl_west_out_funnel_dl_center = "/abl-overlay-sink/funnel_dl_west_out_funnel_dl_center";
+		tpda_dl_south = "/abl-overlay-sink/tpda_dl_south";
+		tpda_dl_south_in_tpdm_sdcc4 = "/abl-overlay-sink/tpda_dl_south_in_tpdm_sdcc4";
+		tpda_dl_south_in_tpdm_ufs = "/abl-overlay-sink/tpda_dl_south_in_tpdm_ufs";
+		tpda_dl_south_in_tpdm_dl_south = "/abl-overlay-sink/tpda_dl_south_in_tpdm_dl_south";
+		tpda_dl_south_out_funnel_dl_south = "/abl-overlay-sink/tpda_dl_south_out_funnel_dl_south";
+		funnel_dl_south = "/abl-overlay-sink/funnel_dl_south";
+		funnel_dl_south_in_tpda_dl_south = "/abl-overlay-sink/funnel_dl_south_in_tpda_dl_south";
+		funnel_dl_south_out_funnel_in1 = "/abl-overlay-sink/funnel_dl_south_out_funnel_in1";
+		modem_etm0_out_funnel_modem_q6_dup = "/abl-overlay-sink/modem_etm0_out_funnel_modem_q6_dup";
+		modem2_etm0_out_funnel_modem = "/abl-overlay-sink/modem2_etm0_out_funnel_modem";
+		modem_diag = "/abl-overlay-sink/modem_diag";
+		modem_diag_out_funnel_modem_q6 = "/abl-overlay-sink/modem_diag_out_funnel_modem_q6";
+		tpda_modem = "/abl-overlay-sink/tpda_modem";
+		tpda_modem_in_tpdm_modem0 = "/abl-overlay-sink/tpda_modem_in_tpdm_modem0";
+		tpda_modem_in_tpdm_modem1 = "/abl-overlay-sink/tpda_modem_in_tpdm_modem1";
+		tpda_modem_out_funnel_modem_dl = "/abl-overlay-sink/tpda_modem_out_funnel_modem_dl";
+		funnel_modem_q6_dup = "/abl-overlay-sink/funnel_modem_q6_dup";
+		funnel_modem_q6_dup_in_modem_etm0 = "/abl-overlay-sink/funnel_modem_q6_dup_in_modem_etm0";
+		funnel_modem_q6_dup_out_funnel_modem_q6 = "/abl-overlay-sink/funnel_modem_q6_dup_out_funnel_modem_q6";
+		funnel_modem_q6 = "/abl-overlay-sink/funnel_modem_q6";
+		funnel_modem_q6_in_funnel_modem_q6_dup = "/abl-overlay-sink/funnel_modem_q6_in_funnel_modem_q6_dup";
+		funnel_modem_q6_in_modem_diag = "/abl-overlay-sink/funnel_modem_q6_in_modem_diag";
+		funnel_modem_q6_in_tpdm_modem_rscc = "/abl-overlay-sink/funnel_modem_q6_in_tpdm_modem_rscc";
+		funnel_modem_q6_out_funnel_modem_dl = "/abl-overlay-sink/funnel_modem_q6_out_funnel_modem_dl";
+		funnel_modem_dl = "/abl-overlay-sink/funnel_modem_dl";
+		funnel_modem_dl_in_tpda_modem = "/abl-overlay-sink/funnel_modem_dl_in_tpda_modem";
+		funnel_modem_in_modem2_etm0 = "/abl-overlay-sink/funnel_modem_in_modem2_etm0";
+		funnel_modem_dl_in_funnel_modem_q6 = "/abl-overlay-sink/funnel_modem_dl_in_funnel_modem_q6";
+		funnel_modem_dl_out_funnel_in1 = "/abl-overlay-sink/funnel_modem_dl_out_funnel_in1";
+		tpda_apss = "/abl-overlay-sink/tpda_apss";
+		tpda_apss_in_tpdm_llm_silver = "/abl-overlay-sink/tpda_apss_in_tpdm_llm_silver";
+		tpda_apss_in_tpdm_llm_gold = "/abl-overlay-sink/tpda_apss_in_tpdm_llm_gold";
+		tpda_apss_in_tpdm_llm_ext = "/abl-overlay-sink/tpda_apss_in_tpdm_llm_ext";
+		tpda_apss_in_tpdm_llm_gold_apc = "/abl-overlay-sink/tpda_apss_in_tpdm_llm_gold_apc";
+		tpda_apss_in_tpdm_apss_ubwcp = "/abl-overlay-sink/tpda_apss_in_tpdm_apss_ubwcp";
+		tpda_apss_in_tpdm_apss_apc2 = "/abl-overlay-sink/tpda_apss_in_tpdm_apss_apc2";
+		tpda_apss_in_tpdm_apss_0 = "/abl-overlay-sink/tpda_apss_in_tpdm_apss_0";
+		tpda_apss_in_tpdm_apss1 = "/abl-overlay-sink/tpda_apss_in_tpdm_apss1";
+		tpda_apss_in_tpdm_apss2 = "/abl-overlay-sink/tpda_apss_in_tpdm_apss2";
+		tpda_apss_out_funnel_apss = "/abl-overlay-sink/tpda_apss_out_funnel_apss";
+		funnel_apss = "/abl-overlay-sink/funnel_apss";
+		funnel_apss_in_tpda_apss = "/abl-overlay-sink/funnel_apss_in_tpda_apss";
+		funnel_apss_in_funnel_ete = "/abl-overlay-sink/funnel_apss_in_funnel_ete";
+		funnel_apss_out_funnel_in1 = "/abl-overlay-sink/funnel_apss_out_funnel_in1";
+		tpda_dl_center = "/abl-overlay-sink/tpda_dl_center";
+		tpda_dl_center_in_funnel_lpass = "/abl-overlay-sink/tpda_dl_center_in_funnel_lpass";
+		tpda_dl_center_4_in_funnel_ddr_dl0 = "/abl-overlay-sink/tpda_dl_center_4_in_funnel_ddr_dl0";
+		tpda_dl_center_5_in_funnel_ddr_dl0 = "/abl-overlay-sink/tpda_dl_center_5_in_funnel_ddr_dl0";
+		tpda_dl_center_6_in_funnel_ddr_dl0 = "/abl-overlay-sink/tpda_dl_center_6_in_funnel_ddr_dl0";
+		tpda_dl_center_7_in_funnel_ddr_dl0 = "/abl-overlay-sink/tpda_dl_center_7_in_funnel_ddr_dl0";
+		tpda_dl_center_8_in_funnel_dl_west = "/abl-overlay-sink/tpda_dl_center_8_in_funnel_dl_west";
+		tpda_dl_center_9_in_funnel_dl_west = "/abl-overlay-sink/tpda_dl_center_9_in_funnel_dl_west";
+		tpda_dl_center_11_in_funnel_dl_west = "/abl-overlay-sink/tpda_dl_center_11_in_funnel_dl_west";
+		tpda_dl_center_13_in_funnel_dl_west = "/abl-overlay-sink/tpda_dl_center_13_in_funnel_dl_west";
+		tpda_dl_center_14_in_funnel_dl_west = "/abl-overlay-sink/tpda_dl_center_14_in_funnel_dl_west";
+		tpda_dl_center_15_in_funnel_dl_west = "/abl-overlay-sink/tpda_dl_center_15_in_funnel_dl_west";
+		tpda_dl_center_16_in_funnel_dl_west = "/abl-overlay-sink/tpda_dl_center_16_in_funnel_dl_west";
+		tpda_dl_center_19_in_funnel_gfx_dl = "/abl-overlay-sink/tpda_dl_center_19_in_funnel_gfx_dl";
+		tpda_dl_center_21_in_tpdm_prng = "/abl-overlay-sink/tpda_dl_center_21_in_tpdm_prng";
+		tpda_dl_center_22_in_tpdm_qm = "/abl-overlay-sink/tpda_dl_center_22_in_tpdm_qm";
+		tpda_dl_center_23_in_tpdm_gcc = "/abl-overlay-sink/tpda_dl_center_23_in_tpdm_gcc";
+		tpda_dl_center_24_in_tpdm_vsense = "/abl-overlay-sink/tpda_dl_center_24_in_tpdm_vsense";
+		tpda_dl_center_26_in_tpdm_ipa = "/abl-overlay-sink/tpda_dl_center_26_in_tpdm_ipa";
+		tpda_dl_center_29_in_tpdm_dl_ct = "/abl-overlay-sink/tpda_dl_center_29_in_tpdm_dl_ct";
+		tpda_dl_center_30_in_tpdm_ipcc = "/abl-overlay-sink/tpda_dl_center_30_in_tpdm_ipcc";
+		tpda_dl_center_out_funnel_dl_center = "/abl-overlay-sink/tpda_dl_center_out_funnel_dl_center";
+		funnel_dl_center = "/abl-overlay-sink/funnel_dl_center";
+		funnel_dl_center_in_tpda_dl_center = "/abl-overlay-sink/funnel_dl_center_in_tpda_dl_center";
+		funnel_dl_center_in_funnel_ddr_dl0 = "/abl-overlay-sink/funnel_dl_center_in_funnel_ddr_dl0";
+		funnel_dl_center_in_funnel_dl_west = "/abl-overlay-sink/funnel_dl_center_in_funnel_dl_west";
+		funnel_dl_center_in_funnel_gfx_dl = "/abl-overlay-sink/funnel_dl_center_in_funnel_gfx_dl";
+		funnel_dl_center_in_funnel_turing = "/abl-overlay-sink/funnel_dl_center_in_funnel_turing";
+		funnel_dl_center_out_funnel_in1 = "/abl-overlay-sink/funnel_dl_center_out_funnel_in1";
+		tpda_qdss = "/abl-overlay-sink/tpda_qdss";
+		tpda_qdss_in_tpdm_dcc = "/abl-overlay-sink/tpda_qdss_in_tpdm_dcc";
+		tpda_qdss_in_tpdm_spdm = "/abl-overlay-sink/tpda_qdss_in_tpdm_spdm";
+		tpda_qdss_out_funnel_in0 = "/abl-overlay-sink/tpda_qdss_out_funnel_in0";
+		funnel_in0 = "/abl-overlay-sink/funnel_in0";
+		funnel_in0_in_tpda_qdss = "/abl-overlay-sink/funnel_in0_in_tpda_qdss";
+		funnel_in0_in_stm = "/abl-overlay-sink/funnel_in0_in_stm";
+		funnel_in0_out_funnel_qdss = "/abl-overlay-sink/funnel_in0_out_funnel_qdss";
+		funnel_qdss = "/abl-overlay-sink/funnel_qdss";
+		funnel_qdss_in_funnel_in0 = "/abl-overlay-sink/funnel_qdss_in_funnel_in0";
+		funnel_qdss_in_funnel_in1 = "/abl-overlay-sink/funnel_qdss_in_funnel_in1";
+		funnel_qdss_out_funnel_aoss = "/abl-overlay-sink/funnel_qdss_out_funnel_aoss";
+		tpda_aoss = "/abl-overlay-sink/tpda_aoss";
+		tpda_aoss_in_tpdm_swao_prio0 = "/abl-overlay-sink/tpda_aoss_in_tpdm_swao_prio0";
+		tpda_aoss_in_tpdm_swao_prio1 = "/abl-overlay-sink/tpda_aoss_in_tpdm_swao_prio1";
+		tpda_aoss_in_tpdm_swao_prio2 = "/abl-overlay-sink/tpda_aoss_in_tpdm_swao_prio2";
+		tpda_aoss_in_tpdm_swao_prio3 = "/abl-overlay-sink/tpda_aoss_in_tpdm_swao_prio3";
+		tpda_aoss_in_tpdm_swao = "/abl-overlay-sink/tpda_aoss_in_tpdm_swao";
+		tpda_aoss_out_funnel_aoss = "/abl-overlay-sink/tpda_aoss_out_funnel_aoss";
+		funnel_aoss = "/abl-overlay-sink/funnel_aoss";
+		funnel_aoss_in_funnel_ddr = "/abl-overlay-sink/funnel_aoss_in_funnel_ddr";
+		funnel_aoss_in_funnel_lpass_lpi = "/abl-overlay-sink/funnel_aoss_in_funnel_lpass_lpi";
+		funnel_aoss_in_tpda_aoss = "/abl-overlay-sink/funnel_aoss_in_tpda_aoss";
+		funnel_aoss_in_funnel_qdss = "/abl-overlay-sink/funnel_aoss_in_funnel_qdss";
+		funnel_aoss_out_tmc_etf = "/abl-overlay-sink/funnel_aoss_out_tmc_etf";
+		tmc_etf = "/abl-overlay-sink/tmc_etf";
+		tmc_etf_in_funnel_aoss = "/abl-overlay-sink/tmc_etf_in_funnel_aoss";
+		tmc_etf_out_replicator_swao = "/abl-overlay-sink/tmc_etf_out_replicator_swao";
+		replicator_swao = "/abl-overlay-sink/replicator_swao";
+		replicator_swao_in_tmc_etf = "/abl-overlay-sink/replicator_swao_in_tmc_etf";
+		replicator_swao_out_replicator_qdss = "/abl-overlay-sink/replicator_swao_out_replicator_qdss";
+		replicator_swao_out_eud = "/abl-overlay-sink/replicator_swao_out_eud";
+		replicator_qdss = "/abl-overlay-sink/replicator_qdss";
+		replicator_qdss_in_replicator_swao = "/abl-overlay-sink/replicator_qdss_in_replicator_swao";
+		replicator_qdss_out_replicator_etr = "/abl-overlay-sink/replicator_qdss_out_replicator_etr";
+		replicator_etr = "/abl-overlay-sink/replicator_etr";
+		replicator_etr_in_replicator_qdss = "/abl-overlay-sink/replicator_etr_in_replicator_qdss";
+		replicator_etr_out_tmc_etr = "/abl-overlay-sink/replicator_etr_out_tmc_etr";
+		replicator_etr_out_replicator_dummy = "/abl-overlay-sink/replicator_etr_out_replicator_dummy";
+		replicator_dummy_in_replicator_etr = "/abl-overlay-sink/replicator_dummy_in_replicator_etr";
+		replicator_dummy_out_tmc_modem = "/abl-overlay-sink/replicator_dummy_out_tmc_modem";
+		replicator_dummy_out_tmc_etr1 = "/abl-overlay-sink/replicator_dummy_out_tmc_etr1";
+		tmc_modem = "/abl-overlay-sink/tmc_modem";
+		tmc_modem_in_replicator_dummy = "/abl-overlay-sink/tmc_modem_in_replicator_dummy";
+		tmc_etr = "/abl-overlay-sink/tmc_etr";
+		tmc_etr_in_replicator_etr = "/abl-overlay-sink/tmc_etr_in_replicator_etr";
+		tmc_etr1 = "/abl-overlay-sink/tmc_etr1";
+		tmc_etr1_in_replicator_dummy = "/abl-overlay-sink/tmc_etr1_in_replicator_dummy";
+		csr = "/abl-overlay-sink/csr";
+		swao_csr = "/abl-overlay-sink/swao_csr";
+		ete0_out_funnel_ete = "/abl-overlay-sink/ete0_out_funnel_ete";
+		ete1_out_funnel_ete = "/abl-overlay-sink/ete1_out_funnel_ete";
+		ete2_out_funnel_ete = "/abl-overlay-sink/ete2_out_funnel_ete";
+		ete3_out_funnel_ete = "/abl-overlay-sink/ete3_out_funnel_ete";
+		ete4_out_funnel_ete = "/abl-overlay-sink/ete4_out_funnel_ete";
+		ete5_out_funnel_ete = "/abl-overlay-sink/ete5_out_funnel_ete";
+		ete6_out_funnel_ete = "/abl-overlay-sink/ete6_out_funnel_ete";
+		ete7_out_funnel_ete = "/abl-overlay-sink/ete7_out_funnel_ete";
+		funnel_ete_out_funnel_apss = "/abl-overlay-sink/funnel_ete_out_funnel_apss";
+		funnel_ete_in_ete0 = "/abl-overlay-sink/funnel_ete_in_ete0";
+		funnel_ete_in_ete1 = "/abl-overlay-sink/funnel_ete_in_ete1";
+		funnel_ete_in_ete2 = "/abl-overlay-sink/funnel_ete_in_ete2";
+		funnel_ete_in_ete3 = "/abl-overlay-sink/funnel_ete_in_ete3";
+		funnel_ete_in_ete4 = "/abl-overlay-sink/funnel_ete_in_ete4";
+		funnel_ete_in_ete5 = "/abl-overlay-sink/funnel_ete_in_ete5";
+		funnel_ete_in_ete6 = "/abl-overlay-sink/funnel_ete_in_ete6";
+		funnel_ete_in_ete7 = "/abl-overlay-sink/funnel_ete_in_ete7";
+		funnel_in1 = "/abl-overlay-sink/funnel_in1";
+		funnel_in1_in_funnel_dl_center = "/abl-overlay-sink/funnel_in1_in_funnel_dl_center";
+		funnel_in1_in_funnel_dl_south = "/abl-overlay-sink/funnel_in1_in_funnel_dl_south";
+		funnel_in1_in_trace_noc = "/abl-overlay-sink/funnel_in1_in_trace_noc";
+		funnel_in1_in_funnel_apss = "/abl-overlay-sink/funnel_in1_in_funnel_apss";
+		funnel_in1_in_funnel_modem_dl = "/abl-overlay-sink/funnel_in1_in_funnel_modem_dl";
+		funnel_in1_out_funnel_qdss = "/abl-overlay-sink/funnel_in1_out_funnel_qdss";
+		dummy_eud = "/abl-overlay-sink/dummy_eud";
+		eud_in_replicator_swao = "/abl-overlay-sink/eud_in_replicator_swao";
+		qdss_cti = "/abl-overlay-sink/qdss_cti";
+		cti0 = "/abl-overlay-sink/cti0";
+		dlmm_cti0 = "/abl-overlay-sink/dlmm_cti0";
+		ddr_dl_0_cti_0 = "/abl-overlay-sink/ddr_dl_0_cti_0";
+		ddr_dl_1_cti_0 = "/abl-overlay-sink/ddr_dl_1_cti_0";
+		ddr_ch02_dl_cti_0 = "/abl-overlay-sink/ddr_ch02_dl_cti_0";
+		ddr_ch13_dl_cti_0 = "/abl-overlay-sink/ddr_ch13_dl_cti_0";
+		ddrss_shrm2 = "/abl-overlay-sink/ddrss_shrm2";
+		ddr_dl2_lpi = "/abl-overlay-sink/ddr_dl2_lpi";
+		lpass_dl_cti = "/abl-overlay-sink/lpass_dl_cti";
+		lpass_lpi_cti1 = "/abl-overlay-sink/lpass_lpi_cti1";
+		lpass_lpi_cti3 = "/abl-overlay-sink/lpass_lpi_cti3";
+		lpass_ssc_sdc = "/abl-overlay-sink/lpass_ssc_sdc";
+		lpass_q6_cti = "/abl-overlay-sink/lpass_q6_cti";
+		apss_pe0 = "/abl-overlay-sink/apss_pe0";
+		apss_pe1 = "/abl-overlay-sink/apss_pe1";
+		apss_pe2 = "/abl-overlay-sink/apss_pe2";
+		apss_pe3 = "/abl-overlay-sink/apss_pe3";
+		apss_pe4 = "/abl-overlay-sink/apss_pe4";
+		apss_pe5 = "/abl-overlay-sink/apss_pe5";
+		apss_pe6 = "/abl-overlay-sink/apss_pe6";
+		apss_pe7 = "/abl-overlay-sink/apss_pe7";
+		apss_cluster = "/abl-overlay-sink/apss_cluster";
+		apss_cti0 = "/abl-overlay-sink/apss_cti0";
+		apss_cti1 = "/abl-overlay-sink/apss_cti1";
+		apss_cti2 = "/abl-overlay-sink/apss_cti2";
+		riscv_cti = "/abl-overlay-sink/riscv_cti";
+		riscv_sifive_cti = "/abl-overlay-sink/riscv_sifive_cti";
+		apss_atb_cti = "/abl-overlay-sink/apss_atb_cti";
+		gpu_isdb_cti = "/abl-overlay-sink/gpu_isdb_cti";
+		gpu_cortex_m3 = "/abl-overlay-sink/gpu_cortex_m3";
+		gpu_dl = "/abl-overlay-sink/gpu_dl";
+		iris_dl_cti = "/abl-overlay-sink/iris_dl_cti";
+		mdss_dl_cti = "/abl-overlay-sink/mdss_dl_cti";
+		turing_dl_cti_0 = "/abl-overlay-sink/turing_dl_cti_0";
+		turing_q6_cti = "/abl-overlay-sink/turing_q6_cti";
+		camera_dl = "/abl-overlay-sink/camera_dl";
+		swao_cti = "/abl-overlay-sink/swao_cti";
+		aop_rvss = "/abl-overlay-sink/aop_rvss";
+		mss_q6_cti = "/abl-overlay-sink/mss_q6_cti";
+		mss_vq6_cti = "/abl-overlay-sink/mss_vq6_cti";
+		modem_tp_cti = "/abl-overlay-sink/modem_tp_cti";
+		tmess_cti_3 = "/abl-overlay-sink/tmess_cti_3";
+		tmess_cti_2 = "/abl-overlay-sink/tmess_cti_2";
+		tmess_cti_1 = "/abl-overlay-sink/tmess_cti_1";
+		tmess_cti_0 = "/abl-overlay-sink/tmess_cti_0";
+		tmess_cti_4 = "/abl-overlay-sink/tmess_cti_4";
+		tmess_cpu = "/abl-overlay-sink/tmess_cpu";
+		ipcb_tgu = "/abl-overlay-sink/ipcb_tgu";
+		spmi_tgu0 = "/abl-overlay-sink/spmi_tgu0";
+		spmi_tgu1 = "/abl-overlay-sink/spmi_tgu1";
+		pcie0 = "/abl-overlay-sink/pcie0";
+		pcie0_rp = "/abl-overlay-sink/pcie0_rp";
+		pcie0_msi = "/abl-overlay-sink/pcie0_msi";
+		pcie1 = "/abl-overlay-sink/pcie1";
+		pcie1_rp = "/abl-overlay-sink/pcie1_rp";
+		pcie1_msi = "/abl-overlay-sink/pcie1_msi";
+		tsens0 = "/abl-overlay-sink/tsens0";
+		tsens1 = "/abl-overlay-sink/tsens1";
+		tsens2 = "/abl-overlay-sink/tsens2";
+		cpu0_pause = "/abl-overlay-sink/cpu0_pause";
+		cpu1_pause = "/abl-overlay-sink/cpu1_pause";
+		cpu2_pause = "/abl-overlay-sink/cpu2_pause";
+		cpu3_pause = "/abl-overlay-sink/cpu3_pause";
+		cpu4_pause = "/abl-overlay-sink/cpu4_pause";
+		cpu5_pause = "/abl-overlay-sink/cpu5_pause";
+		cpu6_pause = "/abl-overlay-sink/cpu6_pause";
+		cpu7_pause = "/abl-overlay-sink/cpu7_pause";
+		APC2_pause = "/abl-overlay-sink/APC2_pause";
+		APC1_pause = "/abl-overlay-sink/APC1_pause";
+		cpu0_hotplug = "/abl-overlay-sink/cpu0_hotplug";
+		cpu1_hotplug = "/abl-overlay-sink/cpu1_hotplug";
+		cpu2_hotplug = "/abl-overlay-sink/cpu2_hotplug";
+		cpu3_hotplug = "/abl-overlay-sink/cpu3_hotplug";
+		cpu4_hotplug = "/abl-overlay-sink/cpu4_hotplug";
+		cpu5_hotplug = "/abl-overlay-sink/cpu5_hotplug";
+		cpu6_hotplug = "/abl-overlay-sink/cpu6_hotplug";
+		cpu7_hotplug = "/abl-overlay-sink/cpu7_hotplug";
+		apc1_cluster = "/abl-overlay-sink/apc1_cluster";
+		ddr_cdev = "/abl-overlay-sink/ddr_cdev";
+		qmi_tmd = "/abl-overlay-sink/qmi_tmd";
+		cdsp_sw = "/abl-overlay-sink/cdsp_sw";
+		cdsp_sw_hvx = "/abl-overlay-sink/cdsp_sw_hvx";
+		cdsp_sw_hmx = "/abl-overlay-sink/cdsp_sw_hmx";
+		cdsp_hw = "/abl-overlay-sink/cdsp_hw";
+		modem_bcl = "/abl-overlay-sink/modem_bcl";
+		modem_lte_dsc = "/abl-overlay-sink/modem_lte_dsc";
+		modem_nr_dsc = "/abl-overlay-sink/modem_nr_dsc";
+		modem_nr_scg_dsc = "/abl-overlay-sink/modem_nr_scg_dsc";
+		sdr0_lte_dsc = "/abl-overlay-sink/sdr0_lte_dsc";
+		sdr0_nr_dsc = "/abl-overlay-sink/sdr0_nr_dsc";
+		pa_lte_sdr0_dsc = "/abl-overlay-sink/pa_lte_sdr0_dsc";
+		pa_nr_sdr0_dsc = "/abl-overlay-sink/pa_nr_sdr0_dsc";
+		pa_nr_sdr0_scg_dsc = "/abl-overlay-sink/pa_nr_sdr0_scg_dsc";
+		mmw0_dsc = "/abl-overlay-sink/mmw0_dsc";
+		mmw1_dsc = "/abl-overlay-sink/mmw1_dsc";
+		mmw2_dsc = "/abl-overlay-sink/mmw2_dsc";
+		mmw3_dsc = "/abl-overlay-sink/mmw3_dsc";
+		qmi_wlan = "/abl-overlay-sink/qmi_wlan";
+		modem_bw_backoff = "/abl-overlay-sink/modem_bw_backoff";
+		modem_vdd = "/abl-overlay-sink/modem_vdd";
+		modem_nr_scg_sub1_dsc = "/abl-overlay-sink/modem_nr_scg_sub1_dsc";
+		modem_lte_sub1_dsc = "/abl-overlay-sink/modem_lte_sub1_dsc";
+		modem_nr_sub1_dsc = "/abl-overlay-sink/modem_nr_sub1_dsc";
+		pa_nr_sdr0_sub1_dsc = "/abl-overlay-sink/pa_nr_sdr0_sub1_dsc";
+		pa_lte_sdr0_sub1_dsc = "/abl-overlay-sink/pa_lte_sdr0_sub1_dsc";
+		pa_nr_sdr0_scg_sub1_dsc = "/abl-overlay-sink/pa_nr_sdr0_scg_sub1_dsc";
+		mmw0_sub1_dsc = "/abl-overlay-sink/mmw0_sub1_dsc";
+		mmw1_sub1_dsc = "/abl-overlay-sink/mmw1_sub1_dsc";
+		mmw2_sub1_dsc = "/abl-overlay-sink/mmw2_sub1_dsc";
+		mmw3_sub1_dsc = "/abl-overlay-sink/mmw3_sub1_dsc";
+		display_fps = "/abl-overlay-sink/display_fps";
+		limits_stat = "/abl-overlay-sink/limits_stat";
+		qmi_sensor = "/abl-overlay-sink/qmi_sensor";
+		hypervisor = "/abl-overlay-sink/hypervisor";
+		gh_watchdog = "/abl-overlay-sink/gh_watchdog";
+	};
+};

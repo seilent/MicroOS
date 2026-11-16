@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+root=${MICROOS_SLEEP_ROOT:-}
+[[ ${1:-} == post ]] || exit 0
+. "${MICROOS_IRQ_LIB:-/usr/libexec/microos/microos-irq}"
+irq=$(cat "$root/sys/power/pm_wakeup_irq" 2> /dev/null) || { echo "microos-wake-reason: no wakeup irq"; exit 0; }
+name=$(irq_name "$irq" "$root/proc/interrupts")
+echo "microos-wake-reason: irq $irq ${name:-unknown}"

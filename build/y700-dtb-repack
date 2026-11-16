@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=y700-dtb-repack
+usage="usage: $me <round boot image> <dtb> <out image>"
+here=$(cd "$(dirname "$0")" && pwd)
+key=${MICROOS_AVB_KEY:-$here/../devices/y700/system_files/usr/share/microos/avb/testkey_rsa4096.pem}
+max=${MICROOS_CMDLINE_MAX:-440}
+die() { echo "$me: $*" >&2; exit 1; }
+
+img=${1:?$usage}
+dtb=${2:?$usage}
+out=${3:?$usage}
+[[ -r $img && -r $dtb ]] || die "$usage"
+[[ -r $key ]] || die "missing $key"
+[[ $(od -An -tx1 -N4 "$dtb" | tr -d ' \n') == d00dfeed ]] || die "$dtb is not a DTB"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "${tmp:?}"' EXIT
+mapfile -d '' -t args < <(unpack_bootimg --boot_img "$img" --out "$tmp/u" --format=mkbootimg -0)
+avbtool info_image --image "$img" > "$tmp/avb"
+
+for p in compatible qcom,msm-id qcom,board-id; do
+  a=$(fdtget -t x "$tmp/u/dtb" / "$p" 2>/dev/null || true)
+  b=$(fdtget -t x "$dtb" / "$p" 2>/dev/null || true)
+  [[ $a == "$b" ]] || die "root $p differs: image '$a', new dtb '$b'"
+done
+
+cmdline=""
+for i in "${!args[@]}"; do
+  [[ ${args[i]} == --cmdline ]] && cmdline=${args[i + 1]}
+done
+[[ $cmdline =~ (^| )microos\.id=([0-9a-f]{12})( |$) ]] || die "no microos.id in the cmdline"
+old=${BASH_REMATCH[2]}
+id=$( { echo "$old"; sha256sum < "$tmp/u/kernel"; sha256sum < "$tmp/u/ramdisk"; sha256sum < "$dtb"; } | sha256sum | cut -d' ' -f1)
+cmdline=${cmdline/microos.id=$old/microos.id=${id:0:12}}
+(( ${#cmdline} <= max )) || die "cmdline is ${#cmdline} bytes, the limit is $max"
+
+cp "$dtb" "$tmp/dtb"
+for i in "${!args[@]}"; do
+  [[ ${args[i]} == --cmdline ]] && args[i + 1]=$cmdline
+  [[ ${args[i]} == --dtb ]] && args[i + 1]=$tmp/dtb
+done
+mkbootimg "${args[@]}" --output "$tmp/boot.img"
+
+size=$(sed -n 's/^Image size: *\([0-9]*\) bytes$/\1/p' "$tmp/avb" | head -1)
+rollback=$(sed -n 's/^Rollback Index: *\([0-9]*\)$/\1/p' "$tmp/avb")
+algo=$(sed -n 's/^Algorithm: *\([A-Z0-9_]*\)$/\1/p' "$tmp/avb")
+pkey=$(sed -n 's/^Public key (sha1): *\([0-9a-f]*\)$/\1/p' "$tmp/avb")
+[[ -n $size && -n $rollback && -n $algo && -n $pkey ]] || die "cannot read the AVB footer of $img"
+props=()
+while read -r k v; do
+  props+=(--prop "$k:$v")
+done < <(sed -n 's/^ *Prop: \([^ ]*\) -> '"'"'\(.*\)'"'"'$/\1 \2/p' "$tmp/avb")
+avbtool add_hash_footer --image "$tmp/boot.img" --partition_name boot --partition_size "$size" \
+  --algorithm "$algo" --key "$key" --rollback_index "$rollback" --salt "$id" "${props[@]}"
+avbtool info_image --image "$tmp/boot.img" > "$tmp/new"
+[[ $(sed -n 's/^Public key (sha1): *\([0-9a-f]*\)$/\1/p' "$tmp/new") == "$pkey" ]] || die "$key is not the key of $img"
+[[ $(stat -c %s "$tmp/boot.img") == "$size" ]] || die "repacked image is not $size bytes"
+mv -f "$tmp/boot.img" "$out"
+echo "$id"

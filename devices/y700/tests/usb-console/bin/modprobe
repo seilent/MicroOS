@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "modprobe $*" >> "$FAKE_STATE/modprobe.log"
+exit 0

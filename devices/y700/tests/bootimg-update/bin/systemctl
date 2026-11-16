@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+if [[ $* == "is-active -q systemd-logind" ]]; then
+  exit "${FAKE_LOGIND_RC:-0}"
+fi
+[[ $* == is-system-running ]] || exit 1
+echo "${FAKE_SYSTEM:-running}"

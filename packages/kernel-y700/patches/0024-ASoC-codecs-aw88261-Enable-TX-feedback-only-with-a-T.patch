@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 07:32:04 +0900
+Subject: [PATCH] ASoC: codecs: aw88261: Enable TX feedback only with a TX slot
+
+In TDM mode a TX mask of zero left the TX slot at 0 and still turned
+the TX output on, so two amplifiers on one bus both drove slot 0. Turn
+TX feedback on only in I2S mode or when the TDM slot setup names a TX
+slot.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ sound/soc/codecs/aw88261.c | 6 +++++-
+ sound/soc/codecs/aw88261.h | 1 +
+ 2 files changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/sound/soc/codecs/aw88261.c b/sound/soc/codecs/aw88261.c
+index 50a3d56bd..abb72080a 100644
+--- a/sound/soc/codecs/aw88261.c
++++ b/sound/soc/codecs/aw88261.c
+@@ -535,7 +535,8 @@ static int aw88261_dev_start(struct aw88261 *aw88261)
+ 	}
+ 
+ 	/* enable tx feedback */
+-	aw88261_dev_i2s_tx_enable(aw_dev, true);
++	if (aw88261->tx_feedback)
++		aw88261_dev_i2s_tx_enable(aw_dev, true);
+ 
+ 	if (aw88261->amppd_st)
+ 		aw88261_dev_amppd(aw_dev, true);
+@@ -806,6 +807,7 @@ static int aw88261_set_tdm_slot(struct snd_soc_dai *dai,
+ 		aw88261->tx_slotvld_mask = 0 << AW88261_I2S_TX_SLOTVLD_START_BIT;
+ 		aw88261->rxl_slotvld_mask = 0 << AW88261_I2S_RXL_SLOTVLD_START_BIT;
+ 		aw88261->rxr_slotvld_mask = 1 << AW88261_I2S_RXR_SLOTVLD_START_BIT;
++		aw88261->tx_feedback = true;
+ 		return 0;
+ 	case 1:
+ 		aw88261->slot_num_value = AW88261_SLOT_NUM_TDM1S_VALUE;
+@@ -847,6 +849,7 @@ static int aw88261_set_tdm_slot(struct snd_soc_dai *dai,
+ 		return -EINVAL;
+ 	}
+ 
++	aw88261->tx_feedback = tx_mask != 0;
+ 	if (tx_mask != 0) {
+ 		if ((chan = __ffs(tx_mask)) > 16)
+ 			return -EINVAL;
+@@ -1361,6 +1364,7 @@ static int aw88261_i2c_probe(struct i2c_client *i2c)
+ 	aw88261->tdm_bck_value = AW88261_TDM_BCK_UNSET;
+ 	aw88261->md_value = AW88261_I2SMD_PHILIPS_STANDARD_VALUE;
+ 	aw88261->rxr_slotvld_mask = 1 << AW88261_I2S_RXR_SLOTVLD_START_BIT;
++	aw88261->tx_feedback = true;
+ 
+ 	mutex_init(&aw88261->lock);
+ 
+diff --git a/sound/soc/codecs/aw88261.h b/sound/soc/codecs/aw88261.h
+index e5fc8ce4d..838203247 100644
+--- a/sound/soc/codecs/aw88261.h
++++ b/sound/soc/codecs/aw88261.h
+@@ -634,6 +634,7 @@ struct aw88261 {
+ 	unsigned int rxr_slotvld_mask;
+ 
+ 	bool phase_sync;
++	bool tx_feedback;
+ };
+ 
+ #endif
+-- 
+2.55.0
+

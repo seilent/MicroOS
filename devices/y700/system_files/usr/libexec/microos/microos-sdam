@@ -1,0 +1,35 @@
+sdam_find() {
+  modprobe -q nvmem_qcom-spmi-sdam 2> /dev/null
+  i=0
+  while [ "$i" -lt "${MICROOS_SDAM_TRIES:-10}" ]; do
+    for d in "${MICROOS_NVMEM_ROOT:-/sys/bus/nvmem/devices}"/spmi_sdam*; do
+      [ -e "$d/nvmem" ] || continue
+      node=$(readlink "$d/of_node") || continue
+      [ "${node##*/}" = nvram@7100 ] || continue
+      sdam=$d
+      return 0
+    done
+    sleep 1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+sdam_byte() {
+  dd if="$sdam/nvmem" bs=1 skip=72 count=1 2> /dev/null | od -An -tu1 | tr -d ' \n'
+}
+
+sdam_put() {
+  old=$(sdam_byte)
+  case $old in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  if [ "$1" = preset ]; then
+    new=$(( (old & 1) | 4 ))
+  else
+    new=$(( old & ~4 ))
+  fi
+  [ "$new" != "$old" ] || return 0
+  printf "\\$(printf %03o "$new")" | dd of="$sdam/nvmem" bs=1 seek=72 count=1 conv=notrunc 2> /dev/null || return 1
+  [ "$(sdam_byte)" = "$new" ]
+}

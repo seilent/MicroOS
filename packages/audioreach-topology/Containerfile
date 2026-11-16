@@ -1,0 +1,10 @@
+FROM localhost/microos-pkg-builder
+
+COPY audioreach-topology.spec SOURCE.env /tmp/audioreach-topology/
+RUN . /tmp/audioreach-topology/SOURCE.env \
+ && dnf -y --setopt=install_weak_deps=False builddep \
+      --define "commit $AUDIOREACH_TOPOLOGY_REF" \
+      --define "snapdate $AUDIOREACH_TOPOLOGY_DATE" \
+      /tmp/audioreach-topology/audioreach-topology.spec \
+ && dnf clean all \
+ && rm -rf /tmp/audioreach-topology

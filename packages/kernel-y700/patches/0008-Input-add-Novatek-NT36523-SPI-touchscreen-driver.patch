@@ -1,0 +1,1130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 01:36:28 +0900
+Subject: [PATCH] Input: add Novatek NT36523 SPI touchscreen driver
+
+Add a driver for the touchscreen and pen part of the Novatek NT36523
+display driver IC over SPI. The controller runs from RAM: each time the
+panel is enabled the driver identifies the chip, loads the firmware
+named by firmware-name, waits for the firmware to start and enables the
+interrupt. It follows the panel through the DRM panel follower API and
+starts the firmware after the panel is enabled, with the display already
+scanning out. The firmware is loaded again after every panel enable and
+after a controller watchdog reset. A reset reported as 0xfe first puts
+the MCU in idle and clears its ACI error flag. More than five watchdog
+resets in a row, each within ten seconds of the last, stop the reloads
+until the panel is enabled again. A start that fails while the panel is
+on, for example because the firmware file is not readable yet, is
+retried a few times.
+
+After each start the driver sends the pen mode command; the pen module
+parameter turns that off.
+
+Touches are reported as a multitouch device with up to ten contacts and
+the pen as a separate tablet device with pressure, tilt and two buttons.
+Size, orientation and physical size come from the common touchscreen
+properties.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ MAINTAINERS                                 |    1 +
+ drivers/input/touchscreen/Kconfig           |   12 +
+ drivers/input/touchscreen/Makefile          |    1 +
+ drivers/input/touchscreen/novatek-nt36523.c | 1038 +++++++++++++++++++
+ 4 files changed, 1052 insertions(+)
+ create mode 100644 drivers/input/touchscreen/novatek-nt36523.c
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 788d06ba2..19a7fa9eb 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -19989,6 +19989,7 @@ M:	seilent <github@seilent.net>
+ L:	linux-input@vger.kernel.org
+ S:	Maintained
+ F:	Documentation/devicetree/bindings/input/touchscreen/novatek,nt36523-ts.yaml
++F:	drivers/input/touchscreen/novatek-nt36523.c
+ 
+ NOVATEK NT72676 I2C CONTROLLER DRIVER
+ M:	Ben Huang <ben_huang@novatek.com.tw>
+diff --git a/drivers/input/touchscreen/Kconfig b/drivers/input/touchscreen/Kconfig
+index 9b9ae8ac3..36e3373ac 100644
+--- a/drivers/input/touchscreen/Kconfig
++++ b/drivers/input/touchscreen/Kconfig
+@@ -701,6 +701,18 @@ config TOUCHSCREEN_NOVATEK_NVT_TS
+ 	  To compile this driver as a module, choose M here: the
+ 	  module will be called novatek-nvt-ts.
+ 
++config TOUCHSCREEN_NOVATEK_NT36523
++	tristate "Novatek NT36523 SPI touchscreen support"
++	depends on SPI
++	depends on DRM || !DRM
++	help
++	  Say Y here if you have the touchscreen and pen of a Novatek NT36523
++	  display driver IC connected over SPI.
++	  If unsure, say N.
++
++	  To compile this driver as a module, choose M here: the
++	  module will be called novatek-nt36523.
++
+ config TOUCHSCREEN_IMAGIS
+ 	tristate "Imagis touchscreen support"
+ 	depends on I2C
+diff --git a/drivers/input/touchscreen/Makefile b/drivers/input/touchscreen/Makefile
+index bfd9de833..22e65217e 100644
+--- a/drivers/input/touchscreen/Makefile
++++ b/drivers/input/touchscreen/Makefile
+@@ -68,6 +68,7 @@ obj-$(CONFIG_TOUCHSCREEN_MIGOR)		+= migor_ts.o
+ obj-$(CONFIG_TOUCHSCREEN_MMS114)	+= mms114.o
+ obj-$(CONFIG_TOUCHSCREEN_MSG2638)	+= msg2638.o
+ obj-$(CONFIG_TOUCHSCREEN_MTOUCH)	+= mtouch.o
++obj-$(CONFIG_TOUCHSCREEN_NOVATEK_NT36523)	+= novatek-nt36523.o
+ obj-$(CONFIG_TOUCHSCREEN_NOVATEK_NVT_TS)	+= novatek-nvt-ts.o
+ obj-$(CONFIG_TOUCHSCREEN_HP600)		+= hp680_ts_input.o
+ obj-$(CONFIG_TOUCHSCREEN_HP7XX)		+= jornada720_ts.o
+diff --git a/drivers/input/touchscreen/novatek-nt36523.c b/drivers/input/touchscreen/novatek-nt36523.c
+new file mode 100644
+index 000000000..e13cd02bd
+--- /dev/null
++++ b/drivers/input/touchscreen/novatek-nt36523.c
+@@ -0,0 +1,1038 @@
++// SPDX-License-Identifier: GPL-2.0-only
++
++#include <linux/bits.h>
++#include <linux/delay.h>
++#include <linux/err.h>
++#include <linux/firmware.h>
++#include <linux/gpio/consumer.h>
++#include <linux/input.h>
++#include <linux/input/mt.h>
++#include <linux/input/touchscreen.h>
++#include <linux/interrupt.h>
++#include <linux/jiffies.h>
++#include <linux/math.h>
++#include <linux/minmax.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/property.h>
++#include <linux/sizes.h>
++#include <linux/slab.h>
++#include <linux/spi/spi.h>
++#include <linux/unaligned.h>
++#include <linux/workqueue.h>
++
++#include <drm/drm_panel.h>
++
++#define NT36523_PAGE_SELECT		0xff
++#define NT36523_PAGE_WRITE		BIT(7)
++#define NT36523_PAGE_OFFSET		GENMASK(6, 0)
++
++#define NT36523_HALT_REG		0x7fff80
++#define NT36523_HALT_KEY		0x5a
++#define NT36523_CHIP_ID_REG		0x3f004
++#define NT36523_LOADER_REG		0x3f0fe
++#define NT36523_LOADER_KEY		0x69
++#define NT36523_IDLE_KEY		0xaa
++#define NT36523_CODE_CRC_REG		0x3f100
++#define NT36523_DATA_CRC_REG		0x3f104
++#define NT36523_START_REG		0x3f10d
++#define NT36523_CODE_LEN_REG		0x3f118
++#define NT36523_CODE_DST_REG		0x3f128
++#define NT36523_DATA_DST_REG		0x3f12c
++#define NT36523_DATA_LEN_REG		0x3f130
++#define NT36523_ACI_CLR_REG		0x3f705
++#define NT36523_ACI_CLR_KEY		0xa5
++#define NT36523_MIRROR_REG		0x3f7e8
++#define NT36523_MIRROR_ON		0x69
++#define NT36523_MIRROR_BUSY_REG		0x3f7f1
++
++#define NT36523_EV_CMD			0x50
++#define NT36523_EV_STATE		0x60
++#define NT36523_EV_VERSION		0x78
++
++#define NT36523_CMD_VERIFY		0xae
++#define NT36523_CMD_PEN			0x7b
++
++#define NT36523_STATE_RUN_FIRST		0xa0
++#define NT36523_STATE_RUN_LAST		0xaf
++
++#define NT36523_VERSION_LEN		38
++#define NT36523_FW_BLOCK		SZ_4K
++#define NT36523_FW_TABLE		0x30
++#define NT36523_FW_ENTRY_LEN		16
++#define NT36523_XFER_MAX		(63 * SZ_1K)
++#define NT36523_XFER_ALIGN		128
++
++#define NT36523_MAX_TOUCHES		10
++#define NT36523_TOUCH_LEN		6
++#define NT36523_ID_STATUS		30
++#define NT36523_SUM_LEN			65
++#define NT36523_PEN_OFFSET		65
++#define NT36523_PEN_LEN			14
++#define NT36523_EVENT_LEN		(NT36523_PEN_OFFSET + NT36523_PEN_LEN)
++#define NT36523_PEN_IN_RANGE		0x01
++#define NT36523_PEN_GONE		0xff
++#define NT36523_PEN_MAX_PRESSURE	4095
++#define NT36523_PEN_MAX_TILT		60
++#define NT36523_PEN_TILT_RES		57
++
++#define NT36523_FAULT_LIMIT		10
++#define NT36523_START_TRIES		5
++#define NT36523_START_RETRY_MS		2000
++#define NT36523_RELOAD_WINDOW_MS	10000
++#define NT36523_BUF_LEN			128
++
++static bool pen = true;
++module_param(pen, bool, 0644);
++MODULE_PARM_DESC(pen, "Send the pen mode command after each firmware start");
++
++struct nt36523_chip {
++	const char *name;
++	u32 event_base;
++	u32 dma_cfg_reg;
++};
++
++struct nt36523_seg {
++	u32 src;
++	u32 dst;
++	u32 len;
++	u32 crc;
++};
++
++struct nt36523_ts {
++	struct spi_device *spi;
++	struct input_dev *touch;
++	struct input_dev *pen;
++	struct touchscreen_properties prop;
++	struct touchscreen_properties pen_prop;
++	struct drm_panel_follower follower;
++	struct delayed_work boot_work;
++	const struct nt36523_chip *chip;
++	const char *fw_name;
++	const struct firmware *fw;
++	struct nt36523_seg *segs;
++	unsigned int num_segs;
++	bool dual;
++	bool dma_cfg;
++	bool powered;
++	bool running;
++	bool version_shown;
++	bool aci_error;
++	u8 fault_count;
++	u8 start_tries;
++	u8 reloads;
++	unsigned long reload_time;
++	u8 event[NT36523_EVENT_LEN];
++	u8 *tx;
++	u8 *rx;
++	u8 *xfer;
++	size_t xfer_len;
++};
++
++static const struct nt36523_chip nt36523_chip = {
++	.name = "NT36523",
++	.event_base = 0x2fe00,
++};
++
++static const struct nt36523_chip nt36523n_chip = {
++	.name = "NT36523N",
++	.event_base = 0x2fd00,
++	.dma_cfg_reg = 0x3f7d0,
++};
++
++static int nt36523_set_page(struct nt36523_ts *ts, u32 addr)
++{
++	ts->tx[0] = NT36523_PAGE_SELECT;
++	ts->tx[1] = addr >> 15;
++	ts->tx[2] = addr >> 7;
++
++	return spi_write(ts->spi, ts->tx, 3);
++}
++
++static int nt36523_write(struct nt36523_ts *ts, u32 addr, const void *data,
++			 size_t len)
++{
++	int error;
++
++	if (len > NT36523_BUF_LEN - 1)
++		return -EINVAL;
++
++	error = nt36523_set_page(ts, addr);
++	if (error)
++		return error;
++
++	ts->tx[0] = (addr & NT36523_PAGE_OFFSET) | NT36523_PAGE_WRITE;
++	memcpy(&ts->tx[1], data, len);
++
++	return spi_write(ts->spi, ts->tx, len + 1);
++}
++
++static int nt36523_write_byte(struct nt36523_ts *ts, u32 addr, u8 val)
++{
++	return nt36523_write(ts, addr, &val, 1);
++}
++
++static int nt36523_read(struct nt36523_ts *ts, u32 addr, void *data, size_t len)
++{
++	struct spi_transfer xfer = {
++		.tx_buf = ts->tx,
++		.rx_buf = ts->rx,
++		.len = len + 2,
++	};
++	int error;
++
++	if (len > NT36523_BUF_LEN - 2)
++		return -EINVAL;
++
++	error = nt36523_set_page(ts, addr);
++	if (error)
++		return error;
++
++	memset(ts->tx, 0, len + 2);
++	ts->tx[0] = addr & NT36523_PAGE_OFFSET;
++
++	error = spi_sync_transfer(ts->spi, &xfer, 1);
++	if (error)
++		return error;
++
++	memcpy(data, &ts->rx[2], len);
++
++	return 0;
++}
++
++static int nt36523_enter_loader(struct nt36523_ts *ts)
++{
++	int error;
++
++	error = nt36523_write_byte(ts, NT36523_LOADER_REG, NT36523_LOADER_KEY);
++	if (error)
++		return error;
++
++	usleep_range(5000, 6000);
++
++	return 0;
++}
++
++static int nt36523_detect(struct nt36523_ts *ts)
++{
++	static const u8 zero[6];
++	u8 id[6] = { };
++	int error;
++	int i;
++
++	for (i = 0; i < 5; i++) {
++		if (i)
++			fsleep(10000);
++
++		error = nt36523_enter_loader(ts);
++		if (error)
++			continue;
++
++		error = nt36523_write(ts, NT36523_CHIP_ID_REG, zero, sizeof(zero));
++		if (error)
++			continue;
++
++		error = nt36523_read(ts, NT36523_CHIP_ID_REG, id, sizeof(id));
++		if (error)
++			continue;
++
++		if (id[3] == 0x23 && id[4] == 0x65 && id[5] == 0x03) {
++			ts->chip = id[0] == 0x17 ? &nt36523n_chip : &nt36523_chip;
++			return 0;
++		}
++	}
++
++	dev_err(&ts->spi->dev, "no NT36523 found, id %6ph\n", id);
++
++	return error ?: -ENODEV;
++}
++
++static int nt36523_parse_fw(struct nt36523_ts *ts)
++{
++	struct device *dev = &ts->spi->dev;
++	const u8 *data = ts->fw->data;
++	size_t size = ts->fw->size;
++	unsigned int table, extra, count, i, n;
++	struct nt36523_seg *segs;
++	size_t blocks, off;
++	const u8 *ver;
++	u32 hdr_end, limit;
++
++	blocks = size / NT36523_FW_BLOCK;
++	while (blocks && memcmp(&data[blocks * NT36523_FW_BLOCK - 3], "NVT", 3) &&
++	       memcmp(&data[blocks * NT36523_FW_BLOCK - 3], "MOD", 3))
++		blocks--;
++
++	if (!blocks) {
++		dev_err(dev, "firmware end marker not found\n");
++		return -EINVAL;
++	}
++
++	ver = &data[(blocks - 1) * NT36523_FW_BLOCK];
++	if ((u8)(ver[0] + ver[1]) != 0xff) {
++		dev_err(dev, "firmware version check failed\n");
++		return -EINVAL;
++	}
++
++	hdr_end = get_unaligned_le32(data);
++	if (hdr_end > size)
++		return -EINVAL;
++
++	ts->dual = data[0x20] & BIT(1);
++	ts->dma_cfg = data[0x29] & BIT(0);
++
++	limit = ts->dual ? hdr_end / 2 : hdr_end;
++	table = limit > NT36523_FW_TABLE ?
++		DIV_ROUND_UP(limit - NT36523_FW_TABLE, NT36523_FW_ENTRY_LEN) : 0;
++	extra = data[0x28] & BIT(4) ? data[0x28] & GENMASK(3, 0) : 0;
++	count = 2 + table + ts->dual + extra;
++
++	segs = devm_kcalloc(dev, count, sizeof(*segs), GFP_KERNEL);
++	if (!segs)
++		return -ENOMEM;
++
++	for (i = 0; i < 2; i++) {
++		segs[i].src = get_unaligned_le32(&data[i * 12]);
++		segs[i].dst = get_unaligned_le32(&data[i * 12 + 4]);
++		segs[i].len = get_unaligned_le32(&data[i * 12 + 8]);
++		segs[i].crc = get_unaligned_le32(&data[0x18 + i * 4]);
++	}
++
++	for (i = 2; i < count; i++) {
++		n = i - 2;
++
++		if (n < table)
++			off = NT36523_FW_TABLE + n * NT36523_FW_ENTRY_LEN;
++		else if (ts->dual && n == table)
++			off = (size_t)hdr_end - NT36523_FW_ENTRY_LEN;
++		else
++			off = segs[1].src + (size_t)(n - table - ts->dual) * NT36523_FW_ENTRY_LEN;
++
++		if (off > size - NT36523_FW_ENTRY_LEN)
++			goto err_free;
++
++		segs[i].dst = get_unaligned_le32(&data[off]);
++		segs[i].len = get_unaligned_le32(&data[off + 4]);
++		segs[i].src = get_unaligned_le32(&data[off + 8]);
++		segs[i].crc = get_unaligned_le32(&data[off + 12]);
++	}
++
++	for (i = 0; i < count; i++)
++		if (segs[i].src > size || segs[i].len > size - segs[i].src)
++			goto err_free;
++
++	ts->segs = segs;
++	ts->num_segs = count;
++
++	return 0;
++
++err_free:
++	devm_kfree(dev, segs);
++	dev_err(dev, "invalid firmware segment table\n");
++
++	return -EINVAL;
++}
++
++static int nt36523_write_seg(struct nt36523_ts *ts, const struct nt36523_seg *seg)
++{
++	size_t left = min_t(size_t, seg->len + 1, ts->fw->size - seg->src);
++	u32 dst = seg->dst;
++	u32 src = seg->src;
++	int error;
++
++	while (left) {
++		size_t len = min(left, ts->xfer_len);
++
++		error = nt36523_set_page(ts, dst);
++		if (error)
++			return error;
++
++		ts->xfer[0] = (dst & NT36523_PAGE_OFFSET) | NT36523_PAGE_WRITE;
++		memcpy(&ts->xfer[1], &ts->fw->data[src], len);
++
++		error = spi_write(ts->spi, ts->xfer, len + 1);
++		if (error)
++			return error;
++
++		dst += len;
++		src += len;
++		left -= len;
++	}
++
++	return 0;
++}
++
++static int nt36523_set_bank(struct nt36523_ts *ts, u32 dst_reg, u32 len_reg,
++			    u32 crc_reg, const struct nt36523_seg *seg)
++{
++	u8 buf[4];
++	int error;
++
++	put_unaligned_le24(seg->dst, buf);
++	error = nt36523_write(ts, dst_reg, buf, 3);
++	if (error)
++		return error;
++
++	put_unaligned_le24(seg->len, buf);
++	error = nt36523_write(ts, len_reg, buf, 3);
++	if (error)
++		return error;
++
++	put_unaligned_le32(seg->crc, buf);
++
++	return nt36523_write(ts, crc_reg, buf, 4);
++}
++
++static int nt36523_wait_byte(struct nt36523_ts *ts, u32 addr, u8 want,
++			     unsigned int tries, unsigned int delay_us)
++{
++	u8 val;
++	int error;
++
++	while (tries--) {
++		error = nt36523_read(ts, addr, &val, 1);
++		if (error)
++			return error;
++
++		if (val == want)
++			return 0;
++
++		fsleep(delay_us);
++	}
++
++	return -ETIMEDOUT;
++}
++
++static int nt36523_wait_running(struct nt36523_ts *ts)
++{
++	u32 addr = ts->chip->event_base + NT36523_EV_STATE;
++	unsigned int tries = 11;
++	u8 state;
++	int error;
++
++	while (tries--) {
++		error = nt36523_read(ts, addr, &state, 1);
++		if (error)
++			return error;
++
++		if (state >= NT36523_STATE_RUN_FIRST && state <= NT36523_STATE_RUN_LAST)
++			return 0;
++
++		fsleep(10000);
++	}
++
++	return -ETIMEDOUT;
++}
++
++static int nt36523_download(struct nt36523_ts *ts)
++{
++	static const u8 zero[32];
++	static const u8 dma_cfg[] = { 0x35, 0x32, 0xaa, 0x00 };
++	static const u8 verify_cmd[] = { NT36523_CMD_VERIFY, 0x00 };
++	u32 event = ts->chip->event_base;
++	unsigned int i;
++	int error;
++
++	error = nt36523_enter_loader(ts);
++	if (error)
++		return error;
++
++	error = nt36523_set_bank(ts, NT36523_CODE_DST_REG, NT36523_CODE_LEN_REG,
++				 NT36523_CODE_CRC_REG, &ts->segs[0]);
++	if (error)
++		return error;
++
++	error = nt36523_set_bank(ts, NT36523_DATA_DST_REG, NT36523_DATA_LEN_REG,
++				 NT36523_DATA_CRC_REG, &ts->segs[1]);
++	if (error)
++		return error;
++
++	if (ts->dual) {
++		if (ts->dma_cfg && ts->chip->dma_cfg_reg) {
++			error = nt36523_write(ts, ts->segs[1].dst, zero, sizeof(zero));
++			if (error)
++				return error;
++
++			error = nt36523_write(ts, ts->chip->dma_cfg_reg, dma_cfg,
++					      sizeof(dma_cfg));
++			if (error)
++				return error;
++		}
++
++		error = nt36523_write_byte(ts, NT36523_MIRROR_REG, NT36523_MIRROR_ON);
++		if (error)
++			return error;
++	}
++
++	for (i = 0; i < ts->num_segs; i++) {
++		if (!ts->segs[i].len)
++			continue;
++
++		error = nt36523_write_seg(ts, &ts->segs[i]);
++		if (error)
++			return error;
++	}
++
++	if (ts->dual) {
++		error = nt36523_wait_byte(ts, NT36523_MIRROR_BUSY_REG, 0, 200, 1000);
++		if (error)
++			return error;
++	}
++
++	error = nt36523_write(ts, event + NT36523_EV_STATE, zero, 6);
++	if (error)
++		return error;
++
++	error = nt36523_write(ts, event + NT36523_EV_CMD, verify_cmd, sizeof(verify_cmd));
++	if (error)
++		return error;
++
++	error = nt36523_write_byte(ts, NT36523_START_REG, 1);
++	if (error)
++		return error;
++
++	usleep_range(5000, 6000);
++
++	return nt36523_wait_running(ts);
++}
++
++static int nt36523_read_version(struct nt36523_ts *ts)
++{
++	struct device *dev = &ts->spi->dev;
++	u8 info[NT36523_VERSION_LEN];
++	int error;
++	int i;
++
++	for (i = 0; i < 3; i++) {
++		if (i)
++			fsleep(10000);
++
++		error = nt36523_read(ts, ts->chip->event_base + NT36523_EV_VERSION,
++				     info, sizeof(info));
++		if (error)
++			return error;
++
++		if ((u8)(info[0] + info[1]) != 0xff)
++			continue;
++
++		if (ts->version_shown)
++			dev_dbg(dev, "%s, firmware 0x%02x, PID 0x%04x\n",
++				ts->chip->name, info[0], get_unaligned_le16(&info[34]));
++		else
++			dev_info(dev, "%s, firmware 0x%02x, PID 0x%04x\n",
++				 ts->chip->name, info[0], get_unaligned_le16(&info[34]));
++		ts->version_shown = true;
++
++		return 0;
++	}
++
++	dev_err(dev, "invalid firmware info %2ph\n", info);
++
++	return -EIO;
++}
++
++static int nt36523_host_cmd(struct nt36523_ts *ts, u8 cmd, u8 arg)
++{
++	u32 addr = ts->chip->event_base + NT36523_EV_CMD;
++	u8 buf[2] = { cmd, arg };
++	int error;
++
++	error = nt36523_write(ts, addr, buf, sizeof(buf));
++	if (error)
++		return error;
++
++	msleep(20);
++
++	return nt36523_wait_byte(ts, addr, 0, 5, 20000);
++}
++
++static int nt36523_boot(struct nt36523_ts *ts)
++{
++	struct device *dev = &ts->spi->dev;
++	int error;
++	int i;
++
++	if (!ts->fw) {
++		error = firmware_request_nowarn(&ts->fw, ts->fw_name, dev);
++		if (error)
++			return error;
++
++		error = nt36523_parse_fw(ts);
++		if (error) {
++			release_firmware(ts->fw);
++			ts->fw = NULL;
++			return error;
++		}
++	}
++
++	if (ts->aci_error) {
++		error = nt36523_write_byte(ts, NT36523_LOADER_REG, NT36523_IDLE_KEY);
++		if (error)
++			return error;
++
++		fsleep(15000);
++
++		error = nt36523_write_byte(ts, NT36523_ACI_CLR_REG,
++					   NT36523_ACI_CLR_KEY);
++		if (error)
++			return error;
++
++		ts->aci_error = false;
++	}
++
++	error = nt36523_write_byte(ts, NT36523_HALT_REG, NT36523_HALT_KEY);
++	if (error)
++		return error;
++
++	fsleep(10000);
++
++	error = nt36523_detect(ts);
++	if (error)
++		return error;
++
++	for (i = 0; i < 3; i++) {
++		error = nt36523_download(ts);
++		if (!error)
++			break;
++	}
++	if (error) {
++		dev_err(dev, "firmware download failed: %d\n", error);
++		return error;
++	}
++
++	error = nt36523_read_version(ts);
++	if (error)
++		return error;
++
++	if (pen) {
++		error = nt36523_host_cmd(ts, NT36523_CMD_PEN, 0);
++		if (error)
++			dev_warn(dev, "pen mode command failed: %d\n", error);
++	}
++
++	return 0;
++}
++
++static void nt36523_release_contacts(struct nt36523_ts *ts)
++{
++	input_mt_sync_frame(ts->touch);
++	input_sync(ts->touch);
++
++	input_report_abs(ts->pen, ABS_PRESSURE, 0);
++	input_report_key(ts->pen, BTN_TOUCH, 0);
++	input_report_key(ts->pen, BTN_STYLUS, 0);
++	input_report_key(ts->pen, BTN_STYLUS2, 0);
++	input_report_key(ts->pen, BTN_TOOL_PEN, 0);
++	input_sync(ts->pen);
++}
++
++static void nt36523_stop(struct nt36523_ts *ts)
++{
++	if (!ts->running)
++		return;
++
++	disable_irq(ts->spi->irq);
++	ts->running = false;
++	nt36523_release_contacts(ts);
++}
++
++static void nt36523_boot_work(struct work_struct *work)
++{
++	struct nt36523_ts *ts = container_of(to_delayed_work(work),
++					     struct nt36523_ts, boot_work);
++	int error;
++
++	if (!READ_ONCE(ts->powered))
++		return;
++
++	nt36523_stop(ts);
++
++	error = nt36523_boot(ts);
++	if (error) {
++		if (++ts->start_tries < NT36523_START_TRIES) {
++			mod_delayed_work(system_dfl_wq, &ts->boot_work,
++					 msecs_to_jiffies(NT36523_START_RETRY_MS));
++			return;
++		}
++
++		dev_err(&ts->spi->dev, "failed to start controller: %d\n", error);
++		return;
++	}
++
++	ts->fault_count = 0;
++	ts->running = true;
++	enable_irq(ts->spi->irq);
++}
++
++static void nt36523_schedule_boot(struct nt36523_ts *ts)
++{
++	ts->start_tries = 0;
++	mod_delayed_work(system_dfl_wq, &ts->boot_work, 0);
++}
++
++static bool nt36523_fault(const u8 *data)
++{
++	int i;
++
++	for (i = 0; i < NT36523_TOUCH_LEN; i++)
++		if (data[i] != 0xfd && data[i] != 0xfe)
++			return false;
++
++	return true;
++}
++
++static bool nt36523_pattern(const u8 *data, u8 val)
++{
++	int i;
++
++	for (i = 0; i < NT36523_TOUCH_LEN; i++)
++		if (data[i] != val)
++			return false;
++
++	return true;
++}
++
++static void nt36523_report_touch(struct nt36523_ts *ts, const u8 *data)
++{
++	unsigned int x, y, id;
++	const u8 *p;
++	int i;
++
++	for (i = 0; i < NT36523_MAX_TOUCHES; i++) {
++		p = &data[i * NT36523_TOUCH_LEN];
++		id = p[0] >> 3;
++
++		if (!id || id > NT36523_MAX_TOUCHES)
++			continue;
++
++		switch (p[0] & GENMASK(2, 0)) {
++		case 1:
++		case 2:
++			break;
++		default:
++			continue;
++		}
++
++		x = min_t(unsigned int, get_unaligned_be16(&p[1]), ts->prop.max_x);
++		y = min_t(unsigned int, get_unaligned_be16(&p[3]), ts->prop.max_y);
++
++		input_mt_slot(ts->touch, id - 1);
++		input_mt_report_slot_state(ts->touch, MT_TOOL_FINGER, true);
++		touchscreen_report_pos(ts->touch, &ts->prop, x, y, true);
++	}
++
++	input_mt_sync_frame(ts->touch);
++	input_sync(ts->touch);
++}
++
++static void nt36523_report_pen(struct nt36523_ts *ts, const u8 *p)
++{
++	const struct touchscreen_properties *prop = &ts->pen_prop;
++	unsigned int x, y, pressure;
++	int tilt_x, tilt_y;
++
++	switch (p[0]) {
++	case NT36523_PEN_IN_RANGE:
++		x = min_t(unsigned int, get_unaligned_be16(&p[1]), prop->max_x);
++		y = min_t(unsigned int, get_unaligned_be16(&p[3]), prop->max_y);
++		pressure = min_t(unsigned int, get_unaligned_be16(&p[5]),
++				 NT36523_PEN_MAX_PRESSURE);
++		tilt_x = clamp_t(int, (s8)p[7], -NT36523_PEN_MAX_TILT, NT36523_PEN_MAX_TILT);
++		tilt_y = clamp_t(int, (s8)p[8], -NT36523_PEN_MAX_TILT, NT36523_PEN_MAX_TILT);
++
++		if (prop->invert_x)
++			tilt_x = -tilt_x;
++		if (prop->invert_y)
++			tilt_y = -tilt_y;
++		if (prop->swap_x_y)
++			swap(tilt_x, tilt_y);
++
++		touchscreen_report_pos(ts->pen, prop, x, y, false);
++		input_report_abs(ts->pen, ABS_PRESSURE, pressure);
++		input_report_abs(ts->pen, ABS_TILT_X, tilt_x);
++		input_report_abs(ts->pen, ABS_TILT_Y, tilt_y);
++		input_report_key(ts->pen, BTN_TOUCH, pressure);
++		input_report_key(ts->pen, BTN_STYLUS, p[11] & BIT(0));
++		input_report_key(ts->pen, BTN_STYLUS2, p[11] & BIT(1));
++		input_report_key(ts->pen, BTN_TOOL_PEN, 1);
++		break;
++	case NT36523_PEN_GONE:
++		input_report_abs(ts->pen, ABS_PRESSURE, 0);
++		input_report_key(ts->pen, BTN_TOUCH, 0);
++		input_report_key(ts->pen, BTN_STYLUS, 0);
++		input_report_key(ts->pen, BTN_STYLUS2, 0);
++		input_report_key(ts->pen, BTN_TOOL_PEN, 0);
++		break;
++	default:
++		return;
++	}
++
++	input_sync(ts->pen);
++}
++
++static irqreturn_t nt36523_irq(int irq, void *dev_id)
++{
++	struct nt36523_ts *ts = dev_id;
++	u8 *data = ts->event;
++	u8 sum = 0;
++	int error;
++	int i;
++
++	error = nt36523_read(ts, ts->chip->event_base, data, NT36523_EVENT_LEN);
++	if (error) {
++		dev_err_ratelimited(&ts->spi->dev, "event read failed: %d\n", error);
++		return IRQ_HANDLED;
++	}
++
++	if (nt36523_fault(data)) {
++		if (++ts->fault_count > NT36523_FAULT_LIMIT) {
++			ts->fault_count = 0;
++			ts->aci_error = data[0] == 0xfe;
++			if (time_after(jiffies, ts->reload_time +
++				       msecs_to_jiffies(NT36523_RELOAD_WINDOW_MS)))
++				ts->reloads = 0;
++			ts->reload_time = jiffies;
++			if (++ts->reloads > NT36523_START_TRIES) {
++				dev_err(&ts->spi->dev, "controller keeps resetting, stopping\n");
++				ts->running = false;
++				disable_irq_nosync(irq);
++				return IRQ_HANDLED;
++			}
++			dev_warn(&ts->spi->dev, "controller reset (0x%02x), reloading firmware\n",
++				 data[0]);
++			nt36523_schedule_boot(ts);
++		}
++		return IRQ_HANDLED;
++	}
++
++	ts->fault_count = 0;
++
++	if (nt36523_pattern(data, 0x77))
++		return IRQ_HANDLED;
++
++	for (i = 0; i < NT36523_SUM_LEN; i++)
++		sum += data[i];
++	if (sum) {
++		dev_dbg_ratelimited(&ts->spi->dev, "event checksum mismatch\n");
++		return IRQ_HANDLED;
++	}
++
++	if ((data[0] >> 3) == NT36523_ID_STATUS)
++		return IRQ_HANDLED;
++
++	nt36523_report_touch(ts, data);
++	nt36523_report_pen(ts, &data[NT36523_PEN_OFFSET]);
++
++	return IRQ_HANDLED;
++}
++
++static int nt36523_panel_enabled(struct drm_panel_follower *follower)
++{
++	struct nt36523_ts *ts = container_of(follower, struct nt36523_ts, follower);
++
++	WRITE_ONCE(ts->powered, true);
++	ts->reloads = 0;
++	nt36523_schedule_boot(ts);
++
++	return 0;
++}
++
++static int nt36523_panel_disabling(struct drm_panel_follower *follower)
++{
++	struct nt36523_ts *ts = container_of(follower, struct nt36523_ts, follower);
++
++	WRITE_ONCE(ts->powered, false);
++	cancel_delayed_work_sync(&ts->boot_work);
++	nt36523_stop(ts);
++
++	return 0;
++}
++
++static const struct drm_panel_follower_funcs nt36523_follower_funcs = {
++	.panel_enabled = nt36523_panel_enabled,
++	.panel_disabling = nt36523_panel_disabling,
++};
++
++static void nt36523_set_res(struct nt36523_ts *ts, struct input_dev *input,
++			    const struct touchscreen_properties *prop,
++			    unsigned int axis_x, unsigned int axis_y)
++{
++	struct device *dev = &ts->spi->dev;
++	u32 mm;
++
++	if (!device_property_read_u32(dev, "touchscreen-x-mm", &mm) && mm)
++		input_abs_set_res(input, prop->swap_x_y ? axis_y : axis_x,
++				  (prop->max_x + 1) / mm);
++
++	if (!device_property_read_u32(dev, "touchscreen-y-mm", &mm) && mm)
++		input_abs_set_res(input, prop->swap_x_y ? axis_x : axis_y,
++				  (prop->max_y + 1) / mm);
++}
++
++static int nt36523_init_touch(struct nt36523_ts *ts)
++{
++	struct device *dev = &ts->spi->dev;
++	struct input_dev *input;
++	int error;
++
++	input = devm_input_allocate_device(dev);
++	if (!input)
++		return -ENOMEM;
++
++	input->name = "Novatek NT36523 Touchscreen";
++	input->id.bustype = BUS_SPI;
++
++	input_set_capability(input, EV_ABS, ABS_MT_POSITION_X);
++	input_set_capability(input, EV_ABS, ABS_MT_POSITION_Y);
++	touchscreen_parse_properties(input, true, &ts->prop);
++	if (!ts->prop.max_x || !ts->prop.max_y)
++		return dev_err_probe(dev, -EINVAL, "touchscreen size missing\n");
++
++	nt36523_set_res(ts, input, &ts->prop, ABS_MT_POSITION_X, ABS_MT_POSITION_Y);
++
++	error = input_mt_init_slots(input, NT36523_MAX_TOUCHES,
++				    INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED);
++	if (error)
++		return error;
++
++	ts->touch = input;
++
++	return 0;
++}
++
++static int nt36523_init_pen(struct nt36523_ts *ts)
++{
++	struct device *dev = &ts->spi->dev;
++	struct input_dev *input;
++
++	input = devm_input_allocate_device(dev);
++	if (!input)
++		return -ENOMEM;
++
++	input->name = "Novatek NT36523 Pen";
++	input->id.bustype = BUS_SPI;
++
++	input_set_capability(input, EV_KEY, BTN_TOUCH);
++	input_set_capability(input, EV_KEY, BTN_TOOL_PEN);
++	input_set_capability(input, EV_KEY, BTN_STYLUS);
++	input_set_capability(input, EV_KEY, BTN_STYLUS2);
++	input_set_capability(input, EV_ABS, ABS_X);
++	input_set_capability(input, EV_ABS, ABS_Y);
++	input_set_abs_params(input, ABS_PRESSURE, 0, NT36523_PEN_MAX_PRESSURE, 0, 0);
++	input_set_abs_params(input, ABS_TILT_X, -NT36523_PEN_MAX_TILT, NT36523_PEN_MAX_TILT, 0, 0);
++	input_set_abs_params(input, ABS_TILT_Y, -NT36523_PEN_MAX_TILT, NT36523_PEN_MAX_TILT, 0, 0);
++	input_abs_set_res(input, ABS_TILT_X, NT36523_PEN_TILT_RES);
++	input_abs_set_res(input, ABS_TILT_Y, NT36523_PEN_TILT_RES);
++	__set_bit(INPUT_PROP_DIRECT, input->propbit);
++
++	touchscreen_parse_properties(input, false, &ts->pen_prop);
++	nt36523_set_res(ts, input, &ts->pen_prop, ABS_X, ABS_Y);
++
++	ts->pen = input;
++
++	return 0;
++}
++
++static void nt36523_cleanup(void *data)
++{
++	struct nt36523_ts *ts = data;
++
++	cancel_delayed_work_sync(&ts->boot_work);
++	release_firmware(ts->fw);
++}
++
++static int nt36523_probe(struct spi_device *spi)
++{
++	struct device *dev = &spi->dev;
++	struct gpio_desc *reset;
++	struct nt36523_ts *ts;
++	int error;
++
++	if (spi->controller->flags & SPI_CONTROLLER_HALF_DUPLEX)
++		return dev_err_probe(dev, -EINVAL, "full duplex SPI controller required\n");
++
++	if (!drm_is_panel_follower(dev))
++		return dev_err_probe(dev, -EINVAL, "panel missing\n");
++
++	ts = devm_kzalloc_obj(dev, *ts);
++	if (!ts)
++		return -ENOMEM;
++
++	ts->spi = spi;
++
++	ts->xfer_len = min_t(size_t, NT36523_XFER_MAX, spi_max_transfer_size(spi) - 1);
++	ts->xfer_len = round_down(ts->xfer_len, NT36523_XFER_ALIGN);
++	if (!ts->xfer_len)
++		return dev_err_probe(dev, -EINVAL, "SPI transfer size too small\n");
++
++	ts->tx = devm_kzalloc(dev, NT36523_BUF_LEN, GFP_KERNEL);
++	ts->rx = devm_kzalloc(dev, NT36523_BUF_LEN, GFP_KERNEL);
++	ts->xfer = devm_kmalloc(dev, ts->xfer_len + 1, GFP_KERNEL);
++	if (!ts->tx || !ts->rx || !ts->xfer)
++		return -ENOMEM;
++
++	error = device_property_read_string(dev, "firmware-name", &ts->fw_name);
++	if (error)
++		return dev_err_probe(dev, error, "firmware-name missing\n");
++
++	reset = devm_gpiod_get_optional(dev, "reset", GPIOD_OUT_LOW);
++	if (IS_ERR(reset))
++		return dev_err_probe(dev, PTR_ERR(reset), "failed to get reset GPIO\n");
++
++	INIT_DELAYED_WORK(&ts->boot_work, nt36523_boot_work);
++
++	error = nt36523_init_touch(ts);
++	if (error)
++		return error;
++
++	error = nt36523_init_pen(ts);
++	if (error)
++		return error;
++
++	error = devm_request_threaded_irq(dev, spi->irq, NULL, nt36523_irq,
++					  IRQF_ONESHOT | IRQF_NO_AUTOEN, dev_name(dev), ts);
++	if (error)
++		return dev_err_probe(dev, error, "failed to request IRQ\n");
++
++	error = input_register_device(ts->touch);
++	if (error)
++		return error;
++
++	error = input_register_device(ts->pen);
++	if (error)
++		return error;
++
++	error = devm_add_action_or_reset(dev, nt36523_cleanup, ts);
++	if (error)
++		return error;
++
++	ts->follower.funcs = &nt36523_follower_funcs;
++
++	return devm_drm_panel_add_follower(dev, &ts->follower);
++}
++
++static const struct of_device_id nt36523_of_match[] = {
++	{ .compatible = "novatek,nt36523-ts" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, nt36523_of_match);
++
++static const struct spi_device_id nt36523_spi_id[] = {
++	{ "nt36523-ts" },
++	{ }
++};
++MODULE_DEVICE_TABLE(spi, nt36523_spi_id);
++
++static struct spi_driver nt36523_driver = {
++	.driver = {
++		.name = "novatek-nt36523",
++		.of_match_table = nt36523_of_match,
++	},
++	.probe = nt36523_probe,
++	.id_table = nt36523_spi_id,
++};
++module_spi_driver(nt36523_driver);
++
++MODULE_DESCRIPTION("Novatek NT36523 SPI touchscreen and pen driver");
++MODULE_AUTHOR("seilent <github@seilent.net>");
++MODULE_LICENSE("GPL");
+-- 
+2.55.0
+

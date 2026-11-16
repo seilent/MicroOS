@@ -1,0 +1,17 @@
+[Unit]
+Description=Count the boot attempt on microos_efi and restore boot-prev.img after two failed starts
+DefaultDependencies=no
+Wants=dev-disk-by\x2dpartlabel-microos_efi.device dev-disk-by\x2dpartlabel-boot_b.device dev-disk-by\x2dpartlabel-boot_a.device
+After=dev-disk-by\x2dpartlabel-microos_efi.device dev-disk-by\x2dpartlabel-boot_b.device dev-disk-by\x2dpartlabel-boot_a.device
+Before=initrd-root-device.target
+OnFailure=emergency.target
+OnFailureJobMode=replace-irreversibly
+
+[Service]
+Type=oneshot
+TimeoutStartSec=180
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microos/microos-guard
+
+[Install]
+WantedBy=initrd.target

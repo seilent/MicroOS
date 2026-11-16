@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-grow-root
+mnt=${MICROOS_GROW_PATH:-/var}
+die() { echo "$me: $*" >&2; exit 1; }
+
+src=$(findmnt -nvr -o SOURCE -T "$mnt" | tail -1)
+[[ -b $src ]] || die "$mnt is on $src, not a block device"
+devsize=$(blockdev --getsize64 "$src")
+mapfile -t sizes < <(btrfs filesystem show --raw "$mnt" | awk '$1 == "devid" { print $4 }')
+(( ${#sizes[@]} == 1 )) || die "$mnt is not a one device btrfs"
+if (( sizes[0] < devsize )); then
+  btrfs filesystem resize max "$mnt"
+  echo "$me: grew $mnt from ${sizes[0]} to $devsize bytes"
+fi

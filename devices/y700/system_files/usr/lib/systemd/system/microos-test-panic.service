@@ -1,0 +1,11 @@
+[Unit]
+Description=microos.test=panic: Crash the kernel
+ConditionKernelCommandLine=microos.test=panic
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-test panic
+
+[Install]
+WantedBy=multi-user.target

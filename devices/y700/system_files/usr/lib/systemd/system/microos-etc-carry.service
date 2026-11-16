@@ -1,0 +1,16 @@
+[Unit]
+Description=Copy the /etc edits made after the update was written into the new deployment
+DefaultDependencies=no
+ConditionPathExists=/var/lib/microos/update-written
+RequiresMountsFor=/var/lib/microos /sysroot
+After=local-fs.target systemd-sysusers.service microos-groups.service
+Before=systemd-tmpfiles-setup.service ldconfig.service sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microos/microos-etc-carry
+
+[Install]
+WantedBy=sysinit.target

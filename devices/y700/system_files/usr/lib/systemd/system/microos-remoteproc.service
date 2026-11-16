@@ -1,0 +1,13 @@
+[Unit]
+Description=Start remote processors whose firmware was not there at probe
+After=local-fs.target
+Before=display-manager.service upower.service
+RequiresMountsFor=/var/lib/microos/fw
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microos/microos-remoteproc
+
+[Install]
+WantedBy=multi-user.target

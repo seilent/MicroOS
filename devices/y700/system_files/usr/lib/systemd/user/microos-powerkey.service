@@ -1,0 +1,10 @@
+[Unit]
+Description=Power key actions in the Steam session
+BindsTo=gamescope-session-plus@steam.service
+After=gamescope-session-plus@steam.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/libexec/microos/microos-powerkey
+Restart=always
+RestartSec=2

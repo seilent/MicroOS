@@ -1,0 +1,1 @@
+ACTION=="add", SUBSYSTEM=="pci", ATTR{class}=="0x060400", KERNELS=="1c00000.pcie", ATTR{power/wakeup}="disabled"

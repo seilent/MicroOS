@@ -1,0 +1,15 @@
+[Unit]
+Description=Block sleep until the boot is confirmed and the stub is stopped
+Wants=systemd-logind.service
+After=systemd-logind.service
+Before=display-manager.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/systemd-inhibit --what=sleep --mode=block --who=microos-sleep-gate "--why=boot not confirmed or stub armed" /usr/libexec/microos/microos-sleep-gate
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

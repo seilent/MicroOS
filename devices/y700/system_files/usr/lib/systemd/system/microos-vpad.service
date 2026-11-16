@@ -1,0 +1,35 @@
+[Unit]
+Description=Virtual Steam Deck controller and power key
+Before=display-manager.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+ExecStart=/usr/libexec/microos/microos-vpad
+ExecStopPost=/usr/libexec/microos/microos-vpad restore
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=microos-vpad
+RuntimeDirectoryPreserve=yes
+DeviceAllow=/dev/uhid rw
+DeviceAllow=char-input rw
+DevicePolicy=closed
+ReadWritePaths=-/sys/class/backlight/ktz8866-backlight/
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+InaccessiblePaths=-/run/dbus -/run/systemd -/run/user -/run/udev -/run/chrony
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

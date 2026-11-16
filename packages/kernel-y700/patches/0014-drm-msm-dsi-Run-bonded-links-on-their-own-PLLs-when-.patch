@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Sun, 15 Nov 2026 13:30:34 +0900
+Subject: [PATCH] drm/msm/dsi: Run bonded links on their own PLLs when DSI1
+ uses its PHY
+
+In bonded DSI mode the DSI0 PHY is the clock master: PHY1 takes its bit
+clock from PHY0 and the link clocks of both hosts come from the DSI0
+PLL.
+
+When the board parents the byte clock of the DSI1 host to the DSI1 PHY
+instead, set both PHYs to the standalone use case, so each PLL drives
+its own link at the same rate.
+
+Both PLLs are then clock sources, so save the PLL state of the DSI1 PHY
+on disable as well. The PHY reset on enable clears the PLL registers and
+the clock rates do not change, so without the saved state the DSI1 PLL
+is not programmed again after the first disable, for example across
+system suspend. The restore still skips a PHY in the slave use case.
+
+The Lenovo Legion Y700 (2025), an SM8650 with a C-PHY dual DSI panel,
+needs this: with its bit clock taken from PHY0, DSI1 sends no high
+speed data the panel can receive, while it works on its own PLL.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ drivers/gpu/drm/msm/dsi/dsi.h         |  1 +
+ drivers/gpu/drm/msm/dsi/dsi_host.c    | 16 ++++++++++++++++
+ drivers/gpu/drm/msm/dsi/dsi_manager.c | 15 ++++++---------
+ 3 files changed, 23 insertions(+), 9 deletions(-)
+
+diff --git a/drivers/gpu/drm/msm/dsi/dsi.h b/drivers/gpu/drm/msm/dsi/dsi.h
+index 93c028a12..84b7efbb1 100644
+--- a/drivers/gpu/drm/msm/dsi/dsi.h
++++ b/drivers/gpu/drm/msm/dsi/dsi.h
+@@ -123,6 +123,7 @@ void msm_dsi_host_snapshot(struct msm_disp_state *disp_state, struct mipi_dsi_ho
+ void msm_dsi_host_test_pattern_en(struct mipi_dsi_host *host);
+ struct drm_dsc_config *msm_dsi_host_get_dsc_config(struct mipi_dsi_host *host);
+ bool msm_dsi_host_is_wide_bus_enabled(struct mipi_dsi_host *host);
++bool msm_dsi_host_byte_clk_from_phy(struct mipi_dsi_host *host, struct msm_dsi_phy *phy);
+ 
+ /* dsi phy */
+ struct msm_dsi_phy;
+diff --git a/drivers/gpu/drm/msm/dsi/dsi_host.c b/drivers/gpu/drm/msm/dsi/dsi_host.c
+index 78f0fd259..4c58f25ff 100644
+--- a/drivers/gpu/drm/msm/dsi/dsi_host.c
++++ b/drivers/gpu/drm/msm/dsi/dsi_host.c
+@@ -4,6 +4,7 @@
+  */
+ 
+ #include <linux/clk.h>
++#include <linux/clk-provider.h>
+ #include <linux/delay.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/err.h>
+@@ -18,6 +19,8 @@
+ #include <linux/regulator/consumer.h>
+ #include <linux/spinlock.h>
+ 
++#include <dt-bindings/clock/qcom,dsi-phy-28nm.h>
++
+ #include <video/mipi_display.h>
+ 
+ #include <drm/display/drm_dsc_helper.h>
+@@ -817,6 +820,19 @@ bool msm_dsi_host_is_wide_bus_enabled(struct mipi_dsi_host *host)
+ 					MSM_DSI_6G_VER_MINOR_V2_5_0);
+ }
+ 
++bool msm_dsi_host_byte_clk_from_phy(struct mipi_dsi_host *host, struct msm_dsi_phy *phy)
++{
++	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
++	struct clk_hw *pll = phy->provided_clocks->hws[DSI_BYTE_PLL_CLK];
++	struct clk_hw *hw;
++
++	for (hw = __clk_get_hw(msm_host->byte_clk); hw; hw = clk_hw_get_parent(hw))
++		if (hw == pll)
++			return true;
++
++	return false;
++}
++
+ static void dsi_ctrl_enable(struct msm_dsi_host *msm_host,
+ 			struct msm_dsi_phy_shared_timings *phy_shared_timings, struct msm_dsi_phy *phy)
+ {
+diff --git a/drivers/gpu/drm/msm/dsi/dsi_manager.c b/drivers/gpu/drm/msm/dsi/dsi_manager.c
+index 531d4ff78..4134eb98b 100644
+--- a/drivers/gpu/drm/msm/dsi/dsi_manager.c
++++ b/drivers/gpu/drm/msm/dsi/dsi_manager.c
+@@ -89,17 +89,13 @@ static int dsi_mgr_setup_components(int id)
+ 							msm_dsi : other_dsi;
+ 		struct msm_dsi *slave_link_dsi = IS_MASTER_DSI_LINK(id) ?
+ 							other_dsi : msm_dsi;
++		bool own_pll = msm_dsi_host_byte_clk_from_phy(clk_slave_dsi->host,
++							      clk_slave_dsi->phy);
+ 
+-		/*
+-		 * PLL0 is to drive both DSI link clocks in bonded DSI mode.
+-		 *
+-		 * Set the usecase before calling msm_dsi_host_register(), which would
+-		 * already program the PLL source mux based on a default usecase.
+-		 */
+ 		msm_dsi_phy_set_usecase(clk_master_dsi->phy,
+-					MSM_DSI_PHY_MASTER);
++					own_pll ? MSM_DSI_PHY_STANDALONE : MSM_DSI_PHY_MASTER);
+ 		msm_dsi_phy_set_usecase(clk_slave_dsi->phy,
+-					MSM_DSI_PHY_SLAVE);
++					own_pll ? MSM_DSI_PHY_STANDALONE : MSM_DSI_PHY_SLAVE);
+ 		msm_dsi_host_set_phy_mode(msm_dsi->host, msm_dsi->phy);
+ 		msm_dsi_host_set_phy_mode(other_dsi->host, other_dsi->phy);
+ 
+@@ -366,8 +362,9 @@ static void dsi_mgr_bridge_post_disable(struct drm_bridge *bridge,
+ 	if (is_bonded_dsi && msm_dsi1)
+ 		msm_dsi_host_disable_irq(msm_dsi1->host);
+ 
+-	/* Save PHY status if it is a clock source */
+ 	msm_dsi_phy_pll_save_state(msm_dsi->phy);
++	if (is_bonded_dsi && msm_dsi1)
++		msm_dsi_phy_pll_save_state(msm_dsi1->phy);
+ 
+ 	ret = msm_dsi_host_power_off(host);
+ 	if (ret)
+-- 
+2.55.0
+

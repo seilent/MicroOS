@@ -1,0 +1,464 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 06:02:50 +0900
+Subject: [PATCH] usb: typec: mux: Add Parade PS5169 redriver driver
+
+Add a driver for the Parade PS5169 USB-C linear redriver. It registers
+as orientation switch and retimer, programs its default equalization
+settings at probe and switches the chip between power down, USB 3,
+four lane DisplayPort and USB 3 with two lane DisplayPort, mirrored by
+plug orientation. The AUX channel monitor is on only in the
+DisplayPort modes and the chip's HPD input follows the sink's HPD
+state. It registers a DRM AUX bridge so the DisplayPort controller
+chains through it to the connector.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ MAINTAINERS                    |   1 +
+ drivers/usb/typec/mux/Kconfig  |  14 ++
+ drivers/usb/typec/mux/Makefile |   1 +
+ drivers/usb/typec/mux/ps5169.c | 383 +++++++++++++++++++++++++++++++++
+ 4 files changed, 399 insertions(+)
+ create mode 100644 drivers/usb/typec/mux/ps5169.c
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 7c7e1c744..70054effc 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -21279,6 +21279,7 @@ M:	seilent <github@seilent.net>
+ L:	linux-usb@vger.kernel.org
+ S:	Maintained
+ F:	Documentation/devicetree/bindings/usb/parade,ps5169.yaml
++F:	drivers/usb/typec/mux/ps5169.c
+ 
+ PARALLAX PING IIO SENSOR DRIVER
+ M:	Andreas Klinger <ak@it-klinger.de>
+diff --git a/drivers/usb/typec/mux/Kconfig b/drivers/usb/typec/mux/Kconfig
+index 6dd8f961b..c0ca3c3b1 100644
+--- a/drivers/usb/typec/mux/Kconfig
++++ b/drivers/usb/typec/mux/Kconfig
+@@ -56,6 +56,20 @@ config TYPEC_MUX_NB7VPQ904M
+ 	  Say Y or M if your system has a On Semiconductor NB7VPQ904M Type-C
+ 	  redriver chip found on some devices with a Type-C port.
+ 
++config TYPEC_MUX_PS5169
++	tristate "Parade PS5169 Type-C redriver driver"
++	depends on I2C
++	depends on DRM || DRM=n
++	select DRM_AUX_BRIDGE if DRM_BRIDGE && OF
++	select REGMAP_I2C
++	help
++	  Say Y or M if your system has a Parade PS5169 Type-C redriver chip
++	  found on some devices with a Type-C port. The driver switches the
++	  SuperSpeed lanes between USB 3 and DisplayPort Alt Mode and follows
++	  the plug orientation.
++
++	  If compiled as a module, the module will be named ps5169.
++
+ config TYPEC_MUX_PS883X
+ 	tristate "Parade PS883x Type-C retimer driver"
+ 	depends on I2C
+diff --git a/drivers/usb/typec/mux/Makefile b/drivers/usb/typec/mux/Makefile
+index b4f599eb5..c775bfa12 100644
+--- a/drivers/usb/typec/mux/Makefile
++++ b/drivers/usb/typec/mux/Makefile
+@@ -6,6 +6,7 @@ obj-$(CONFIG_TYPEC_MUX_PI3USB30532)	+= pi3usb30532.o
+ obj-$(CONFIG_TYPEC_MUX_INTEL_PMC)	+= intel_pmc_mux.o
+ obj-$(CONFIG_TYPEC_MUX_IT5205)		+= it5205.o
+ obj-$(CONFIG_TYPEC_MUX_NB7VPQ904M)	+= nb7vpq904m.o
++obj-$(CONFIG_TYPEC_MUX_PS5169)		+= ps5169.o
+ obj-$(CONFIG_TYPEC_MUX_PS883X)		+= ps883x.o
+ obj-$(CONFIG_TYPEC_MUX_PTN36502)	+= ptn36502.o
+ obj-$(CONFIG_TYPEC_MUX_TUSB1046)	+= tusb1046.o
+diff --git a/drivers/usb/typec/mux/ps5169.c b/drivers/usb/typec/mux/ps5169.c
+new file mode 100644
+index 000000000..55d12777b
+--- /dev/null
++++ b/drivers/usb/typec/mux/ps5169.c
+@@ -0,0 +1,383 @@
++// SPDX-License-Identifier: GPL-2.0-only
++
++#include <drm/bridge/aux-bridge.h>
++#include <linux/delay.h>
++#include <linux/i2c.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/regmap.h>
++#include <linux/regulator/consumer.h>
++#include <linux/usb/typec_altmode.h>
++#include <linux/usb/typec_dp.h>
++#include <linux/usb/typec_mux.h>
++#include <linux/usb/typec_retimer.h>
++
++#define PS5169_MODE_REG			0x40
++#define PS5169_MODE_AUTO_PWRDN		BIT(7)
++#define PS5169_MODE_USB			BIT(6)
++#define PS5169_MODE_DP			BIT(5)
++#define PS5169_MODE_FLIP		BIT(4)
++
++#define PS5169_RX1_TERM_REG		0x8d
++#define PS5169_RX2_TERM_REG		0x90
++#define PS5169_RX_TERM_FORCE_ON		BIT(0)
++
++#define PS5169_RESET_REG		0x9d
++#define PS5169_RESET			BIT(7)
++
++#define PS5169_AUX_REG			0xa0
++#define PS5169_AUX_DISABLE		BIT(1)
++
++#define PS5169_HPD_REG			0xa1
++#define PS5169_HPD_HIGH			BIT(2)
++
++#define PS5169_CHIP_ID_REG		0xac
++
++struct ps5169 {
++	struct i2c_client *client;
++	struct regmap *regmap;
++	struct typec_switch_dev *sw;
++	struct typec_retimer *retimer;
++
++	struct typec_switch *typec_switch;
++	struct typec_mux *typec_mux;
++
++	struct mutex lock; /* protect non-concurrent retimer & switch */
++
++	enum typec_orientation orientation;
++	unsigned long mode;
++	unsigned int svid;
++	bool hpd;
++	bool dp;
++};
++
++static const struct reg_sequence ps5169_init_seq[] = {
++	{ PS5169_MODE_REG, PS5169_MODE_AUTO_PWRDN },
++	{ 0x04, 0x44 },
++	{ PS5169_AUX_REG, PS5169_AUX_DISABLE },
++	{ 0x51, 0x87 },
++	{ 0x50, 0x00 },
++	{ 0x54, 0x01 },
++	{ 0x5d, 0x66 },
++	{ 0x52, 0x10 },
++	{ 0x55, 0x00 },
++	{ 0x56, 0x00 },
++	{ 0x57, 0x00 },
++	{ 0x58, 0x00 },
++	{ 0x59, 0x00 },
++	{ 0x5a, 0x00 },
++	{ 0x5b, 0x00 },
++	{ 0x5e, 0x05 },
++	{ 0x5f, 0x00 },
++	{ 0x60, 0x00 },
++	{ 0x61, 0x03 },
++	{ 0x65, 0x40 },
++	{ 0x66, 0x00 },
++	{ 0x67, 0x03 },
++	{ 0x75, 0x0c },
++	{ 0x77, 0x00 },
++	{ 0x78, 0x7c },
++};
++
++static int ps5169_write_mode(struct ps5169 *ps, bool usb, bool dp)
++{
++	bool flip = (usb || dp) && ps->orientation == TYPEC_ORIENTATION_REVERSE;
++	unsigned int term = usb ? PS5169_RX_TERM_FORCE_ON : 0;
++	unsigned int mode = PS5169_MODE_AUTO_PWRDN |
++			    (usb ? PS5169_MODE_USB : 0) |
++			    (dp ? PS5169_MODE_DP : 0) |
++			    (flip ? PS5169_MODE_FLIP : 0);
++	const struct reg_sequence seq[] = {
++		{ PS5169_MODE_REG, mode },
++		{ PS5169_RX1_TERM_REG, term },
++		{ PS5169_RX2_TERM_REG, term },
++		{ PS5169_AUX_REG, dp ? 0 : PS5169_AUX_DISABLE },
++	};
++
++	return regmap_multi_reg_write(ps->regmap, seq, ARRAY_SIZE(seq));
++}
++
++static int ps5169_write_hpd(struct ps5169 *ps)
++{
++	return regmap_write(ps->regmap, PS5169_HPD_REG,
++			    (ps->dp && ps->hpd) ? PS5169_HPD_HIGH : 0);
++}
++
++static int ps5169_set(struct ps5169 *ps)
++{
++	bool usb = false;
++	bool dp = false;
++	int ret;
++
++	if (ps->mode == TYPEC_STATE_SAFE) {
++		ret = ps5169_write_mode(ps, false, false);
++	} else if (ps->svid == USB_TYPEC_DP_SID) {
++		switch (ps->mode) {
++		case TYPEC_DP_STATE_C:
++		case TYPEC_DP_STATE_E:
++			dp = true;
++			break;
++		case TYPEC_DP_STATE_D:
++		case TYPEC_DP_STATE_F:
++			usb = true;
++			dp = true;
++			break;
++		default:
++			return -EOPNOTSUPP;
++		}
++
++		ret = ps5169_write_mode(ps, usb, dp);
++	} else if (!ps->svid) {
++		switch (ps->mode) {
++		case TYPEC_MODE_USB2:
++			break;
++		case TYPEC_STATE_USB:
++		case TYPEC_MODE_USB3:
++			usb = true;
++			break;
++		default:
++			return -EOPNOTSUPP;
++		}
++
++		ret = ps5169_write_mode(ps, usb, false);
++	} else {
++		return -EOPNOTSUPP;
++	}
++
++	if (ret)
++		return ret;
++
++	ps->dp = dp;
++
++	return ps5169_write_hpd(ps);
++}
++
++static int ps5169_sw_set(struct typec_switch_dev *sw, enum typec_orientation orientation)
++{
++	struct ps5169 *ps = typec_switch_get_drvdata(sw);
++	int ret;
++
++	ret = typec_switch_set(ps->typec_switch, orientation);
++	if (ret)
++		return ret;
++
++	guard(mutex)(&ps->lock);
++
++	if (ps->orientation == orientation)
++		return 0;
++
++	ps->orientation = orientation;
++
++	return ps5169_set(ps);
++}
++
++static int ps5169_retimer_set(struct typec_retimer *retimer, struct typec_retimer_state *state)
++{
++	struct ps5169 *ps = typec_retimer_get_drvdata(retimer);
++	struct typec_displayport_data *dp_data = NULL;
++	struct typec_mux_state mux_state;
++	unsigned int svid = 0;
++	bool hpd = false;
++	int ret = 0;
++
++	if (state->alt) {
++		svid = state->alt->svid;
++		if (svid == USB_TYPEC_DP_SID)
++			dp_data = state->data;
++	}
++
++	if (dp_data)
++		hpd = dp_data->status & DP_STATUS_HPD_STATE;
++
++	scoped_guard(mutex, &ps->lock) {
++		unsigned long old_mode = ps->mode;
++		unsigned int old_svid = ps->svid;
++		bool old_hpd = ps->hpd;
++
++		ps->hpd = hpd;
++
++		if (old_mode == state->mode && old_svid == svid) {
++			if (old_hpd != hpd)
++				ret = ps5169_write_hpd(ps);
++		} else {
++			ps->mode = state->mode;
++			ps->svid = svid;
++
++			ret = ps5169_set(ps);
++		}
++
++		if (ret) {
++			ps->mode = old_mode;
++			ps->svid = old_svid;
++			ps->hpd = old_hpd;
++		}
++	}
++
++	if (ret)
++		return ret;
++
++	mux_state.alt = state->alt;
++	mux_state.data = state->data;
++	mux_state.mode = state->mode;
++
++	return typec_mux_set(ps->typec_mux, &mux_state);
++}
++
++static int ps5169_init(struct ps5169 *ps)
++{
++	struct device *dev = &ps->client->dev;
++	u8 id[4];
++	int ret;
++
++	ret = regmap_write(ps->regmap, PS5169_RESET_REG, PS5169_RESET);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to reset\n");
++
++	fsleep(10000);
++
++	ret = regmap_write(ps->regmap, PS5169_RESET_REG, 0);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to release reset\n");
++
++	ret = regmap_bulk_read(ps->regmap, PS5169_CHIP_ID_REG, id, sizeof(id));
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to read chip ID\n");
++
++	dev_dbg(dev, "chip ID %02x%02x, revision %02x%02x\n", id[1], id[0], id[3], id[2]);
++
++	ret = regmap_multi_reg_write(ps->regmap, ps5169_init_seq,
++				     ARRAY_SIZE(ps5169_init_seq));
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to write default settings\n");
++
++	return regmap_write(ps->regmap, PS5169_HPD_REG, 0);
++}
++
++static const struct regmap_config ps5169_regmap = {
++	.max_register = 0xaf,
++	.reg_bits = 8,
++	.val_bits = 8,
++};
++
++static int ps5169_probe(struct i2c_client *client)
++{
++	struct device *dev = &client->dev;
++	struct typec_switch_desc sw_desc = { };
++	struct typec_retimer_desc retimer_desc = { };
++	struct ps5169 *ps;
++	int ret;
++
++	ps = devm_kzalloc_obj(dev, *ps);
++	if (!ps)
++		return -ENOMEM;
++
++	ps->client = client;
++
++	ps->regmap = devm_regmap_init_i2c(client, &ps5169_regmap);
++	if (IS_ERR(ps->regmap))
++		return dev_err_probe(dev, PTR_ERR(ps->regmap),
++				     "failed to allocate register map\n");
++
++	ps->mode = TYPEC_STATE_SAFE;
++	ps->orientation = TYPEC_ORIENTATION_NONE;
++
++	ret = devm_mutex_init(dev, &ps->lock);
++	if (ret)
++		return ret;
++
++	ret = devm_regulator_get_enable_optional(dev, "vdd");
++	if (ret && ret != -ENODEV)
++		return dev_err_probe(dev, ret, "failed to enable vdd\n");
++
++	ps->typec_switch = fwnode_typec_switch_get(dev->fwnode);
++	if (IS_ERR(ps->typec_switch))
++		return dev_err_probe(dev, PTR_ERR(ps->typec_switch),
++				     "failed to acquire orientation-switch\n");
++
++	ps->typec_mux = fwnode_typec_mux_get(dev->fwnode);
++	if (IS_ERR(ps->typec_mux)) {
++		ret = dev_err_probe(dev, PTR_ERR(ps->typec_mux),
++				    "failed to acquire mode-switch\n");
++		goto err_switch_put;
++	}
++
++	ret = ps5169_init(ps);
++	if (ret)
++		goto err_mux_put;
++
++	ret = drm_aux_bridge_register(dev);
++	if (ret) {
++		dev_err_probe(dev, ret, "failed to register aux bridge\n");
++		goto err_mux_put;
++	}
++
++	sw_desc.drvdata = ps;
++	sw_desc.fwnode = dev->fwnode;
++	sw_desc.set = ps5169_sw_set;
++
++	ps->sw = typec_switch_register(dev, &sw_desc);
++	if (IS_ERR(ps->sw)) {
++		ret = dev_err_probe(dev, PTR_ERR(ps->sw),
++				    "failed to register typec switch\n");
++		goto err_mux_put;
++	}
++
++	retimer_desc.drvdata = ps;
++	retimer_desc.fwnode = dev->fwnode;
++	retimer_desc.set = ps5169_retimer_set;
++
++	ps->retimer = typec_retimer_register(dev, &retimer_desc);
++	if (IS_ERR(ps->retimer)) {
++		ret = dev_err_probe(dev, PTR_ERR(ps->retimer),
++				    "failed to register typec retimer\n");
++		goto err_switch_unregister;
++	}
++
++	i2c_set_clientdata(client, ps);
++
++	return 0;
++
++err_switch_unregister:
++	typec_switch_unregister(ps->sw);
++err_mux_put:
++	typec_mux_put(ps->typec_mux);
++err_switch_put:
++	typec_switch_put(ps->typec_switch);
++
++	return ret;
++}
++
++static void ps5169_remove(struct i2c_client *client)
++{
++	struct ps5169 *ps = i2c_get_clientdata(client);
++
++	typec_retimer_unregister(ps->retimer);
++	typec_switch_unregister(ps->sw);
++
++	ps5169_write_mode(ps, false, false);
++	regmap_write(ps->regmap, PS5169_HPD_REG, 0);
++
++	typec_mux_put(ps->typec_mux);
++	typec_switch_put(ps->typec_switch);
++}
++
++static const struct of_device_id ps5169_of_table[] = {
++	{ .compatible = "parade,ps5169" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, ps5169_of_table);
++
++static struct i2c_driver ps5169_driver = {
++	.driver = {
++		.name = "ps5169",
++		.of_match_table = ps5169_of_table,
++	},
++	.probe = ps5169_probe,
++	.remove = ps5169_remove,
++};
++module_i2c_driver(ps5169_driver);
++
++MODULE_AUTHOR("seilent <github@seilent.net>");
++MODULE_DESCRIPTION("Parade PS5169 USB-C redriver driver");
++MODULE_LICENSE("GPL");
+-- 
+2.55.0
+

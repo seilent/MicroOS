@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 07:10:03 +0900
+Subject: [PATCH] ASoC: dt-bindings: awinic,aw88395: Add AW88461
+
+Add the Awinic AW88461 I2S/TDM smart amplifier. It has a reset pin
+and no DVDD supply property, like the other parts that are not the
+AW88261.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ Documentation/devicetree/bindings/sound/awinic,aw88395.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/sound/awinic,aw88395.yaml b/Documentation/devicetree/bindings/sound/awinic,aw88395.yaml
+index b9abb1094..e51270367 100644
+--- a/Documentation/devicetree/bindings/sound/awinic,aw88395.yaml
++++ b/Documentation/devicetree/bindings/sound/awinic,aw88395.yaml
+@@ -23,6 +23,7 @@ properties:
+       - awinic,aw88261
+       - awinic,aw88395
+       - awinic,aw88399
++      - awinic,aw88461
+ 
+   reg:
+     maxItems: 1
+-- 
+2.55.0
+

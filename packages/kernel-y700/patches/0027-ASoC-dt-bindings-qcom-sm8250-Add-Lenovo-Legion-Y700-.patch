@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 07:10:04 +0900
+Subject: [PATCH] ASoC: dt-bindings: qcom,sm8250: Add Lenovo Legion Y700 (2025)
+ sound card
+
+Add the sound card of the Lenovo Legion Y700 (2025), TB321FU, an
+SM8650 tablet with two speaker amplifiers on secondary TDM.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ Documentation/devicetree/bindings/sound/qcom,sm8250.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/sound/qcom,sm8250.yaml b/Documentation/devicetree/bindings/sound/qcom,sm8250.yaml
+index e2e3fc99e..0c89f7c21 100644
+--- a/Documentation/devicetree/bindings/sound/qcom,sm8250.yaml
++++ b/Documentation/devicetree/bindings/sound/qcom,sm8250.yaml
+@@ -36,6 +36,7 @@ properties:
+           - ayaneo,pocket-s2-sndcard
+           - fairphone,fp4-sndcard
+           - fairphone,fp5-sndcard
++          - lenovo,tb321fu-sndcard
+           - motorola,dubai-sndcard
+           - qcom,apq8096-sndcard
+           - qcom,glymur-sndcard
+-- 
+2.55.0
+

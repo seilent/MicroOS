@@ -1,0 +1,14 @@
+[connection]
+id=microos-usb0
+type=ethernet
+interface-name=usb0
+autoconnect=true
+
+[ethernet]
+
+[ipv4]
+address1=10.42.0.1/24
+method=shared
+
+[ipv6]
+method=disabled

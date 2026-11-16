@@ -1,0 +1,72 @@
+bootb_full=100663296
+
+bootb_version() {
+  [ "$(dd if="$1" bs=8 count=1 status=none 2> /dev/null | tr -d '\0')" = ANDROID! ] || return 1
+  od -An -tu4 -j40 -N4 "$1" | tr -d ' '
+}
+
+bootb_cmdline() {
+  printf '%s%s\n' "$(dd if="$1" bs=32 skip=2 count=16 status=none | tr -d '\0')" \
+    "$(dd if="$1" bs=32 skip=19 count=32 status=none | tr -d '\0')"
+}
+
+bootb_word() {
+  bootb_v=$(bootb_version "$1") || return 1
+  case $bootb_v in
+    0|1|2) ;;
+    *) return 1 ;;
+  esac
+  case $- in
+    *f*) bootb_f=1 ;;
+    *) bootb_f=0 ;;
+  esac
+  set -f
+  bootb_r=1
+  for bootb_w in $(bootb_cmdline "$1"); do
+    case $bootb_w in
+      "$2"=*) echo "${bootb_w#"$2"=}"; bootb_r=0; break ;;
+    esac
+  done
+  [ "$bootb_f" = 1 ] || set +f
+  return "$bootb_r"
+}
+
+bootb_size() {
+  if [ -b "$1" ]; then
+    blockdev --getsize64 "$1"
+  else
+    stat -c %s "$1"
+  fi
+}
+
+bootb_sha() {
+  bootb_s=$(dd if="$1" bs=1048576 count="$2" iflag=direct,count_bytes status=none | sha256sum) || return 1
+  echo "${bootb_s%% *}"
+}
+
+bootb_write() {
+  bootb_n=$(stat -c %s "$1") || return 1
+  dd if=/dev/zero of="$2" bs=4096 count=1 oflag=direct,sync conv=notrunc status=none || return 1
+  dd if="$1" of="$2" bs=1048576 skip=4096 seek=4096 iflag=skip_bytes oflag=seek_bytes,direct,sync conv=notrunc \
+    status=none || return 1
+  dd if="$1" of="$2" bs=4096 count=1 oflag=direct,sync conv=notrunc status=none || return 1
+  [ "$(bootb_sha "$2" "$bootb_n")" = "$3" ]
+}
+
+bootb_disk() {
+  bootb_p=$(readlink -f "$1") && readlink -f "$2/${bootb_p##*/}/.."
+}
+
+bootb_prev() {
+  bootb_prev_id=""
+  bootb_prev_sha=""
+  [ -f "$1/microos/boot-prev.id" ] && [ -f "$1/microos/boot-prev.img" ] || return 1
+  read -r bootb_prev_id bootb_prev_sha < "$1/microos/boot-prev.id" || :
+  [ -n "$bootb_prev_id" ] && [ "$bootb_prev_id" != "$2" ] || return 1
+  case $bootb_prev_sha in
+    *[!0-9a-f]*|'') return 1 ;;
+  esac
+  [ "${#bootb_prev_sha}" = 64 ] || return 1
+  bootb_s=$(sha256sum < "$1/microos/boot-prev.img") || return 1
+  [ "${bootb_s%% *}" = "$bootb_prev_sha" ]
+}

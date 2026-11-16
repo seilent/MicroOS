@@ -1,0 +1,12 @@
+[Unit]
+Description=USB serial console and network gadget
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=180
+ExecStart=/usr/libexec/microos/microos-usb-console start
+ExecStop=/usr/libexec/microos/microos-usb-console stop
+
+[Install]
+WantedBy=multi-user.target

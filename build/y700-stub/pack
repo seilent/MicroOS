@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=y700-stub-pack
+usage="usage: pack [--preset-free] [--keep <dir>] <Image> <out> | pack [--preset-free] [--keep <dir>] --prefix <out>"
+here=$(cd "$(dirname "$0")" && pwd)
+conf=${MICROOS_STUB_CONF:-$here/../../devices/y700/system_files/usr/lib/microos/stub.conf}
+die() { echo "$me: $*" >&2; exit 1; }
+
+preset=1
+keep=""
+prefix=""
+while [[ ${1:-} == --* ]]; do
+  case $1 in
+    --preset-free) preset=0; shift ;;
+    --keep) keep=${2:?$usage}; shift 2 ;;
+    --prefix) prefix=${2:?$usage}; shift 2 ;;
+    *) die "$usage" ;;
+  esac
+done
+if [[ -n $prefix ]]; then
+  (( $# == 0 )) || die "$usage"
+else
+  image=${1:?$usage}
+  out=${2:?$usage}
+fi
+
+if [[ -z ${CROSS_COMPILE+x} ]]; then
+  if [[ $(uname -m) == aarch64 ]]; then
+    CROSS_COMPILE=""
+  else
+    CROSS_COMPILE=aarch64-linux-gnu-
+  fi
+fi
+
+[[ -r $conf ]] || die "missing $conf"
+. "$conf"
+
+le() { od -An -v -t"u$2" -j "$1" -N "$2" "$3" | tr -d ' '; }
+
+if [[ -z $prefix ]]; then
+  [[ $(dd if="$image" bs=1 skip=56 count=4 status=none) == ARMd ]] || die "$image has no arm64 Image header"
+  size=$(le 16 8 "$image")
+  (( size > 0 )) || die "$image header image_size is 0"
+fi
+(( MICROOS_STUB_ROUTINE % 4096 == 0 )) || die "routine address is not page aligned"
+(( MICROOS_STUB_STATUS >= MICROOS_STUB_ROUTINE + 0x2000 )) || die "status word overlaps the routine or its table"
+(( MICROOS_STUB_DISARM >= MICROOS_STUB_STATUS + 8 )) || die "disarm word overlaps the status words"
+(( MICROOS_STUB_ROUTINE >= 0xc0000000 && MICROOS_STUB_DISARM + 64 <= 0x100000000 )) || die "stub words outside 3 to 4 GiB"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "${tmp:?}"' EXIT
+work=${keep:-$tmp}
+mkdir -p "$work"
+
+defs=(--defsym PRESET="$preset")
+for v in PAYLOAD MPIDR ROUTINE STATUS DISARM MAGIC SIGNATURE ARMED RUNNING STOPPED REFUSED DEADLINE; do
+  n=MICROOS_STUB_$v
+  defs+=(--defsym "$v=$(( ${!n} ))")
+done
+
+"${CROSS_COMPILE}as" -o "$work/stub.o" "${defs[@]}" "$here/stub.S"
+"${CROSS_COMPILE}ld" -Ttext=0 -o "$work/stub.elf" "$work/stub.o"
+"${CROSS_COMPILE}objcopy" -O binary "$work/stub.elf" "$work/stub.bin"
+
+stub=$(stat -c %s "$work/stub.bin")
+(( stub <= MICROOS_STUB_PAYLOAD )) || die "stub is $stub bytes, over the payload offset"
+
+cp "$work/stub.bin" "$tmp/packed"
+truncate -s "$(( MICROOS_STUB_PAYLOAD ))" "$tmp/packed"
+if [[ -n $prefix ]]; then
+  mv -f "$tmp/packed" "$prefix"
+  echo "$me: $prefix stub $stub bytes, prefix $(( MICROOS_STUB_PAYLOAD )) bytes, preset $preset"
+  exit 0
+fi
+cat "$image" >> "$tmp/packed"
+total=$(( size + MICROOS_STUB_PAYLOAD ))
+printf "$(printf '\\x%02x' $(( total & 0xff )) $(( total >> 8 & 0xff )) $(( total >> 16 & 0xff )) $(( total >> 24 & 0xff )) \
+  $(( total >> 32 & 0xff )) $(( total >> 40 & 0xff )) $(( total >> 48 & 0xff )) $(( total >> 56 & 0xff )))" |
+  dd of="$tmp/packed" bs=1 seek=16 conv=notrunc status=none
+[[ $(dd if="$tmp/packed" bs=1 skip=56 count=4 status=none) == ARMd && $(le 16 8 "$tmp/packed") == "$total" ]] ||
+  die "packed header check failed"
+mv -f "$tmp/packed" "$out"
+echo "$me: $out stub $stub bytes, image_size $total, preset $preset"

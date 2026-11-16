@@ -1,0 +1,30 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 08:34:58 +0900
+Subject: [PATCH] ASoC: codecs: aw88261: Keep the volume across profile changes
+
+A profile change set the volume control to 0 dB attenuation, the
+loudest setting. Keep the volume the user set.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ sound/soc/codecs/aw88261.c | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/sound/soc/codecs/aw88261.c b/sound/soc/codecs/aw88261.c
+index 7a16bb413..c662280d9 100644
+--- a/sound/soc/codecs/aw88261.c
++++ b/sound/soc/codecs/aw88261.c
+@@ -422,9 +422,6 @@ static int aw88261_dev_reg_update(struct aw88261 *aw88261,
+ 	if (ret)
+ 		return ret;
+ 
+-	if (aw_dev->prof_cur != aw_dev->prof_index)
+-		vol_desc->ctl_volume = 0;
+-
+ 	/* keep min volume */
+ 	aw88261_dev_set_volume(aw_dev, vol_desc->mute_volume);
+ 
+-- 
+2.55.0
+

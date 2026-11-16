@@ -1,0 +1,7 @@
+[Unit]
+Description=Reboot when the boot is not confirmed in 15 minutes
+ConditionPathExists=/run/ostree-booted
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-fail deadline

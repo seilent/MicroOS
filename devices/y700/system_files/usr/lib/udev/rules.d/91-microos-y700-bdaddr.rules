@@ -1,0 +1,1 @@
+SUBSYSTEM=="bluetooth", KERNEL=="hci[0-9]*", ENV{DEVTYPE}=="host", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-bdaddr@%k.service"

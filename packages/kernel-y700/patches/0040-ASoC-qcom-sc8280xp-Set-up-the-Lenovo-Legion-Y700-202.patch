@@ -1,0 +1,49 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 10:01:25 +0900
+Subject: [PATCH] ASoC: qcom: sc8280xp: Set up the Lenovo Legion Y700 (2025)
+ headset jack
+
+The TB321FU has a WCD9390 codec for the USB-C headset. Set up the
+headset jack on its codec DMA links. A failed jack setup only warns,
+so the speakers on the same card keep working.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ sound/soc/qcom/sc8280xp.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/sound/soc/qcom/sc8280xp.c b/sound/soc/qcom/sc8280xp.c
+index 928ae1579..59fd52bd8 100644
+--- a/sound/soc/qcom/sc8280xp.c
++++ b/sound/soc/qcom/sc8280xp.c
+@@ -460,6 +460,18 @@ static int ayaneo_ps2_snd_prepare(struct snd_pcm_substream *substream)
+ 					   ayaneo_ps2_channels_mapping);
+ }
+ 
++static int lenovo_tb321fu_snd_init(struct snd_soc_pcm_runtime *rtd)
++{
++	struct sc8280xp_snd_data *data = snd_soc_card_get_drvdata(rtd->card);
++	int ret;
++
++	ret = qcom_snd_wcd_jack_setup(rtd, &data->jack, &data->jack_setup);
++	if (ret)
++		dev_warn(rtd->dev, "headset jack setup failed: %d\n", ret);
++
++	return 0;
++}
++
+ static int sc8280xp_snd_prepare(struct snd_pcm_substream *substream)
+ {
+ 	struct snd_soc_pcm_runtime *rtd = snd_soc_substream_to_rtd(substream);
+@@ -597,6 +609,7 @@ static const struct qcom_snd_soc_common lenovo_tb321fu_priv_data = {
+ 	.driver_name = "sm8650",
+ 	.dapm_widgets = sc8280xp_dapm_widgets,
+ 	.num_dapm_widgets = ARRAY_SIZE(sc8280xp_dapm_widgets),
++	.snd_init = lenovo_tb321fu_snd_init,
+ 	.mi2s_bclk_enable = true,
+ 	.codec_dai_fmt = SND_SOC_DAIFMT_BC_FC |
+ 			 SND_SOC_DAIFMT_NB_NF |
+-- 
+2.55.0
+

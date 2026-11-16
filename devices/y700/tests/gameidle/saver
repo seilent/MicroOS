@@ -1,0 +1,42 @@
+#!/usr/bin/python3
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+log = sys.argv[1]
+XML = """<node><interface name="org.freedesktop.ScreenSaver">
+<method name="Inhibit"><arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="u" direction="out"/></method>
+<method name="UnInhibit"><arg type="u" direction="in"/></method>
+</interface></node>"""
+cookie = [0]
+
+
+def say(msg):
+    with open(log, "a") as f:
+        f.write(msg + "\n")
+
+
+def call(conn, sender, path, iface, method, params, inv):
+    if method == "Inhibit":
+        cookie[0] += 1
+        say(f"inhibit {cookie[0]} {sender}")
+        inv.return_value(GLib.Variant("(u)", (cookie[0],)))
+    else:
+        say(f"uninhibit {params.unpack()[0]}")
+        inv.return_value(None)
+
+
+def acquired(conn, name):
+    conn.register_object("/org/freedesktop/ScreenSaver", Gio.DBusNodeInfo.new_for_xml(XML).interfaces[0], call, None, None)
+    say("ready")
+
+
+def lost(conn, name):
+    sys.exit(1)
+
+
+Gio.bus_own_name(Gio.BusType.SESSION, "org.freedesktop.ScreenSaver", Gio.BusNameOwnerFlags.NONE, acquired, None, lost)
+GLib.MainLoop().run()

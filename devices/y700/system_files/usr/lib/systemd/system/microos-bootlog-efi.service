@@ -1,0 +1,9 @@
+[Unit]
+Description=Copy the boot journal to microos_efi
+RequiresMountsFor=/boot/efi
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microos/microos-efi-log boot
+ExecStop=/usr/libexec/microos/microos-efi-log boot

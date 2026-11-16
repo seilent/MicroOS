@@ -1,0 +1,349 @@
+#!/usr/bin/env python3
+import fcntl
+import mmap
+import os
+import shutil
+import struct
+import sys
+import zlib
+
+LAYOUT = {
+    "slots": {"a": "boot_a", "b": "boot_b"},
+    "microos_slot": "b",
+    "root_label": "microos",
+    "byte": 54,
+    "fields": {"priority": (0, 2), "active": (2, 1), "retry": (3, 3), "successful": (6, 1), "unbootable": (7, 1)},
+    "arm": {"successful": 0, "unbootable": 0, "retry": 7},
+}
+
+ME = "microos-slot"
+PARTLABEL = "/dev/disk/by-partlabel"
+SYSBLOCK = "/sys/class/block"
+TEST = os.environ.get("MICROOS_SLOT_TEST") == "1"
+TREE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
+OWN_CONF = os.path.join(TREE, "usr/lib/microos/slot.conf")
+CONF = os.environ.get("MICROOS_SLOT_CONF", OWN_CONF) if TEST else OWN_CONF
+SAVES = os.environ.get("MICROOS_SLOT_STATE", "/var/lib/microos/gpt") if TEST else "/var/lib/microos/gpt"
+DISKS = os.environ.get("MICROOS_SLOT_DISKS", "") if TEST else ""
+BLOCK = os.environ.get("MICROOS_SLOT_BLOCK_SIZE", "") if TEST else ""
+FAIL = os.environ.get("MICROOS_SLOT_FAIL", "") if TEST else ""
+
+
+class Refuse(Exception):
+    pass
+
+
+def crc(data):
+    return zlib.crc32(data) & 0xFFFFFFFF
+
+
+def field(value, name):
+    shift, bits = LAYOUT["fields"][name]
+    return (value >> shift) & ((1 << bits) - 1)
+
+
+def apply(value, change):
+    for name, v in change.items():
+        shift, bits = LAYOUT["fields"][name]
+        mask = ((1 << bits) - 1) << shift
+        value = (value & ~mask) | ((v << shift) & mask)
+    return value & 0xFF
+
+
+def describe(value):
+    names = ("active", "priority", "retry", "successful", "unbootable")
+    return " ".join(f"{n} {field(value, n)}" for n in names) + f" (0x{value:02x})"
+
+
+def read_text(path):
+    with open(path) as f:
+        return f.read().strip()
+
+
+def sysfs_part(label):
+    link = os.path.join(PARTLABEL, label)
+    if not os.path.exists(link):
+        return None
+    dev = os.path.realpath(link)
+    part = os.path.realpath(os.path.join(SYSBLOCK, os.path.basename(dev)))
+    if not os.path.isfile(os.path.join(part, "partition")):
+        raise Refuse(f"{dev} ({label}) is not a partition")
+    disk = os.path.basename(os.path.dirname(part))
+    return "/dev/" + disk, int(read_text(os.path.join(part, "partition")))
+
+
+def locate():
+    labels = [*LAYOUT["slots"].values(), LAYOUT["root_label"]]
+    where = {}
+    if DISKS:
+        for word in DISKS.split():
+            label, sep, path = word.partition("=")
+            if not sep or not path:
+                raise Refuse(f"MICROOS_SLOT_DISKS word {word} is not label=path")
+            where[label] = (os.path.realpath(path), None)
+    else:
+        if os.geteuid() != 0:
+            raise Refuse("needs root")
+        for label in labels:
+            found = sysfs_part(label)
+            if found:
+                where[label] = found
+    a, b = (where.get(LAYOUT["slots"][s]) for s in ("a", "b"))
+    if not b:
+        raise Refuse(f"no {LAYOUT['slots']['b']} partition")
+    if not a or a[0] != b[0]:
+        raise Refuse(f"{LAYOUT['slots']['a']} and {LAYOUT['slots']['b']} are not on one disk")
+    root = where.get(LAYOUT["root_label"])
+    if root and root[0] == b[0]:
+        raise Refuse(f"{b[0]} holds {LAYOUT['root_label']}")
+    if BLOCK:
+        block = int(BLOCK)
+    elif DISKS:
+        raise Refuse("MICROOS_SLOT_BLOCK_SIZE is not set")
+    else:
+        block = int(read_text(os.path.join(SYSBLOCK, os.path.basename(b[0]), "queue", "logical_block_size")))
+    if block < 512 or block & (block - 1):
+        raise Refuse(f"bad logical block size {block}")
+    return b[0], block, {"a": a[1], "b": b[1]}
+
+
+def pread(fd, size, offset):
+    data = os.pread(fd, size, offset)
+    if len(data) != size:
+        raise Refuse(f"short read at {offset}")
+    return data
+
+
+def pwrite(fd, data, offset):
+    if os.pwrite(fd, data, offset) != len(data):
+        raise Refuse(f"short write at {offset}")
+
+
+def load(fd, lba, block, name):
+    header = bytearray(pread(fd, block, lba * block))
+    if header[:8] != b"EFI PART":
+        raise Refuse(f"{name} GPT: no header at LBA {lba}")
+    hsize = struct.unpack_from("<I", header, 12)[0]
+    if hsize < 92 or hsize > block:
+        raise Refuse(f"{name} GPT: header size {hsize}")
+    check = bytearray(header[:hsize])
+    check[16:20] = bytes(4)
+    if crc(check) != struct.unpack_from("<I", header, 16)[0]:
+        raise Refuse(f"{name} GPT: header CRC mismatch")
+    my, alt = struct.unpack_from("<QQ", header, 24)
+    entries_lba = struct.unpack_from("<Q", header, 72)[0]
+    count, esize, ecrc = struct.unpack_from("<III", header, 80)
+    if my != lba:
+        raise Refuse(f"{name} GPT: header says LBA {my}, read at {lba}")
+    if esize < 128 or esize % 8 or count == 0 or count * esize > 1 << 20:
+        raise Refuse(f"{name} GPT: {count} entries of {esize} bytes")
+    entries = bytearray(pread(fd, count * esize, entries_lba * block))
+    if crc(entries) != ecrc:
+        raise Refuse(f"{name} GPT: entry array CRC mismatch")
+    return {"name": name, "lba": lba, "alt": alt, "header": header, "hsize": hsize,
+            "entries_lba": entries_lba, "count": count, "esize": esize, "entries": entries}
+
+
+def names(copy):
+    out = []
+    for i in range(copy["count"]):
+        e = copy["entries"][i * copy["esize"]:(i + 1) * copy["esize"]]
+        if any(e[:16]):
+            out.append((i, e[56:128].decode("utf-16-le", "replace").split("\0")[0]))
+    return out
+
+
+def attr_offset(copy, index):
+    return index * copy["esize"] + LAYOUT["byte"]
+
+
+def read_gpt(fd, block, numbers):
+    last = os.lseek(fd, 0, os.SEEK_END) // block - 1
+    primary = load(fd, 1, block, "primary")
+    if primary["alt"] != last:
+        raise Refuse(f"primary GPT: backup at LBA {primary['alt']}, disk ends at {last}")
+    backup = load(fd, last, block, "backup")
+    if backup["alt"] != 1:
+        raise Refuse(f"backup GPT: primary at LBA {backup['alt']}")
+    table = names(primary)
+    if LAYOUT["root_label"] in (n for _, n in table):
+        raise Refuse(f"disk holds {LAYOUT['root_label']}")
+    index = {}
+    for slot, label in LAYOUT["slots"].items():
+        found = [i for i, n in table if n == label]
+        if len(found) != 1:
+            raise Refuse(f"{len(found)} entries named {label}")
+        if numbers[slot] is not None and numbers[slot] != found[0] + 1:
+            raise Refuse(f"{label} is partition {numbers[slot]}, GPT entry {found[0] + 1}")
+        index[slot] = found[0]
+    if primary["header"][8:16] != backup["header"][8:16] or primary["header"][40:72] != backup["header"][40:72] \
+            or primary["header"][80:88] != backup["header"][80:88]:
+        raise Refuse("primary and backup GPT headers differ")
+    p, b = bytearray(primary["entries"]), bytearray(backup["entries"])
+    for i in index.values():
+        p[attr_offset(primary, i)] = b[attr_offset(backup, i)] = 0
+    if p != b:
+        raise Refuse("primary and backup GPT differ outside the slot attributes")
+    return primary, backup, index
+
+
+def attrs(copy, index):
+    return {s: copy["entries"][attr_offset(copy, i)] for s, i in index.items()}
+
+
+def regions(copy, block):
+    return [(copy["lba"] * block, bytes(copy["header"])), (copy["entries_lba"] * block, bytes(copy["entries"]))]
+
+
+def store(fd, copy, index, values, block):
+    entries = bytearray(copy["entries"])
+    for s, i in index.items():
+        entries[attr_offset(copy, i)] = values[s]
+    header = bytearray(copy["header"])
+    struct.pack_into("<I", header, 88, crc(entries))
+    header[16:20] = bytes(4)
+    struct.pack_into("<I", header, 16, crc(header[:copy["hsize"]]))
+    pwrite(fd, entries, copy["entries_lba"] * block)
+    pwrite(fd, header, copy["lba"] * block)
+    os.fsync(fd)
+    return regions(dict(copy, header=header, entries=entries), block)
+
+
+def direct_read(disk, offset, size, block):
+    length = (size + block - 1) // block * block
+    buf = mmap.mmap(-1, length)
+    fd = os.open(disk, os.O_RDONLY | os.O_DIRECT | os.O_CLOEXEC)
+    try:
+        if os.preadv(fd, [buf], offset) != length:
+            raise Refuse(f"short direct read at {offset}")
+        return bytes(buf[:size])
+    finally:
+        os.close(fd)
+        buf.close()
+
+
+def matches(disk, wrote, block):
+    return all(direct_read(disk, offset, len(data), block) == data for offset, data in wrote)
+
+
+def save(saved):
+    os.makedirs(SAVES, mode=0o700, exist_ok=True)
+    used = [int(n[4:]) for n in os.listdir(SAVES) if n.startswith("pre-") and n[4:].isdigit()]
+    path = os.path.join(SAVES, f"pre-{max(used, default=0) + 1}")
+    os.mkdir(path, 0o700)
+    with open(os.path.join(path, "offsets"), "w") as offsets:
+        for n, (offset, data) in enumerate(saved):
+            with open(os.path.join(path, f"{n}.bin"), "wb") as f:
+                f.write(data)
+                os.fsync(f.fileno())
+            offsets.write(f"{n}.bin {offset}\n")
+        os.fsync(offsets.fileno())
+    return path
+
+
+def prune(keep=8):
+    used = sorted(int(n[4:]) for n in os.listdir(SAVES) if n.startswith("pre-") and n[4:].isdigit())
+    for n in used[:-keep]:
+        shutil.rmtree(os.path.join(SAVES, f"pre-{n}"))
+
+
+def restore(fd, disk, saved, block):
+    for offset, data in saved:
+        pwrite(fd, data, offset)
+    os.fsync(fd)
+    return matches(disk, saved, block)
+
+
+def slot_conf():
+    conf = {}
+    try:
+        with open(CONF) as f:
+            for line in f:
+                key, sep, value = line.strip().partition("=")
+                if sep:
+                    conf[key] = value.strip("'\"")
+    except FileNotFoundError:
+        pass
+    return conf
+
+
+def status(disk, block, primary, backup, index):
+    p, b = attrs(primary, index), attrs(backup, index)
+    print(f"disk {disk} block {block}")
+    if p == b:
+        print("gpt: ok")
+    else:
+        print("gpt: the backup differs in the slot attributes, the primary is current; arm rewrites both")
+    for s in index:
+        print(f"{s} {LAYOUT['slots'][s]}: {describe(p[s])}")
+    if p != b:
+        for s in index:
+            print(f"{s} {LAYOUT['slots'][s]} backup: {describe(b[s])}")
+
+
+def change(current):
+    new = dict(current)
+    s = LAYOUT["microos_slot"]
+    if not field(new[s], "active"):
+        raise Refuse(f"{LAYOUT['slots'][s]} is not active")
+    new[s] = apply(new[s], LAYOUT["arm"])
+    return new
+
+
+def main(argv):
+    cmd = argv[0] if argv else ""
+    if cmd not in ("status", "arm") or len(argv) != 1:
+        print(f"usage: {ME} status | arm", file=sys.stderr)
+        return 2
+    disk, block, numbers = locate()
+    writing = cmd != "status"
+    if writing and slot_conf().get("MICROOS_SLOT_WRITE") != "1":
+        print(f"{ME}: slot writes are off ({CONF})", file=sys.stderr)
+        return 3
+    fd = os.open(disk, (os.O_RDWR if writing else os.O_RDONLY) | os.O_CLOEXEC)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        primary, backup, index = read_gpt(fd, block, numbers)
+        if not writing:
+            status(disk, block, primary, backup, index)
+            return 0
+        current = attrs(primary, index)
+        new = change(current)
+        if new == current and attrs(backup, index) == current:
+            print(f"{ME}: unchanged")
+            return 0
+        saved = regions(backup, block) + regions(primary, block)
+        try:
+            print(f"{ME}: saved both copies to {save(saved)}")
+        except OSError as e:
+            raise Refuse(f"copies not saved under {SAVES}, nothing written: {e}")
+        for copy in (backup, primary):
+            wrote = store(fd, copy, index, new, block)
+            if FAIL == f"corrupt-{copy['name']}":
+                at = copy["entries_lba"] * block + attr_offset(copy, index["a"])
+                pwrite(fd, bytes([pread(fd, 1, at)[0] ^ 1]), at)
+                os.fsync(fd)
+            if not matches(disk, wrote, block):
+                if restore(fd, disk, saved, block):
+                    raise Refuse(f"{copy['name']} read back differs from the write, both copies restored")
+                raise Refuse(f"{copy['name']} read back differs from the write, and the restore did not read back")
+            if FAIL == "after-backup":
+                raise Refuse("fail point after the backup write")
+        read_gpt(fd, block, numbers)
+        try:
+            prune()
+        except OSError as e:
+            print(f"{ME}: old copies under {SAVES} not pruned: {e}", file=sys.stderr)
+        for s in index:
+            print(f"{s} {LAYOUT['slots'][s]}: {describe(new[s])}")
+        return 0
+    finally:
+        os.close(fd)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except (Refuse, OSError, ValueError) as e:
+        print(f"{ME}: {e}", file=sys.stderr)
+        sys.exit(1)

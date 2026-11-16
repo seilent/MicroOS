@@ -1,0 +1,12 @@
+[Unit]
+Description=microos.test=gptdump: Copy the GPT sectors of every disk to microos_efi and reboot
+ConditionKernelCommandLine=microos.test=gptdump
+After=multi-user.target
+RequiresMountsFor=/boot/efi
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-test gptdump
+
+[Install]
+WantedBy=multi-user.target

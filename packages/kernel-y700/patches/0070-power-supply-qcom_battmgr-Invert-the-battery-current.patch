@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Mon, 16 Nov 2026 03:19:06 +0900
+Subject: [PATCH] power: supply: qcom_battmgr: Invert the battery current on
+ the Lenovo Legion Y700 2025
+
+The battery manager firmware on the Lenovo Legion Y700 2025 reports the
+battery current inverted: -7.58 A while it charges from a PD charger and
++0.85 A while it discharges. The power supply ABI has charging current
+positive, and UPower takes a negative current_now as discharging, so the
+battery shows as discharging while it charges.
+
+Invert the battery current on this board.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ drivers/power/supply/qcom_battmgr.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/power/supply/qcom_battmgr.c b/drivers/power/supply/qcom_battmgr.c
+index 58e238e6f..3e9ffca2b 100644
+--- a/drivers/power/supply/qcom_battmgr.c
++++ b/drivers/power/supply/qcom_battmgr.c
+@@ -9,6 +9,7 @@
+ #include <linux/module.h>
+ #include <linux/mutex.h>
+ #include <linux/nvmem-consumer.h>
++#include <linux/of.h>
+ #include <linux/of_device.h>
+ #include <linux/power_supply.h>
+ #include <linux/property.h>
+@@ -325,6 +326,7 @@ struct qcom_battmgr {
+ 	struct completion ack;
+ 
+ 	bool service_up;
++	bool invert_current;
+ 
+ 	struct qcom_battmgr_info info;
+ 	struct qcom_battmgr_status status;
+@@ -1461,6 +1463,8 @@ static void qcom_battmgr_sm8350_callback(struct qcom_battmgr *battmgr,
+ 			break;
+ 		case BATT_CURR_NOW:
+ 			battmgr->status.current_now = le32_to_cpu(resp->intval.value);
++			if (battmgr->invert_current)
++				battmgr->status.current_now = -battmgr->status.current_now;
+ 			break;
+ 		case BATT_TEMP:
+ 			val = le32_to_cpu(resp->intval.value);
+@@ -1685,6 +1689,8 @@ static int qcom_battmgr_probe(struct auxiliary_device *adev,
+ 	else
+ 		battmgr->variant = QCOM_BATTMGR_SM8350;
+ 
++	battmgr->invert_current = of_machine_is_compatible("lenovo,tb321fu");
++
+ 	ret = qcom_battmgr_charge_control_thresholds_init(battmgr);
+ 	if (ret < 0)
+ 		return dev_err_probe(dev, ret,
+-- 
+2.43.0
+

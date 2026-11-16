@@ -1,0 +1,10 @@
+[Unit]
+Description=Hold Steam idle off while a game runs
+BindsTo=gamescope-session-plus@steam.service
+After=gamescope-session-plus@steam.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart=/usr/libexec/microos/microos-gameidle
+Restart=always
+RestartSec=2

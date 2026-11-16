@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_STATE/inhibit.log"
+while [[ $1 == --* ]]; do
+  shift
+done
+exec "$@"

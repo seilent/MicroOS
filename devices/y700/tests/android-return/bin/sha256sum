@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+real=$(type -P -a sha256sum | grep -vxF "$0" | head -n 1)
+n=$(cat "$FAKE_STATE/sha-bad" 2> /dev/null || echo 0)
+if [[ ${1:-} == "$MICROOS_RETURN_BOOT_B" ]] && (( n > 0 )); then
+  echo $(( n - 1 )) > "$FAKE_STATE/sha-bad"
+  echo "$(printf '%064d' 0)  $1"
+  exit 0
+fi
+exec "$real" "$@"

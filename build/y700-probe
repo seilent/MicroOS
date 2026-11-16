@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+image=${1:?usage: y700-probe <Image> <dtb> <ramdisk> <cmdline> <out.img>}
+dtb=${2:?usage: y700-probe <Image> <dtb> <ramdisk> <cmdline> <out.img>}
+ramdisk=${3:?usage: y700-probe <Image> <dtb> <ramdisk> <cmdline> <out.img>}
+cmdline=${4:?usage: y700-probe <Image> <dtb> <ramdisk> <cmdline> <out.img>}
+out=${5:?usage: y700-probe <Image> <dtb> <ramdisk> <cmdline> <out.img>}
+
+(( ${#cmdline} <= 440 )) || { echo "y700-probe: cmdline is ${#cmdline} bytes, the limit is 440" >&2; exit 1; }
+
+tmp=$(mktemp -d)
+trap 'rm -rf "${tmp:?}"' EXIT
+gzip -9 -c "$image" > "$tmp/kernel"
+
+[[ $(fdtget "$dtb" / region_country) == PRC ]] || { echo "y700-probe: dtb region_country" >&2; exit 1; }
+
+mkbootimg --header_version 2 --pagesize 4096 --base 0x00000000 --kernel_offset 0x00008000 \
+  --ramdisk_offset 0x01000000 --dtb_offset 0x01f00000 --tags_offset 0x00000100 \
+  --os_version 14.0.0 --os_patch_level 2025-10-05 \
+  --kernel "$tmp/kernel" --ramdisk "$ramdisk" --dtb "$dtb" --cmdline "$cmdline" -o "$out"
+
+"$here/y700-abl-budget" "$out"
+unpack_bootimg --boot_img "$out" --format=info | grep -E 'header version|page size|dtb size|command line'

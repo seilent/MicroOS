@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-fail
+tree=$(cd "$(dirname "$(realpath "$0")")/../../.." && pwd)
+tree=${tree%/}
+conf=${MICROOS_SLOT_CONF:-$tree/usr/lib/microos/slot.conf}
+cmdline=${MICROOS_CMDLINE:-/proc/cmdline}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+efilog=${MICROOS_EFI_LOG:-$tree/usr/libexec/microos/microos-efi-log}
+sdamlib=${MICROOS_SDAM_LIB:-$tree/usr/libexec/microos/microos-sdam}
+bootblib=${MICROOS_BOOTB_LIB:-$tree/usr/libexec/microos/microos-bootb}
+say() { echo "$me: $*" >&2; }
+
+why=${1:-}
+[[ $why == emergency || $why == deadline ]] || { echo "usage: $me emergency|deadline" >&2; exit 2; }
+
+if [[ $why == deadline ]]; then
+  if [[ -f $rundir/boot-confirmed ]]; then
+    say "boot confirmed, no deadline reboot"
+    exit 0
+  fi
+  say "boot not confirmed: no $rundir/boot-confirmed"
+fi
+
+MICROOS_BOOT_TRIES=3
+[[ -r $conf ]] && . "$conf"
+
+efi=${MICROOS_EFI:-/boot/efi}
+bootb=${MICROOS_BOOT_B:-/dev/disk/by-partlabel/boot_b}
+boota=${MICROOS_BOOT_A:-/dev/disk/by-partlabel/boot_a}
+classblock=${MICROOS_CLASS_BLOCK:-/sys/class/block}
+if [[ -z ${MICROOS_EFI:-} ]] && ! mountpoint -q "$efi" && ! timeout 30 mount "$efi"; then
+  say "$efi is not mounted, no log and no count"
+  efi=""
+fi
+
+if [[ -n $efi ]]; then
+  MICROOS_EFI=$efi "$efilog" "$why" || say "no $why log on $efi"
+  id="" test=""
+  read -ra words < "$cmdline" || true
+  for w in "${words[@]}"; do
+    case $w in
+      microos.id=*) id=${w#microos.id=} ;;
+      microos.test=*) test=${w#microos.test=} ;;
+    esac
+  done
+  f=$efi/microos/boot-attempts
+  fid="" count=0
+  [[ -f $f ]] && read -r fid count < "$f"
+  [[ $count =~ ^[0-9]+$ ]] || count=0
+  [[ -n $id && $fid == "$id" ]] || count=0
+  say "${id:-no microos.id}, attempt $count of $MICROOS_BOOT_TRIES"
+  if (( count >= MICROOS_BOOT_TRIES )); then
+    if [[ -r $bootblib ]] && . "$bootblib" && bootb_prev "$efi" "$id" &&
+      [[ $(bootb_word "$bootb" microos.id || true) == "$id" && $(bootb_size "$bootb" 2> /dev/null) == "$bootb_full" &&
+        $(stat -c %s "$efi/microos/boot-prev.img") == "$bootb_full" ]] &&
+      db=$(bootb_disk "$bootb" "$classblock") && [[ $(bootb_disk "$boota" "$classblock" || true) == "$db" ]]; then
+      say "boot-prev.img holds $bootb_prev_id, the guard restores it on the next start"
+      if [[ -n $test && -r $sdamlib ]] && . "$sdamlib" && sdam_find && sdam_put clear; then
+        say "fastboot preset cleared in ${sdam##*/}"
+      fi
+    elif [[ $test == 1 ]]; then
+      if [[ -r $sdamlib ]] && . "$sdamlib" && sdam_find && sdam_put preset; then
+        say "fastboot preset written in ${sdam##*/}, rebooting into the bootloader"
+        sync
+        systemctl reboot --reboot-argument=bootloader || systemctl --force reboot --reboot-argument=bootloader
+        exit 0
+      fi
+      say "no fastboot preset, plain reboot"
+    else
+      say "no boot-prev.img for the guard to restore, plain reboot, the ABL retry budget decides"
+    fi
+  fi
+fi
+
+sync
+systemctl reboot || systemctl --force reboot

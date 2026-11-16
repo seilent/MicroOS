@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Wed, 11 Nov 2026 12:00:00 +0000
+Subject: [PATCH] device-quirks: add Lenovo Legion Y700 (2025)
+
+---
+ usr/share/gamescope-session-plus/device-quirks | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/usr/share/gamescope-session-plus/device-quirks b/usr/share/gamescope-session-plus/device-quirks
+index f5605bb..c88cb3d 100644
+--- a/usr/share/gamescope-session-plus/device-quirks
++++ b/usr/share/gamescope-session-plus/device-quirks
+@@ -213,6 +213,12 @@
+   export STEAM_DISPLAY_REFRESH_LIMITS=60,144
+ fi
+ 
++if [[ ":Lenovo Legion Y700 (2025) / TB321FU:" =~ ":$SYS_ID:" ]]; then
++  OUTPUT_CONNECTOR='*,DSI-1'
++  ORIENTATION=right
++  GAMESCOPE_STARTUP_TIMEOUT=30
++fi
++
+ # Minisforum V3
+ if [[ ":V3:" =~ ":$SYS_ID:"  ]]; then
+   PANEL_TYPE=external
+-- 
+2.43.0
+

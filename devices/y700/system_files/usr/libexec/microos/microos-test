@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-test
+efi=${MICROOS_EFI:-/boot/efi}
+sysblock=${MICROOS_SYSBLOCK:-/sys/block}
+devdir=${MICROOS_DEVDIR:-/dev}
+platform=${MICROOS_PLATFORM:-/sys/devices/platform}
+sysrq=${MICROOS_SYSRQ:-/proc/sysrq-trigger}
+watchdog=${MICROOS_WATCHDOG:-/dev/watchdog0}
+die() { echo "$me: $*" >&2; exit 1; }
+
+gptdump() {
+  local n=0 d s name lbs sectors blocks f k
+  for d in "$efi"/logs/gpt-*; do
+    k=${d##*/gpt-}
+    [[ $k =~ ^[0-9]+$ ]] || continue
+    (( 10#$k <= n )) || n=$(( 10#$k ))
+  done
+  d=$efi/logs/gpt-$(( n + 1 ))
+  mkdir -p "$d" || return 1
+  for s in "$sysblock"/sd*; do
+    [[ -e $s/size ]] || continue
+    name=${s##*/}
+    lbs=$(< "$s/queue/logical_block_size")
+    sectors=$(< "$s/size")
+    blocks=$(( sectors * 512 / lbs ))
+    dd if="$devdir/$name" of="$d/$name-primary.bin" bs="$lbs" count=6 status=none || return 1
+    dd if="$devdir/$name" of="$d/$name-backup.bin" bs="$lbs" skip=$(( blocks - 5 )) count=5 status=none || return 1
+    echo "$name logical_block_size=$lbs blocks=$blocks" >> "$d/disks.txt"
+  done
+  for f in "$platform"/soc*/*.ufshc/attributes/boot_lun_enabled; do
+    [[ -r $f ]] && echo "${f#"$platform"/} $(< "$f")" >> "$d/boot_lun_enabled.txt"
+  done
+  (cd "$d" && sha256sum -- *.bin > SHA256SUMS) || return 1
+  sync -f "$d"
+  echo "$me: GPT dumps in $d"
+}
+
+case ${1:-} in
+  bootloader) exec systemctl reboot --reboot-argument=bootloader ;;
+  panic) echo c > "$sysrq"; die "sysrq crash returned" ;;
+  emergency) exec systemctl --no-block start emergency.target ;;
+  wdhang)
+    exec 3> "$watchdog" || die "cannot open $watchdog"
+    echo "$me: $watchdog open, no pings"
+    exec sleep infinity
+    ;;
+  gptdump)
+    gptdump || echo "$me: GPT dump failed" >&2
+    exec systemctl reboot
+    ;;
+  *) echo "usage: $me bootloader|panic|emergency|wdhang|gptdump" >&2; exit 2 ;;
+esac

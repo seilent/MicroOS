@@ -1,0 +1,14 @@
+[Unit]
+Description=Check the MicroOS channel once the boot is confirmed
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/microos /boot /boot/efi
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/microos-update --auto
+IOSchedulingClass=idle
+CPUSchedulingPolicy=idle
+Nice=19
+SuccessExitStatus=3 4 7

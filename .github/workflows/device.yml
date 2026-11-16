@@ -281,7 +281,8 @@ jobs:
         run: |
           git fetch --no-tags --depth=1 origin main
           PKG_HASH_BASE=FETCH_HEAD tests/pkg-hash.sh
-          $PODMAN run --rm -e "MICROOS_IMAGE=$IMAGE" -v "$RUNNER_TEMP/ctx/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/seed-rpm:ro" "$IMAGE:$TAG" /tests/image.sh
+          $PODMAN run --rm -e "MICROOS_IMAGE=$IMAGE" -e "MICROOS_DEVICE=$DEVICE" -e MICROOS_REPO=/repo -v "$PWD:/repo:ro" \
+            -v "$RUNNER_TEMP/ctx/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/seed-rpm:ro" "$IMAGE:$TAG" /tests/image.sh
           $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/helpers.sh
           $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/storage.sh
           $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/bootimg.sh

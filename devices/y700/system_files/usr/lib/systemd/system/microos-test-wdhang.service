@@ -1,0 +1,11 @@
+[Unit]
+Description=microos.test=wdhang: Hold the watchdog without pings
+ConditionKernelCommandLine=microos.test=wdhang
+After=multi-user.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/microos/microos-test wdhang
+
+[Install]
+WantedBy=multi-user.target

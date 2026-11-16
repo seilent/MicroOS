@@ -1,0 +1,15 @@
+[Unit]
+Description=Add the image's users and groups missing from /etc before sysusers
+DefaultDependencies=no
+ConditionNeedsUpdate=/etc
+After=systemd-remount-fs.service
+Before=systemd-sysusers.service systemd-update-done.service sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microos/microos-groups
+
+[Install]
+WantedBy=sysinit.target

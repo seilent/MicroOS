@@ -1,0 +1,1 @@
+firmware_class.path=/var/lib/microos/fw loglevel=4 regulator_ignore_unused clk_ignore_unused pd_ignore_unused reboot=cold cpuidle.off=1

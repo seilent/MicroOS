@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+a=" $* "
+if [[ $a == *" of=$MICROOS_BOOT_B "* ]]; then
+  echo "dd of=boot_b" >> "$FAKE_STATE/dd.log"
+  [[ -z ${FAKE_DD_FAIL:-} ]] || exit 1
+elif [[ $a == *" of="*/nvmem" "* ]]; then
+  echo "dd of=nvmem" >> "$FAKE_STATE/dd.log"
+fi
+exec "$(type -P -a dd | grep -vxF "$0" | head -n 1)" "$@"

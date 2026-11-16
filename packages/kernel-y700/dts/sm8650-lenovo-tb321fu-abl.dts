@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include "sm8650-lenovo-tb321fu.dts"
+#include "sm8650-lenovo-tb321fu-abl-sink.dtsi"
+
+/delete-node/ &splash_region;
+
+/ {
+	qcom,msm-id = <0x241 0x20000>;
+	region_country = "PRC";
+	qcom,board-id = <0 0>;
+
+	chosen {
+		framebuffer@d5100000 {
+			compatible = "simple-framebuffer";
+			memory-region = <&splash_region>;
+			width = <1600>;
+			height = <2560>;
+			stride = <6400>;
+			format = "a8r8g8b8";
+			status = "okay";
+		};
+	};
+};
+
+&reserved_memory {
+	splash_region: splash_region {
+		label = "cont_splash_region";
+		reg = <0 0xd5100000 0 0x2b00000>;
+		iommu-addresses = <&mdss 0 0xd5100000 0 0x2b00000>;
+		no-map;
+	};
+
+	qlink-logging@84800000 {
+		reg = <0 0x84800000 0 0x200000>;
+		no-map;
+	};
+
+	mpss-dsm@86b00000 {
+		reg = <0 0x86b00000 0 0x4900000>;
+		no-map;
+	};
+
+	mpss-dsm-2@8b400000 {
+		reg = <0 0x8b400000 0 0x800000>;
+		no-map;
+	};
+
+	mpss@8bc00000 {
+		reg = <0 0x8bc00000 0 0xf400000>;
+		no-map;
+	};
+
+	q6-mpss-dtb@9b000000 {
+		reg = <0 0x9b000000 0 0x80000>;
+		no-map;
+	};
+
+	ramoops@a2000000 {
+		compatible = "ramoops";
+		reg = <0 0xa2000000 0 0x400000>;
+		console-size = <0x200000>;
+		pmsg-size = <0x200000>;
+		no-map;
+	};
+};
+
+&mdss {
+	memory-region = <&splash_region>;
+};

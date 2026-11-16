@@ -1,0 +1,60 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 07:10:04 +0900
+Subject: [PATCH] ASoC: qcom: q6prm: Add TDM bit clocks
+
+Add the primary to quinary TDM internal and external bit clocks, so a
+TDM DAI can enable its bit clock through PRM.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ sound/soc/qcom/qdsp6/q6prm-clocks.c | 10 ++++++++++
+ sound/soc/qcom/qdsp6/q6prm.h        | 11 +++++++++++
+ 2 files changed, 21 insertions(+)
+
+diff --git a/sound/soc/qcom/qdsp6/q6prm-clocks.c b/sound/soc/qcom/qdsp6/q6prm-clocks.c
+index b4f9abbe0..067c86007 100644
+--- a/sound/soc/qcom/qdsp6/q6prm-clocks.c
++++ b/sound/soc/qcom/qdsp6/q6prm-clocks.c
+@@ -42,6 +42,16 @@ static const struct q6dsp_clk_init q6prm_clks[] = {
+ 	Q6PRM_CLK(LPASS_CLK_ID_INT5_MI2S_IBIT),
+ 	Q6PRM_CLK(LPASS_CLK_ID_INT6_MI2S_IBIT),
+ 	Q6PRM_CLK(LPASS_CLK_ID_QUI_MI2S_OSR),
++	Q6PRM_CLK(LPASS_CLK_ID_PRI_TDM_IBIT),
++	Q6PRM_CLK(LPASS_CLK_ID_PRI_TDM_EBIT),
++	Q6PRM_CLK(LPASS_CLK_ID_SEC_TDM_IBIT),
++	Q6PRM_CLK(LPASS_CLK_ID_SEC_TDM_EBIT),
++	Q6PRM_CLK(LPASS_CLK_ID_TER_TDM_IBIT),
++	Q6PRM_CLK(LPASS_CLK_ID_TER_TDM_EBIT),
++	Q6PRM_CLK(LPASS_CLK_ID_QUAD_TDM_IBIT),
++	Q6PRM_CLK(LPASS_CLK_ID_QUAD_TDM_EBIT),
++	Q6PRM_CLK(LPASS_CLK_ID_QUIN_TDM_IBIT),
++	Q6PRM_CLK(LPASS_CLK_ID_QUIN_TDM_EBIT),
+ 	Q6PRM_CLK(LPASS_CLK_ID_MCLK_1),
+ 	Q6PRM_CLK(LPASS_CLK_ID_MCLK_2),
+ 	Q6PRM_CLK(LPASS_CLK_ID_MCLK_3),
+diff --git a/sound/soc/qcom/qdsp6/q6prm.h b/sound/soc/qcom/qdsp6/q6prm.h
+index cf619ef65..6cfde09c8 100644
+--- a/sound/soc/qcom/qdsp6/q6prm.h
++++ b/sound/soc/qcom/qdsp6/q6prm.h
+@@ -55,6 +55,17 @@
+ /* Clock ID for QUINARY MI2S OSR CLK  */
+ #define Q6PRM_LPASS_CLK_ID_QUI_MI2S_OSR                         0x116
+ 
++#define Q6PRM_LPASS_CLK_ID_PRI_TDM_IBIT			0x200
++#define Q6PRM_LPASS_CLK_ID_PRI_TDM_EBIT			0x201
++#define Q6PRM_LPASS_CLK_ID_SEC_TDM_IBIT			0x202
++#define Q6PRM_LPASS_CLK_ID_SEC_TDM_EBIT			0x203
++#define Q6PRM_LPASS_CLK_ID_TER_TDM_IBIT			0x204
++#define Q6PRM_LPASS_CLK_ID_TER_TDM_EBIT			0x205
++#define Q6PRM_LPASS_CLK_ID_QUAD_TDM_IBIT			0x206
++#define Q6PRM_LPASS_CLK_ID_QUAD_TDM_EBIT			0x207
++#define Q6PRM_LPASS_CLK_ID_QUIN_TDM_IBIT			0x208
++#define Q6PRM_LPASS_CLK_ID_QUIN_TDM_EBIT			0x209
++
+ /* Clock ID for MCLK1 */
+ #define Q6PRM_LPASS_CLK_ID_MCLK_1                                 0x300
+ /* Clock ID for MCLK2 */
+-- 
+2.55.0
+

@@ -1,0 +1,49 @@
+{
+  "deployments": [
+    {
+      "checksum": "f2d6d5707a9e5702c3ede94983ba430205a8cf846f5a803fa9e124cab02721b3",
+      "stateroot": "default",
+      "refspec": null,
+      "serial": 0,
+      "index": 0,
+      "booted": false,
+      "pending": true,
+      "rollback": false,
+      "finalization-locked": false,
+      "soft-reboot-target": false,
+      "staged": false,
+      "pinned": false,
+      "unlocked": "none"
+    },
+    {
+      "checksum": "293b0813043058f51c629759dc64ce0143cbf72db296212de60994f2df171c3e",
+      "stateroot": "default",
+      "refspec": null,
+      "serial": 0,
+      "index": 1,
+      "booted": true,
+      "pending": false,
+      "rollback": false,
+      "finalization-locked": false,
+      "soft-reboot-target": false,
+      "staged": false,
+      "pinned": true,
+      "unlocked": "development"
+    },
+    {
+      "checksum": "8daed9d2343e3a62db465ddfbf4bec5e2715f1355f6898efd653cf55443e7c71",
+      "stateroot": "default",
+      "refspec": null,
+      "serial": 0,
+      "index": 2,
+      "booted": false,
+      "pending": false,
+      "rollback": true,
+      "finalization-locked": false,
+      "soft-reboot-target": false,
+      "staged": false,
+      "pinned": true,
+      "unlocked": "none"
+    }
+  ]
+}

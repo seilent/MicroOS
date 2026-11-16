@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+rc=0
+for r in /sys/class/remoteproc/remoteproc*; do
+  [[ -r $r/state && -r $r/name ]] || continue
+  name=$(< "$r/name")
+  state=$(< "$r/state")
+  [[ $state == offline ]] || continue
+  if echo start > "$r/state"; then
+    echo "microos-remoteproc: started $name"
+  else
+    echo "microos-remoteproc: $name did not start" >&2
+    rc=1
+  fi
+done
+exit "$rc"

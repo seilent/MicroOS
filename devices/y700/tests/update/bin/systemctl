@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_DIR/systemctl.calls"
+[[ $1 == is-active ]] || exit 1
+[[ ${FAKE_WRITE_ACTIVE:-0} == 1 ]]

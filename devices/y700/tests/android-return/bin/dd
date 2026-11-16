@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+[[ " $* " != *" of=$MICROOS_RETURN_BOOT_B "* ]] || echo "dd $*" >> "$FAKE_STATE/events"
+exec "$(type -P -a dd | grep -vxF "$0" | head -n 1)" "$@"

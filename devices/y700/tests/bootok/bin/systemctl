@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+u=${!#}
+case $1 in
+  is-system-running)
+    n=$(( $(cat "$FAKE_STATE/system-reads" 2> /dev/null || echo 0) + 1 ))
+    echo "$n" > "$FAKE_STATE/system-reads"
+    if (( n <= ${FAKE_STARTING:-0} )); then
+      s=starting
+    elif [[ -n ${FAKE_DEGRADED_AFTER:-} ]] && (( n > FAKE_DEGRADED_AFTER )); then
+      s=degraded
+    else
+      s=${FAKE_SYSTEM:-running}
+    fi
+    echo "$s"
+    [[ $s == running ]]
+    ;;
+  list-units)
+    for f in ${FAKE_FAILED_UNITS:-}; do
+      echo "$f loaded failed failed $f"
+    done
+    ;;
+  is-active) [[ " ${FAKE_INACTIVE:-} " != *" $u "* ]] ;;
+  show) if [[ " ${FAKE_COND_NO:-} " == *" $u "* ]]; then echo no; else echo yes; fi ;;
+  *) exit 1 ;;
+esac

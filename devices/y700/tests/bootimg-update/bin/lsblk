@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+case " $* " in
+  *" PARTLABEL "*) echo "${FAKE_PARTLABEL-boot_b}" ;;
+  *" PKNAME "*) echo "${FAKE_PKNAME-sdz}" ;;
+  *) exit 1 ;;
+esac

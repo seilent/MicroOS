@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+[[ $1 != sys.boot_completed ]] || echo 1

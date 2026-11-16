@@ -1,0 +1,88 @@
+#!/usr/bin/python3
+import os
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-gameidle"
+PROC = os.environ.get("MICROOS_GAMEIDLE_PROC", "/proc")
+POLL_S = float(os.environ.get("MICROOS_GAMEIDLE_POLL", "5"))
+SAVER = ("org.freedesktop.ScreenSaver", "/org/freedesktop/ScreenSaver", "org.freedesktop.ScreenSaver")
+
+
+def log(msg):
+    print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+
+
+def game_running():
+    for pid in os.listdir(PROC):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"{PROC}/{pid}/cmdline", "rb") as f:
+                argv = f.read().split(b"\0")
+        except OSError:
+            continue
+        if len(argv) > 1 and os.path.basename(argv[0]) == b"reaper" and argv[1] == b"SteamLaunch":
+            return True
+    return False
+
+
+class Gameidle:
+    def __init__(self):
+        self.conn = None
+        self.cookie = None
+
+    def call(self, method, args, reply):
+        return self.conn.call_sync(
+            *SAVER[:2], SAVER[2], method, args, GLib.VariantType(reply), Gio.DBusCallFlags.NONE, 2000, None
+        )
+
+    def hold(self):
+        try:
+            self.conn = Gio.DBusConnection.new_for_address_sync(
+                Gio.dbus_address_get_for_bus_sync(Gio.BusType.SESSION, None),
+                Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+                None,
+                None,
+            )
+            self.cookie = self.call("Inhibit", GLib.Variant("(ss)", (ME, "a game is running")), "(u)").unpack()[0]
+        except GLib.Error as err:
+            log(f"Inhibit failed: {err.message}")
+            self.drop()
+            return
+        log("game running, idle blocked")
+
+    def release(self):
+        try:
+            self.call("UnInhibit", GLib.Variant("(u)", (self.cookie,)), "()")
+        except GLib.Error:
+            pass
+        self.drop()
+        log("no game, idle allowed")
+
+    def drop(self):
+        if self.conn is not None:
+            try:
+                self.conn.close_sync(None)
+            except GLib.Error:
+                pass
+        self.conn = None
+        self.cookie = None
+
+    def poll(self):
+        running = game_running()
+        if running and self.cookie is None:
+            self.hold()
+        elif not running and self.cookie is not None:
+            self.release()
+        return GLib.SOURCE_CONTINUE
+
+
+g = Gameidle()
+g.poll()
+GLib.timeout_add(int(POLL_S * 1000), g.poll)
+GLib.MainLoop().run()

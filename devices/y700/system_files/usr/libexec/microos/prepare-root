@@ -1,0 +1,99 @@
+#!/bin/sh
+
+prep=${MICROOS_PREPARE_ROOT:-/usr/lib/ostree/ostree-prepare-root}
+sysroot=${MICROOS_SYSROOT:-/sysroot}
+cmdfile=${MICROOS_CMDLINE:-/proc/cmdline}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+kmsg=${MICROOS_KMSG:-/dev/kmsg}
+
+aboot_link() {
+	case " $cmdline" in
+	*" androidboot."*) ;;
+	*) return 0 ;;
+	esac
+	al_dep=$(realpath -e "$sysroot$1" 2>/dev/null) || return 0
+	al_rel=${al_dep#"$sysroot"/ostree/}
+	case $al_rel in
+	deploy/*/deploy/*) ;;
+	*) return 0 ;;
+	esac
+	al_opts=
+	while read -r al_d al_m al_t al_o al_rest; do
+		[ "$al_m" = "$sysroot" ] && al_opts=$al_o
+	done < /proc/mounts
+	al_ro=0
+	case ",$al_opts," in
+	*,ro,*) mount -o remount,rw "$sysroot" && al_ro=1 ;;
+	esac
+	for al_s in a b; do
+		al_l=$sysroot/ostree/root.$al_s
+		[ "$(readlink "$al_l" 2>/dev/null)" = "$al_rel" ] && continue
+		ln -sfn "$al_rel" "$al_l.tmp" && mv -fT "$al_l.tmp" "$al_l"
+		(printf 'microos: ostree/root.%s -> %s\n' "$al_s" "$al_rel" > "$kmsg") 2>/dev/null
+	done
+	[ "$al_ro" = 0 ] || mount -o remount,ro "$sysroot"
+	return 0
+}
+
+unchanged() {
+	aboot_link "$ostree"
+	exec "$prep" "$sysroot"
+}
+
+cmdline=
+read -r cmdline < "$cmdfile" 2>/dev/null
+
+set -f
+ostree=
+deploy=
+for w in $cmdline; do
+	case $w in
+	ostree=*) ostree=${w#ostree=} ;;
+	microos.deploy=*) deploy=${w#microos.deploy=} ;;
+	esac
+done
+set +f
+
+if [ -z "$deploy" ] || [ -z "$ostree" ]; then
+	unchanged
+fi
+case $deploy in
+*/* | . | ..) unchanged ;;
+esac
+
+cur=$(realpath -e "$sysroot$ostree" 2>/dev/null)
+[ "${cur##*/}" = "$deploy" ] && unchanged
+
+link=
+real=
+for l in "$sysroot"/ostree/boot.0/*/*/* "$sysroot"/ostree/boot.1/*/*/*; do
+	[ -L "$l" ] || continue
+	r=$(realpath -e "$l" 2>/dev/null) || continue
+	if [ -z "$r" ] || [ "${r##*/}" != "$deploy" ]; then
+		continue
+	fi
+	if [ -z "$real" ]; then
+		link=$l
+		real=$r
+	elif [ "$r" != "$real" ]; then
+		unchanged
+	fi
+done
+[ -n "$link" ] || unchanged
+
+new=${link#"$sysroot"}
+args=
+set -f
+for w in $cmdline; do
+	case $w in
+	ostree=*) w=ostree=$new ;;
+	esac
+	args=${args:+$args }$w
+done
+set +f
+
+(mkdir -p "$rundir" && printf '%s %s\n' "$ostree" "$new" > "$rundir/remapped") 2>/dev/null
+(printf 'microos: ostree=%s names no deployment %s, booting %s\n' "$ostree" "$deploy" "$new" > "$kmsg") 2>/dev/null
+
+aboot_link "$new"
+exec "$prep" "$sysroot" "$args"

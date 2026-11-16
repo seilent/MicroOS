@@ -1,0 +1,17 @@
+[Unit]
+Description=USB serial console with the initrd log
+DefaultDependencies=no
+Wants=sys-kernel-config.mount
+After=sys-kernel-config.mount systemd-journald.service
+Conflicts=initrd-switch-root.target shutdown.target
+Before=initrd-switch-root.target shutdown.target
+
+[Service]
+Environment=MICROOS_USB_FUNCS=acm.usb0
+ExecStart=-/usr/libexec/microos/microos-initrd-usbcon
+ExecStopPost=-/usr/libexec/microos/microos-usb-console stop
+KillSignal=SIGKILL
+TimeoutStopSec=5
+
+[Install]
+WantedBy=sysinit.target

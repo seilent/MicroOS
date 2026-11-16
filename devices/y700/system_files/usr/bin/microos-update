@@ -1,0 +1,527 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-update
+die() { echo "$me: $*" >&2; exit 1; }
+usage() { echo "usage: $me [--check|--auto|--discard]" >&2; exit 2; }
+
+rundir=${MICROOS_RUNDIR:-/run/microos}
+statedir=${MICROOS_STATEDIR:-/var/lib/microos}
+sysroot=${MICROOS_SYSROOT:-/sysroot}
+repo=ghcr.io/seilent/microos-y700
+etc_policy=/etc/containers/policy.json
+etc_policy=${MICROOS_ETC_POLICY:-$etc_policy}
+reserve=2147483648
+root=${MICROOS_ROOT:-/}
+cmdline=${MICROOS_CMDLINE:-/proc/cmdline}
+bootb=${MICROOS_BOOT_B:-/dev/disk/by-partlabel/boot_b}
+bootblib=${MICROOS_BOOTB_LIB:-/usr/libexec/microos/microos-bootb}
+power=${MICROOS_POWER:-/sys/class/power_supply}
+lockwait=${MICROOS_UPDATE_LOCK_WAIT:-120}
+
+expected=$statedir/expected-deployment
+notapplied=$rundir/update-not-applied
+available=$rundir/update-available
+written=$statedir/update-written
+failed=$statedir/update-failed
+pause=$statedir/update-pause
+bootfiles=(usr/lib/modules usr/lib/dracut usr/lib/microos/bootimg.conf usr/lib/microos/slot.conf usr/lib/microos/stub.conf
+  usr/lib/microos/stub usr/lib/bootc/kargs.d usr/libexec/microos/microos-bootb usr/libexec/microos/microos-sdam
+  usr/libexec/microos/prepare-root usr/libexec/microos/microos-bootimg-build usr/libexec/microos/microos-stub-pack
+  usr/lib/ostree/ostree-prepare-root usr/lib/systemd/systemd usr/lib/systemd/systemd-udevd usr/lib64/systemd)
+
+[[ -r $bootblib ]] || die "missing $bootblib"
+. "$bootblib"
+
+kv() {
+  [[ -f $2 ]] || return 0
+  sed -n "s/^$1=//p" "$2" | head -1
+}
+
+write_file() {
+  local tmp
+  tmp=$(mktemp "$1.XXXXXX")
+  cat > "$tmp"
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "$1"
+}
+
+sync_file() {
+  local tmp
+  tmp=$(mktemp "$1.XXXXXX")
+  cat > "$tmp"
+  chmod 0644 "$tmp"
+  sync "$tmp"
+  mv -fT "$tmp" "$1"
+  sync -f "$1"
+}
+
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+field() {
+  local v
+  v=$(jq -r "$1 // empty | if type == \"string\" then . else tojson end" <<< "$2")
+  printf '%s' "${v//[[:cntrl:]]/}"
+}
+
+mode=stage
+case ${1:-} in
+  "") ;;
+  --check) mode=check ;;
+  --auto) mode=auto ;;
+  --discard) mode=discard ;;
+  *) usage ;;
+esac
+(( $# <= 1 )) || usage
+
+pending='select((.staged or .pending) and (.booted | not))'
+read_ostree() {
+  ost=$(ostree admin status --json) || die "ostree admin status failed"
+  staged_csum=$(jq -r "first(.deployments[] | $pending | .checksum) // empty" <<< "$ost")
+  staged_id=$(jq -r "first(.deployments[] | $pending | \"\\(.checksum).\\(.serial)\") // empty" <<< "$ost")
+  staged_root=$(jq -r "first(.deployments[] | $pending | .stateroot // .osname) // empty" <<< "$ost")
+  booted_id=$(jq -r 'first(.deployments[] | select(.booted) | "\(.checksum).\(.serial)") // empty' <<< "$ost")
+  booted_pinned=$(jq -r 'first(.deployments[] | select(.booted) | .pinned) // false' <<< "$ost")
+}
+
+rid=""
+read -ra words < "$cmdline" || true
+for w in "${words[@]}"; do
+  case $w in
+    microos.id=*) rid=${w#microos.id=} ;;
+    microos.test=*|microos.kround=*) [[ $mode != auto ]] || { echo "$me: paused, $w" >&2; exit 3; } ;;
+  esac
+done
+
+confirmed() { [[ -f $rundir/boot-confirmed && $(< "$rundir/boot-confirmed") == "$booted_id" ]]; }
+
+if [[ $mode == auto ]]; then
+  if [[ -e $pause && -n $(find "$pause" -mmin -1440 2> /dev/null) ]]; then
+    install -d -m 0755 "$rundir"
+    printf 'state=paused\nchecked=%s\n' "$(now)" | write_file "$available"
+    echo "$me: paused, $pause exists" >&2
+    exit 3
+  elif [[ -e $pause ]]; then
+    echo "$me: $pause is older than a day, not paused" >&2
+  fi
+  read_ostree
+  if ! confirmed; then
+    echo "$me: $booted_id is not confirmed yet" >&2
+    exit 3
+  fi
+fi
+
+install -d -m 0755 "$rundir"
+exec 9> "$rundir/update.lock"
+wait=(-n)
+[[ $mode != auto ]] || wait=(-w "$lockwait")
+if ! flock "${wait[@]}" 9; then
+  echo "$me: already running (microos-update or microos-boot-ok)" >&2
+  exit 3
+fi
+ionice -c 3 -p $$
+chrt -i -p 0 $$
+renice -n 19 -p $$ > /dev/null
+
+read_bootc() {
+  local bst
+  bst=$(bootc status --json) || die "bootc status failed"
+  spec_image=$(field .spec.image.image "$bst")
+  spec_transport=$(field .spec.image.transport "$bst")
+  spec_sig=$(field .spec.image.signature "$bst")
+  B=$(field .status.booted.image.imageDigest "$bst")
+  booted_version=$(field .status.booted.image.version "$bst")
+  local p=.status.staged
+  if [[ -z $(field "$p.image.imageDigest" "$bst") && $(field .status.rollbackQueued "$bst") == true ]]; then
+    p=.status.rollback
+  fi
+  S=$(field "$p.image.imageDigest" "$bst")
+  staged_version=$(field "$p.image.version" "$bst")
+  staged_image=$(field "$p.image.image.image" "$bst")
+  local pi=$staged_image pt ps
+  pt=$(field "$p.image.image.transport" "$bst")
+  ps=$(field "$p.image.image.signature" "$bst")
+  if [[ $p == .status.staged ]]; then
+    pi=$spec_image pt=$spec_transport ps=$spec_sig
+  fi
+  psigned=0
+  if [[ $pi == "$R" && $pt == registry && $ps == containerPolicy ]]; then
+    psigned=1
+  fi
+  [[ -n $B ]] || die "bootc status has no booted image"
+}
+
+if [[ $mode == discard ]]; then
+  read_ostree
+  [[ -z $staged_id ]] || die "a staged deployment exists ($staged_id), $expected kept"
+  rm -f "$expected" "$notapplied"
+  echo "$me: removed $expected and $notapplied"
+  exit 0
+fi
+
+channel=testing
+if [[ -e $statedir/update-channel ]]; then
+  channel=$(tr -d '[:space:]' < "$statedir/update-channel")
+fi
+if [[ $channel != testing && $channel != stable ]] &&
+  ! { [[ $channel =~ ^branch-[A-Za-z0-9_][A-Za-z0-9._-]*$ ]] && (( ${#channel} <= 128 )); }; then
+  die "$statedir/update-channel names '$channel', not testing, stable or branch-<name>"
+fi
+R=$repo:$channel
+
+home=${HOME:-}
+if [[ -z $home ]]; then
+  home=$(getent passwd "${_CONTAINERS_ROOTLESS_UID:-$(id -u)}" | cut -d: -f6) || home=""
+fi
+policy=$etc_policy
+if [[ -n $home && -e $home/.config/containers/policy.json ]]; then
+  policy=$home/.config/containers/policy.json
+fi
+jq -e --arg scope "$repo" '
+  def signed: type == "array" and length > 0 and all(.type == "sigstoreSigned");
+  .default == [{"type": "reject"}]
+  and (.transports.docker[$scope] | signed)
+  and ([.transports.docker | to_entries[] | select(.key | startswith($scope + ":") or startswith($scope + "@")) | .value]
+    | all(signed))
+' "$policy" > /dev/null 2>&1 || die "$policy does not reject by default and require signatures for every $repo scope"
+
+channel_read() {
+  local js r=0
+  js=$(skopeo inspect --no-creds --retry-times 3 "docker://$R") || r=$?
+  case $r in
+    0) ;;
+    2) die "$R does not exist" ;;
+    *) echo "$me: cannot read $R" >&2; exit 4 ;;
+  esac
+  chan_digest=$(field .Digest "$js")
+  chan_version=$(field '(.Labels // {})["org.opencontainers.image.version"]' "$js")
+  [[ $chan_digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "$R has no valid digest"
+}
+
+undeploy_staged() {
+  local first=$staged_csum idx0
+  read_ostree
+  idx0=$(jq -r 'first(.deployments[] | select(.index == 0) | "\(.staged or .pending) \(.checksum)") // empty' <<< "$ost")
+  [[ $idx0 == "true $first" ]] || die "index 0 is no longer the staged $first, nothing removed"
+  ostree admin undeploy 0 || exit 1
+  rm -f "$expected"
+}
+
+channel_read
+C=$chan_digest
+Cver=$chan_version
+
+space() {
+  local blocks bsize free
+  read -r blocks bsize <<< "$(stat -f -c '%a %S' "$sysroot")"
+  [[ $blocks =~ ^[0-9]+$ && $bsize =~ ^[0-9]+$ ]] || die "cannot read free space on $sysroot"
+  free=$(( blocks * bsize ))
+  (( free >= reserve )) || die "$sysroot has $free bytes free, needs $reserve"
+}
+[[ $mode != stage ]] || space
+
+read_bootc
+read_ostree
+
+signed=0
+if [[ $spec_image == "$R" && $spec_transport == registry && $spec_sig == containerPolicy ]]; then
+  signed=1
+fi
+
+report() {
+  {
+    echo "state=$1"
+    echo "image=$R"
+    echo "version=$3"
+    echo "digest=$2"
+    [[ -z ${4:-} ]] || echo "missed=$4"
+    echo "checked=$(now)"
+  } | write_file "$available"
+  echo "$me: $1 $3 $2"
+}
+
+pend=0
+if [[ -n $S && $S == "$C" ]] && (( psigned )); then
+  pend=1
+fi
+
+if [[ $mode == check || $mode == auto ]]; then
+  if (( pend )); then
+    report staged "$S" "$staged_version"
+  elif (( ! signed )); then
+    report switch "$C" "$Cver"
+    exit 0
+  elif [[ $B == "$C" && -n $S ]]; then
+    report withdrawn "$S" "$staged_version"
+  elif [[ $B == "$C" ]]; then
+    rm -f "$available" "$expected" "$notapplied"
+    echo "$me: up to date, $booted_version is booted"
+    exit 7
+  else
+    [[ $mode == auto ]] || bootc upgrade --check || exit 1
+    missed=""
+    if [[ -e $notapplied ]]; then
+      missed=$(kv version "$notapplied")
+      missed=${missed:-unknown}
+    fi
+    report fetch "$C" "$Cver" "$missed"
+  fi
+  [[ $mode == auto ]] || exit 0
+  space
+fi
+
+if [[ $booted_pinned != true ]]; then
+  echo "$me: booted deployment is not confirmed yet" >&2
+fi
+
+inhibited() {
+  systemd-inhibit --what=sleep --mode=block --who="$me" --why="staging an update" bootc "$@" || exit 1
+}
+
+write_expected() {
+  {
+    echo "deploy=$staged_id"
+    echo "digest=$S"
+    echo "version=$staged_version"
+    echo "image=$staged_image"
+    echo "staged=$(now)"
+  } | write_file "$expected"
+}
+
+record_stage() {
+  read_bootc
+  read_ostree
+  [[ -n $S && -n $staged_id ]] || die "no staged deployment after bootc $1"
+  ostree admin lock-finalization > /dev/null || die "cannot lock the finalization of $staged_id"
+  write_expected
+  local sd=${staged_version%%.*} bd=${booted_version%%.*}
+  if [[ $sd =~ ^[0-9]{8}$ && $bd =~ ^[0-9]{8}$ ]] && (( 10#$sd < 10#$bd )); then
+    echo "$me: $staged_version is older than the booted $booted_version" >&2
+  fi
+}
+
+bootset() {
+  local f img="" m
+  for f in "$1"/usr/lib/modules/*/initramfs.img; do
+    [[ ! -f $f ]] || img=$f
+  done
+  [[ -n $img ]] || die "no initramfs.img under $1/usr/lib/modules"
+  m=$(zstd -dc "$img" | cpio -it --quiet) || die "cannot list $img"
+  (
+    cd "$1"
+    {
+      for f in "${bootfiles[@]}"; do
+        [[ ! -e $f ]] || find -L "$f" -type f ! -name initramfs.img
+      done
+      sed 's,^\./,,; s,^etc/,usr/etc/,' <<< "$m" | grep '^usr/' || true
+    } | LC_ALL=C sort -u | grep -vxE 'usr/(lib|etc)/os-release' | while IFS= read -r f; do
+      [[ ! -f $f ]] || printf '%s\0' "$f"
+    done | xargs -0r sha256sum
+  )
+}
+
+battery() {
+  local b cap st
+  for b in "$power"/*; do
+    [[ $(cat "$b/type" 2> /dev/null) == Battery && $(cat "$b/scope" 2> /dev/null) != Device ]] || continue
+    cap=$(cat "$b/capacity" 2> /dev/null) || continue
+    st=$(cat "$b/status" 2> /dev/null) || st=""
+    [[ $cap =~ ^[0-9]+$ ]] || continue
+    if (( cap < 30 )) && [[ $st != Charging && $st != Full ]]; then
+      echo "$cap"
+      return 1
+    fi
+  done
+}
+
+ids() { awk -F: -v n="$1" '$1 == n { print $3; exit }' "${@:2}" 2> /dev/null; }
+
+drift() {
+  local dir=$1 db f name id cur owned
+  owned=" $(find "$dir/usr" -xdev -printf '%U\n%G\n' 2> /dev/null | sort -un | tr '\n' ' ') "
+  for db in group passwd; do
+    for f in "$dir/usr/etc/$db" "$dir/usr/lib/$db"; do
+      [[ -f $f ]] || continue
+      while IFS=: read -r name _ id _; do
+        [[ $name != root && $id =~ ^[0-9]+$ && $owned == *" $id "* ]] || continue
+        cur=$(ids "$name" "$root/etc/$db")
+        if [[ -z $cur ]] && awk -F: -v n="$name" -v i="$id" '$3 == i && $1 != n { f = 1 } END { exit !f }' "$root/etc/$db" 2> /dev/null; then
+          cur=taken
+        fi
+        if [[ -n $cur && $cur != "$id" ]]; then
+          echo "$db $name ($id in the update, ${cur/taken/held by another name} here, owns files in /usr)"
+          return 0
+        fi
+      done < "$f"
+    done
+  done
+}
+
+declined() {
+  if grep -qxF "$1" "$failed" 2> /dev/null; then
+    report refused "$1" "$2"
+    echo "$me: $2 ($1) was written once and did not stay, sudo microos-update writes it again" >&2
+    exit 0
+  fi
+  local n
+  n=$(grep -c . "$failed" 2> /dev/null) || true
+  if (( ${n:-0} >= 2 )); then
+    report held "$1" "$2"
+    echo "$me: two written updates in a row did not stay, sudo microos-update writes $2" >&2
+    exit 0
+  fi
+}
+
+write_bootb() {
+  local dir tool cap first stamp rc=0 nheld nhid
+  read_bootc
+  read_ostree
+  [[ -n $staged_id && -n $S && -n $staged_root ]] || die "no pending deployment to write to boot_b"
+  dir=$sysroot/ostree/deploy/$staged_root/deploy/$staged_id
+  tool=$dir/usr/libexec/microos/microos-bootimg-update
+  [[ -x $tool ]] || die "$staged_id has no microos-bootimg-update, boot_b not written"
+  if [[ $mode == auto ]]; then
+    declined "$S" "$staged_version"
+    bootset "$root" > "$rundir/bootset.running" || exit 1
+    bootset "$dir" > "$rundir/bootset.pending" || exit 1
+    first=$(diff "$rundir/bootset.running" "$rundir/bootset.pending" | sed -n 's/^[<>] [0-9a-f]\{64\}  //p' | head -n 1) || true
+    rm -f "$rundir/bootset.running" "$rundir/bootset.pending"
+    [[ -n $first ]] || first=$(drift "$dir")
+    if [[ -n $first ]]; then
+      report attended "$S" "$staged_version"
+      echo "$me: $staged_version changes $first, sudo microos-update writes it" >&2
+      exit 0
+    fi
+  fi
+  if systemctl is-active --quiet microos-bootb-write.service; then
+    echo "$me: a boot_b write is running" >&2
+    exit 3
+  fi
+  if ! cap=$(battery); then
+    [[ $mode != auto ]] || report deferred "$S" "$staged_version"
+    echo "$me: battery $cap%, boot_b is written on the next run" >&2
+    exit 0
+  fi
+  stamp=$(date +%s)
+  if [[ $(jq -r --arg id "$staged_id" 'any(.deployments[]; "\(.checksum).\(.serial)" == $id and .staged)' <<< "$ost") != true ]]; then
+    stamp=$(stat -c %Y "$dir.origin") || die "no $dir.origin"
+  fi
+  printf '%s\n' "deploy=$staged_id" "digest=$S" "version=$staged_version" "from=$booted_id" "stamp=$stamp" |
+    sync_file "$written"
+  exec 9>&-
+  systemd-run --unit=microos-bootb-write --wait --collect --quiet -p KillMode=mixed -p KillSignal=SIGCONT \
+    -p TimeoutStopSec=300 -p Nice=0 -p IOSchedulingClass=best-effort -p CPUSchedulingPolicy=other \
+    -p "RequiresMountsFor=/boot /boot/efi /sysroot /var/lib/microos" -p After=ostree-finalize-staged.service \
+    -p Environment=MICROOS_SLEEP_BLOCKED=1 systemd-inhibit --what=sleep:shutdown --mode=block --who="$me" --why="writing boot_b" \
+    "$tool" --tree "$dir" --deployment "$staged_id" || rc=$?
+  nheld=$(bootb_word "$bootb" microos.deploy 2> /dev/null) || nheld=""
+  nhid=$(bootb_word "$bootb" microos.id 2> /dev/null) || nhid=""
+  if [[ $nheld != "$staged_id" || -z $nhid || $nhid == "$rid" ]]; then
+    rm -f "$written"
+    die "boot_b holds ${nhid:-no image} after microos-bootimg-update (exit $rc), journalctl -u microos-bootb-write"
+  fi
+  { cat "$written"; echo "written=$nhid"; } | sync_file "$written"
+  (( rc == 0 )) || echo "$me: microos-bootimg-update exited $rc, boot_b holds $nhid for $staged_id" >&2
+  [[ $mode != auto ]] || report staged "$S" "$staged_version"
+}
+
+announce() { echo "$me: staged $staged_version $S, applies on the next reboot"; }
+
+held=$(bootb_word "$bootb" microos.deploy 2> /dev/null) || held=""
+hid=$(bootb_word "$bootb" microos.id 2> /dev/null) || hid=""
+
+re='^[0-9a-f]{64}\.[0-9]+$'
+wdeploy=$(kv deploy "$written") wdigest=$(kv digest "$written") wid=$(kv written "$written")
+if [[ -f $written ]] && ! [[ $wdeploy =~ $re && $wdigest =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "$me: $written names no deployment and digest, removed" >&2
+  rm -f "$written"
+elif [[ -f $written && -z $wid ]] && ! systemctl is-active --quiet microos-bootb-write.service; then
+  if [[ $wdeploy == "$booted_id" && -n $rid ]]; then
+    wid=$rid
+  elif [[ $held == "$wdeploy" && -n $hid && $hid != "$rid" ]]; then
+    wid=$hid
+  fi
+  if [[ -n $wid ]]; then
+    { cat "$written"; echo "written=$wid"; } | sync_file "$written"
+  else
+    rm -f "$written"
+  fi
+fi
+if [[ -n $wid && $wdeploy == "$booted_id" ]]; then
+  ! confirmed || rm -f "$failed"
+elif [[ -n $wid && $wdeploy == "$staged_id" && -n $rid && $hid == "$rid" && $hid != "$wid" ]]; then
+  echo "$me: $(kv version "$written") ($wdigest) was written to boot_b as $wid and $rid runs again" >&2
+  grep -qxF "$wdigest" "$failed" 2> /dev/null || echo "$wdigest" >> "$failed"
+  rm -f "$written"
+elif [[ -n $wid && $wdeploy != "$staged_id" ]]; then
+  rm -f "$written"
+fi
+
+if [[ -z $rid || $hid != "$rid" || $held != "$booted_id" ]]; then
+  if [[ -n $staged_id && $held == "$staged_id" ]]; then
+    [[ $mode != auto ]] || report staged "$S" "$staged_version"
+    if [[ $S == "$C" ]]; then
+      [[ $(kv deploy "$expected") == "$staged_id" ]] || write_expected
+      announce
+      exit 0
+    fi
+  fi
+  echo "$me: boot_b holds ${hid:-no image} for ${held:-no deployment}, the running image is ${rid:-unknown} on $booted_id:" \
+    "nothing is staged before a reboot"
+  exit 0
+fi
+
+if (( pend )); then
+  if [[ $(kv deploy "$expected") != "$staged_id" ]]; then
+    write_expected
+  fi
+  write_bootb
+  announce
+  exit 0
+fi
+
+if (( ! signed )); then
+  if [[ -n $S ]]; then
+    echo "$me: replacing the staged $staged_image with $R"
+  else
+    echo "$me: origin $spec_image is not the signed $R, switching"
+  fi
+  inhibited switch --enforce-container-sigpolicy "$R"
+  record_stage switch
+  write_bootb
+  announce
+  exit 0
+fi
+
+if [[ $B == "$C" && -n $S ]]; then
+  channel_read
+  if [[ $chan_digest == "$C" ]]; then
+    undeploy_staged
+    rm -f "$notapplied"
+    echo "$me: removed staged $S, the channel is back at the booted image"
+    exit 7
+  fi
+  C=$chan_digest
+  Cver=$chan_version
+fi
+
+if [[ $B == "$C" ]]; then
+  rm -f "$expected" "$notapplied"
+  echo "$me: up to date, $booted_version is booted"
+  exit 7
+fi
+
+[[ $mode != auto ]] || declined "$C" "$Cver"
+inhibited upgrade
+record_stage upgrade
+if [[ $S != "$C" ]]; then
+  r=0
+  ( channel_read && [[ $chan_digest == "$S" ]] ) || r=$?
+  if (( r )); then
+    undeploy_staged
+    die "staged $S is not the channel digest $C, removed it"
+  fi
+fi
+write_bootb
+announce
+exit 0

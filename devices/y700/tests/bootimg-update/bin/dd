@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+real=$(type -P -a dd | grep -vxF "$0" | head -n 1)
+a=" $* "
+if [[ $a == *" of=$MICROOS_BOOT_B "* ]]; then
+  echo "dd $*" >> "$FAKE_STATE/events"
+  : > "$FAKE_STATE/written"
+  [[ -z ${FAKE_DD_FAIL_BULK:-} || $a != *" skip=4096 "* ]] || exit 1
+elif [[ $a == *" if=$MICROOS_BOOT_B "* && $a != *" of="* && -e $FAKE_STATE/written ]]; then
+  n=$(cat "$FAKE_STATE/dd-bad" 2> /dev/null || echo 0)
+  if (( n > 0 )); then
+    echo $(( n - 1 )) > "$FAKE_STATE/dd-bad"
+    "$real" "$@" | { printf X; tail -c +2; }
+    exit "${PIPESTATUS[0]}"
+  fi
+fi
+exec "$real" "$@"

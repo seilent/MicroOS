@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 13 Nov 2026 08:24:04 +0900
+Subject: [PATCH] iommu/arm-smmu-qcom: Add SM8650 MDSS compatible to client
+ list
+
+Add the SM8650 MDSS to the clients that get an identity default domain,
+as the other MDSS versions do. The bootloader leaves the display
+scanning out its splash, and with a DMA domain the scanout faults on
+the splash addresses until the display driver takes over.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c b/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
+index 795e8ec7e..40c35e5d7 100644
+--- a/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
++++ b/drivers/iommu/arm/arm-smmu/arm-smmu-qcom.c
+@@ -426,6 +426,7 @@ static const struct of_device_id qcom_smmu_client_of_match[] __maybe_unused = {
+ 	{ .compatible = "qcom,sm8150-mdss" },
+ 	{ .compatible = "qcom,sm8250-mdss" },
+ 	{ .compatible = "qcom,sm8450-mdss" },
++	{ .compatible = "qcom,sm8650-mdss" },
+ 	{ .compatible = "qcom,x1e80100-mdss" },
+ 	{ }
+ };
+-- 
+2.55.0
+

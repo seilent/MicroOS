@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-efi-log
+efi=${MICROOS_EFI:-/boot/efi}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+kind=${1:-}
+[[ $kind =~ ^[a-z]+$ ]] || { echo "usage: $me <kind>" >&2; exit 2; }
+logs=$efi/logs
+
+mkdir -p "$logs" || exit 1
+install -d -m 0755 "$rundir" || exit 1
+n=""
+[[ -f $rundir/efi-log-$kind ]] && n=$(< "$rundir/efi-log-$kind")
+if [[ ! $n =~ ^[0-9]+$ ]]; then
+  n=0
+  for f in "$logs/$kind"-*.txt; do
+    k=${f##*/"$kind"-}
+    k=${k%.txt}
+    [[ $k =~ ^[0-9]+$ ]] || continue
+    (( 10#$k <= n )) || n=$(( 10#$k ))
+  done
+  n=$(( n + 1 ))
+  echo "$n" > "$rundir/efi-log-$kind"
+fi
+
+out=$logs/$kind-$n.txt
+journalctl -b -o short-monotonic --no-pager > "$out.tmp" 2>&1
+mv -f "$out.tmp" "$out" || exit 1
+for f in "$logs/$kind"-*.txt; do
+  k=${f##*/"$kind"-}
+  k=${k%.txt}
+  [[ $k =~ ^[0-9]+$ ]] || continue
+  (( 10#$k > n - 8 )) || rm -f "$f"
+done
+sync -f "$out"
+echo "$out"

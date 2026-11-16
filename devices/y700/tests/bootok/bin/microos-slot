@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+echo "microos-slot $*" >> "$FAKE_STATE/slot.log"
+[[ $1 != status ]] || echo "b boot_b: active 1 priority 3 retry 5 successful 0 unbootable 0 (0x2f)"
+exit "${FAKE_SLOT_RC:-0}"

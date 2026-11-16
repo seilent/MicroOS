@@ -1,0 +1,135 @@
+#!/bin/sh
+set -u
+
+cmdline=${MICROOS_CMDLINE:-/proc/cmdline}
+dev=${MICROOS_EFI_DEV:-/dev/disk/by-partlabel/microos_efi}
+dir=${MICROOS_EFI_DIR:-}
+idfile=${MICROOS_INITRD_ID:-/etc/microos-initrd-id}
+bootb=${MICROOS_BOOT_B:-/dev/disk/by-partlabel/boot_b}
+boota=${MICROOS_BOOT_A:-/dev/disk/by-partlabel/boot_a}
+classblock=${MICROOS_CLASS_BLOCK:-/sys/class/block}
+conf=${MICROOS_SLOT_CONF:-/usr/lib/microos/slot.conf}
+mnt=/run/microos-guard
+. "${MICROOS_SDAM_LIB:-/usr/libexec/microos/microos-sdam}"
+. "${MICROOS_BOOTB_LIB:-/usr/libexec/microos/microos-bootb}"
+
+say() { echo "microos-guard: $*" >&2; }
+
+MICROOS_BOOT_TRIES=3
+[ ! -r "$conf" ] || . "$conf"
+case $MICROOS_BOOT_TRIES in
+  ''|*[!0-9]*) MICROOS_BOOT_TRIES=3 ;;
+esac
+
+id=""
+test=""
+set -f
+for w in $(cat "$cmdline"); do
+  case $w in
+    microos.id=*) id=${w#microos.id=} ;;
+    microos.test=*) test=${w#microos.test=} ;;
+  esac
+done
+set +f
+
+if [ "$test" = 1 ]; then
+  if sdam_find && sdam_put preset; then
+    say "fastboot preset written to ${sdam##*/}"
+  else
+    say "no fastboot preset, SDAM nvram@7100 not written"
+  fi
+fi
+
+if [ -n "$dir" ]; then
+  efi=$dir
+else
+  [ -b "$dev" ] || { say "$dev is missing"; exit 1; }
+  mkdir -p "$mnt"
+  mount -t vfat -o umask=0077 "$dev" "$mnt" || { say "cannot mount $dev"; exit 1; }
+  efi=$mnt
+fi
+
+f=$efi/microos/boot-attempts
+fid=""
+count=0
+if [ -f "$f" ]; then
+  read -r fid count < "$f" || :
+fi
+case $count in
+  ''|*[!0-9]*) count=0 ;;
+esac
+[ -n "$id" ] && [ "$fid" = "$id" ] || count=0
+
+rc=0
+counted=0
+case $test in
+  noguard|gptdump) say "microos.test=$test, boot not counted" ;;
+  *)
+    if [ -z "$id" ]; then
+      say "no microos.id, boot not counted"
+    else
+      count=$((count + 1))
+      counted=1
+      mkdir -p "$efi/microos" && echo "$id $count" > "$f.tmp" && mv -f "$f.tmp" "$f" || say "cannot write $f"
+      say "$id attempt $count"
+    fi
+    ;;
+esac
+
+initrd=$(cat "$idfile" 2> /dev/null) || initrd=unknown
+log=$efi/logs/guard.txt
+if mkdir -p "$efi/logs" && echo "initrd=$initrd id=${id:-none} test=${test:-none} count=$count" >> "$log"; then
+  tail -n 200 "$log" > "$log.tmp" && mv -f "$log.tmp" "$log"
+fi
+
+restored=""
+once=""
+[ "$test" != once ] || once=1
+if [ "$counted" = 1 ] && { [ -n "$once" ] || [ "$count" -ge "$MICROOS_BOOT_TRIES" ]; }; then
+  msg=""
+  img=$efi/microos/boot-prev.img
+  if ! bootb_prev "$efi" "$id"; then
+    [ -z "$once" ] || msg="boot-prev.img is missing, does not match boot-prev.id or names $id, not restored"
+  else
+    held=$(bootb_word "$bootb" microos.id) || held=""
+    da=$(bootb_disk "$boota" "$classblock") || da=""
+    db=$(bootb_disk "$bootb" "$classblock") || db=""
+    if [ "$held" != "$id" ]; then
+      msg="boot_b holds ${held:-no MicroOS image}, not $id, boot-prev.img not restored"
+    elif [ "$(bootb_size "$bootb")" != "$bootb_full" ] || [ "$(stat -c %s "$img")" != "$bootb_full" ]; then
+      msg="boot_b or boot-prev.img is not $bootb_full bytes, boot-prev.img not restored"
+    elif [ -z "$db" ] || [ "$da" != "$db" ]; then
+      msg="boot_b is not on the boot_a disk, boot-prev.img not restored"
+    else
+      if [ -z "$once" ] && [ -n "$test" ] && sdam_find && sdam_put clear; then
+        say "fastboot preset cleared in ${sdam##*/}"
+      fi
+      if bootb_write "$img" "$bootb" "$bootb_prev_sha" || bootb_write "$img" "$bootb" "$bootb_prev_sha"; then
+        restored=$bootb_prev_id
+        echo "$restored 0" > "$f.tmp" && mv -f "$f.tmp" "$f" || say "cannot write $f"
+        if [ -n "$once" ]; then
+          msg="restored $restored to boot_b at start $count of $id"
+        else
+          msg="restored $restored from boot-prev.img to $bootb after $count starts of $id"
+        fi
+      else
+        msg="restore of $bootb_prev_id from boot-prev.img to $bootb failed"
+      fi
+      if [ -n "$once" ] && sdam_find && sdam_put clear; then
+        say "fastboot preset cleared in ${sdam##*/}"
+      fi
+    fi
+  fi
+  if [ -n "$msg" ]; then
+    [ -z "$once" ] || msg="once: $msg"
+    say "$msg"
+    echo "$msg" >> "$log"
+  fi
+fi
+sync
+
+[ -n "$dir" ] || umount "$mnt" || { say "cannot unmount $mnt"; rc=1; }
+if [ -n "$restored" ] && [ -z "$once" ]; then
+  systemctl --no-block reboot || systemctl --force reboot
+fi
+exit "$rc"

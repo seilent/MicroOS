@@ -1,0 +1,11 @@
+[Unit]
+Description=microos.test=bootloader: Reboot into fastboot
+ConditionKernelCommandLine=microos.test=bootloader
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-test bootloader
+
+[Install]
+WantedBy=multi-user.target

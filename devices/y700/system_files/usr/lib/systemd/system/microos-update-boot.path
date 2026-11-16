@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the MicroOS channel once the boot is confirmed
+ConditionPathExists=/run/ostree-booted
+
+[Path]
+PathExists=/run/microos/boot-confirmed
+Unit=microos-update-boot.service
+
+[Install]
+WantedBy=multi-user.target

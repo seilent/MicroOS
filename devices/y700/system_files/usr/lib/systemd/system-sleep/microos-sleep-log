@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root=${MICROOS_SLEEP_ROOT:-}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+statedir=${MICROOS_STATEDIR:-/var/lib/microos}
+stats=$root/sys/kernel/debug/qcom_stats
+pre=$rundir/sleep-pre
+log=$statedir/sleep.tsv
+keep=10000
+cap=20000
+
+. "${MICROOS_IRQ_LIB:-/usr/libexec/microos/microos-irq}"
+
+rd() { cat "$1" 2> /dev/null || echo -; }
+
+battery() {
+  local p
+  for p in "$root"/sys/class/power_supply/*; do
+    [[ $(rd "$p/type") == Battery ]] && { rd "$p/charge_counter"; return; }
+  done
+  echo -
+}
+
+qstat() {
+  awk '/^Count:/ { c = $2 } /^Accumulated Duration:/ { d = $3 } END { print (c == "" ? "-" : c), (d == "" ? "-" : d) }' \
+    "$stats/$1" 2> /dev/null || echo "- -"
+}
+
+snap() {
+  local up
+  read -r up _ < "$root/proc/uptime" || up=-
+  echo "$up $(battery) $(qstat cxsd) $(qstat aosd) $(qstat ddr)"
+}
+
+delta() { [[ $1 =~ ^[0-9]+$ && $2 =~ ^[0-9]+$ ]] && echo $(( $2 - $1 )) || echo -; }
+
+case ${1:-} in
+  pre)
+    [[ -d $stats ]] || timeout 2 modprobe -q qcom_stats || true
+    install -d -m 0755 "$rundir"
+    snap > "$pre"
+    ;;
+  post)
+    [[ -r $pre ]] || exit 0
+    a=()
+    read -ra a < "$pre" || true
+    rm -f "$pre"
+    read -ra b <<< "$(snap)"
+    irq=$(rd "$root/sys/power/pm_wakeup_irq")
+    name=$(irq_name "$irq" "$root/proc/interrupts")
+    install -d -m 0755 "$statedir"
+    [[ -s $log ]] || printf 'in\tout\tcharge_in\tcharge_out\tcxsd\tcxsd_time\taosd\taosd_time\tddr\tddr_time\twake_irq\twake_name\n' > "$log"
+    row=("${a[0]:--}" "${b[0]:--}" "${a[1]:--}" "${b[1]:--}")
+    for i in 2 3 4 5 6 7; do
+      row+=("$(delta "${a[i]:--}" "${b[i]:--}")")
+    done
+    row+=("$irq" "${name:--}")
+    (IFS=$'\t'; echo "${row[*]}") >> "$log"
+    if (( $(wc -l < "$log") > cap )); then
+      { head -n 1 "$log"; tail -n "$keep" "$log"; } > "$log.tmp"
+      mv -f "$log.tmp" "$log"
+    fi
+    ;;
+esac

@@ -1,0 +1,425 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-boot-ok
+die() { echo "$me: $*" >&2; exit 1; }
+say() { echo "$me: $*" >&2; }
+
+rundir=${MICROOS_RUNDIR:-/run/microos}
+statedir=${MICROOS_STATEDIR:-/var/lib/microos}
+esp=${MICROOS_ESP:-/boot/efi}
+conf=${MICROOS_BOOT_OK_CONF:-/usr/lib/microos/boot-ok.conf}
+slotconf=${MICROOS_SLOT_CONF:-/usr/lib/microos/slot.conf}
+stubconf=${MICROOS_STUB_CONF:-/usr/lib/microos/stub.conf}
+sdamlib=${MICROOS_SDAM_LIB:-/usr/libexec/microos/microos-sdam}
+bootblib=${MICROOS_BOOTB_LIB:-/usr/libexec/microos/microos-bootb}
+stublib=${MICROOS_STUB_LIB:-/usr/libexec/microos/microos-stub}
+slot=${MICROOS_SLOT:-/usr/libexec/microos/microos-slot}
+cmdline=${MICROOS_CMDLINE:-/proc/cmdline}
+bootb=${MICROOS_BOOT_B:-/dev/disk/by-partlabel/boot_b}
+timer=${MICROOS_DEADLINE_TIMER:-/usr/lib/systemd/system/microos-boot-deadline.timer}
+uptime=${MICROOS_UPTIME:-/proc/uptime}
+devmem=${MICROOS_DEVMEM:-/dev/mem}
+lockwait=${MICROOS_BOOT_OK_LOCK_WAIT:-1800}
+udcdir=${MICROOS_UDC:-/sys/class/udc}
+netdir=${MICROOS_NET:-/sys/class/net}
+drmdir=${MICROOS_DRM:-/sys/class/drm}
+inputdir=${MICROOS_INPUT:-/sys/class/input}
+pins=$statedir/boot-ok-pins
+skip=$statedir/boot-ok-skip
+record=$statedir/bootimg-update
+
+[[ -r $conf ]] || die "missing $conf"
+. "$conf"
+[[ -r $bootblib ]] || die "missing $bootblib"
+. "$bootblib"
+[[ -r $stublib ]] || die "missing $stublib"
+. "$stublib"
+
+kround="" mid="" test=""
+read -ra words < "$cmdline" || true
+for w in "${words[@]}"; do
+  case $w in
+    microos.kround=*) kround=${w#microos.kround=} ;;
+    microos.id=*) mid=${w#microos.id=} ;;
+    microos.test=*) test=${w#microos.test=} ;;
+  esac
+done
+
+kchecks=""
+if [[ -n $kround ]]; then
+  case $kround in
+    p0|p1a) kchecks="udc wlan0" ;;
+    p1b) kchecks="udc wlan0 dsi" ;;
+    p1c|p2a|p2b|p2c) kchecks="udc wlan0 dsi touch pen" ;;
+    *) die "not confirmed: kround $kround has no checks" ;;
+  esac
+  allow=" $MICROOS_BOOT_OK_ALLOW "
+  for u in microos-usb-console.service NetworkManager-wait-online.service; do
+    allow=${allow// $u / }
+  done
+  if [[ $test == once ]]; then
+    kchecks=${kchecks/udc /}
+    allow+="microos-usb-console.service microos-initrd-usbcon.service "
+  fi
+  MICROOS_BOOT_OK_ALLOW=$allow
+  say "kround $kround: checks $kchecks"
+fi
+
+write() {
+  local f=$1 t
+  shift
+  t=$(mktemp "$f.XXXXXX")
+  if (( $# )); then
+    printf '%s\n' "$@" > "$t"
+  fi
+  chmod 0644 "$t"
+  sync "$t"
+  mv -fT "$t" "$f"
+  sync -f "$f"
+}
+
+read_status() {
+  status=$(ostree admin status --json) || die "ostree admin status failed"
+}
+
+id_of() {
+  jq -r "[.deployments[] | select($1) | \"\(.checksum).\(.serial)\"] | first // empty" <<< "$status"
+}
+
+pinned() {
+  jq -e --arg id "$1" 'any(.deployments[]; .pinned and "\(.checksum).\(.serial)" == $id)' <<< "$status" > /dev/null
+}
+
+index_of() {
+  jq -r --arg id "$1" '.deployments[] | select("\(.checksum).\(.serial)" == $id) | .index' <<< "$status"
+}
+
+if [[ -z $kround && -e $skip ]]; then
+  want=$(tr -d '[:space:]' < "$skip")
+  rm -f "$skip"
+  sync -f "$statedir"
+  read_status
+  booted=$(id_of .booted)
+  if [[ -n $booted && $booted == "$want" ]]; then
+    echo "$me: skipped once"
+    exit 3
+  fi
+  echo "$me: boot-ok-skip names '$want', booted $booted, not skipped" >&2
+fi
+
+health() {
+  local s u bad=""
+  s=$(systemctl is-system-running 2> /dev/null) || true
+  if [[ $s == degraded ]]; then
+    while read -r u _; do
+      if [[ -n $u && " $MICROOS_BOOT_OK_ALLOW " != *" $u "* ]]; then
+        bad+=" $u"
+      fi
+    done < <(systemctl list-units --state=failed --plain --no-legend --full 2> /dev/null)
+    if [[ -n $bad ]]; then
+      why="failed:$bad"
+      return 1
+    fi
+  elif [[ $s != running ]]; then
+    why="system ${s:-unknown}"
+    return 1
+  fi
+  for u in $MICROOS_BOOT_OK_ACTIVE; do
+    if [[ $(systemctl show -p ConditionResult --value "$u") == yes ]] && ! systemctl is-active --quiet "$u"; then
+      why="$u is not active"
+      return 1
+    fi
+  done
+  kround_ok
+}
+
+bit() {
+  local -a w
+  local i
+  read -ra w < "$1" 2> /dev/null || return 1
+  i=$(( ${#w[@]} - 1 - $2 / 64 ))
+  (( i >= 0 )) || return 1
+  (( (0x${w[i]} >> ($2 % 64)) & 1 ))
+}
+
+has_input() {
+  local d
+  for d in "$inputdir"/input*; do
+    bit "$d/properties" 1 && bit "$d/capabilities/$1" "$2" && return 0
+  done
+  return 1
+}
+
+kround_ok() {
+  local c f up
+  for c in $kchecks; do
+    case $c in
+      udc)
+        up=0
+        for f in "$udcdir"/*/state; do
+          [[ $(cat "$f" 2> /dev/null) != configured ]] || up=1
+        done
+        (( up )) || { why="kround $kround: no UDC configured"; return 1; }
+        ;;
+      wlan0) compgen -G "$netdir/*/wireless" > /dev/null || { why="kround $kround: no wireless interface"; return 1; } ;;
+      dsi)
+        grep -qx connected "$drmdir"/card*-DSI-1/status 2> /dev/null ||
+          { why="kround $kround: no DSI-1 connected"; return 1; }
+        ;;
+      touch) has_input abs 53 || { why="kround $kround: no touchscreen input device"; return 1; } ;;
+      pen) has_input key 320 || { why="kround $kround: no pen input device"; return 1; } ;;
+    esac
+  done
+}
+
+waited=0
+until health; do
+  (( waited < MICROOS_BOOT_OK_WAIT )) || die "not confirmed: $why after $MICROOS_BOOT_OK_WAIT s"
+  sleep "$MICROOS_BOOT_OK_STEP"
+  waited=$(( waited + MICROOS_BOOT_OK_STEP ))
+done
+held=0
+while (( held < MICROOS_BOOT_OK_HOLD )); do
+  sleep "$MICROOS_BOOT_OK_STEP"
+  held=$(( held + MICROOS_BOOT_OK_STEP ))
+  health || die "not confirmed: $why after $held s of the hold"
+done
+
+first=0
+if [[ $test != once && -n $mid && -f $record ]] && grep -qxF "armed=$mid" "$record" && ! grep -qxF "confirmed=$mid" "$record"; then
+  first=1
+fi
+if (( first )) && [[ -n $MICROOS_BOOT_OK_GATE ]]; then
+  deadline=$(sed -n 's/^OnBootSec=\([0-9]\+\)$/\1/p' "$timer" 2> /dev/null | head -n 1)
+  read -r up _ < "$uptime" || up=""
+  [[ $up =~ ^[0-9]+ ]] || die "not confirmed: no uptime in $uptime for the gate"
+  left=$(( ${deadline:-900} - BASH_REMATCH - 60 - MICROOS_BOOT_OK_GATE_RUN - MICROOS_BOOT_OK_STEP - 5 ))
+  (( left > 0 )) || die "not confirmed: no time left for $MICROOS_BOOT_OK_GATE before the ${deadline:-900} s deadline"
+  wait=$(( left < MICROOS_BOOT_OK_GATE_WAIT ? left : MICROOS_BOOT_OK_GATE_WAIT ))
+  end=$(( SECONDS + wait ))
+  until timeout -k 5 "$MICROOS_BOOT_OK_GATE_RUN" bash "$MICROOS_BOOT_OK_GATE"; do
+    (( SECONDS < end )) || die "not confirmed: $MICROOS_BOOT_OK_GATE failed for $wait s on the first boot of $mid"
+    sleep "$MICROOS_BOOT_OK_STEP"
+  done
+  say "first boot of $mid: $MICROOS_BOOT_OK_GATE passed"
+elif (( first )); then
+  say "first boot of $mid, no MICROOS_BOOT_OK_GATE"
+fi
+
+stubdown=0 res=""
+if [[ $test == once ]]; then
+  say "microos.test=once: stub left armed, it resets the board by its deadline"
+elif [[ -r $stubconf ]]; then
+  . "$stubconf"
+  if r=$(stub_disarm 2>&1); then
+    read -r res st n <<< "$r"
+    case $res in
+      absent) say "no stub, status word $st"; stubdown=1 ;;
+      refused) say "stub CPU_ON was refused, PSCI $n" ;;
+      stopped) say "stub stopped at $n s"; stubdown=1 ;;
+      *) say "stub still running at $n s after the disarm, it resets at $MICROOS_STUB_DEADLINE s" ;;
+    esac
+  else
+    say "stub words not reachable through $devmem: ${r##*$'\n'}"
+  fi
+else
+  say "missing $stubconf, stub not disarmed"
+fi
+if [[ -z $test && $res != stopped && $res != absent ]]; then
+  die "not confirmed: the stub is ${res:-in an unknown state} on an image without microos.test"
+fi
+
+read_status
+booted=$(id_of .booted)
+[[ $booted =~ ^[0-9a-f]{64}\.[0-9]+$ ]] || die "no booted deployment in ostree admin status"
+b=$(bootc status --json | jq -r '.status.booted.ostree | "\(.checksum).\(.deploySerial)"') || die "bootc status failed"
+[[ $b == "$booted" ]] || die "ostree booted $booted, bootc booted $b"
+
+install -d -m 0755 "$rundir" "$statedir"
+if [[ -n $kround ]]; then
+  say "kround $kround: $booted not pinned, confirmed state and $pins left as they are"
+else
+  exec 8> "$rundir/update.lock"
+  if ! flock -w "$lockwait" 8; then
+    echo "$me: not confirmed: update.lock busy" >&2
+    exit 3
+  fi
+
+  listed=()
+  if [[ -f $pins ]]; then
+    while read -r id; do
+      [[ -n $id ]] && listed+=("$id")
+    done < "$pins"
+  fi
+  was_listed=0
+  for id in "${listed[@]}"; do
+    [[ $id != "$booted" ]] || was_listed=1
+  done
+
+  read_status
+  if ! pinned "$booted"; then
+    if (( ! was_listed )); then
+      listed+=("$booted")
+      write "$pins" "${listed[@]}"
+      was_listed=1
+    fi
+    ostree admin pin booted > /dev/null
+  fi
+
+  read_status
+  [[ $(id_of .booted) == "$booted" ]] || die "the booted deployment changed to $(id_of .booted)"
+  pinned "$booted" || die "$booted is not pinned"
+
+  write "$statedir/confirmed" "$booted"
+  rollback=no
+  ! jq -e 'any(.deployments[]; (.booted or .staged) | not)' <<< "$status" > /dev/null || rollback=yes
+  write "$rundir/deployments" "booted=$booted" confirmed=yes "rollback=$rollback"
+
+  pinset() {
+    jq -r '.deployments[] | select(.pinned) | "\(.checksum).\(.serial)"' <<< "$status" | LC_ALL=C sort | paste -sd' '
+  }
+  ids() {
+    jq -r '.deployments[] | "\(.checksum).\(.serial)"' <<< "$status"
+  }
+
+  read_status
+  target=" "
+  for id in $(pinset) "$booted"; do
+    [[ $target == *" $id "* ]] && continue
+    if [[ $id == "$booted" || " ${listed[*]} " != *" $id "* ]]; then
+      target+="$id "
+    fi
+  done
+
+  fails=0
+  while :; do
+    read_status
+    cur=" $(pinset) "
+    op="" id=""
+    for x in $(ids); do
+      if [[ $target == *" $x "* && $cur != *" $x "* ]]; then
+        op=pin id=$x
+        break
+      fi
+    done
+    if [[ -z $op ]]; then
+      for x in $cur; do
+        if [[ $target != *" $x "* ]]; then
+          op=unpin id=$x
+          break
+        fi
+      done
+    fi
+    [[ -n $op ]] || break
+    if [[ $op == pin ]]; then
+      want=$({ tr ' ' '\n' <<< "$cur"; echo "$id"; } | grep . | LC_ALL=C sort | paste -sd' ')
+      if [[ $id == "$booted" ]]; then
+        ostree admin pin booted > /dev/null
+      else
+        ostree admin pin "$(index_of "$id")" > /dev/null
+      fi
+    else
+      want=$(tr ' ' '\n' <<< "$cur" | grep . | grep -Fvx "$id" | LC_ALL=C sort | paste -sd' ' || true)
+      ostree admin pin --unpin "$(index_of "$id")" > /dev/null
+    fi
+    read_status
+    if [[ $(pinset) != "$want" ]]; then
+      fails=$(( fails + 1 ))
+      (( fails < 3 )) || die "deployment indexes kept moving, $pins unchanged"
+    fi
+  done
+
+  if (( was_listed )); then
+    write "$pins" "$booted"
+  else
+    write "$pins"
+  fi
+fi
+
+flash_boot() {
+  local ver
+  if [[ -z $mid ]]; then
+    say "no microos.id on the cmdline"
+    return 1
+  fi
+  if [[ ! -r $bootb ]]; then
+    say "$bootb is not readable"
+    return 1
+  fi
+  if ! ver=$(bootb_version "$bootb"); then
+    say "$bootb has no boot image header"
+    return 1
+  fi
+  if [[ ! $ver =~ ^[0-2]$ ]]; then
+    say "$bootb header version ${ver:-unknown}, cmdline not read"
+    return 1
+  fi
+  [[ " $(bootb_cmdline "$bootb") " == *" microos.id=$mid "* ]]
+}
+
+flash=0
+if flash_boot; then
+  flash=1
+  say "flash boot of $mid"
+else
+  say "RAM boot of ${mid:-no microos.id}"
+fi
+
+if [[ -n $mid ]]; then
+  f=$esp/microos/boot-attempts
+  if mkdir -p "$esp/microos" && echo "$mid 0" > "$f.tmp" && mv -f "$f.tmp" "$f" && sync -f "$f"; then
+    say "attempt counter of $mid reset"
+  else
+    say "cannot reset $f"
+  fi
+fi
+
+if (( stubdown )); then
+  if [[ -r $sdamlib ]]; then
+    . "$sdamlib"
+    if sdam_find && sdam_put clear; then
+      say "fastboot preset cleared in ${sdam##*/}"
+    else
+      say "fastboot preset not cleared, no SDAM nvram@7100"
+    fi
+  else
+    say "missing $sdamlib, fastboot preset not cleared"
+  fi
+else
+  say "stub not stopped, fastboot preset kept"
+fi
+
+MICROOS_SLOT_WRITE=0
+if [[ -r $slotconf ]]; then
+  . "$slotconf"
+fi
+if (( flash )) && [[ $test == once ]]; then
+  say "microos.test=once: slot b not armed"
+elif (( flash )); then
+  if [[ -x $slot ]]; then
+    if st=$("$slot" status 2>&1); then
+      while IFS= read -r l; do
+        say "slot status: $l"
+      done <<< "$st"
+    else
+      say "microos-slot status failed: ${st##*$'\n'}"
+    fi
+  fi
+  if [[ $MICROOS_SLOT_WRITE != 1 ]]; then
+    say "slot writes are off, slot b not armed"
+  elif [[ ! -x $slot ]]; then
+    say "$slot is missing, slot b not armed"
+  elif "$slot" arm; then
+    say "slot b armed, retry 7"
+  else
+    say "microos-slot arm failed"
+  fi
+fi
+
+write "$rundir/boot-confirmed" "$booted"
+if (( first )); then
+  mapfile -t lines < "$record"
+  write "$record" "${lines[@]}" "confirmed=$mid"
+fi
+echo "$me: confirmed $booted"

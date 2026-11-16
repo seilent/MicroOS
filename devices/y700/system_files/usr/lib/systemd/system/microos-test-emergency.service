@@ -1,0 +1,11 @@
+[Unit]
+Description=microos.test=emergency: Start the emergency target
+ConditionKernelCommandLine=microos.test=emergency
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-test emergency
+
+[Install]
+WantedBy=multi-user.target

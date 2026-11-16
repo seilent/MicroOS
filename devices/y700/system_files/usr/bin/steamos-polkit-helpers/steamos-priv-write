@@ -1,0 +1,11 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+(( $# == 2 )) || exit 2
+path=$(realpath -e -- "$1") || exit 1
+case $path in
+  /sys/devices/*/backlight/*/brightness) ;;
+  *) echo "steamos-priv-write: $1 is not an allowed path" >&2; exit 1 ;;
+esac
+[[ $2 =~ ^[0-9]+$ ]] || { echo "steamos-priv-write: $2 is not a number" >&2; exit 1; }
+printf '%s\n' "$2" > "$path"

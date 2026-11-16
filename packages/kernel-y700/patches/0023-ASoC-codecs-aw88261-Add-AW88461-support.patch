@@ -1,0 +1,400 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 08:35:33 +0900
+Subject: [PATCH] ASoC: codecs: aw88261: Add AW88461 support
+
+The AW88461 (chip ID 0x2308) shares the AW88261 system control,
+status, I2S and TDM registers and loads the same ACF format. It
+differs in the ultrasonic mute bit (SYSCTRL bit 15), the I2S TX enable
+bit (SYSCTRL bit 13), the CCO mux bit (register 0x1f bit 13) and a
+linear volume field in 0.125 dB steps, and it has no efuse
+calibration.
+
+Move those per chip values into match data, skip the efuse steps on
+the AW88461 and pulse an optional reset GPIO before the chip ID read.
+With no speaker protection on the AW88461, its volume control stops at
+the level of the active ACF profile. ACF register entries past the
+register map (the AW88461 ACF ends with one at 0xff) are skipped
+instead of failing the write, and a failed register write is no
+longer hidden by the calibration step.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ sound/soc/codecs/Kconfig   |   5 +-
+ sound/soc/codecs/aw88261.c | 138 +++++++++++++++++++++++++------------
+ sound/soc/codecs/aw88261.h |  27 ++++++++
+ 3 files changed, 125 insertions(+), 45 deletions(-)
+
+diff --git a/sound/soc/codecs/Kconfig b/sound/soc/codecs/Kconfig
+index ba59dabee..3c8443dea 100644
+--- a/sound/soc/codecs/Kconfig
++++ b/sound/soc/codecs/Kconfig
+@@ -697,7 +697,7 @@ config SND_SOC_AW88166
+ 	  enhancement algorithms and speaker protection.
+ 
+ config SND_SOC_AW88261
+-	tristate "Soc Audio for awinic aw88261"
++	tristate "Soc Audio for awinic aw88261 and aw88461"
+ 	depends on I2C
+ 	select REGMAP_I2C
+ 	select GPIOLIB
+@@ -707,7 +707,8 @@ config SND_SOC_AW88261
+ 	  The awinic AW88261 is an I2S/TDM input, high efficiency
+ 	  digital Smart K audio amplifier. The output voltage of
+ 	  boost converter can be adjusted smartly according to
+-	  the input amplitude.
++	  the input amplitude. The awinic AW88461 is supported as
++	  well.
+ 
+ config SND_SOC_AW88081
+ 	tristate "Soc Audio for awinic aw88081/aw88083"
+diff --git a/sound/soc/codecs/aw88261.c b/sound/soc/codecs/aw88261.c
+index c662280d9..50a3d56bd 100644
+--- a/sound/soc/codecs/aw88261.c
++++ b/sound/soc/codecs/aw88261.c
+@@ -11,6 +11,7 @@
+ #include <linux/cleanup.h>
+ #include <linux/i2c.h>
+ #include <linux/firmware.h>
++#include <linux/gpio/consumer.h>
+ #include <linux/bitops.h>
+ #include <linux/regmap.h>
+ #include <linux/regulator/consumer.h>
+@@ -31,20 +32,23 @@ static const struct regmap_config aw88261_remap_config = {
+ 
+ static void aw88261_dev_set_volume(struct aw_device *aw_dev, unsigned int value)
+ {
++	struct aw88261 *aw88261 = i2c_get_clientdata(aw_dev->i2c);
+ 	unsigned int volume = min(value, (unsigned int)AW88261_MUTE_VOL);
+ 
++	if (!aw88261->info->linear_volume)
++		volume = DB_TO_REG_VAL(volume);
++
+ 	regmap_update_bits(aw_dev->regmap, AW88261_SYSCTRL2_REG,
+-		~AW88261_VOL_MASK, DB_TO_REG_VAL(volume));
++		~AW88261_VOL_MASK, volume);
+ }
+ 
+ static void aw88261_dev_i2s_tx_enable(struct aw_device *aw_dev, bool flag)
+ {
+-	if (flag)
+-		regmap_update_bits(aw_dev->regmap, AW88261_I2SCTRL3_REG,
+-				   ~AW88261_I2STXEN_MASK, AW88261_I2STXEN_ENABLE_VALUE);
+-	else
+-		regmap_update_bits(aw_dev->regmap, AW88261_I2SCTRL3_REG,
+-				   ~AW88261_I2STXEN_MASK, AW88261_I2STXEN_DISABLE_VALUE);
++	struct aw88261 *aw88261 = i2c_get_clientdata(aw_dev->i2c);
++	const struct aw88261_chip_info *info = aw88261->info;
++
++	regmap_update_bits(aw_dev->regmap, info->i2s_tx_reg, info->i2s_tx,
++			   flag ? info->i2s_tx : 0);
+ }
+ 
+ static void aw88261_dev_pwd(struct aw_device *aw_dev, bool pwd)
+@@ -155,8 +159,8 @@ static int aw88261_dev_configure_syspll(struct aw88261 *aw88261)
+ 		return ret;
+ 
+ 	/* PLL divider must be used for 8/16/32 kHz modes */
+-	ret = regmap_update_bits(aw_dev->regmap, AW88261_PLLCTRL1_REG,
+-			~AW88261_CCO_MUX_MASK, aw88261->cco_mux_value);
++	ret = regmap_update_bits(aw_dev->regmap, aw88261->info->cco_mux_reg,
++				 aw88261->info->cco_mux, aw88261->cco_mux_value);
+ 	if (ret)
+ 		return ret;
+ 
+@@ -222,14 +226,11 @@ static int aw88261_dev_check_sysst(struct aw_device *aw_dev)
+ 
+ static void aw88261_dev_uls_hmute(struct aw_device *aw_dev, bool uls_hmute)
+ {
+-	if (uls_hmute)
+-		regmap_update_bits(aw_dev->regmap, AW88261_SYSCTRL_REG,
+-				~AW88261_ULS_HMUTE_MASK,
+-				AW88261_ULS_HMUTE_ENABLE_VALUE);
+-	else
+-		regmap_update_bits(aw_dev->regmap, AW88261_SYSCTRL_REG,
+-				~AW88261_ULS_HMUTE_MASK,
+-				AW88261_ULS_HMUTE_DISABLE_VALUE);
++	struct aw88261 *aw88261 = i2c_get_clientdata(aw_dev->i2c);
++	unsigned int mask = aw88261->info->uls_hmute;
++
++	regmap_update_bits(aw_dev->regmap, AW88261_SYSCTRL_REG, mask,
++			   uls_hmute ? mask : 0);
+ }
+ 
+ static void aw88261_reg_force_set(struct aw88261 *aw88261)
+@@ -349,7 +350,7 @@ static int aw88261_dev_reg_update(struct aw88261 *aw88261,
+ 	struct aw_device *aw_dev = aw88261->aw_pa;
+ 	struct aw_volume_desc *vol_desc = &aw_dev->volume_desc;
+ 	unsigned int read_val, efcheck_val, read_vol;
+-	int data_len, i, ret;
++	int data_len, i, ret = 0;
+ 	int16_t *reg_data;
+ 	u16 reg_val;
+ 	u8 reg_addr;
+@@ -368,6 +369,9 @@ static int aw88261_dev_reg_update(struct aw88261 *aw88261,
+ 	}
+ 
+ 	for (i = 0; i < data_len; i += 2) {
++		if ((u16)reg_data[i] > AW88261_REG_MAX)
++			continue;
++
+ 		reg_addr = reg_data[i];
+ 		reg_val = reg_data[i + 1];
+ 
+@@ -384,11 +388,10 @@ static int aw88261_dev_reg_update(struct aw88261 *aw88261,
+ 			reg_val |= read_val;
+ 
+ 			/* enable uls hmute */
+-			reg_val &= AW88261_ULS_HMUTE_MASK;
+-			reg_val |= AW88261_ULS_HMUTE_ENABLE_VALUE;
++			reg_val |= aw88261->info->uls_hmute;
+ 		}
+ 
+-		if (reg_addr == AW88261_DBGCTRL_REG) {
++		if (aw88261->info->efuse_cal && reg_addr == AW88261_DBGCTRL_REG) {
+ 			efcheck_val = reg_val & (~AW88261_EF_DBMD_MASK);
+ 			if (efcheck_val == AW88261_OR_VALUE)
+ 				aw88261->efuse_check = AW88261_EF_OR_CHECK;
+@@ -396,21 +399,19 @@ static int aw88261_dev_reg_update(struct aw88261 *aw88261,
+ 				aw88261->efuse_check = AW88261_EF_AND_CHECK;
+ 		}
+ 
+-		/* i2stxen */
+-		if (reg_addr == AW88261_I2SCTRL3_REG) {
+-			/* close tx */
+-			reg_val &= AW88261_I2STXEN_MASK;
+-			reg_val |= AW88261_I2STXEN_DISABLE_VALUE;
+-		}
++		/* close tx */
++		if (reg_addr == aw88261->info->i2s_tx_reg)
++			reg_val &= ~aw88261->info->i2s_tx;
+ 
+ 		if (reg_addr == AW88261_SYSCTRL2_REG) {
+ 			read_vol = (reg_val & (~AW88261_VOL_MASK)) >>
+ 				AW88261_VOL_START_BIT;
+-			aw_dev->volume_desc.init_volume =
+-				REG_VAL_TO_DB(read_vol);
++			if (!aw88261->info->linear_volume)
++				read_vol = REG_VAL_TO_DB(read_vol);
++			aw_dev->volume_desc.init_volume = read_vol;
+ 		}
+ 
+-		if (reg_addr == AW88261_VSNTM1_REG)
++		if (aw88261->info->efuse_cal && reg_addr == AW88261_VSNTM1_REG)
+ 			continue;
+ 
+ 		ret = regmap_write(aw_dev->regmap, reg_addr, reg_val);
+@@ -418,10 +419,18 @@ static int aw88261_dev_reg_update(struct aw88261 *aw88261,
+ 			break;
+ 	}
+ 
+-	ret = aw88261_dev_set_vcalb(aw_dev);
+ 	if (ret)
+ 		return ret;
+ 
++	if (aw88261->info->efuse_cal) {
++		ret = aw88261_dev_set_vcalb(aw_dev);
++		if (ret)
++			return ret;
++	}
++
++	if (aw88261->info->acf_volume_limit)
++		vol_desc->ctl_volume = max(vol_desc->ctl_volume, vol_desc->init_volume);
++
+ 	/* keep min volume */
+ 	aw88261_dev_set_volume(aw_dev, vol_desc->mute_volume);
+ 
+@@ -700,7 +709,7 @@ static int aw88261_hw_params(struct snd_pcm_substream *substream,
+ 	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
+ 		return 0;
+ 
+-	aw88261->cco_mux_value = AW88261_CCO_MUX_BYPASS_VALUE;
++	aw88261->cco_mux_value = aw88261->info->cco_mux;
+ 	switch (params_rate(params)) {
+ 	case 8000:
+ 		aw88261->sr_value = AW88261_I2SSR_8KHZ_VALUE;
+@@ -1000,6 +1009,8 @@ static int aw88261_volume_set(struct snd_kcontrol *kcontrol,
+ 		return -EINVAL;
+ 
+ 	value = AW88261_MUTE_VOL - (value * 2);
++	if (aw88261->info->acf_volume_limit)
++		value = max_t(int, value, vol_desc->init_volume);
+ 
+ 	if (vol_desc->ctl_volume != value) {
+ 		vol_desc->ctl_volume = value;
+@@ -1039,8 +1050,9 @@ static int aw88261_mute_put(struct snd_kcontrol *kcontrol,
+ }
+ 
+ /*
+- * The field contains 4 bits in units of 6dB + 6 bits in units of 0.125dB
+- * which is too precise for TLV (!) so we have to multiply the scale by 2.
++ * The AW88261 field contains 4 bits in units of 6dB + 6 bits in units of
++ * 0.125dB, the AW88461 field 10 bits in units of 0.125dB. Both are too
++ * precise for TLV (!) so we have to multiply the scale by 2.
+  *
+  * The range is clamped at -90dB to prevent overflowing the 4-bit part.
+  */
+@@ -1150,10 +1162,12 @@ static int aw88261_dev_init(struct aw88261 *aw88261, struct aw_container *aw_cfg
+ 		return ret;
+ 	}
+ 
+-	ret = aw88261_frcset_check(aw88261);
+-	if (ret) {
+-		dev_err(aw_dev->dev, "aw88261_frcset_check ret = %d\n", ret);
+-		return ret;
++	if (aw88261->info->efuse_cal) {
++		ret = aw88261_frcset_check(aw88261);
++		if (ret) {
++			dev_err(aw_dev->dev, "aw88261_frcset_check ret = %d\n", ret);
++			return ret;
++		}
+ 	}
+ 
+ 	aw88261_dev_clear_int_status(aw_dev);
+@@ -1275,13 +1289,24 @@ static int aw88261_init(struct aw88261 *aw88261, struct i2c_client *i2c, struct
+ 	if (ret)
+ 		return dev_err_probe(&i2c->dev, ret, "Failed to enable dvdd supply\n");
+ 
++	aw88261->reset_gpio = devm_gpiod_get_optional(&i2c->dev, "reset", GPIOD_OUT_HIGH);
++	if (IS_ERR(aw88261->reset_gpio))
++		return dev_err_probe(&i2c->dev, PTR_ERR(aw88261->reset_gpio),
++				     "Failed to get reset gpio\n");
++
++	if (aw88261->reset_gpio) {
++		usleep_range(AW88261_1000_US, AW88261_1000_US + 10);
++		gpiod_set_value_cansleep(aw88261->reset_gpio, 0);
++		usleep_range(AW88261_2000_US, AW88261_2000_US + 10);
++	}
++
+ 	/* read chip id */
+ 	ret = regmap_read(regmap, AW88261_ID_REG, &chip_id);
+ 	if (ret) {
+ 		dev_err(&i2c->dev, "%s read chipid error. ret = %d", __func__, ret);
+ 		return ret;
+ 	}
+-	if (chip_id != AW88261_CHIP_ID) {
++	if (chip_id != aw88261->info->chip_id) {
+ 		dev_err(&i2c->dev, "unsupported device id = %x", chip_id);
+ 		return -ENXIO;
+ 	}
+@@ -1296,7 +1321,7 @@ static int aw88261_init(struct aw88261 *aw88261, struct i2c_client *i2c, struct
+ 	aw_dev->i2c = i2c;
+ 	aw_dev->regmap = regmap;
+ 	aw_dev->dev = &i2c->dev;
+-	aw_dev->chip_id = AW88261_CHIP_ID;
++	aw_dev->chip_id = chip_id;
+ 	aw_dev->acf = NULL;
+ 	aw_dev->prof_info.prof_desc = NULL;
+ 	aw_dev->prof_info.count = 0;
+@@ -1322,10 +1347,14 @@ static int aw88261_i2c_probe(struct i2c_client *i2c)
+ 	if (!aw88261)
+ 		return -ENOMEM;
+ 
++	aw88261->info = i2c_get_match_data(i2c);
++	if (!aw88261->info)
++		return -ENODEV;
++
+ 	/* set defaults */
+ 	aw88261->slot_num_value = AW88261_SLOT_NUM_I2S_MODE_VALUE;
+ 	aw88261->sr_value = AW88261_I2SSR_48KHZ_VALUE;
+-	aw88261->cco_mux_value = AW88261_CCO_MUX_BYPASS_VALUE;
++	aw88261->cco_mux_value = aw88261->info->cco_mux;
+ 	aw88261->fs_value = AW88261_I2SFS_24_BITS_VALUE;
+ 	aw88261->bck_value = AW88261_I2SBCK_64FS_VALUE;
+ 	aw88261->bck_inv_value = AW88261_BCKINV_NOT_INVERT_VALUE;
+@@ -1357,14 +1386,37 @@ static int aw88261_i2c_probe(struct i2c_client *i2c)
+ 	return ret;
+ }
+ 
++static const struct aw88261_chip_info aw88261_info = {
++	.chip_id = AW88261_CHIP_ID,
++	.uls_hmute = AW88261_ULS_HMUTE_ENABLE_VALUE,
++	.i2s_tx_reg = AW88261_I2SCTRL3_REG,
++	.i2s_tx = AW88261_I2STXEN_ENABLE_VALUE,
++	.cco_mux_reg = AW88261_PLLCTRL1_REG,
++	.cco_mux = AW88261_CCO_MUX_BYPASS_VALUE,
++	.efuse_cal = true,
++};
++
++static const struct aw88261_chip_info aw88461_info = {
++	.chip_id = AW88461_CHIP_ID,
++	.uls_hmute = AW88461_ULS_HMUTE_ENABLE_VALUE,
++	.i2s_tx_reg = AW88261_SYSCTRL_REG,
++	.i2s_tx = AW88461_I2STXEN_ENABLE_VALUE,
++	.cco_mux_reg = AW88461_CCO_MUX_REG,
++	.cco_mux = AW88461_CCO_MUX_BYPASS_VALUE,
++	.linear_volume = true,
++	.acf_volume_limit = true,
++};
++
+ static const struct i2c_device_id aw88261_i2c_id[] = {
+-	{ .name = "aw88261" },
++	{ .name = "aw88261", .driver_data = (kernel_ulong_t)&aw88261_info },
++	{ .name = "aw88461", .driver_data = (kernel_ulong_t)&aw88461_info },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(i2c, aw88261_i2c_id);
+ 
+ static const struct of_device_id aw88261_of_table[] = {
+-	{ .compatible = "awinic,aw88261" },
++	{ .compatible = "awinic,aw88261", .data = &aw88261_info },
++	{ .compatible = "awinic,aw88461", .data = &aw88461_info },
+ 	{ }
+ };
+ MODULE_DEVICE_TABLE(of, aw88261_of_table);
+diff --git a/sound/soc/codecs/aw88261.h b/sound/soc/codecs/aw88261.h
+index f16f9f8c4..e5fc8ce4d 100644
+--- a/sound/soc/codecs/aw88261.h
++++ b/sound/soc/codecs/aw88261.h
+@@ -426,6 +426,19 @@
+ #define AW88261_CCO_MUX_BYPASS_VALUE	\
+ 	(AW88261_CCO_MUX_BYPASS << AW88261_CCO_MUX_START_BIT)
+ 
++#define AW88461_CCO_MUX_REG		(0x1F)
++#define AW88461_CCO_MUX_START_BIT	(13)
++#define AW88461_CCO_MUX_BYPASS_VALUE	\
++	(AW88261_CCO_MUX_BYPASS << AW88461_CCO_MUX_START_BIT)
++
++#define AW88461_ULS_HMUTE_START_BIT	(15)
++#define AW88461_ULS_HMUTE_ENABLE_VALUE	\
++	(AW88261_ULS_HMUTE_ENABLE << AW88461_ULS_HMUTE_START_BIT)
++
++#define AW88461_I2STXEN_START_BIT	(13)
++#define AW88461_I2STXEN_ENABLE_VALUE	\
++	(AW88261_I2STXEN_ENABLE << AW88461_I2STXEN_START_BIT)
++
+ #define AW88261_EF_VSN_GESLP_H_START_BIT	(0)
+ #define AW88261_EF_VSN_GESLP_H_BITS_LEN	(10)
+ #define AW88261_EF_VSN_GESLP_H_MASK		\
+@@ -553,6 +566,7 @@
+ 
+ enum aw88261_id {
+ 	AW88261_CHIP_ID = 0x2113,
++	AW88461_CHIP_ID = 0x2308,
+ };
+ 
+ enum {
+@@ -581,7 +595,20 @@ enum {
+ 	AW88261_FRCSET_ENABLE,
+ };
+ 
++struct aw88261_chip_info {
++	unsigned int chip_id;
++	unsigned int uls_hmute;
++	unsigned int i2s_tx_reg;
++	unsigned int i2s_tx;
++	unsigned int cco_mux_reg;
++	unsigned int cco_mux;
++	bool linear_volume;
++	bool acf_volume_limit;
++	bool efuse_cal;
++};
++
+ struct aw88261 {
++	const struct aw88261_chip_info *info;
+ 	struct aw_device *aw_pa;
+ 	struct mutex lock;
+ 	struct gpio_desc *reset_gpio;
+-- 
+2.55.0
+

@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 00:05:06 +0900
+Subject: [PATCH] dt-bindings: backlight: kinetic,ktz8866: Add boost and LED
+ current properties
+
+The backlight boost overvoltage threshold, the boost inductor setting
+and the full scale LED current of the KTZ8866 depend on the LED strings
+and the inductor of the board. Their reset values of 40 V, 6.8 uH and
+30 mA do not fit every board, so add properties for them.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ .../leds/backlight/kinetic,ktz8866.yaml       | 22 +++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/leds/backlight/kinetic,ktz8866.yaml b/Documentation/devicetree/bindings/leds/backlight/kinetic,ktz8866.yaml
+index c914e1276..204cafc70 100644
+--- a/Documentation/devicetree/bindings/leds/backlight/kinetic,ktz8866.yaml
++++ b/Documentation/devicetree/bindings/leds/backlight/kinetic,ktz8866.yaml
+@@ -55,6 +55,25 @@ properties:
+     description: Set if we want to output bias power supply for LCD.
+     type: boolean
+ 
++  kinetic,inductor-nanohenry:
++    description: Inductance of the backlight boost inductor in nanohenry.
++    $ref: /schemas/types.yaml#/definitions/uint32
++    enum: [4700, 6800, 10000]
++    default: 6800
++
++  kinetic,ovp-microvolt:
++    description: Backlight boost overvoltage protection threshold.
++    enum: [21400000, 23900000, 26400000, 29000000, 31500000, 34000000, 36500000, 40000000]
++    default: 40000000
++
++  led-max-microamp:
++    description: |
++      Full scale current of each LED current sink, from 5.2 mA to 30 mA
++      in 0.8 mA steps.
++    minimum: 5200
++    maximum: 30000
++    default: 30000
++
+ required:
+   - compatible
+   - reg
+@@ -82,5 +101,8 @@ examples:
+             kinetic,current-ramp-delay-ms = <128>;
+             kinetic,led-enable-ramp-delay-ms = <1>;
+             kinetic,enable-lcd-bias;
++            kinetic,inductor-nanohenry = <4700>;
++            kinetic,ovp-microvolt = <34000000>;
++            led-max-microamp = <15600>;
+         };
+     };
+-- 
+2.55.0
+

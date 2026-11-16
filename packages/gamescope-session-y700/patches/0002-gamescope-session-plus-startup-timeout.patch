@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Tue, 13 Oct 2026 12:00:00 +0000
+Subject: [PATCH] gamescope-session-plus: GAMESCOPE_STARTUP_TIMEOUT for the
+ startup socket wait
+
+---
+ usr/share/gamescope-session-plus/gamescope-session-plus | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/usr/share/gamescope-session-plus/gamescope-session-plus b/usr/share/gamescope-session-plus/gamescope-session-plus
+index 228ea12..683870e 100755
+--- a/usr/share/gamescope-session-plus/gamescope-session-plus
++++ b/usr/share/gamescope-session-plus/gamescope-session-plus
+@@ -298,7 +298,7 @@ fi
+ $GAMESCOPECMD &
+ gamescope_pid="$!"
+ 
+-if read -r -t 5 response_x_display response_wl_display <>"$socket"; then
++if read -r -t "${GAMESCOPE_STARTUP_TIMEOUT:-5}" response_x_display response_wl_display <>"$socket"; then
+ 	export DISPLAY="$response_x_display"
+ 	export GAMESCOPE_WAYLAND_DISPLAY="$response_wl_display"
+ 	# We're done!
+-- 
+2.43.0
+

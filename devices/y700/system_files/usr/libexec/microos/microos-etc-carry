@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-etc-carry
+statedir=${MICROOS_STATEDIR:-/var/lib/microos}
+sysroot=${MICROOS_SYSROOT:-/sysroot}
+etc=${MICROOS_ETC:-/etc}
+groups=${MICROOS_GROUPS:-/usr/libexec/microos/microos-groups}
+sysusers=${MICROOS_SYSUSERS:-systemd-sysusers}
+rec=$statedir/update-written
+say() { echo "$me: $*" >&2; }
+
+[[ -f $rec ]] || exit 0
+kv() { sed -n "s/^$1=//p" "$rec" | head -1; }
+deploy=$(kv deploy) from=$(kv from) stamp=$(kv stamp)
+re='^[0-9a-f]{64}\.[0-9]+$'
+[[ $deploy =~ $re ]] || exit 0
+
+dir() {
+  local d
+  for d in "$sysroot"/ostree/deploy/*/deploy/"$1"; do
+    [[ -d $d/etc ]] && echo "$d/etc" && return 0
+  done
+  return 1
+}
+new=$(dir "$deploy") || exit 0
+[[ $(stat -c %d:%i "$etc") == $(stat -c %d:%i "$new") ]] || exit 0
+[[ -z $(kv carried) ]] || exit 0
+if ! [[ $from =~ $re && $stamp =~ ^[0-9]+$ ]]; then
+  say "$rec has no from= or stamp=, nothing carried"
+  exit 0
+fi
+if ! old=$(dir "$from"); then
+  say "no /etc of $from under $sysroot, nothing carried"
+  exit 0
+fi
+
+n=0 accounts=0
+while IFS= read -r -d '' f; do
+  if (cd "$old" && cp -a --parents -t "$etc" "$f"); then
+    n=$(( n + 1 ))
+    echo "$me: ${f#./} from $from"
+    case $f in
+      ./group|./gshadow|./passwd|./shadow) accounts=1 ;;
+    esac
+  else
+    say "${f#./} not carried"
+  fi
+done < <(cd "$old" && find . -newerct "@$stamp" \( -type f -o -type l \) ! -path ./.updated ! -path ./machine-id \
+  ! -name ld.so.cache ! -name '*-' -print0)
+if (( accounts )); then
+  "$groups" || say "$groups failed"
+  "$sysusers" || say "$sysusers failed"
+fi
+t=$(mktemp "$rec.XXXXXX") && { cat "$rec"; echo "carried=$n"; } > "$t" && chmod 0644 "$t" && sync "$t" && mv -fT "$t" "$rec" &&
+  sync -f "$rec" || say "cannot write carried= to $rec"
+echo "$me: $n files from $from"
+exit 0

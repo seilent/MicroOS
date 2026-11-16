@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+import os
+import select
+import socket
+import sys
+import time
+
+path, feed, log = sys.argv[1:4]
+refuse = sys.argv[4:] == ["refuse"]
+
+
+def record(line):
+    with open(log, "a") as f:
+        f.write(line + "\n")
+
+
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+server = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+server.bind(path)
+server.listen(1)
+fd = os.open(feed, os.O_RDWR | os.O_NONBLOCK)
+poller = select.poll()
+poller.register(server, select.POLLIN)
+poller.register(fd, select.POLLIN)
+client = None
+off = False
+mute = False
+last = "0"
+pending = b""
+record("ready")
+while True:
+    for ready, _ in poller.poll():
+        if ready == server.fileno():
+            client, _ = server.accept()
+            if refuse:
+                client.close()
+                client = None
+                record("refused")
+                continue
+            poller.register(client, select.POLLIN)
+            record("connected")
+            client.send(b"state off" if off else b"state on")
+        elif client is not None and ready == client.fileno():
+            data = client.recv(64)
+            if not data:
+                poller.unregister(client)
+                client.close()
+                client = None
+                record("closed")
+                continue
+            word = data.decode()
+            record(f"word {word}")
+            if word in ("blank", "restore") and not mute:
+                off = word == "blank"
+                client.send(b"state off" if off else b"state on")
+        elif ready == fd:
+            *lines, pending = (pending + os.read(fd, 4096)).split(b"\n")
+            for line in lines:
+                words = line.decode().split()
+                if words == ["mute"]:
+                    mute = True
+                    record("muted")
+                    continue
+                if words[1].startswith("now"):
+                    words[1] = f"{time.clock_gettime(time.CLOCK_BOOTTIME) + float(words[1][3:] or 0):.6f}"
+                elif words[1] == "last":
+                    words[1] = last
+                if words[0] == "down":
+                    last = words[1]
+                if words[2] == "-":
+                    words[2] = "off" if off else "on"
+                text = " ".join(words)
+                record(f"sent {text}")
+                if client is not None:
+                    client.send(text.encode())

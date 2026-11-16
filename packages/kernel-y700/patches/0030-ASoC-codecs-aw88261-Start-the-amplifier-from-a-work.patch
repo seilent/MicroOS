@@ -1,0 +1,135 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 13 Nov 2026 15:43:05 +0900
+Subject: [PATCH] ASoC: codecs: aw88261: Start the amplifier from a work
+
+The amplifier needs the I2S or TDM clocks to lock its PLL. The DAPM
+pre power up event runs in the back end prepare, before the trigger
+that starts a DSP driven interface, so the start ran without clocks
+and failed after all retries.
+
+Start it from a delayed work in the pre power up event, as aw88395,
+aw88399 and aw88166 do, and cancel the work before the power down.
+A profile change during playback still starts it in place.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ sound/soc/codecs/aw88261.c | 41 ++++++++++++++++++++++++++++++++------
+ sound/soc/codecs/aw88261.h |  1 +
+ 2 files changed, 36 insertions(+), 6 deletions(-)
+
+diff --git a/sound/soc/codecs/aw88261.c b/sound/soc/codecs/aw88261.c
+index abb72080a..6a8fadd59 100644
+--- a/sound/soc/codecs/aw88261.c
++++ b/sound/soc/codecs/aw88261.c
+@@ -15,6 +15,7 @@
+ #include <linux/bitops.h>
+ #include <linux/regmap.h>
+ #include <linux/regulator/consumer.h>
++#include <linux/workqueue.h>
+ #include <sound/soc.h>
+ #include <sound/pcm_params.h>
+ #include <sound/tlv.h>
+@@ -650,7 +651,19 @@ static void aw88261_start_pa(struct aw88261 *aw88261)
+ 		dev_err(aw88261->aw_pa->dev, "start failure (%d)\n", ret);
+ }
+ 
+-static void aw88261_start(struct aw88261 *aw88261)
++static void aw88261_startup_work(struct work_struct *work)
++{
++	struct aw88261 *aw88261 =
++		container_of(work, struct aw88261, start_work.work);
++
++	guard(mutex)(&aw88261->lock);
++	if (aw88261->aw_pa->status == AW88261_DEV_PW_ON)
++		return;
++
++	aw88261_start_pa(aw88261);
++}
++
++static void aw88261_start(struct aw88261 *aw88261, bool sync_start)
+ {
+ 	if (aw88261->aw_pa->fw_status != AW88261_DEV_FW_OK)
+ 		return;
+@@ -658,7 +671,11 @@ static void aw88261_start(struct aw88261 *aw88261)
+ 	if (aw88261->aw_pa->status == AW88261_DEV_PW_ON)
+ 		return;
+ 
+-	aw88261_start_pa(aw88261);
++	if (sync_start)
++		aw88261_start_pa(aw88261);
++	else
++		queue_delayed_work(system_dfl_wq, &aw88261->start_work,
++				   msecs_to_jiffies(AW88261_START_WORK_DELAY_MS));
+ }
+ 
+ static int aw88261_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
+@@ -979,7 +996,7 @@ static int aw88261_profile_set(struct snd_kcontrol *kcontrol,
+ 
+ 	if (aw88261->aw_pa->status) {
+ 		aw88261_dev_stop(aw88261->aw_pa);
+-		aw88261_start(aw88261);
++		aw88261_start(aw88261, true);
+ 	}
+ 
+ 	return 1;
+@@ -1077,13 +1094,15 @@ static int aw88261_playback_event(struct snd_soc_dapm_widget *w,
+ 	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+ 	struct aw88261 *aw88261 = snd_soc_component_get_drvdata(component);
+ 
+-	guard(mutex)(&aw88261->lock);
+ 	switch (event) {
+ 	case SND_SOC_DAPM_PRE_PMU:
+-		aw88261_start(aw88261);
++		scoped_guard(mutex, &aw88261->lock)
++			aw88261_start(aw88261, false);
+ 		break;
+ 	case SND_SOC_DAPM_POST_PMD:
+-		aw88261_dev_stop(aw88261->aw_pa);
++		cancel_delayed_work_sync(&aw88261->start_work);
++		scoped_guard(mutex, &aw88261->lock)
++			aw88261_dev_stop(aw88261->aw_pa);
+ 		break;
+ 	default:
+ 		break;
+@@ -1243,6 +1262,8 @@ static int aw88261_codec_probe(struct snd_soc_component *component)
+ 	struct aw88261 *aw88261 = snd_soc_component_get_drvdata(component);
+ 	int ret;
+ 
++	INIT_DELAYED_WORK(&aw88261->start_work, aw88261_startup_work);
++
+ 	ret = aw88261_request_firmware_file(aw88261);
+ 	if (ret)
+ 		return dev_err_probe(aw88261->aw_pa->dev, ret,
+@@ -1266,8 +1287,16 @@ static int aw88261_codec_probe(struct snd_soc_component *component)
+ 	return ret;
+ }
+ 
++static void aw88261_codec_remove(struct snd_soc_component *component)
++{
++	struct aw88261 *aw88261 = snd_soc_component_get_drvdata(component);
++
++	cancel_delayed_work_sync(&aw88261->start_work);
++}
++
+ static const struct snd_soc_component_driver soc_codec_dev_aw88261 = {
+ 	.probe = aw88261_codec_probe,
++	.remove = aw88261_codec_remove,
+ };
+ 
+ static void aw88261_parse_channel_dt(struct aw88261 *aw88261)
+diff --git a/sound/soc/codecs/aw88261.h b/sound/soc/codecs/aw88261.h
+index 838203247..594de68e5 100644
+--- a/sound/soc/codecs/aw88261.h
++++ b/sound/soc/codecs/aw88261.h
+@@ -611,6 +611,7 @@ struct aw88261 {
+ 	const struct aw88261_chip_info *info;
+ 	struct aw_device *aw_pa;
+ 	struct mutex lock;
++	struct delayed_work start_work;
+ 	struct gpio_desc *reset_gpio;
+ 	struct regmap *regmap;
+ 	struct aw_container *aw_cfg;
+-- 
+2.55.0
+

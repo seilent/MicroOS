@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-groups
+root=${1:-}
+say() { echo "$me: $*" >&2; }
+
+has() { awk -F: -v k="$1" -v n="$2" '$k == n { f = 1 } END { exit !f }' "$3"; }
+taken() { awk -F: -v n="$1" -v i="$2" '$3 == i && $1 != n { f = 1 } END { exit !f }' "$3"; }
+line() { awk -F: -v n="$1" '$1 == n { print; exit }' "$2"; }
+
+copy() {
+  local db=$1 sdb=$2 name id l s
+  local src=$root/usr/etc/$db dst=$root/etc/$db ssrc=$root/usr/etc/$sdb sdst=$root/etc/$sdb lib=$root/usr/lib/$db
+  [[ -f $src && -f $dst ]] || return 0
+  while IFS=: read -r name _ id gid _; do
+    [[ -n $name && $name != [+-]* ]] || continue
+    has 1 "$name" "$dst" && continue
+    if taken "$name" "$id" "$dst" || { [[ -f $lib ]] && taken "$name" "$id" "$lib"; }; then
+      say "$name in /usr/etc/$db has id $id, which is taken, not added"
+      continue
+    fi
+    if [[ $db == passwd ]] && ! has 3 "$gid" "$root/etc/group" && ! { [[ -f $root/usr/lib/group ]] && has 3 "$gid" "$root/usr/lib/group"; }; then
+      say "$name in /usr/etc/passwd has group $gid, which no group file holds, not added"
+      continue
+    fi
+    l=$(line "$name" "$src")
+    printf '%s\n' "$l" >> "$dst"
+    if [[ -f $ssrc && -f $sdst ]] && ! has 1 "$name" "$sdst" && s=$(line "$name" "$ssrc") && [[ -n $s ]]; then
+      printf '%s\n' "$s" >> "$sdst"
+    fi
+    say "added $name ($id) from /usr/etc/$db"
+  done < "$src"
+}
+
+copy group gshadow
+copy passwd shadow
+
+while read -r t u g _; do
+  if [[ $t == m && $u == micro ]] && ! has 1 "$g" "$root/etc/group"; then
+    l=$(line "$g" "$root/usr/lib/group")
+    if [[ -n $l ]]; then
+      printf '%s\n' "$l" >> "$root/etc/group"
+      say "added $g from /usr/lib/group"
+    fi
+  fi
+done < "$root/usr/lib/sysusers.d/microos.conf"
+sync -f "$root/etc/group"

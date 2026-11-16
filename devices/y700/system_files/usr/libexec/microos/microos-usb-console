@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-usb-console
+cfg=${MICROOS_CONFIGFS:-/sys/kernel/config}
+class=${MICROOS_SYSCLASS:-/sys/class}
+cmdline=${MICROOS_CMDLINE:-/proc/cmdline}
+modprobe=${MICROOS_MODPROBE:-modprobe}
+polls=${MICROOS_USB_POLLS:-120}
+gadget=$cfg/usb_gadget/microos
+config=$gadget/configs/c.1
+read -r -a funcs <<< "${MICROOS_USB_FUNCS:-acm.usb0 ncm.usb0}"
+ncm=$gadget/functions/ncm.usb0
+dev_mac=02:6e:3a:91:c4:05
+host_mac=02:6e:3a:91:c4:06
+
+log() { echo "$me: $*" >&2; }
+put() { printf '%s\n' "$2" > "$1"; }
+
+first_udc() {
+  local u
+  for u in "$class"/udc/*; do
+    [[ -e $u ]] || continue
+    echo "${u##*/}"
+    return 0
+  done
+  return 1
+}
+
+wait_udc() {
+  local i
+  for (( i = 0; i < polls; i++ )); do
+    first_udc && return 0
+    sleep 0.5
+  done
+  first_udc
+}
+
+serial() {
+  local w s= words=()
+  read -r -a words < "$cmdline" 2> /dev/null
+  for w in "${words[@]}"; do
+    [[ $w == androidboot.serialno=* ]] && s=${w#*=}
+  done
+  if [[ -n $s ]]; then
+    echo "$s-microos"
+  else
+    echo microos
+  fi
+}
+
+start() {
+  local udc r f
+  if [[ -n $(cat "$gadget/UDC" 2> /dev/null) ]]; then
+    log "already bound to $(< "$gadget/UDC")"
+    return 0
+  fi
+  "$modprobe" -a phy-nxp-ptn3222 snd-soc-wcd939x libcomposite || log "modprobe failed"
+  if ! udc=$(wait_udc); then
+    for r in "$class"/usb_role/*/role; do
+      [[ -e $r ]] || continue
+      if put "$r" device; then
+        log "$r set to device"
+      else
+        log "writing device to $r failed"
+      fi
+    done
+    udc=$(wait_udc) || { log "no UDC"; return 1; }
+  fi
+  [[ -d $cfg/usb_gadget ]] || { log "no $cfg/usb_gadget"; return 1; }
+  mkdir -p "$gadget/strings/0x409" "$config" || return 1
+  put "$gadget/idVendor" 0x1d6b && put "$gadget/idProduct" 0x0104 &&
+    put "$gadget/strings/0x409/serialnumber" "$(serial)" || return 1
+  for f in "${funcs[@]}"; do
+    mkdir -p "$gadget/functions/$f" || return 1
+  done
+  if [[ " ${funcs[*]} " == *" ncm.usb0 "* && ! -L $config/ncm.usb0 ]]; then
+    put "$ncm/dev_addr" "$dev_mac" && put "$ncm/host_addr" "$host_mac" || return 1
+  fi
+  for f in "${funcs[@]}"; do
+    [[ -L $config/$f ]] || ln -s "$gadget/functions/$f" "$config/$f" || return 1
+  done
+  put "$gadget/UDC" "$udc" || return 1
+  log "bound to $udc"
+}
+
+stop() {
+  local d f rc=0
+  [[ -d $gadget ]] || return 0
+  if [[ -n $(cat "$gadget/UDC" 2> /dev/null) ]]; then
+    put "$gadget/UDC" "" || { log "clearing UDC failed"; rc=1; }
+  fi
+  for f in "${funcs[@]}"; do
+    if [[ -L $config/$f ]]; then
+      rm -f -- "$config/$f" || { log "removing $config/$f failed"; rc=1; }
+    fi
+  done
+  for d in "$config" "$gadget/functions/acm.usb0" "$ncm" "$gadget/strings/0x409" "$gadget"; do
+    if [[ -d $d ]]; then
+      rmdir "$d" || { log "removing $d failed"; rc=1; }
+    fi
+  done
+  return "$rc"
+}
+
+case ${1:-} in
+  start) start ;;
+  stop) stop ;;
+  *) echo "usage: $me start|stop" >&2; exit 2 ;;
+esac

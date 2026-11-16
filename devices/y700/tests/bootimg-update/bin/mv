@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+echo "mv $*" >> "$FAKE_STATE/events"
+exec "$(type -P -a mv | grep -vxF "$0" | head -n 1)" "$@"

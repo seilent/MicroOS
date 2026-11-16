@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+hci=${1:-}
+dev=${MICROOS_PERSIST:-/dev/disk/by-partlabel/persist}
+tries=${MICROOS_BDADDR_TRIES:-10}
+fail() { echo "microos-bdaddr: $*, ${hci:-the controller} stays unconfigured" >&2; exit 1; }
+
+[[ $hci =~ ^hci([0-9]+)$ ]] || fail "bad controller name '$hci'"
+idx=${BASH_REMATCH[1]}
+[[ -b $dev || -f $dev ]] || fail "no $dev"
+addr=$(debugfs -R "cat /bd_addr.bin" "$dev" 2>/dev/null | tr -d '\0')
+[[ $addr =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]] || fail "no address in bd_addr.bin on $dev"
+[[ -n ${addr//[0:]/} && -n ${addr//[fF:]/} ]] || fail "bd_addr.bin holds a placeholder address"
+
+for (( i = 1; i <= tries; i++ )); do
+  if btmgmt --index "$idx" public-addr "$addr" >/dev/null 2>&1; then
+    echo "microos-bdaddr: $hci public address set from $dev"
+    exit 0
+  fi
+  (( i < tries )) && sleep 1
+done
+fail "btmgmt public-addr failed $tries times"

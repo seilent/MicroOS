@@ -1,0 +1,4 @@
+irq_name() {
+  awk -v irq="$1:" '$1 == irq { for (i = 2; i <= NF && $i ~ /^[0-9]+$/; i++); s = $i; for (i++; i <= NF; i++) s = s " " $i; print s }' \
+    "$2" 2> /dev/null || true
+}

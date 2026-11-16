@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+#include "sm8650-lenovo-tb321fu.dts"
+
+&display_panel {
+	compatible = "lenovo,tb321fu-csot-nt36523", "novatek,nt36523";
+};
+
+&touchscreen {
+	firmware-name = "qcom/sm8650/lenovo/tb321fu/novatek_ts_csot_fw.bin";
+};

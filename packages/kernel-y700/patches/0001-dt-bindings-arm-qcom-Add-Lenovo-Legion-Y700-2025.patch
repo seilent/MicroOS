@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Wed, 11 Nov 2026 22:05:05 +0900
+Subject: [PATCH] dt-bindings: arm: qcom: Add Lenovo Legion Y700 (2025)
+
+Document the Lenovo Legion Y700 (2025) / TB321FU, a tablet based on the
+SM8650 SoC.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ Documentation/devicetree/bindings/arm/qcom.yaml | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/arm/qcom.yaml b/Documentation/devicetree/bindings/arm/qcom.yaml
+index 121ca557c..f1cc2f703 100644
+--- a/Documentation/devicetree/bindings/arm/qcom.yaml
++++ b/Documentation/devicetree/bindings/arm/qcom.yaml
+@@ -1212,6 +1212,7 @@ properties:
+       - items:
+           - enum:
+               - ayaneo,pocket-s2
++              - lenovo,tb321fu
+               - qcom,sm8650-hdk
+               - qcom,sm8650-mtp
+               - qcom,sm8650-qrd
+-- 
+2.55.0
+

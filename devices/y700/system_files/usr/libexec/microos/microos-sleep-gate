@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+me=microos-sleep-gate
+rundir=${MICROOS_RUNDIR:-/run/microos}
+cmdline=${MICROOS_CMDLINE:-/proc/cmdline}
+stubconf=${MICROOS_STUB_CONF:-/usr/lib/microos/stub.conf}
+stublib=${MICROOS_STUB_LIB:-/usr/libexec/microos/microos-stub}
+step=${MICROOS_SLEEP_GATE_STEP:-5}
+
+hold() {
+  echo "$me: $*, sleep stays blocked this boot" >&2
+  exec sleep infinity
+}
+trap 'hold "unexpected error"' ERR
+
+[[ -r $stubconf && -r $stublib ]] || hold "missing $stubconf or $stublib"
+. "$stubconf"
+. "$stublib"
+
+read -ra words < "$cmdline" || true
+for w in "${words[@]}"; do
+  [[ $w != microos.test=once ]] || hold "microos.test=once"
+done
+
+said=""
+while :; do
+  if [[ -e $rundir/boot-confirmed ]]; then
+    res=unreadable
+    if r=$(stub_status 2> /dev/null); then
+      read -r res _ <<< "$r"
+    fi
+    case $res in
+      stopped | absent | refused)
+        echo "$me: boot confirmed, stub $res, sleep allowed" >&2
+        exit 0
+        ;;
+    esac
+    [[ $said == "$res" ]] || echo "$me: boot confirmed, stub $res, sleep stays blocked" >&2
+    said=$res
+  fi
+  sleep "$step"
+done

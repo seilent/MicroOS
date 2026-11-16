@@ -1,0 +1,54 @@
+stub_mem() {
+  python3 - "$1" "${MICROOS_DEVMEM:-/dev/mem}" "${MICROOS_DEVMEM_BASE:-0}" "$MICROOS_STUB_STATUS" "$MICROOS_STUB_DISARM" \
+    "$MICROOS_STUB_MAGIC" "$MICROOS_STUB_SIGNATURE" "$MICROOS_STUB_ARMED" "$MICROOS_STUB_RUNNING" "$MICROOS_STUB_STOPPED" \
+    "$MICROOS_STUB_REFUSED" "${MICROOS_STUB_WAIT:-5}" << 'EOF'
+import mmap
+import os
+import sys
+import time
+
+mode, path = sys.argv[1:3]
+base, status, disarm, magic, sig, armed, running, stopped, refused = (int(a, 0) for a in sys.argv[3:12])
+wait = float(sys.argv[12])
+rw = mode == "disarm"
+lo = (min(status, disarm) - base) // mmap.PAGESIZE * mmap.PAGESIZE
+hi = max(status, disarm) + 8 - base
+fd = os.open(path, (os.O_RDWR if rw else os.O_RDONLY) | os.O_SYNC)
+prot = mmap.PROT_READ | (mmap.PROT_WRITE if rw else 0)
+m = mmap.mmap(fd, hi - lo, mmap.MAP_SHARED, prot, offset=lo)
+w = memoryview(m).cast("I")
+
+
+def word(a):
+    return w[(a - base - lo) // 4]
+
+
+def state():
+    s = word(status)
+    return s >> 16, s & 0xFFFF, word(status + 4)
+
+
+g, st, n = state()
+if g != sig or st not in (armed, running, stopped, refused):
+    print("absent", hex(word(status)), n)
+    sys.exit(0)
+if st == refused:
+    print("refused", st, n)
+    sys.exit(0)
+if rw and st != stopped:
+    w[(disarm - base - lo) // 4] = magic
+    end = time.monotonic() + wait
+    while st != stopped and time.monotonic() < end:
+        time.sleep(0.1)
+        g, st, n = state()
+print("stopped" if st == stopped else "running", st, n)
+EOF
+}
+
+stub_status() {
+  stub_mem status
+}
+
+stub_disarm() {
+  stub_mem disarm
+}

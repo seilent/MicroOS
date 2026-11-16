@@ -1,0 +1,106 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 00:05:33 +0900
+Subject: [PATCH] backlight: ktz8866: Set boost OVP, inductor and LED current
+ from DT
+
+Program the backlight boost overvoltage threshold, the boost inductor
+setting and the full scale LED current from the kinetic,ovp-microvolt,
+kinetic,inductor-nanohenry and led-max-microamp properties. The chip
+keeps its reset values when a property is absent. A current between two
+0.8 mA steps is rounded down with a warning.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ drivers/video/backlight/ktz8866.c | 58 +++++++++++++++++++++++++++++++
+ 1 file changed, 58 insertions(+)
+
+diff --git a/drivers/video/backlight/ktz8866.c b/drivers/video/backlight/ktz8866.c
+index 20b848343..7270c679b 100644
+--- a/drivers/video/backlight/ktz8866.c
++++ b/drivers/video/backlight/ktz8866.c
+@@ -6,6 +6,7 @@
+  */
+ 
+ #include <linux/backlight.h>
++#include <linux/bitfield.h>
+ #include <linux/err.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/i2c.h>
+@@ -42,6 +43,19 @@
+ #define BL_EN_BIT BIT(6)
+ #define LCD_BIAS_EN 0x9F
+ #define PWM_HYST 0x5
++#define BL_OVP_MASK GENMASK(7, 5)
++#define BL_L_SELECT_MASK GENMASK(7, 6)
++#define BL_IFS_MASK GENMASK(7, 3)
++#define BL_IFS_MIN_UA 5200
++#define BL_IFS_MAX_UA 30000
++#define BL_IFS_STEP_UA 800
++
++static const u32 ktz8866_ovp_uv[] = {
++	21400000, 26400000, 31500000, 36500000,
++	23900000, 29000000, 34000000, 40000000,
++};
++
++static const u32 ktz8866_inductor_nh[] = { 4700, 6800, 10000 };
+ 
+ struct ktz8866 {
+ 	struct i2c_client *client;
+@@ -93,9 +107,53 @@ static const struct backlight_ops ktz8866_backlight_ops = {
+ 	.update_status = ktz8866_backlight_update_status,
+ };
+ 
++static int ktz8866_lookup(const u32 *table, unsigned int len, u32 val)
++{
++	unsigned int i;
++
++	for (i = 0; i < len; i++)
++		if (table[i] == val)
++			return i;
++
++	return -EINVAL;
++}
++
+ static void ktz8866_init(struct ktz8866 *ktz)
+ {
++	struct device *dev = &ktz->client->dev;
+ 	unsigned int val = 0;
++	int sel;
++
++	if (!of_property_read_u32(dev->of_node, "kinetic,ovp-microvolt", &val)) {
++		sel = ktz8866_lookup(ktz8866_ovp_uv, ARRAY_SIZE(ktz8866_ovp_uv), val);
++		if (sel < 0)
++			dev_warn(dev, "unsupported OVP threshold %u uV\n", val);
++		else
++			ktz8866_update_bits(ktz, BL_CFG1, BL_OVP_MASK,
++					    FIELD_PREP(BL_OVP_MASK, sel));
++	}
++
++	if (!of_property_read_u32(dev->of_node, "kinetic,inductor-nanohenry", &val)) {
++		sel = ktz8866_lookup(ktz8866_inductor_nh, ARRAY_SIZE(ktz8866_inductor_nh), val);
++		if (sel < 0)
++			dev_warn(dev, "unsupported inductor %u nH\n", val);
++		else
++			ktz8866_update_bits(ktz, BL_OPTION2, BL_L_SELECT_MASK,
++					    FIELD_PREP(BL_L_SELECT_MASK, sel));
++	}
++
++	if (!of_property_read_u32(dev->of_node, "led-max-microamp", &val)) {
++		if (val < BL_IFS_MIN_UA || val > BL_IFS_MAX_UA) {
++			dev_warn(dev, "unsupported LED current %u uA\n", val);
++		} else {
++			if ((val - BL_IFS_MIN_UA) % BL_IFS_STEP_UA)
++				dev_warn(dev, "LED current %u uA rounded down to a %u uA step\n",
++					 val, BL_IFS_STEP_UA);
++			ktz8866_update_bits(ktz, PWM_RAMP_TIME, BL_IFS_MASK,
++					    FIELD_PREP(BL_IFS_MASK,
++						       (val - BL_IFS_MIN_UA) / BL_IFS_STEP_UA));
++		}
++	}
+ 
+ 	if (!of_property_read_u32(ktz->client->dev.of_node, "current-num-sinks", &val))
+ 		ktz8866_write(ktz, BL_EN, BIT(val) - 1);
+-- 
+2.55.0
+

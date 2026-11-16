@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 08:34:58 +0900
+Subject: [PATCH] ASoC: codecs: aw88261: Enable I2S TX in I2SCTRL3
+
+The ACF load path turns TX off in I2SCTRL3 (0x08) bit 6, while the TX
+enable helper writes bit 6 of I2SCFG1 (0x13). Use I2SCTRL3 in the
+helper as well.
+
+Fixes: 028a2ae25691 ("ASoC: codecs: Add aw88261 amplifier driver")
+Signed-off-by: seilent <github@seilent.net>
+---
+ sound/soc/codecs/aw88261.c | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/sound/soc/codecs/aw88261.c b/sound/soc/codecs/aw88261.c
+index e14df93e6..7a16bb413 100644
+--- a/sound/soc/codecs/aw88261.c
++++ b/sound/soc/codecs/aw88261.c
+@@ -40,11 +40,11 @@ static void aw88261_dev_set_volume(struct aw_device *aw_dev, unsigned int value)
+ static void aw88261_dev_i2s_tx_enable(struct aw_device *aw_dev, bool flag)
+ {
+ 	if (flag)
+-		regmap_update_bits(aw_dev->regmap, AW88261_I2SCFG1_REG,
+-			~AW88261_I2STXEN_MASK, AW88261_I2STXEN_ENABLE_VALUE);
++		regmap_update_bits(aw_dev->regmap, AW88261_I2SCTRL3_REG,
++				   ~AW88261_I2STXEN_MASK, AW88261_I2STXEN_ENABLE_VALUE);
+ 	else
+-		regmap_update_bits(aw_dev->regmap, AW88261_I2SCFG1_REG,
+-			~AW88261_I2STXEN_MASK, AW88261_I2STXEN_DISABLE_VALUE);
++		regmap_update_bits(aw_dev->regmap, AW88261_I2SCTRL3_REG,
++				   ~AW88261_I2STXEN_MASK, AW88261_I2STXEN_DISABLE_VALUE);
+ }
+ 
+ static void aw88261_dev_pwd(struct aw_device *aw_dev, bool pwd)
+-- 
+2.55.0
+

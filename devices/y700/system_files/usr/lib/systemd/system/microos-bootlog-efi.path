@@ -1,0 +1,10 @@
+[Unit]
+Description=Copy the boot journal to microos_efi once the boot is confirmed
+ConditionPathExists=/run/ostree-booted
+
+[Path]
+PathExists=/run/microos/boot-confirmed
+Unit=microos-bootlog-efi.service
+
+[Install]
+WantedBy=multi-user.target

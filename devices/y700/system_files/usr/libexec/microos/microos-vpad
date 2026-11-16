@@ -1,0 +1,868 @@
+#!/usr/bin/python3
+import fcntl
+import math
+import os
+import pwd
+import select
+import signal
+import socket
+import struct
+import sys
+import time
+
+UHID_SET_REPORT_REPLY = 14
+UHID_SET_REPORT = 13
+UHID_INPUT2 = 12
+UHID_CREATE2 = 11
+UHID_GET_REPORT_REPLY = 10
+UHID_GET_REPORT = 9
+EVENT_SIZE = 4376
+DESC = bytes.fromhex("06ffff 0901 a101 0902 0903 1500 26ff00 7508 9540 8102 0906 0907 1500 26ff00 7508 9540 b102 c0")
+UNIT_SERIAL = b"MICROOSY700"
+SERIALS = {0: b"MICROOSY700B", 1: UNIT_SERIAL}
+REPORT_US = 4000
+ATTRIBUTES = ((1, 0x1205), (2, 0), (4, 0x65E4F1AD), (9, 0x2E), (10, 0x62A9122B), (11, REPORT_US), (12, 0), (13, 0), (14, 0))
+
+
+def ioc(direction, nr, size):
+    return (direction << 30) | (size << 16) | (0x45 << 8) | nr
+
+
+EVIOCSFF = ioc(1, 0x80, 48)
+EVIOCGRAB = ioc(1, 0x90, 4)
+EVIOCGKEY = ioc(2, 0x18, 96)
+EVIOCSCLOCKID = ioc(1, 0xA0, 4)
+EV_KEY = 0x01
+EV_FF = 0x15
+FF_RUMBLE = 0x50
+KEY_POWER = 116
+EBUSY = 16
+ENODEV = 19
+EROFS = 30
+
+MOTORS = {"left": "vibrator@5b", "right": "vibrator@5a"}
+BOTH = ("left", "right")
+PULSE_SIDES = {0: ("right",), 1: ("left",), 2: BOTH}
+CMD_SIDES = {0: ("left",), 1: ("right",), 2: BOTH}
+POWER = "pmic_pwrkey"
+SCREEN_INPUTS = ("Novatek NT36523 Touchscreen", "Novatek NT36523 Pen")
+BACKLIGHT = "/sys/class/backlight/ktz8866-backlight/brightness"
+BL_POWER = "/sys/class/backlight/ktz8866-backlight/bl_power"
+POWERDOWN = 4
+SAVED = "/run/microos-vpad/brightness"
+SOCKET = os.environ.get("MICROOS_VPAD_SOCKET", "/run/microos-vpad/power")
+HELPER = os.environ.get("MICROOS_VPAD_HELPER", "micro")
+HELPER_UNIT = os.environ.get("MICROOS_VPAD_HELPER_UNIT", "microos-powerkey.service")
+DEFAULT_BRIGHTNESS = 512
+
+BASE = 0xA000
+MIN_MS = 8
+TICK_MS = 12
+CLICK_MS = 25
+MAX_MS = 200
+INTENSITY = {0: 1.0, 1: 0.5, 2: 1.0, 3: 1.5, 4: 2.0}
+REPORT_MS = REPORT_US / 1000
+TAP_MS = 300
+HOLD_MS = 1000
+QAM_MS = 100
+GRAB_POLL_MS = 50
+GRAB_WAIT_MS = 2000
+RECHECK_MS = 1000
+SCAN_MS = 5000
+TRACE = os.environ.get("MICROOS_VPAD_TRACE") == "1"
+MICROSET = os.environ.get("MICROOS_VPAD_MICROSET") == "1"
+
+
+def log(text):
+    print(f"microos-vpad: {text}", file=sys.stderr)
+
+
+def ms():
+    return time.clock_gettime(time.CLOCK_BOOTTIME) * 1000
+
+
+def message(data):
+    return bytes(data).ljust(64, b"\0")[:64]
+
+
+def create_event():
+    ev = bytearray(EVENT_SIZE)
+    struct.pack_into("<I128s64s64sHHIIII", ev, 0, UHID_CREATE2, b"Steam Deck Controller", b"", UNIT_SERIAL,
+                     len(DESC), 3, 0x28DE, 0x1205, 0x1000, 0)
+    ev[280:280 + len(DESC)] = DESC
+    return ev
+
+
+def feature(msg):
+    if msg[0] == 0xAE:
+        text = SERIALS.get(msg[2], b"") + b"\0"
+        out = bytes((0xAE, len(text), msg[2])) + text
+    elif msg[0] == 0x83:
+        body = b"".join(struct.pack("<BI", tag, value) for tag, value in ATTRIBUTES)
+        out = bytes((0x83, len(body))) + body
+    elif msg[0] == 0xBA:
+        out = bytes((0xBA, 0x11, 0)) + UNIT_SERIAL.ljust(16, b"\0")
+    else:
+        out = msg
+    return message(out)
+
+
+class Pad:
+    def __init__(self):
+        self.last = message(b"")
+
+    def handle(self, ev):
+        kind, rid = struct.unpack_from("<II", ev)
+        if kind == UHID_SET_REPORT:
+            size = struct.unpack_from("<H", ev, 10)[0]
+            self.last = message(ev[13:12 + size])
+            if TRACE:
+                log("set " + self.last[:12].hex(" "))
+            reply = bytearray(EVENT_SIZE)
+            struct.pack_into("<IIH", reply, 0, UHID_SET_REPORT_REPLY, rid, 0)
+            return [reply], self.last
+        if kind == UHID_GET_REPORT:
+            reply = bytearray(EVENT_SIZE)
+            struct.pack_into("<IIHH", reply, 0, UHID_GET_REPORT_REPLY, rid, 0, 65)
+            reply[13:77] = feature(self.last)
+            return [reply], None
+        return [], None
+
+
+def clamp(length):
+    return max(MIN_MS, min(MAX_MS, length))
+
+
+def magnitude(msg, at):
+    gain = struct.unpack_from("<b", msg, at)[0]
+    return min(0xFFFF, round(BASE * 10 ** (gain / 20)))
+
+
+def pulses(msg):
+    if msg[0] == 0x8F:
+        on, off, count = struct.unpack_from("<HHH", msg, 3)
+        us = on if count <= 1 else count * (on + off)
+        length = clamp(math.ceil(us / 1000))
+        return [(motor, length, magnitude(msg, 9)) for motor in PULSE_SIDES.get(msg[2], BOTH)]
+    if msg[0] == 0xEA:
+        motors = CMD_SIDES.get(msg[2], BOTH)
+        if msg[3] == 0:
+            return [(motor, 0, 0) for motor in motors]
+        base = TICK_MS if msg[3] == 1 else CLICK_MS
+        length = clamp(math.ceil(base * INTENSITY.get(msg[4], 1.0)))
+        return [(motor, length, magnitude(msg, 5)) for motor in motors]
+    return []
+
+
+def effect(eid, length, strong):
+    return struct.pack("<HhHHHHH2xHH28x", FF_RUMBLE, eid, 0, 0, 0, length, 0, strong, 0)
+
+
+def input_event(kind, code, value):
+    return struct.pack("<qqHHi", 0, 0, kind, code, value)
+
+
+def scan():
+    found = {}
+    for entry in sorted(os.listdir("/sys/class/input")):
+        if entry.startswith("event"):
+            dev = f"/dev/input/{entry}"
+            try:
+                with open(f"/sys/class/input/{entry}/device/name") as f:
+                    found.setdefault(f.read().strip(), dev)
+            except OSError:
+                pass
+            try:
+                node = os.readlink(f"/sys/class/input/{entry}/device/device/of_node")
+            except OSError:
+                continue
+            found.setdefault(os.path.basename(node), dev)
+    return found
+
+
+class Taps:
+    def __init__(self, emit):
+        self.emit = emit
+        self.down = None
+        self.released = None
+        self.first = None
+        self.hold_at = None
+        self.second = False
+
+    def deadline(self):
+        tap = math.inf if self.released is None else self.released + TAP_MS
+        return min(tap, math.inf if self.hold_at is None else self.hold_at)
+
+    def expire(self, now):
+        if self.released is not None and now - self.released >= TAP_MS:
+            at = self.released + TAP_MS
+            self.released = None
+            self.emit("single", at, self.first)
+        if self.hold_at is not None and now >= self.hold_at:
+            at = self.hold_at
+            self.hold_at = None
+            self.emit("hold", at, self.down)
+
+    def key(self, value, now):
+        self.expire(now)
+        if value == 1 and self.down is None:
+            self.down = now
+            self.second = self.released is not None
+            self.hold_at = None if self.second else now + HOLD_MS
+            self.emit("down", now, now)
+            if self.second:
+                self.released = None
+                self.emit("double", now, now)
+        elif value == 0 and self.down is not None:
+            held = now - self.down
+            if not self.second and held <= TAP_MS:
+                self.released = now
+                self.first = self.down
+            self.down = None
+            self.hold_at = None
+
+
+def restore_value(level, saved):
+    return None if level else (saved or DEFAULT_BRIGHTNESS)
+
+
+class Screen:
+    def __init__(self, qam):
+        self.qam = qam
+        self.off = False
+        self.pending = []
+        self.grabbed = []
+
+    def tap(self, kind, now):
+        if self.off:
+            self.wake()
+        elif kind == "double":
+            if not MICROSET:
+                self.qam(now)
+        else:
+            self.sleep(now)
+
+    def sleep(self, now):
+        if MICROSET:
+            self.write(POWERDOWN, BL_POWER)
+        else:
+            try:
+                level = self.read()
+            except OSError as err:
+                self.say("", f"backlight: {err.strerror}")
+                return
+            self.save(level)
+            self.write(0)
+        self.off = True
+        self.pending = [(name, handle, now + GRAB_WAIT_MS) for name, handle in self.inputs()]
+        self.poll(now)
+
+    def poll(self, now):
+        waiting = []
+        for name, handle, deadline in self.pending:
+            try:
+                if self.touched(handle):
+                    if now < deadline:
+                        waiting.append((name, handle, deadline))
+                    else:
+                        self.release(handle)
+                        self.say("nograb", f"{name}: still in contact after {GRAB_WAIT_MS} ms, not grabbed")
+                    continue
+                self.grab(handle)
+            except OSError as err:
+                self.release(handle)
+                self.say("nograb", f"{name}: grab: {err.strerror}")
+                continue
+            self.grabbed.append(handle)
+            self.say("grab")
+        self.pending = waiting
+
+    def wake(self):
+        if MICROSET:
+            self.write(0, BL_POWER)
+        else:
+            self.write(self.load() or DEFAULT_BRIGHTNESS)
+        for _, handle, _ in self.pending:
+            self.release(handle)
+        for handle in self.grabbed:
+            self.release(handle)
+        self.pending = []
+        self.grabbed = []
+        self.off = False
+        self.unsave()
+        self.say("ungrab")
+
+    def recheck(self):
+        node, dark = (BL_POWER, POWERDOWN) if MICROSET else (BACKLIGHT, 0)
+        try:
+            level = self.read(node)
+        except OSError:
+            return
+        if level != dark:
+            self.write(dark, node)
+
+    def read(self, node=BACKLIGHT):
+        with open(node) as f:
+            return int(f.read())
+
+    def write(self, level, node=BACKLIGHT):
+        try:
+            fd = os.open(node, os.O_WRONLY | os.O_TRUNC)
+            try:
+                os.write(fd, b"%d\n" % level)
+            finally:
+                os.close(fd)
+        except OSError as err:
+            if err.errno == EROFS:
+                log("backlight is read only in this namespace, exiting for a restart")
+                raise SystemExit(1)
+            log(f"backlight: {err.strerror}")
+
+    def save(self, level):
+        try:
+            with open(SAVED, "w") as f:
+                f.write(f"{level}\n")
+        except OSError as err:
+            log(f"{SAVED}: {err.strerror}")
+
+    def load(self):
+        try:
+            with open(SAVED) as f:
+                return int(f.read())
+        except (OSError, ValueError):
+            return None
+
+    def unsave(self):
+        try:
+            os.unlink(SAVED)
+        except FileNotFoundError:
+            pass
+
+    def inputs(self):
+        found = scan()
+        handles = []
+        for name in SCREEN_INPUTS:
+            if name in found:
+                try:
+                    handles.append((name, os.open(found[name], os.O_RDONLY | os.O_NONBLOCK)))
+                except OSError as err:
+                    log(f"{name}: {err.strerror}")
+        return handles
+
+    def touched(self, fd):
+        keys = bytearray(96)
+        fcntl.ioctl(fd, EVIOCGKEY, keys)
+        return any(keys)
+
+    def grab(self, fd):
+        fcntl.ioctl(fd, EVIOCGRAB, 1)
+
+    def release(self, fd):
+        os.close(fd)
+
+    def say(self, word, detail=""):
+        if detail:
+            log(detail)
+
+
+class DryScreen(Screen):
+    def __init__(self, level):
+        super().__init__(lambda now: print("qam"))
+        self.level = level
+        self.power = 0
+        self.saved = None
+        self.contact = False
+        self.busy = False
+
+    def read(self, node=BACKLIGHT):
+        return self.power if node == BL_POWER else self.level
+
+    def write(self, level, node=BACKLIGHT):
+        if node == BL_POWER:
+            self.power = level
+            print(f"bl_power {level}")
+        else:
+            self.level = level
+            print(f"bl {level}")
+
+    def save(self, level):
+        self.saved = level
+        print(f"save {level}")
+
+    def load(self):
+        return self.saved
+
+    def unsave(self):
+        self.saved = None
+
+    def inputs(self):
+        return [("touch", None)]
+
+    def touched(self, handle):
+        return self.contact
+
+    def grab(self, handle):
+        if self.busy:
+            raise OSError(EBUSY, os.strerror(EBUSY))
+
+    def release(self, handle):
+        pass
+
+    def say(self, word, detail=""):
+        if word:
+            print(word)
+
+
+class Power:
+    def __init__(self, screen, qam, send):
+        self.screen = screen
+        self.qam = qam
+        self.send = send
+
+    def state(self):
+        return "state off" if self.screen.off else "state on"
+
+    def gesture(self, kind, at, down):
+        if self.send(f"{kind} {down / 1000:.6f} {'off' if self.screen.off else 'on'}"):
+            if kind == "double" and not self.screen.off and not MICROSET:
+                self.qam(at)
+            return
+        if kind in ("single", "double"):
+            self.screen.tap(kind, at)
+
+    def command(self, word, now):
+        if word == "blank":
+            if self.screen.off:
+                self.screen.recheck()
+            else:
+                self.screen.sleep(now)
+        elif word == "restore":
+            if self.screen.off:
+                self.screen.wake()
+        elif word == "qam":
+            self.qam(now)
+        else:
+            log(f"power key helper: unknown word {word!r}")
+            return
+        self.send(self.state())
+
+
+def cgroup(pid):
+    try:
+        with open(f"/proc/{pid}/cgroup") as f:
+            for line in f:
+                if line.startswith("0::"):
+                    return line[3:].strip()
+    except OSError:
+        pass
+    return ""
+
+
+class Link:
+    def __init__(self, poller):
+        self.poller = poller
+        self.server = None
+        self.client = None
+        self.refused = set()
+
+    def listen(self):
+        try:
+            os.unlink(SOCKET)
+        except FileNotFoundError:
+            pass
+        except OSError as err:
+            log(f"{SOCKET}: {err.strerror}, no power key helper")
+            return
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_NONBLOCK | socket.SOCK_CLOEXEC)
+        try:
+            server.bind(SOCKET)
+            os.chmod(SOCKET, 0o666)
+            server.listen(1)
+        except OSError as err:
+            server.close()
+            log(f"{SOCKET}: {err.strerror}, no power key helper")
+            return
+        self.server = server
+        self.poller.register(server, select.POLLIN)
+
+    def ready(self, fd, power, now):
+        if self.server is not None and fd == self.server.fileno():
+            self.accept(power)
+        elif self.client is not None and fd == self.client.fileno():
+            self.receive(power, now)
+
+    def accept(self, power):
+        try:
+            conn, _ = self.server.accept()
+        except OSError:
+            return
+        pid, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
+        try:
+            want = pwd.getpwnam(HELPER).pw_uid
+        except KeyError:
+            want = None
+        group = cgroup(pid)
+        if uid != want or not group.endswith("/" + HELPER_UNIT):
+            if (uid, group) not in self.refused:
+                self.refused.add((uid, group))
+                log(f"power key helper: uid {uid} in {group or 'no cgroup'} refused")
+            conn.close()
+            return
+        self.drop()
+        conn.setblocking(False)
+        self.client = conn
+        self.poller.register(conn, select.POLLIN)
+        log("power key helper connected")
+        self.send(power.state())
+
+    def receive(self, power, now):
+        try:
+            data = self.client.recv(64)
+        except BlockingIOError:
+            return
+        except OSError:
+            data = b""
+        if not data:
+            log("power key helper gone")
+            self.drop()
+            return
+        power.command(data.decode(errors="replace").strip(), now)
+
+    def send(self, text):
+        if self.client is None:
+            return False
+        try:
+            self.client.send(text.encode())
+        except OSError:
+            log("power key helper gone")
+            self.drop()
+            return False
+        return True
+
+    def drop(self):
+        if self.client is not None:
+            self.poller.unregister(self.client)
+            self.client.close()
+            self.client = None
+
+
+class Daemon:
+    def __init__(self, uhid):
+        self.uhid = uhid
+        self.poller = select.poll()
+        self.poller.register(uhid, select.POLLIN)
+        self.power = None
+        self.clock = False
+        self.motors = {}
+        self.noted = set()
+        self.pad = Pad()
+        self.screen = Screen(self.qam)
+        self.link = Link(self.poller)
+        self.keys = Power(self.screen, self.qam, self.link.send)
+        self.taps = Taps(self.keys.gesture)
+        self.qam_until = 0
+        self.scan_at = 0
+        self.stop = False
+        self.seq = 0
+        self.report = bytearray(EVENT_SIZE)
+        struct.pack_into("<IH4B", self.report, 0, UHID_INPUT2, 64, 0x01, 0x00, 0x09, 0x40)
+
+    def note(self, text):
+        if text not in self.noted:
+            self.noted.add(text)
+            log(text)
+
+    def qam(self, now):
+        self.qam_until = now + QAM_MS
+
+    def scan(self, now):
+        found = scan()
+        if self.power is None and POWER in found:
+            try:
+                fd = os.open(found[POWER], os.O_RDONLY | os.O_NONBLOCK)
+            except OSError as err:
+                self.note(f"{POWER}: {err.strerror}")
+            else:
+                try:
+                    fcntl.ioctl(fd, EVIOCGRAB, 1)
+                except OSError as err:
+                    os.close(fd)
+                    self.note(f"{POWER}: grab: {err.strerror}")
+                else:
+                    try:
+                        fcntl.ioctl(fd, EVIOCSCLOCKID, struct.pack("i", time.CLOCK_BOOTTIME))
+                        self.clock = True
+                    except OSError as err:
+                        self.clock = False
+                        self.note(f"{POWER}: clock: {err.strerror}, key times taken on read")
+                    self.power = fd
+                    self.poller.register(fd, select.POLLIN)
+        for side, name in MOTORS.items():
+            if side in self.motors or name not in found:
+                continue
+            try:
+                fd = os.open(found[name], os.O_RDWR | os.O_NONBLOCK)
+            except OSError as err:
+                self.note(f"{name}: {err.strerror}")
+                continue
+            buf = bytearray(effect(-1, MIN_MS, 0))
+            try:
+                fcntl.ioctl(fd, EVIOCSFF, buf)
+            except OSError as err:
+                os.close(fd)
+                self.note(f"{name}: upload: {err.strerror}")
+                continue
+            self.motors[side] = (fd, struct.unpack_from("<h", buf, 2)[0])
+        missing = self.power is None or len(self.motors) < len(MOTORS)
+        self.scan_at = now + SCAN_MS if missing else math.inf
+
+    def play(self, side, length, strong):
+        if side not in self.motors:
+            return
+        fd, eid = self.motors[side]
+        try:
+            if length:
+                fcntl.ioctl(fd, EVIOCSFF, effect(eid, length, strong))
+            os.write(fd, input_event(EV_FF, eid, 1 if length else 0))
+        except OSError as err:
+            if err.errno != ENODEV:
+                self.note(f"{MOTORS[side]}: {err.strerror}")
+                return
+            self.drop(fd)
+            del self.motors[side]
+            self.scan_at = ms()
+
+    def drop(self, fd):
+        try:
+            self.poller.unregister(fd)
+        except KeyError:
+            pass
+        os.close(fd)
+
+    def uhid_events(self):
+        while True:
+            try:
+                ev = os.read(self.uhid, EVENT_SIZE)
+            except BlockingIOError:
+                return
+            replies, msg = self.pad.handle(ev)
+            for reply in replies:
+                os.write(self.uhid, reply)
+            if msg is not None:
+                for side, length, strong in pulses(msg):
+                    self.play(side, length, strong)
+
+    def power_events(self):
+        try:
+            data = os.read(self.power, 24 * 32)
+        except BlockingIOError:
+            return
+        except OSError as err:
+            self.note(f"{POWER}: {err.strerror}")
+            self.drop(self.power)
+            self.power = None
+            self.scan_at = ms()
+            return
+        now = ms()
+        for at in range(0, len(data) - 23, 24):
+            sec, usec, kind, code, value = struct.unpack_from("<qqHHi", data, at)
+            if kind == EV_KEY and code == KEY_POWER and value in (0, 1):
+                self.taps.key(value, sec * 1000 + usec / 1000 if self.clock else now)
+
+    def send(self, now):
+        self.seq = (self.seq + 1) & 0xFFFFFFFF
+        struct.pack_into("<I", self.report, 10, self.seq)
+        self.report[20] = 0x04 if now < self.qam_until else 0
+        os.write(self.uhid, self.report)
+
+    def run(self):
+        signal.signal(signal.SIGTERM, lambda *_: setattr(self, "stop", True))
+        os.write(self.uhid, create_event())
+        self.link.listen()
+        report_at = grab_at = check_at = ms()
+        while not self.stop:
+            now = ms()
+            if now >= self.scan_at:
+                self.scan(now)
+            self.taps.expire(now)
+            if self.screen.pending and now >= grab_at:
+                self.screen.poll(now)
+                grab_at = now + GRAB_POLL_MS
+            if self.screen.off and now >= check_at:
+                self.screen.recheck()
+                check_at = now + RECHECK_MS
+            if now >= report_at:
+                self.send(now)
+                report_at = report_at + REPORT_MS if report_at + REPORT_MS > now else now + REPORT_MS
+            deadlines = [report_at, self.scan_at, self.taps.deadline()]
+            if self.screen.pending:
+                deadlines.append(grab_at)
+            if self.screen.off:
+                deadlines.append(check_at)
+            timeout = max(0, math.ceil(min(deadlines) - ms()))
+            for fd, _ in self.poller.poll(timeout):
+                if fd == self.uhid:
+                    self.uhid_events()
+                elif fd == self.power:
+                    self.power_events()
+                else:
+                    self.link.ready(fd, self.keys, ms())
+        if self.screen.off:
+            self.screen.wake()
+        os.close(self.uhid)
+        return 0
+
+
+def restore(screen):
+    try:
+        if screen.read(BL_POWER):
+            screen.write(0, BL_POWER)
+    except (OSError, ValueError):
+        pass
+    try:
+        level = screen.read()
+    except (OSError, ValueError):
+        return 0
+    value = restore_value(level, screen.load())
+    if value is not None:
+        screen.write(value)
+        screen.unsave()
+    return 0
+
+
+def dryrun(mode, args):
+    if mode == "1":
+        print(EVENT_SIZE, EVIOCSFF, EVIOCGRAB, EVIOCGKEY, EVIOCSCLOCKID, len(effect(-1, 0, 0)), len(input_event(0, 0, 0)), DESC.hex())
+    elif mode == "uhid":
+        pad = Pad()
+        for arg in args:
+            if arg == "create":
+                print(create_event()[:280 + len(DESC)].hex())
+                continue
+            for reply in pad.handle(bytes.fromhex(arg).ljust(EVENT_SIZE, b"\0"))[0]:
+                print(reply[:80].hex())
+    elif mode == "feature":
+        pad = Pad()
+        for arg in args:
+            data = b"\0" + bytes.fromhex(arg)
+            pad.handle(struct.pack("<IIBBH", UHID_SET_REPORT, 1, 0, 0, len(data)) + data)
+            print(pad.handle(struct.pack("<IIBB", UHID_GET_REPORT, 2, 0, 0))[0][0][12:77].hex())
+    elif mode == "haptic":
+        for arg in args:
+            for side, length, strong in pulses(message(bytes.fromhex(arg))):
+                print(side, length, strong)
+    elif mode == "keys":
+        taps = Taps(lambda kind, at, down: print(kind, at, down))
+        for item in " ".join(args).split():
+            at, value = item.split(":")
+            taps.key(int(value), int(at))
+        taps.expire(math.inf)
+    elif mode == "power":
+        screen = DryScreen(int(args[0]))
+        helper = []
+
+        def send(text):
+            if helper:
+                print(f"send {text}")
+            return bool(helper)
+
+        power = Power(screen, screen.qam, send)
+        taps = Taps(power.gesture)
+        for item in " ".join(args[1:]).split():
+            name, _, value = item.partition("=")
+            if name == "helper":
+                helper[:] = [True] if value == "1" else []
+            elif name == "key":
+                at, down = value.split(":")
+                taps.key(int(down), int(at))
+            elif name == "at":
+                taps.expire(int(value))
+            elif name == "word":
+                power.command(value, 0)
+            elif name == "bl":
+                screen.level = int(value)
+            elif name == "blp":
+                screen.power = int(value)
+        taps.expire(math.inf)
+    elif mode == "link":
+        sys.stdout.reconfigure(line_buffering=True)
+        poller = select.poll()
+        link = Link(poller)
+        link.listen()
+        if link.server is None:
+            return 1
+        screen = DryScreen(int(args[0]))
+        power = Power(screen, screen.qam, link.send)
+        taps = Taps(power.gesture)
+        poller.register(0, select.POLLIN)
+        print("ready")
+        pending = b""
+        while True:
+            for fd, _ in poller.poll():
+                if fd != 0:
+                    link.ready(fd, power, 0)
+                    continue
+                data = os.read(0, 4096)
+                if not data:
+                    return 0
+                *lines, pending = (pending + data).split(b"\n")
+                for words in (line.split() for line in lines):
+                    if words[0] == b"key":
+                        taps.key(int(words[2]), int(words[1]))
+                    elif words[0] == b"at":
+                        taps.expire(int(words[1]))
+    elif mode == "screen":
+        screen = DryScreen(int(args[0]))
+        now = 0
+        for item in " ".join(args[1:]).split():
+            name, _, value = item.partition("=")
+            if name in ("single", "double"):
+                screen.tap(name, now)
+            elif name == "bl":
+                screen.level = int(value)
+                if screen.off:
+                    screen.recheck()
+            elif name == "touch":
+                screen.contact = value == "1"
+            elif name == "ebusy":
+                screen.busy = True
+            elif name == "wait":
+                now += int(value)
+            if screen.pending:
+                screen.poll(now)
+    elif mode == "restore":
+        value = restore_value(int(args[0]), None if args[1] == "none" else int(args[1]))
+        if value is not None:
+            print(value)
+    elif mode == "stop":
+        screen = DryScreen(int(args[0]))
+        screen.saved = None if args[1] == "none" else int(args[1])
+        screen.power = int(args[2])
+        restore(screen)
+    elif mode == "qam":
+        daemon = Daemon(os.open(os.devnull, os.O_WRONLY))
+        daemon.keys.command("qam", int(args[0]))
+        for at in args[1:]:
+            daemon.send(int(at))
+            print(at, daemon.report[20])
+    else:
+        log(f"unknown MICROOS_VPAD_DRYRUN {mode}")
+        return 2
+    return 0
+
+
+def main():
+    mode = os.environ.get("MICROOS_VPAD_DRYRUN")
+    if mode:
+        return dryrun(mode, sys.argv[1:])
+    if sys.argv[1:] == ["restore"]:
+        return restore(Screen(None))
+    try:
+        uhid = os.open("/dev/uhid", os.O_RDWR | os.O_NONBLOCK)
+    except OSError as err:
+        log(f"/dev/uhid: {err.strerror}")
+        return 1
+    return Daemon(uhid).run()
+
+
+sys.exit(main())

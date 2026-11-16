@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Praveen Talari <praveen.talari@oss.qualcomm.com>
+Date: Wed, 21 Oct 2026 09:19:37 +0530
+Subject: [PATCH] serial: qcom-geni: Clear pending IRQs while suspended
+
+When uart_suspend_port() marks a port suspended, an interrupt may still
+be pending before TX and RX are stopped. Returning IRQ_NONE before taking
+the port lock leaves those interrupt status bits uncleared and can cause
+the interrupt to be retriggered.
+
+Take the UART port lock and clear the relevant interrupt status first,
+then skip interrupt processing while the port is suspended.
+
+Signed-off-by: Praveen Talari <praveen.talari@oss.qualcomm.com>
+Link: https://patch.msgid.link/20261021-ack-interrupts-on-suspended-port-v1-1-2747a58ca7cb@oss.qualcomm.com
+---
+ drivers/tty/serial/qcom_geni_serial.c | 28 +++++++++++++--------------
+ 1 file changed, 13 insertions(+), 15 deletions(-)
+
+diff --git a/drivers/tty/serial/qcom_geni_serial.c b/drivers/tty/serial/qcom_geni_serial.c
+index 8ea43b294..61744eef0 100644
+--- a/drivers/tty/serial/qcom_geni_serial.c
++++ b/drivers/tty/serial/qcom_geni_serial.c
+@@ -1210,16 +1210,26 @@ static irqreturn_t qcom_geni_serial_isr(int isr, void *dev)
+ 	struct tty_port *tport = &uport->state->port;
+ 	struct qcom_geni_serial_port *port = to_dev_port(uport);
+ 
+-	if (uport->suspended)
+-		return IRQ_NONE;
+-
+ 	uart_port_lock(uport);
+ 
++	m_irq_status = readl(uport->membase + SE_GENI_M_IRQ_STATUS);
+ 	s_irq_status = readl(uport->membase + SE_GENI_S_IRQ_STATUS);
++	dma_tx_status = readl(uport->membase + SE_DMA_TX_IRQ_STAT);
+ 	dma_rx_status = readl(uport->membase + SE_DMA_RX_IRQ_STAT);
++	geni_status = readl(uport->membase + SE_GENI_STATUS);
++	dma = readl(uport->membase + SE_GENI_DMA_MODE_EN);
++	m_irq_en = readl(uport->membase + SE_GENI_M_IRQ_EN);
++	writel(m_irq_status, uport->membase + SE_GENI_M_IRQ_CLEAR);
+ 	writel(s_irq_status, uport->membase + SE_GENI_S_IRQ_CLEAR);
++	writel(dma_tx_status, uport->membase + SE_DMA_TX_IRQ_CLR);
+ 	writel(dma_rx_status, uport->membase + SE_DMA_RX_IRQ_CLR);
+ 
++	trace_geni_serial_irq(uport->dev, m_irq_status, s_irq_status,
++			      dma_tx_status, dma_rx_status);
++
++	if (uport->suspended)
++		goto out_unlock;
++
+ 	if (s_irq_status & S_RX_FIFO_WR_ERR_EN) {
+ 		uport->icount.overrun++;
+ 		tty_insert_flip_char(tport, 0, TTY_OVERRUN);
+@@ -1234,18 +1244,6 @@ static irqreturn_t qcom_geni_serial_isr(int isr, void *dev)
+ 		port->brk = true;
+ 	}
+ 
+-	m_irq_status = readl(uport->membase + SE_GENI_M_IRQ_STATUS);
+-	dma_tx_status = readl(uport->membase + SE_DMA_TX_IRQ_STAT);
+-	geni_status = readl(uport->membase + SE_GENI_STATUS);
+-	dma = readl(uport->membase + SE_GENI_DMA_MODE_EN);
+-	m_irq_en = readl(uport->membase + SE_GENI_M_IRQ_EN);
+-
+-	trace_geni_serial_irq(uport->dev, m_irq_status, s_irq_status,
+-			      dma_tx_status, dma_rx_status);
+-
+-	writel(m_irq_status, uport->membase + SE_GENI_M_IRQ_CLEAR);
+-	writel(dma_tx_status, uport->membase + SE_DMA_TX_IRQ_CLR);
+-
+ 	if (WARN_ON(m_irq_status & M_ILLEGAL_CMD_EN))
+ 		goto handle_rx;
+ 
+-- 
+2.55.0
+

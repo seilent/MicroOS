@@ -1,0 +1,451 @@
+#!/usr/bin/python3
+import os
+import socket
+import stat
+import sys
+import time
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-powerkey"
+LOGIN1 = ("org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager")
+DBUS = ("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus")
+OVERLAY = ("net.seilent.MicroSet.Overlay", "/net/seilent/MicroSet/Overlay", "net.seilent.MicroSet.Overlay1")
+NAME = "net.seilent.MicroOS.PowerKey"
+PATH = "/net/seilent/MicroOS/PowerKey"
+IFACE = Gio.DBusNodeInfo.new_for_xml(
+    '<node><interface name="net.seilent.MicroOS.PowerKey1"><method name="OpenQuickAccess"/></interface></node>'
+).interfaces[0]
+USE_OVERLAY = os.environ.get("MICROOS_POWERKEY_OVERLAY") == "1"
+SOCKET = os.environ.get("MICROOS_POWERKEY_SOCKET", "/run/microos-vpad/power")
+STEAM = os.environ.get("MICROOS_POWERKEY_STEAM", "/usr/bin/steam")
+RESLEEP_S = float(os.environ.get("MICROOS_POWERKEY_RESLEEP", "10"))
+PIPE = os.path.expanduser("~/.steam/steam.pipe")
+URIS = {"single": "steam://shortpowerpress", "hold": "steam://longpowerpress"}
+WAKE_GRACE = 1.5
+WAKE_BEFORE = 5
+DARK_WAKES = 3
+DARK_SPAN_S = 300
+FAST_RESLEEP_S = 2
+RECONNECT_S = 2
+MAX_BACKOFF_S = 60
+CONNECT_S = 1
+BLANK_WAIT_MS = 1000
+TOGGLE_MS = 1000
+DO_NOT_QUEUE = 4
+PRIMARY_OWNER = 1
+
+
+def log(msg):
+    print(f"{ME}: {msg}", file=sys.stderr, flush=True)
+
+
+def boottime():
+    return time.clock_gettime(time.CLOCK_BOOTTIME)
+
+
+def client_running():
+    try:
+        fd = os.open(PIPE, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return False
+    try:
+        return stat.S_ISFIFO(os.fstat(fd).st_mode)
+    finally:
+        os.close(fd)
+
+
+class Powerkey:
+    def __init__(self, system):
+        self.system = system
+        self.session = None
+        self.toggle_logged = False
+        self.conn = None
+        self.failing = False
+        self.fresh = False
+        self.got_state = False
+        self.backoff = RECONNECT_S
+        self.backoff_logged = False
+        self.fail_logged = False
+        self.queue = []
+        self.busy = False
+        self.off = False
+        self.delay_fd = None
+        self.blank_timer = None
+        self.slept = None
+        self.woke = None
+        self.last_down = None
+        self.used = None
+        self.dark = False
+        self.dark_wakes = []
+        self.fast_logged = False
+        self.stay_logged = False
+        self.decide_timer = None
+        self.resleep_timer = None
+        self.resleep_s = RESLEEP_S
+
+    def connect(self):
+        conn = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET | socket.SOCK_CLOEXEC)
+        conn.settimeout(CONNECT_S)
+        try:
+            conn.connect(SOCKET)
+        except OSError as err:
+            conn.close()
+            if not self.failing:
+                log(f"{SOCKET}: {err.strerror or err}, trying every {RECONNECT_S} s")
+                self.failing = True
+            GLib.timeout_add_seconds(RECONNECT_S, self.reconnect)
+            return
+        conn.setblocking(False)
+        self.conn = conn
+        self.failing = False
+        self.fresh = True
+        self.got_state = False
+        GLib.io_add_watch(conn.fileno(), GLib.PRIORITY_DEFAULT, GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, self.readable)
+
+    def reconnect(self):
+        self.connect()
+        return GLib.SOURCE_REMOVE
+
+    def lost(self):
+        self.conn.close()
+        self.conn = None
+        if self.blank_timer is not None:
+            self.release()
+        if self.got_state:
+            log("microos-vpad gone")
+            self.backoff = RECONNECT_S
+            self.backoff_logged = False
+        else:
+            self.backoff = min(self.backoff * 2, MAX_BACKOFF_S)
+            if not self.backoff_logged:
+                log(f"microos-vpad closed the connection before a state word, retrying up to every {MAX_BACKOFF_S} s")
+                self.backoff_logged = True
+        GLib.timeout_add_seconds(self.backoff, self.reconnect)
+
+    def send(self, word):
+        if self.conn is None:
+            return False
+        try:
+            self.conn.send(word.encode())
+        except OSError:
+            return False
+        return True
+
+    def readable(self, _fd, _cond):
+        while self.conn is not None:
+            try:
+                data = self.conn.recv(64)
+            except BlockingIOError:
+                break
+            except OSError:
+                data = b""
+            if not data:
+                self.lost()
+                return GLib.SOURCE_REMOVE
+            self.queue.append(data.decode(errors="replace").split())
+        self.work()
+        return GLib.SOURCE_CONTINUE if self.conn is not None else GLib.SOURCE_REMOVE
+
+    def work(self):
+        if self.busy:
+            return
+        self.busy = True
+        try:
+            while self.queue:
+                self.message(self.queue.pop(0))
+        finally:
+            self.busy = False
+
+    def message(self, words):
+        if len(words) == 2 and words[0] == "state":
+            self.off = words[1] == "off"
+            if not self.got_state:
+                self.got_state = True
+                log("connected to microos-vpad")
+            fresh, self.fresh = self.fresh, False
+            if self.off and self.blank_timer is not None:
+                self.release()
+            elif fresh and self.off and not self.dark and not self.asleep():
+                log(f"microos-vpad is dark at connect, sleeping again in {self.resleep_s:g} s")
+                self.dark = True
+                self.arm_resleep()
+            return
+        if len(words) == 3 and words[0] in ("down", "single", "double", "hold"):
+            try:
+                down = float(words[1])
+            except ValueError:
+                log(f"bad event {' '.join(words)}")
+                return
+            self.off = words[2] == "off"
+            self.drain()
+            self.event(words[0], down)
+            return
+        log(f"bad event {' '.join(words)}")
+
+    def drain(self):
+        try:
+            self.system.call_sync(
+                LOGIN1[0], LOGIN1[1], "org.freedesktop.DBus.Peer", "Ping",
+                None, None, Gio.DBusCallFlags.NONE, 1000, None,
+            )
+        except GLib.Error:
+            pass
+        ctx = GLib.MainContext.default()
+        while ctx.pending():
+            ctx.iteration(False)
+
+    def asleep(self):
+        return self.slept is not None and (self.woke is None or self.woke < self.slept)
+
+    def is_wake(self, down):
+        return self.woke is not None and not self.asleep() and self.woke - WAKE_BEFORE <= down <= self.woke + WAKE_GRACE
+
+    def event(self, kind, down):
+        if kind == "down":
+            self.last_down = down
+            if self.asleep():
+                return
+            if self.is_wake(down) or self.dark or (self.off and self.decide_timer is None):
+                self.used = down
+                self.key_wake()
+            return
+        if down == self.used or self.asleep() or self.is_wake(down):
+            return
+        if kind == "double":
+            if USE_OVERLAY and not self.off:
+                self.toggle()
+            return
+        if self.off:
+            self.key_wake()
+            return
+        can = self.can_suspend()
+        if can != "yes":
+            log(f"CanSuspend is {can}, blanking")
+            self.send("blank")
+            self.dark = True
+            if self.resleep_timer is None:
+                self.arm_resleep()
+            return
+        if client_running():
+            self.spawn([STEAM, "-ifrunning", URIS[kind]])
+        elif kind == "single":
+            log("Steam is not running, suspending")
+            self.suspend()
+
+    def can_suspend(self):
+        try:
+            return self.system.call_sync(
+                *LOGIN1, "CanSuspend", None, GLib.VariantType("(s)"), Gio.DBusCallFlags.NONE, 2000, None,
+            ).unpack()[0]
+        except GLib.Error as err:
+            return f"unknown ({err.message})"
+
+    def suspend(self):
+        self.system.call(
+            *LOGIN1, "Suspend", GLib.Variant("(b)", (False,)), None, Gio.DBusCallFlags.NONE, -1, None, self.done, None,
+        )
+
+    def done(self, bus, result, _data):
+        try:
+            bus.call_finish(result)
+        except GLib.Error as err:
+            if not self.fail_logged:
+                log(f"Suspend failed: {err.message}")
+                self.fail_logged = True
+            if self.dark and self.resleep_timer is None:
+                self.arm_resleep()
+
+    def spawn(self, argv):
+        try:
+            GLib.spawn_async(argv, flags=GLib.SpawnFlags.SEARCH_PATH)
+        except GLib.Error as err:
+            log(f"{' '.join(argv)} failed: {err.message}")
+
+    def toggle(self):
+        if self.session is None:
+            self.send("qam")
+            return
+        self.session.call(
+            *OVERLAY, "Toggle", None, None, Gio.DBusCallFlags.NO_AUTO_START, TOGGLE_MS, None, self.toggled, None,
+        )
+
+    def toggled(self, bus, result, _data):
+        try:
+            bus.call_finish(result)
+        except GLib.Error as err:
+            if not self.toggle_logged:
+                log(f"MicroSet overlay Toggle failed: {err.message}")
+                self.toggle_logged = True
+            if not self.off and not self.asleep():
+                self.send("qam")
+            return
+        self.toggle_logged = False
+
+    def own(self):
+        Gio.bus_get(Gio.BusType.SESSION, None, self.got_bus, None)
+
+    def got_bus(self, _source, result, _data):
+        try:
+            bus = Gio.bus_get_finish(result)
+        except GLib.Error as err:
+            log(f"user bus: {err.message}, double tap opens the quick access menu")
+            return
+        bus.set_exit_on_close(False)
+        bus.connect("closed", self.bus_closed)
+        self.session = bus
+        try:
+            bus.register_object_with_closures2(PATH, IFACE, self.method_call, None, None)
+        except GLib.Error as err:
+            log(f"{NAME}: {err.message}")
+            return
+        bus.call(
+            *DBUS, "RequestName", GLib.Variant("(su)", (NAME, DO_NOT_QUEUE)), GLib.VariantType("(u)"),
+            Gio.DBusCallFlags.NONE, 2000, None, self.named, None,
+        )
+
+    def named(self, bus, result, _data):
+        try:
+            got = bus.call_finish(result).unpack()[0]
+        except GLib.Error as err:
+            log(f"{NAME}: {err.message}")
+            return
+        if got != PRIMARY_OWNER:
+            log(f"{NAME} has another owner")
+
+    def bus_closed(self, _bus, _remote, _err):
+        self.session = None
+        log("user bus closed, double tap opens the quick access menu")
+
+    def method_call(self, _conn, _sender, _path, _iface, _method, _params, invocation):
+        if self.off or self.asleep():
+            invocation.return_dbus_error(f"{NAME}.Error.ScreenOff", "the screen is off")
+        elif self.send("qam"):
+            invocation.return_value(None)
+        else:
+            invocation.return_dbus_error(f"{NAME}.Error.NoVpad", "microos-vpad is not connected")
+
+    def key_wake(self):
+        self.dark_wakes = []
+        self.fast_logged = False
+        self.resleep_s = RESLEEP_S
+        self.restore()
+
+    def restore(self):
+        self.dark = False
+        self.stay_logged = False
+        self.fail_logged = False
+        self.stop_timers()
+        if self.send("restore"):
+            self.off = False
+
+    def stop_timers(self):
+        for name in ("decide_timer", "resleep_timer"):
+            timer = getattr(self, name)
+            if timer is not None:
+                GLib.source_remove(timer)
+                setattr(self, name, None)
+
+    def take_delay(self):
+        if self.delay_fd is not None:
+            return
+        try:
+            result, fds = self.system.call_with_unix_fd_list_sync(
+                *LOGIN1, "Inhibit", GLib.Variant("(ssss)", ("sleep", ME, "Blank the screen before sleep", "delay")),
+                GLib.VariantType("(h)"), Gio.DBusCallFlags.NONE, -1, None, None,
+            )
+        except GLib.Error as err:
+            log(f"sleep delay inhibitor failed: {err.message}")
+            return
+        self.delay_fd = fds.get(result.unpack()[0])
+
+    def release(self):
+        if self.blank_timer is not None:
+            GLib.source_remove(self.blank_timer)
+            self.blank_timer = None
+        if self.delay_fd is not None:
+            os.close(self.delay_fd)
+            self.delay_fd = None
+
+    def blank_late(self):
+        self.blank_timer = None
+        log(f"no word from microos-vpad in {BLANK_WAIT_MS} ms, sleeping anyway")
+        self.release()
+        return GLib.SOURCE_REMOVE
+
+    def prepare_for_sleep(self, _conn, _sender, _path, _iface, _signal, params):
+        if params.unpack()[0]:
+            self.slept = boottime()
+            self.last_down = None
+            self.dark = False
+            self.stop_timers()
+            if self.send("blank") and self.delay_fd is not None:
+                self.blank_timer = GLib.timeout_add(BLANK_WAIT_MS, self.blank_late)
+            else:
+                self.release()
+            return
+        self.woke = boottime()
+        self.take_delay()
+        if self.last_down is not None and self.is_wake(self.last_down):
+            self.used = self.last_down
+            self.key_wake()
+        elif self.off:
+            self.send("blank")
+            self.decide_timer = GLib.timeout_add(int(WAKE_GRACE * 1000), self.decide)
+
+    def decide(self):
+        self.decide_timer = None
+        if not self.off:
+            return GLib.SOURCE_REMOVE
+        now = boottime()
+        self.dark_wakes = [t for t in self.dark_wakes if now - t <= DARK_SPAN_S] + [now]
+        self.dark = True
+        if len(self.dark_wakes) >= DARK_WAKES:
+            self.resleep_s = FAST_RESLEEP_S
+            if not self.fast_logged:
+                log(f"{DARK_WAKES} dark wakes within {DARK_SPAN_S // 60} min, sleeping again after {FAST_RESLEEP_S} s")
+                self.fast_logged = True
+        else:
+            self.resleep_s = RESLEEP_S
+            log(f"not a power key wake, dark, sleeping again in {self.resleep_s:g} s")
+        self.arm_resleep()
+        return GLib.SOURCE_REMOVE
+
+    def arm_resleep(self):
+        self.resleep_timer = GLib.timeout_add(int(self.resleep_s * 1000), self.resleep)
+
+    def resleep(self):
+        self.resleep_timer = None
+        if not self.dark:
+            return GLib.SOURCE_REMOVE
+        can = self.can_suspend()
+        if can == "yes":
+            self.stay_logged = False
+            self.suspend()
+        else:
+            if not self.stay_logged:
+                log(f"CanSuspend is {can}, staying dark, trying again every {self.resleep_s:g} s")
+                self.stay_logged = True
+            self.arm_resleep()
+        return GLib.SOURCE_REMOVE
+
+
+def main():
+    system = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    daemon = Powerkey(system)
+    system.signal_subscribe(
+        LOGIN1[0], LOGIN1[2], "PrepareForSleep", LOGIN1[1], None, Gio.DBusSignalFlags.NONE, daemon.prepare_for_sleep,
+    )
+    daemon.take_delay()
+    if USE_OVERLAY:
+        daemon.own()
+    daemon.connect()
+    GLib.MainLoop().run()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

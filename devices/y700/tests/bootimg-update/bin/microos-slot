@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+echo "microos-slot $*" >> "$FAKE_STATE/slot.log"
+case $1 in
+  status) echo "disk /dev/${FAKE_DISK:-sdz} block 4096" ;;
+  arm) echo "microos-slot arm" >> "$FAKE_STATE/events"; exit "${FAKE_ARM_RC:-0}" ;;
+  *) exit 1 ;;
+esac

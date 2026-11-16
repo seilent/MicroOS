@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+import socket
+import sys
+
+path, keys = sys.argv[1:3]
+conn = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+conn.connect(path)
+conn.settimeout(5)
+with open(keys, "w", buffering=1) as feed:
+    for step in sys.argv[3:]:
+        name, _, value = step.partition(":")
+        if name in ("key", "at"):
+            feed.write(f"{name} {value.replace(':', ' ')}\n")
+        elif name == "send":
+            conn.send(value.encode())
+        elif name == "recv":
+            try:
+                data = conn.recv(64)
+            except socket.timeout:
+                print("timeout")
+                continue
+            print(data.decode() if data else "closed")

@@ -1,0 +1,15 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	qcom,msm-id = <0x22d 0x20000 0x22d 0x10000 0x241 0x20000 0x241 0x10000>;
+	qcom,board-id = <0x3000b 0x00>;
+
+	fragment@0 {
+		target = <&spmi_bus>;
+
+		__overlay__ {
+			microos,dtbo = "1";
+		};
+	};
+};

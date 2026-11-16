@@ -1,0 +1,48 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 12 Nov 2026 00:02:32 +0900
+Subject: [PATCH] dt-bindings: display: panel: novatek,nt36523: Add Lenovo
+ Legion Y700 (2025) panels
+
+The Lenovo Legion Y700 (2025) / TB321FU uses a 1600x2560 NT36523 panel
+from either BOE or CSOT, driven over two C-PHY DSI links with DSC.
+Document a compatible for each of them.
+
+The panel on that board also has its analog and core supplies on
+regulators of their own, so document them as the optional vci and vdd
+supplies.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ .../bindings/display/panel/novatek,nt36523.yaml           | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/display/panel/novatek,nt36523.yaml b/Documentation/devicetree/bindings/display/panel/novatek,nt36523.yaml
+index b9300a1f2..c9d106a1c 100644
+--- a/Documentation/devicetree/bindings/display/panel/novatek,nt36523.yaml
++++ b/Documentation/devicetree/bindings/display/panel/novatek,nt36523.yaml
+@@ -19,6 +19,8 @@ properties:
+     oneOf:
+       - items:
+           - enum:
++              - lenovo,tb321fu-boe-nt36523
++              - lenovo,tb321fu-csot-nt36523
+               - xiaomi,elish-boe-nt36523
+               - xiaomi,elish-csot-nt36523
+           - const: novatek,nt36523
+@@ -37,6 +39,12 @@ properties:
+   vddio-supply:
+     description: regulator that supplies the I/O voltage
+ 
++  vci-supply:
++    description: regulator that supplies the analog voltage
++
++  vdd-supply:
++    description: regulator that supplies the core voltage
++
+ required:
+   - compatible
+   - reg
+-- 
+2.55.0
+
