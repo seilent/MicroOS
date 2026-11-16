@@ -59,6 +59,8 @@ abl=$kdir/dtb/qcom/sm8650-lenovo-tb321fu-abl.dtb
 [[ $(fdtget -t x "$abl" / qcom,board-id) == "0 0" ]] || { echo "pkg-kernel-y700: abl dtb board-id" >&2; exit 1; }
 [[ $(fdtget "$abl" / region_country) == PRC ]] || { echo "pkg-kernel-y700: abl dtb region_country" >&2; exit 1; }
 [[ $(fdtget -t x "$abl" /reserved-memory/splash_region reg) == "0 d5100000 0 2b00000" ]] || { echo "pkg-kernel-y700: abl dtb splash_region" >&2; exit 1; }
+[[ $(fdtget -t x "$abl" /reserved-memory/ramoops@a2000000 record-size) == 80000 && $(fdtget -t x "$abl" /reserved-memory/ramoops@a2000000 console-size) == 200000 ]] || { echo "pkg-kernel-y700: abl dtb ramoops sizes" >&2; exit 1; }
+! fdtget "$abl" /reserved-memory/ramoops@a2000000 pmsg-size > /dev/null 2>&1 || { echo "pkg-kernel-y700: abl dtb ramoops has pmsg-size" >&2; exit 1; }
 [[ $(fdtget "$abl" /chosen/framebuffer@d5100000 status) == okay ]] || { echo "pkg-kernel-y700: abl dtb framebuffer" >&2; exit 1; }
 [[ $(fdtget "$abl" /soc@0/spmi@c400000/pmic@0/nvram@7100 compatible) == qcom,spmi-sdam ]] || { echo "pkg-kernel-y700: abl dtb sdam nvram@7100" >&2; exit 1; }
 [[ $(fdtget "$abl" /aliases serial1) == /soc@0/geniqup@8c0000/serial@898000 ]] || { echo "pkg-kernel-y700: abl dtb serial1 alias" >&2; exit 1; }
