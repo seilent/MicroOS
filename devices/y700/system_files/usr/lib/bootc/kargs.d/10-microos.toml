@@ -5,6 +5,6 @@ kargs = [
   "regulator_ignore_unused",
   "clk_ignore_unused",
   "pd_ignore_unused",
-  "reboot=cold",
+  "reboot=cold,panic_warm",
   "cpuidle.off=1",
 ]

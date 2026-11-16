@@ -273,7 +273,7 @@ kargs = [
   "regulator_ignore_unused",
   "clk_ignore_unused",
   "pd_ignore_unused",
-  "reboot=cold",
+  "reboot=cold,panic_warm",
   "cpuidle.off=1",
 ]' ]] || fail "10-microos.toml kargs"
 [[ $(< /usr/lib/microos/slot.conf) == $'MICROOS_SLOT_WRITE=1\nMICROOS_BOOT_TRIES=3' ]] || fail "slot.conf does not turn slot writes on"
