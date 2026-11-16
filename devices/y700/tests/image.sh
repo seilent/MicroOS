@@ -270,9 +270,6 @@ last=$(/usr/lib/systemd/systemd-sysctl --cat-config | awk '/^# \/[^ ]*\.conf( ->
 kargs = [
   "firmware_class.path=/var/lib/microos/fw",
   "loglevel=4",
-  "regulator_ignore_unused",
-  "clk_ignore_unused",
-  "pd_ignore_unused",
   "reboot=cold,panic_warm",
   "cpuidle.off=1",
 ]' ]] || fail "10-microos.toml kargs"
