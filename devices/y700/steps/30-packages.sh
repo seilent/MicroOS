@@ -12,6 +12,14 @@ own=(
   microset/microset
   microset/microset-settings
   microset/microset-fonts
+  hyprland/hyprland
+  hyprland/hyprutils
+  hyprland/hyprlang
+  hyprland/hyprgraphics
+  hyprland/hyprwire
+  hyprland/aquamarine
+  hyprland/hyprcursor
+  hyprgrass/hyprgrass
 )
 
 own_rpm() {
@@ -97,4 +105,88 @@ dnf -y install \
   bluez \
   e2fsprogs \
   zstd \
+  quickshell \
+  qt6-qtbase \
+  qt6-qtdeclarative \
+  qt6-qtwayland \
+  qt6-qt5compat \
+  qt6-qtsvg \
+  qt6-qtimageformats \
+  qt6-qtmultimedia \
+  qt6-qtpositioning \
+  qt6-qtshadertools \
+  qt6-qtquicktimeline \
+  qt6-qtsensors \
+  qt6-qttools \
+  qt6-qttranslations \
+  qt6-qtvirtualkeyboard \
+  kf6-kirigami \
+  kf6-syntax-highlighting \
+  kf6-kimageformats \
+  kdialog \
+  matugen \
+  cava \
+  cliphist \
+  wl-clipboard \
+  ydotool \
+  wtype \
+  brightnessctl \
+  ddcutil \
+  geoclue2 \
+  grim \
+  slurp \
+  swappy \
+  tesseract \
+  tesseract-langpack-eng \
+  fuzzel \
+  ImageMagick \
+  translate-shell \
+  wlogout \
+  qalculate \
+  playerctl \
+  pavucontrol-qt \
+  NetworkManager \
+  plasma-nm \
+  bluedevil \
+  gnome-keyring \
+  polkit-kde \
+  dolphin \
+  plasma-systemsettings \
+  xdg-desktop-portal \
+  xdg-desktop-portal-gtk \
+  xdg-desktop-portal-kde \
+  adw-gtk3-theme \
+  breeze-icon-theme \
+  breeze-cursor-theme \
+  kvantum \
+  qt6ct \
+  python3.12 \
+  python3.12-devel \
+  uv \
+  python3-opencv \
+  python3-pillow \
+  python3-numpy \
+  python3-cairo \
+  python3-gobject \
+  python3-dbus \
+  python3-libsass \
+  python3-pywayland \
+  python3-psutil \
+  yq \
+  ripgrep \
+  kitty \
+  fish \
+  eza \
+  ffmpeg-free \
+  cmake \
+  ninja-build \
+  glib2 \
+  bc \
+  xdg-user-dirs \
+  curl \
+  wget2 \
+  unzip \
   "${rpms[@]}"
+
+printf '[main]\nexcludepkgs=hyprland,hyprutils,hyprlang,hyprgraphics,hyprwire,hyprcursor,aquamarine,hyprgrass,udis86\n' \
+  > /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf
