@@ -75,14 +75,6 @@ fi
 [[ -z $maxcpus ]] || words+=("maxcpus=$maxcpus")
 (( ! slota )) || words+=(initcall_blacklist=msm_drm_register)
 cmdline="${words[*]}"
-idlen=$(( ${#cmdline} + 24 ))
-if (( slota && idlen > MICROOS_CMDLINE_MAX )); then
-  kept=()
-  for w in "${words[@]}"; do
-    [[ $w == cpuidle.off=1 ]] || kept+=("$w")
-  done
-  cmdline="${kept[*]}"
-fi
 
 id=$(microos_bootimg_id "$cmdline" "$kernel" "$initrd" "$dtb" "$patch") || die "cannot compute the id"
 if (( idonly )); then

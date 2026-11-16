@@ -165,7 +165,7 @@ variant() {
 declare -A ids=()
 out=$tmp/out
 mkdir -p "$out"
-variant production -- root=PARTLABEL=microos cpuidle.off=1 firmware_class.path=/var/lib/microos/fw '!maxcpus=1'
+variant production -- root=PARTLABEL=microos firmware_class.path=/var/lib/microos/fw '!maxcpus=1'
 id2=$(bake --out "$out/again.img")
 [[ $id2 == "${ids[production]}" ]] || fail "id not stable"
 same "$out/production.img" "$out/again.img" || fail "two bakes differ"
@@ -173,10 +173,10 @@ rm -f "$out/again.img"
 for w in 1 once noguard bootloader panic emergency wdhang gptdump; do
   variant "test-$w" --test "$w" -- "microos.test=$w" root=PARTLABEL=microos
 done
-variant stub1 --kernel "$stub" --test 1 --maxcpus 1 -- microos.test=1 maxcpus=1 cpuidle.off=1
+variant stub1 --kernel "$stub" --test 1 --maxcpus 1 -- microos.test=1 maxcpus=1
 variant stub7 --kernel "$stub" --test 1 --maxcpus 7 -- microos.test=1 maxcpus=7
 variant slota --kernel "$stub" --test gptdump --maxcpus 1 --slot-a -- microos.test=gptdump maxcpus=1 \
-  initcall_blacklist=msm_drm_register cpuidle.off=1
+  initcall_blacklist=msm_drm_register
 variant rootmissing --kernel "$stub" --test noguard --maxcpus 1 --root-missing -- root=PARTLABEL=microos_missing '!root=PARTLABEL=microos'
 rm -rf "${out:?}"
 
@@ -188,11 +188,6 @@ longest=$(( ${#base} + 21 + 10 + 36 + 24 ))
 fill=$(pad $(( 440 - longest + 5 )))
 opts0=$opts
 opts="$opts0 $fill"
-id=$(bake --kernel "$stub" --test gptdump --maxcpus 1 --slot-a --out "$tmp/drop.img") || fail "slot a over 440 not baked without cpuidle.off=1"
-if [[ -f $tmp/drop.img ]]; then
-  check slota-drop "$tmp/drop.img" "$id" "$stub" initcall_blacklist=msm_drm_register '!cpuidle.off=1' "$fill"
-  rm -f "$tmp/drop.img"
-fi
 opts="$opts0 $(pad $(( 440 - ${#base} - 25 )))"
 bake --out "$tmp/full.img" >/dev/null || fail "440 byte cmdline refused"
 rm -f "$tmp/full.img"
@@ -200,7 +195,7 @@ opts="$opts0 $(pad $(( 441 - ${#base} - 25 )))"
 if bake --out "$tmp/x" 2>/dev/null; then fail "441 byte cmdline accepted"; fi
 opts="$opts0 $fill$(pad 10)"
 if bake --kernel "$stub" --test gptdump --maxcpus 1 --slot-a --out "$tmp/x" 2>/dev/null; then
-  fail "slot a over 440 without cpuidle.off=1 accepted"
+  fail "slot a over 440 accepted"
 fi
 opts=$opts0
 

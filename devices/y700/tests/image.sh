@@ -271,7 +271,6 @@ kargs = [
   "firmware_class.path=/var/lib/microos/fw",
   "loglevel=4",
   "reboot=cold,panic_warm",
-  "cpuidle.off=1",
 ]' ]] || fail "10-microos.toml kargs"
 [[ $(< /usr/lib/microos/slot.conf) == $'MICROOS_SLOT_WRITE=1\nMICROOS_BOOT_TRIES=3' ]] || fail "slot.conf does not turn slot writes on"
 stub=/usr/lib/microos/stub

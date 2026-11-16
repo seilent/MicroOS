@@ -3,5 +3,4 @@ kargs = [
   "firmware_class.path=/var/lib/microos/fw",
   "loglevel=4",
   "reboot=cold,panic_warm",
-  "cpuidle.off=1",
 ]
