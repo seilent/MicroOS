@@ -44,7 +44,7 @@ done
 grep -qx 'install_weak_deps=False' /etc/dnf/libdnf5.conf.d/10-microos.conf || fail "10-microos.conf does not turn off weak deps"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 own=$(rpm -qa --qf '%{NAME}\t%{VENDOR}\n' | awk -F'\t' '$2 == "MicroOS" { print $1 }' | LC_ALL=C sort | paste -sd' ')
-[[ $own == 'audioreach-topology gamescope gamescope-session gamescope-session-steam microos-kernel microset microset-fonts microset-settings' ]] ||
+[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hyprcursor hyprgraphics hyprgrass hyprland hyprlang hyprpicker hyprsunset hyprutils hyprwire microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
   fail "MicroOS rpms: $own"
 for p in qbootctl inputplumber steamos-manager mangohud lsfg-vk hexagonrpc microos-eq libfreeaptx \
   pipewire-codec-aptx microos-android-guestos microos-steam-seed; do
@@ -107,7 +107,7 @@ for u in pipewire.socket pipewire-pulse.socket wireplumber.service; do
 done
 null=/usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
 grep -qF 'factory.name = support.null-audio-sink' "$null" && grep -qF 'priority.session = 1' "$null" || fail "$null"
-[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service' ]] \
+[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-desktop.service\n/usr/lib/systemd/user/microos-desktop.service.d\n/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-ii-seed.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service' ]] \
   || fail "MicroOS user units: $(compgen -G '/usr/lib/systemd/user/microos-*' | tr '\n' ' ')"
 [[ $(< /usr/lib/systemd/system-preset/50-microos.preset) == 'enable microos-*' ]] || fail "50-microos.preset"
 
@@ -207,6 +207,16 @@ kept=(
   /usr/lib/systemd/user/microos-session-alive@.timer
   /usr/lib/systemd/user/microos-session-install@.service
   /usr/lib/systemd/user/microos-steam-seed.service
+  /usr/lib/microos/sessions.d/desktop.conf
+  /usr/lib/systemd/user/microos-desktop.service.d/20-microos-ii-seed.conf
+  /usr/lib/systemd/user/microos-ii-seed.service
+  /usr/lib/systemd/user/xdg-desktop-portal.service.d/50-microos-desktop.conf
+  /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf
+  /usr/lib/systemd/user/microos-desktop.service
+  /usr/libexec/microos/microos-desktop-env
+  /usr/libexec/microos/microos-desktop-session
+  /usr/libexec/microos/microos-ii-seed
+  /usr/share/wayland-sessions/microos-desktop.desktop
   /usr/lib/sysusers.d/microos.conf
   /usr/lib/tmpfiles.d/microos-session.conf
   /usr/lib/tmpfiles.d/microos.conf
@@ -259,10 +269,13 @@ done
 ours=()
 while IFS= read -r f; do
   rpm -qf "$f" >/dev/null 2>&1 || ours+=("$f")
-done < <(find /usr /etc -xdev -path /usr/lib/modules -prune -o -path '*microos*' -type f -print \
+done < <(find /usr /etc -xdev -path /usr/lib/modules -prune -o -path /usr/share/microos/quickshell -prune -o \
+  -path /usr/share/microos/matugen -prune -o -path /usr/share/microos/hypr -prune -o -path '*microos*' -type f -print \
   | grep -vxF /etc/dnf/libdnf5.conf.d/10-microos.conf | LC_ALL=C sort)
 extra=$(LC_ALL=C comm -23 <(printf '%s\n' "${ours[@]}") <(printf '%s\n' "${kept[@]}" | LC_ALL=C sort))
 [[ -z $extra ]] || fail "MicroOS files outside the M2 set: $(tr '\n' ' ' <<< "$extra")"
+[[ -f /usr/share/microos/quickshell/ii/shell.qml && -d /usr/share/microos/matugen \
+  && -f /usr/share/microos/hypr/hyprland.lua ]] || fail "ii shell, matugen, or hypr tree not shipped"
 for f in /usr/bin/steamvr /usr/lib/hwsupport /usr/lib/android-sdk /usr/share/inputplumber /usr/share/steamos-manager \
   /usr/share/gamescope-session-plus/sessions.d/recovery /usr/libexec/microos/microos-steam-compat \
   /usr/libexec/microos/microos-pad-lib /usr/share/plymouth/themes/microos \
@@ -398,7 +411,7 @@ grep -qxF 'SUBSYSTEM=="hidraw", KERNELS=="000[356]:28DE:*", MODE="0660", TAG+="u
 compgen -G "/usr/lib/modules/$kver/kernel/drivers/hid/hid-steam.ko*" >/dev/null || fail "hid-steam module missing"
 [[ $(< /usr/lib/udev/rules.d/90-microos-usb-console.rules) == \
   'SUBSYSTEM=="tty", KERNEL=="ttyGS0", ENV{SYSTEMD_WANTS}+="serial-getty@ttyGS0.service"' ]] || fail "90-microos-usb-console.rules"
-[[ $(< /usr/lib/tmpfiles.d/microos.conf) == $'d /run/microos 0755 root root -\nd /var/home/micro 0700 micro micro -\nd /var/lib/microos 0755 root root -\nd /var/cache/libX11 0755 root root -\nd /var/cache/libX11/compose 0755 root root -\nw /sys/power/pm_freeze_timeout - - - - 5000' ]] \
+[[ $(< /usr/lib/tmpfiles.d/microos.conf) == $'d /run/microos 0755 root root -\nd /var/home/micro 0700 micro micro -\nd /var/lib/microos 0755 root root -\nd /var/cache/libX11 0755 root root -\nd /var/cache/libX11/compose 0755 root root -\nd /var/lib/geoclue 0755 geoclue geoclue -\nw /sys/power/pm_freeze_timeout - - - - 5000' ]] \
   || fail "tmpfiles microos.conf"
 [[ $(< /usr/lib/systemd/sleep.conf.d/50-microos.conf) == $'[Sleep]\nAllowHibernation=no\nAllowSuspendThenHibernate=no\nAllowHybridSleep=no\nMemorySleepMode=s2idle' ]] \
   || fail "sleep.conf.d 50-microos.conf"

@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-desktop-session
+runtime=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+state=$runtime/microos
+
+log() { echo "$me: $*" >&2; }
+
+export DESKTOP_SESSION=microos-desktop
+export XDG_CURRENT_DESKTOP=Hyprland
+export XDG_SESSION_TYPE=wayland
+
+unset XDG_DESKTOP_PORTAL_DIR
+vars=(DESKTOP_SESSION)
+while IFS='=' read -r k _; do
+  [[ $k == XDG_* ]] && vars+=("$k")
+done < <(env)
+dbus-update-activation-environment --systemd "${vars[@]}" || log "dbus-update-activation-environment failed"
+systemctl --user unset-environment XDG_DESKTOP_PORTAL_DIR || log "unset of XDG_DESKTOP_PORTAL_DIR failed"
+
+install -d -m 0700 "$state" || log "cannot create $state"
+rotation=$(timeout 3 microset watch display.rotation 2> /dev/null | tail -n 1 | cut -f 2)
+case $rotation in
+  portrait) transform=0 ;;
+  portrait-flipped) transform=2 ;;
+  landscape-flipped) transform=1 ;;
+  *) transform=3 ;;
+esac
+if tmp=$(mktemp "$state/desktop-transform.XXXXXX"); then
+  if printf '%s\n' "$transform" > "$tmp" && mv -f "$tmp" "$state/desktop-transform"; then
+    log "transform $transform"
+  else
+    rm -f "${tmp:?}"
+    log "cannot write $state/desktop-transform"
+  fi
+else
+  log "cannot create a temp file in $state"
+fi
+
+trap 'systemctl --user stop microos-desktop.service' HUP INT TERM
+systemctl --user --wait start microos-desktop.service &
+wait

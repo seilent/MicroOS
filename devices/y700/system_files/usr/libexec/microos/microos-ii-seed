@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+me=microos-ii-seed
+log() { echo "$me: $*" >&2; }
+
+version=1
+share=${XDG_DATA_HOME:-$HOME/.local/share}
+config=${XDG_CONFIG_HOME:-$HOME/.config}
+stamp=$share/microos/ii-seed
+
+declare -A links=(
+  ["$config/quickshell/ii"]=/usr/share/microos/quickshell/ii
+  ["$config/matugen"]=/usr/share/microos/matugen
+  ["$config/hypr"]=/usr/share/microos/hypr
+)
+
+link_one() {
+  local path=$1 target=$2 aside
+  if [[ -L $path ]]; then
+    [[ $(readlink "$path") == "$target" ]] && return 0
+    ln -sfn "$target" "$path"
+    log "repointed $path to $target"
+    return 0
+  fi
+  if [[ -e $path ]]; then
+    aside=$path.pre-ii-$(date -u +%Y%m%dT%H%M%SZ)
+    mv -T "$path" "$aside"
+    log "moved $path to $aside"
+  fi
+  mkdir -p "$(dirname "$path")"
+  ln -sfn "$target" "$path"
+  log "linked $path to $target"
+}
+
+for path in "${!links[@]}"; do
+  link_one "$path" "${links[$path]}"
+done
+
+settings=$config/illogical-impulse/config.json
+if [[ ! -e $settings ]]; then
+  mkdir -p "$(dirname "$settings")"
+  printf '%s\n' '{}' > "$settings"
+  log "seeded $settings"
+fi
+
+mkdir -p "$(dirname "$stamp")"
+printf '%s\n' "$version" > "$stamp.tmp"
+mv -f "$stamp.tmp" "$stamp"
+log "ii seed $version"

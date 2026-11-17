@@ -17,7 +17,7 @@ fail() { echo "FAIL: $*" >&2; rc=1; }
 [[ $(< "$tree/usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf") == \
   $'[Unit]\nRequires=microos-steam-seed.service\nAfter=microos-steam-seed.service\n\n[Service]\nExecStartPre=-/usr/bin/chronyc waitsync 6 0.5 0 5' ]] \
   || fail "gamescope-session-plus@steam 10-microos.conf"
-[[ $(ls "$tree/usr/lib/microos/sessions.d") == steam.conf ]] || fail "sessions.d: $(ls "$tree/usr/lib/microos/sessions.d" | tr '\n' ' ')"
+[[ $(ls "$tree/usr/lib/microos/sessions.d") == $'desktop.conf\nsteam.conf' ]] || fail "sessions.d: $(ls "$tree/usr/lib/microos/sessions.d" | tr '\n' ' ')"
 [[ ! -e $tree/usr/libexec/microos/microos-pad-lib ]] || fail "microos-pad-lib in the Y700 tree"
 [[ $(readlink "$tree/etc/sddm.conf.d/zzz-microos-autologin.conf") == /run/microos/sddm-autologin.conf ]] ||
   fail "zzz-microos-autologin.conf is not the link to /run/microos/sddm-autologin.conf"
