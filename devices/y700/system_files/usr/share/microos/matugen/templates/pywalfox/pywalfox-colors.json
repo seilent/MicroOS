@@ -1,0 +1,27 @@
+{
+  "wallpaper": "{{image}}",
+  "alpha": "100",
+  "special": {
+    "background": "{{colors.surface.dark.hex}}",
+    "foreground": "{{colors.on_surface.dark.hex}}",
+    "cursor": "{{colors.primary.dark.hex}}"
+  },
+  "colors": {
+    "color0": "{{colors.surface.dark.hex}}",
+    "color1": "{{colors.error.dark.hex}}",
+    "color2": "{{colors.primary.dark.hex}}",
+    "color3": "{{colors.tertiary.dark.hex}}",
+    "color4": "{{colors.secondary.dark.hex}}",
+    "color5": "{{colors.primary_container.dark.hex}}",
+    "color6": "{{colors.secondary_container.dark.hex}}",
+    "color7": "{{colors.on_surface_variant.dark.hex}}",
+    "color8": "{{colors.surface_variant.dark.hex}}",
+    "color9": "{{colors.error.dark.hex}}",
+    "color10": "{{colors.primary.dark.hex}}",
+    "color11": "{{colors.tertiary.dark.hex}}",
+    "color12": "{{colors.secondary.dark.hex}}",
+    "color13": "{{colors.tertiary_container.dark.hex}}",
+    "color14": "{{colors.secondary_container.dark.hex}}",
+    "color15": "{{colors.on_surface.dark.hex}}"
+  }
+}
