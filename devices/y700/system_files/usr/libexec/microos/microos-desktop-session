@@ -20,13 +20,7 @@ dbus-update-activation-environment --systemd "${vars[@]}" || log "dbus-update-ac
 systemctl --user unset-environment XDG_DESKTOP_PORTAL_DIR || log "unset of XDG_DESKTOP_PORTAL_DIR failed"
 
 install -d -m 0700 "$state" || log "cannot create $state"
-rotation=$(timeout 3 microset watch display.rotation 2> /dev/null | tail -n 1 | cut -f 2)
-case $rotation in
-  portrait) transform=0 ;;
-  portrait-flipped) transform=2 ;;
-  landscape-flipped) transform=1 ;;
-  *) transform=3 ;;
-esac
+transform=3
 if tmp=$(mktemp "$state/desktop-transform.XXXXXX"); then
   if printf '%s\n' "$transform" > "$tmp" && mv -f "$tmp" "$state/desktop-transform"; then
     log "transform $transform"
