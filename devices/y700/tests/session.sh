@@ -17,6 +17,28 @@ fail() { echo "FAIL: $*" >&2; rc=1; }
 [[ $(< "$tree/usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf") == \
   $'[Unit]\nRequires=microos-steam-seed.service\nAfter=microos-steam-seed.service\n\n[Service]\nExecStartPre=-/usr/bin/chronyc waitsync 6 0.5 0 5' ]] \
   || fail "gamescope-session-plus@steam 10-microos.conf"
+[[ $(ls "$tree/usr/lib/microos/sessions.d") == steam.conf ]] || fail "sessions.d: $(ls "$tree/usr/lib/microos/sessions.d" | tr '\n' ' ')"
+[[ ! -e $tree/usr/libexec/microos/microos-pad-lib ]] || fail "microos-pad-lib in the Y700 tree"
+[[ $(readlink "$tree/etc/sddm.conf.d/zzz-microos-autologin.conf") == /run/microos/sddm-autologin.conf ]] ||
+  fail "zzz-microos-autologin.conf is not the link to /run/microos/sddm-autologin.conf"
+[[ $(< "$tree/usr/lib/tmpfiles.d/microos-session.conf") == $'d /run/microos/lock 0700 root root -\nd /run/microos/user 0755 micro micro -\nd /var/lib/microos/session 0755 root root -' ]] ||
+  fail "tmpfiles.d/microos-session.conf"
+[[ $(< "$tree/usr/lib/systemd/user/gamescope-session-plus@.service.d/10-microos-track.conf") == $'[Unit]\nWants=microos-session-alive@%i.timer\n\n[Service]\nExecStopPost=/usr/libexec/microos/microos-session-track stop %i' ]] ||
+  fail "gamescope-session-plus@ 10-microos-track.conf"
+bl='sys-subsystem-backlight-devices-ktz8866\x2dbacklight.device'
+d=$tree/usr/lib/systemd/system/microsetd.service.d/50-microos-y700.conf
+for l in "Wants=$bl" "After=$bl" Environment=MICROSET_BACKLIGHT=/sys/class/backlight/ktz8866-backlight Environment=MICROSET_ALSA_CARD= \
+  Environment=MICROSET_RGB_DEVICE= Environment=MICROSET_SCHEMA_DIR=/usr/share/microset/schema-y700.d \
+  ReadWritePaths=-/sys/class/backlight/ktz8866-backlight/ SupplementaryGroups=video DeviceAllow=; do
+  grep -qxF -- "$l" "$d" || fail "microsetd 50-microos-y700.conf lacks $l"
+done
+grep -qxF 'SUBSYSTEM=="backlight", KERNEL=="ktz8866-backlight", ENV{SYSTEMD_ALIAS}+="/sys/subsystem/backlight/devices/ktz8866-backlight"' \
+  "$tree/usr/lib/udev/rules.d/60-microos-backlight.rules" || fail "60-microos-backlight.rules has no ktz8866 device alias"
+[[ $(grep '^DeviceAllow' "$d") == DeviceAllow= ]] || fail "microsetd 50-microos-y700.conf allows devices: $(grep '^DeviceAllow' "$d")"
+[[ $(< "$tree/usr/lib/systemd/system/microos-vpad.service.d/50-microos-microset.conf") == $'[Service]\nEnvironment=MICROOS_VPAD_MICROSET=1' ]] ||
+  fail "microos-vpad 50-microos-microset.conf"
+[[ $(< "$tree/usr/lib/systemd/user/microos-powerkey.service.d/50-microos-microset.conf") == $'[Service]\nEnvironment=MICROOS_POWERKEY_OVERLAY=1' ]] ||
+  fail "microos-powerkey 50-microos-microset.conf"
 
 mkdir -p "$tmp/bin" "$tmp/t" "$tmp/noetc"
 sed -e "s|^DMI_PATH=.*|DMI_PATH=$tmp/none|" -e "s|^DT_PATH=.*|DT_PATH=$tmp/model|" \

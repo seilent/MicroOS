@@ -43,8 +43,9 @@ done
 grep -qx 'install_weak_deps=False' /etc/dnf/libdnf5.conf.d/10-microos.conf || fail "10-microos.conf does not turn off weak deps"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 own=$(rpm -qa --qf '%{NAME}\t%{VENDOR}\n' | awk -F'\t' '$2 == "MicroOS" { print $1 }' | LC_ALL=C sort | paste -sd' ')
-[[ $own == 'audioreach-topology gamescope gamescope-session gamescope-session-steam microos-kernel' ]] || fail "MicroOS rpms: $own"
-for p in qbootctl inputplumber steamos-manager microset mangohud lsfg-vk hexagonrpc microos-eq libfreeaptx \
+[[ $own == 'audioreach-topology gamescope gamescope-session gamescope-session-steam microos-kernel microset microset-fonts microset-settings' ]] ||
+  fail "MicroOS rpms: $own"
+for p in qbootctl inputplumber steamos-manager mangohud lsfg-vk hexagonrpc microos-eq libfreeaptx \
   pipewire-codec-aptx microos-android-guestos microos-steam-seed; do
   ! rpm -q "$p" >/dev/null 2>&1 || fail "$p is installed"
 done
@@ -62,7 +63,10 @@ want=$(printf '%s\n' microos-boot-ok.service microos-provision.service microos-u
   microos-update-check.service microos-update-check.timer microos-boot-deadline.service microos-boot-deadline.timer \
   microos-bootlog-efi.path microos-bootlog-efi.service microos-grow-root.service microos-usb-console.service microos-vpad.service \
   microos-remoteproc.service microos-groups.service microos-etc-carry.service microos-update-boot.path \
-  microos-update-boot.service microos-bdaddr@.service microos-sleep-gate.service "${tests[@]}")
+  microos-update-boot.service microos-bdaddr@.service microos-sleep-gate.service microos-session-switch@.service \
+  microos-session-up@.service microos-session-fallback@.service microos-session-switcher.service \
+  microos-session-switcher.path microos-session-boot.service microos-session-watch.service microos-session-attempt.service \
+  "${tests[@]}")
 units=()
 for u in /usr/lib/systemd/system/microos-*; do
   [[ -f $u ]] && units+=("$u")
@@ -72,7 +76,8 @@ got=$(printf '%s\n' "${units[@]##*/}" | LC_ALL=C sort)
 for u in microos-boot-ok.service microos-provision.service microos-update-applied.service microos-boot-deadline.timer \
   microos-bootlog-efi.path microos-grow-root.service microos-usb-console.service microos-vpad.service microos-remoteproc.service \
   microos-groups.service microos-etc-carry.service microos-update-check.timer microos-update-boot.path microos-sleep-gate.service \
-  "${tests[@]}"; do
+  microos-session-boot.service microos-session-attempt.service microos-session-switcher.path microos-session-watch.service \
+  microsetd.service "${tests[@]}"; do
   [[ $(systemctl is-enabled "$u") == enabled ]] || fail "$u is not enabled"
 done
 for u in microos-groups.service microos-etc-carry.service; do
@@ -101,7 +106,7 @@ for u in pipewire.socket pipewire-pulse.socket wireplumber.service; do
 done
 null=/usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
 grep -qF 'factory.name = support.null-audio-sink' "$null" && grep -qF 'priority.session = 1' "$null" || fail "$null"
-[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-steam-seed.service' ]] \
+[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service' ]] \
   || fail "MicroOS user units: $(compgen -G '/usr/lib/systemd/user/microos-*' | tr '\n' ' ')"
 [[ $(< /usr/lib/systemd/system-preset/50-microos.preset) == 'enable microos-*' ]] || fail "50-microos.preset"
 
@@ -109,6 +114,7 @@ kept=(
   /etc/containers/policy.json
   /etc/containers/registries.d/ghcr-microos.yaml
   /etc/ssh/sshd_config.d/10-microos.conf
+  /usr/bin/microos-session
   /usr/bin/microos-update
   /usr/lib/NetworkManager/conf.d/10-microos.conf
   /usr/lib/NetworkManager/system-connections/microos-usb0.nmconnection
@@ -134,6 +140,7 @@ kept=(
   /usr/lib/dracut/modules.d/93microos-y700-usbcon/module-setup.sh
   /usr/lib/microos/boot-ok.conf
   /usr/lib/microos/bootimg.conf
+  /usr/lib/microos/sessions.d/steam.conf
   /usr/lib/microos/slot.conf
   /usr/lib/microos/stub.conf
   /usr/lib/microos/stub/stub-preset-free.bin
@@ -147,6 +154,7 @@ kept=(
   /usr/lib/systemd/sleep.conf.d/50-microos.conf
   /usr/lib/systemd/system.conf.d/50-microos.conf
   /usr/lib/systemd/system-preset/50-microos.preset
+  /usr/lib/systemd/system-preset/60-microos-microset.preset
   /usr/lib/systemd/system-preset/60-microos-steam.preset
   /usr/lib/systemd/system/emergency.service.d/10-microos.conf
   /usr/lib/systemd/system/microos-bdaddr@.service
@@ -159,6 +167,14 @@ kept=(
   /usr/lib/systemd/system/microos-etc-carry.service
   /usr/lib/systemd/system/microos-groups.service
   /usr/lib/systemd/system/microos-provision.service
+  /usr/lib/systemd/system/microos-session-attempt.service
+  /usr/lib/systemd/system/microos-session-boot.service
+  /usr/lib/systemd/system/microos-session-fallback@.service
+  /usr/lib/systemd/system/microos-session-switch@.service
+  /usr/lib/systemd/system/microos-session-switcher.path
+  /usr/lib/systemd/system/microos-session-switcher.service
+  /usr/lib/systemd/system/microos-session-up@.service
+  /usr/lib/systemd/system/microos-session-watch.service
   /usr/lib/systemd/system/microos-update-applied.service
   /usr/lib/systemd/system/microos-update-boot.path
   /usr/lib/systemd/system/microos-update-boot.service
@@ -174,17 +190,25 @@ kept=(
   /usr/lib/systemd/system/microos-vpad.service
   /usr/lib/systemd/system/microos-remoteproc.service
   /usr/lib/systemd/system/microos-sleep-gate.service
+  /usr/lib/systemd/system/microos-vpad.service.d/50-microos-microset.conf
+  /usr/lib/systemd/system/microsetd.service.d/50-microos-y700.conf
   /usr/lib/systemd/system/serial-getty@ttyGS0.service.d/10-microos.conf
   /usr/lib/systemd/system/sshd.service.d/10-microos.conf
   /usr/lib/systemd/system-sleep/microos-sleep-log
   /usr/lib/systemd/system-sleep/microos-wake-reason
+  /usr/lib/systemd/user/gamescope-session-plus@.service.d/10-microos-track.conf
   /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf
   /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/20-microos-powerkey.conf
   /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/30-microos-gameidle.conf
   /usr/lib/systemd/user/microos-gameidle.service
   /usr/lib/systemd/user/microos-powerkey.service
+  /usr/lib/systemd/user/microos-powerkey.service.d/50-microos-microset.conf
+  /usr/lib/systemd/user/microos-session-alive@.service
+  /usr/lib/systemd/user/microos-session-alive@.timer
+  /usr/lib/systemd/user/microos-session-install@.service
   /usr/lib/systemd/user/microos-steam-seed.service
   /usr/lib/sysusers.d/microos.conf
+  /usr/lib/tmpfiles.d/microos-session.conf
   /usr/lib/tmpfiles.d/microos.conf
   /usr/lib/udev/rules.d/90-microos-usb-console.rules
   /usr/lib/udev/rules.d/91-microos-y700-bdaddr.rules
@@ -204,6 +228,9 @@ kept=(
   /usr/libexec/microos/microos-powerkey
   /usr/libexec/microos/microos-provision
   /usr/libexec/microos/microos-sdam
+  /usr/libexec/microos/microos-session-boot
+  /usr/libexec/microos/microos-session-track
+  /usr/libexec/microos/microos-session-watch
   /usr/libexec/microos/microos-sleep-gate
   /usr/libexec/microos/microos-slot
   /usr/libexec/microos/microos-steam-seed
@@ -222,6 +249,7 @@ kept=(
   /usr/share/licenses/microos-steam-seed/steam_subscriber_agreement.txt
   /usr/share/microos-seed/steam-seed.tar.zst
   /usr/share/microos-seed/steam-seed.version
+  /usr/share/polkit-1/rules.d/50-microos-session.rules
   /usr/share/polkit-1/rules.d/50-microos-steam.rules
   /usr/share/polkit-1/rules.d/50-microos-timezone.rules
 )
@@ -237,7 +265,7 @@ extra=$(LC_ALL=C comm -23 <(printf '%s\n' "${ours[@]}") <(printf '%s\n' "${kept[
 [[ -z $extra ]] || fail "MicroOS files outside the M2 set: $(tr '\n' ' ' <<< "$extra")"
 for f in /usr/bin/steamvr /usr/lib/hwsupport /usr/lib/android-sdk /usr/share/inputplumber /usr/share/steamos-manager \
   /usr/share/gamescope-session-plus/sessions.d/recovery /usr/libexec/microos/microos-steam-compat \
-  /usr/libexec/microos/microos-session-watch /usr/bin/microos-session /usr/share/plymouth/themes/microos \
+  /usr/libexec/microos/microos-pad-lib /usr/share/plymouth/themes/microos \
   /usr/lib/udev/rules.d/59-microos-y700-input.rules; do
   [[ ! -e $f ]] || fail "$f is in the image"
 done
@@ -260,6 +288,22 @@ done
 ! grep -qs '^micro:' /etc/subuid /etc/subgid || fail "micro has subordinate ids"
 words=$(grep -lIiE 'PocketMICRO2|sm8250|ayaneo|aya-keys|fastrpc-sdsp|mmcblk' "${ours[@]}" || true)
 [[ -z $words ]] || fail "MicroOS files name PM2 hardware: $(tr '\n' ' ' <<< "$words")"
+for c in jq setpriv flock python3 loginctl busctl; do
+  command -v "$c" > /dev/null || fail "$c missing, the session switcher needs it"
+done
+grep -qxF $'steam\tSteam OS\tyes' <<< "$(microos-session list)" || fail "microos-session list lacks steam as Steam OS"
+[[ $(readlink /etc/sddm.conf.d/zzz-microos-autologin.conf) == /run/microos/sddm-autologin.conf ]] ||
+  fail "zzz-microos-autologin.conf is not the link to /run/microos/sddm-autologin.conf"
+getent passwd microset > /dev/null || fail "user microset missing"
+schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system/microsetd.service.d/50-microos-y700.conf)
+[[ -f $schema/10-microset.json ]] || fail "microsetd drop-in names no schema: '$schema'"
+! grep -q '"power\.' "$schema/10-microset.json" || fail "$schema/10-microset.json holds power keys"
+[[ $(< /usr/lib/systemd/system/microos-vpad.service.d/50-microos-microset.conf) == $'[Service]\nEnvironment=MICROOS_VPAD_MICROSET=1' ]] ||
+  fail "microos-vpad 50-microos-microset.conf"
+[[ $(< /usr/lib/systemd/user/microos-powerkey.service.d/50-microos-microset.conf) == $'[Service]\nEnvironment=MICROOS_POWERKEY_OVERLAY=1' ]] ||
+  fail "microos-powerkey 50-microos-microset.conf"
+grep -q MICROOS_VPAD_MICROSET /usr/libexec/microos/microos-vpad || fail "microos-vpad has no MICROOS_VPAD_MICROSET knob"
+grep -q MICROOS_POWERKEY_OVERLAY /usr/libexec/microos/microos-powerkey || fail "microos-powerkey has no MICROOS_POWERKEY_OVERLAY knob"
 
 yama=/usr/lib/sysctl.d/60-microos-yama.conf
 grep -qx 'kernel.yama.ptrace_scope = 1' "$yama" || fail "$yama does not set ptrace_scope 1"
@@ -489,8 +533,7 @@ systemctl cat sshd.service | grep -qx 'ConditionPathExists=/var/home/micro/.ssh/
 while read -r u p; do
   [[ $p == -* || $p == /sys/* ]] && continue
   grep -qE "^d $p [0-7]+ " /usr/lib/tmpfiles.d/*.conf || fail "${u##*/} ReadWritePaths=$p has no tmpfiles line"
-done < <(awk -F= '/^ReadWritePaths=/ { n = split($2, a, " "); for (i = 1; i <= n; i++) print FILENAME, a[i] }' \
-  /usr/lib/systemd/system/microos-*)
+done < <(awk -F= '/^ReadWritePaths=/ { n = split($2, a, " "); for (i = 1; i <= n; i++) print FILENAME, a[i] }' "${units[@]}")
 SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --man=no "${units[@]}" /usr/lib/systemd/system/sshd.service \
   /usr/lib/systemd/system/ostree-finalize-staged.service || fail "systemd-analyze verify"
 
@@ -559,7 +602,7 @@ for g in wheel systemd-journal video; do
   [[ " $groups " == *" $g "* ]] || fail "micro is not in $g"
 done
 [[ $(getent passwd micro | cut -d: -f6,7) == /var/home/micro:/bin/bash ]] || fail "micro home or shell"
-for u in microos-openh264 microset; do
+for u in microos-openh264; do
   ! getent passwd "$u" >/dev/null || fail "user $u exists"
 done
 ! getent group hexagonrpc >/dev/null || fail "group hexagonrpc exists"

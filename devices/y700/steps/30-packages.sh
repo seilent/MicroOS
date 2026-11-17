@@ -9,6 +9,9 @@ own=(
   gamescope/gamescope
   gamescope-session-y700/gamescope-session
   gamescope-session-y700/gamescope-session-steam
+  microset/microset
+  microset/microset-settings
+  microset/microset-fonts
 )
 
 own_rpm() {
