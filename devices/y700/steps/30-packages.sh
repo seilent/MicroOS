@@ -179,6 +179,8 @@ dnf -y install \
   yq \
   ripgrep \
   kitty \
+  firefox \
+  loupe \
   fish \
   eza \
   ffmpeg-free \

@@ -209,6 +209,7 @@ kept=(
   /usr/lib/systemd/user/microos-steam-seed.service
   /usr/lib/microos/sessions.d/desktop.conf
   /usr/lib/systemd/user/microos-desktop.service.d/20-microos-ii-seed.conf
+  /usr/lib/systemd/user/microos-desktop.service.d/30-hypr-config.conf
   /usr/lib/systemd/user/microos-ii-seed.service
   /usr/lib/systemd/user/xdg-desktop-portal.service.d/50-microos-desktop.conf
   /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf

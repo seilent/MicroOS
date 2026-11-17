@@ -4,37 +4,37 @@ set -euo pipefail
 me=microos-ii-seed
 log() { echo "$me: $*" >&2; }
 
-version=1
+version=2
 share=${XDG_DATA_HOME:-$HOME/.local/share}
 config=${XDG_CONFIG_HOME:-$HOME/.config}
 stamp=$share/microos/ii-seed
 
-declare -A links=(
+declare -A trees=(
   ["$config/quickshell/ii"]=/usr/share/microos/quickshell/ii
   ["$config/matugen"]=/usr/share/microos/matugen
   ["$config/hypr"]=/usr/share/microos/hypr
 )
 
-link_one() {
-  local path=$1 target=$2 aside
+seed_tree() {
+  local path=$1 from=$2 aside
   if [[ -L $path ]]; then
-    [[ $(readlink "$path") == "$target" ]] && return 0
-    ln -sfn "$target" "$path"
-    log "repointed $path to $target"
+    rm -f "$path"
+    log "removed legacy symlink $path"
+  elif [[ -d $path ]]; then
     return 0
-  fi
-  if [[ -e $path ]]; then
+  elif [[ -e $path ]]; then
     aside=$path.pre-ii-$(date -u +%Y%m%dT%H%M%SZ)
     mv -T "$path" "$aside"
     log "moved $path to $aside"
   fi
   mkdir -p "$(dirname "$path")"
-  ln -sfn "$target" "$path"
-  log "linked $path to $target"
+  cp -rL --no-preserve=mode,ownership "$from" "$path"
+  chmod -R u+w "$path"
+  log "seeded $path from $from"
 }
 
-for path in "${!links[@]}"; do
-  link_one "$path" "${links[$path]}"
+for path in "${!trees[@]}"; do
+  seed_tree "$path" "${trees[$path]}"
 done
 
 settings=$config/illogical-impulse/config.json

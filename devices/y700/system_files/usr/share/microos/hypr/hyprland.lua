@@ -49,16 +49,11 @@ hl.monitor({
     transform = transform,
 })
 
-hl.device({
-    name = "novatek-nt36523-touchscreen",
-    output = "DSI-1",
-    transform = transform,
-})
-
-hl.device({
-    name = "novatek-nt36523-pen",
-    output = "DSI-1",
-    transform = transform,
+hl.config({
+    input = {
+        touchdevice = { output = "DSI-1", transform = 0 },
+        tablet = { output = "DSI-1", transform = 0 },
+    },
 })
 
 hl.on("hyprland.start", function()
