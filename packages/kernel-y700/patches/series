@@ -29,4 +29,6 @@
 0053-usb-typec-ucsi-debugfs-Fix-GET-commands-on-UCSI-2.0.patch
 0054-usb-dwc3-qcom-Defer-the-VBUS-override-while-suspende.patch
 0060-serial-qcom-geni-Clear-pending-IRQs-while-suspended.patch
+0065-media-iris-Preserve-timestamps-on-error-buffers.patch
+0066-media-iris-Recycle-decoder-buffers-for-non-display.patch
 0070-power-supply-qcom_battmgr-Invert-the-battery-current.patch
