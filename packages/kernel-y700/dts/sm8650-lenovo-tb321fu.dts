@@ -562,6 +562,10 @@
 	};
 };
 
+&crypto {
+	status = "disabled";
+};
+
 &gpi_dma1 {
 	status = "okay";
 };

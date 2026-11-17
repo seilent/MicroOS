@@ -81,6 +81,7 @@ disp=/soc@0/display-subsystem@ae00000
 panel=$disp/dsi@ae94000/panel@0
 for d in "$main" "$csot" "$abl"; do
   n=$(basename "$d")
+  [[ $(fdtget "$d" /soc@0/crypto@1dfa000 status) == disabled ]] || { echo "pkg-kernel-y700: $n crypto engine not disabled" >&2; exit 1; }
   for dsi in dsi@ae94000 dsi@ae96000; do
     fdtget "$d" "$disp/$dsi" qcom,dual-dsi-mode > /dev/null && fdtget "$d" "$disp/$dsi" qcom,sync-dual-dsi > /dev/null ||
       { echo "pkg-kernel-y700: $n $dsi is not dual sync DSI" >&2; exit 1; }
