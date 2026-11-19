@@ -25,6 +25,7 @@ domain-idle-state ARM_PSCI_CPUIDLE_DOMAIN
 fcs,fsa4480 TYPEC_MUX_FSA4480
 fixed-clock COMMON_CLK
 fixed-factor-clock -
+galaxycore,gc13a0 VIDEO_GC13A0
 gpio-keys KEYBOARD_GPIO
 gpio-usb2-port-mux USB_ROLES_GPIO_USB2_PORT_MUX
 kinetic,ktz8866 BACKLIGHT_KTZ8866
