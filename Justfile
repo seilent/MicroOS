@@ -34,11 +34,11 @@ pkg name:
     if [[ " microset microdap microemu " == *" $1 "* && -n ${!srcvar:-} ]]; then
       mounts+=(-v "$(realpath "${!srcvar}"):/$1-src:ro,Z" -e "$srcvar=/$1-src")
     fi
-    podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -t {{builder}} -f build/pkg.Containerfile build
+    podman build --memory=14g --cpu-period=100000 --cpu-quota=600000 -t {{builder}} -f build/pkg.Containerfile build
     img={{builder}}
     if [[ -f packages/$1/Containerfile ]]; then
       img={{builder}}-$1
-      podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -t "$img" -f "packages/$1/Containerfile" "packages/$1"
+      podman build --memory=14g --cpu-period=100000 --cpu-quota=600000 -t "$img" -f "packages/$1/Containerfile" "packages/$1"
     fi
     rm -rf "$out"
     mkdir -p "$out"
@@ -51,31 +51,31 @@ pkg name:
       work=out/work/$1
       rm -rf "$work"
       mkdir -p "$work"
-      podman run --rm --memory=14g --cpus=8 \
+      podman run --rm --memory=14g --cpus=6 \
         -v "$PWD/packages/$1:/src:ro,Z" \
         -v "$PWD/$work:/work:Z" \
         "$img" /src/fetch.sh /work
-      podman run --rm --memory=14g --cpus=8 --network=none "${cache[@]}" "${mounts[@]}" \
+      podman run --rm --memory=14g --cpus=6 --network=none "${cache[@]}" "${mounts[@]}" \
         -v "$PWD/packages/$1:/src:ro,Z" \
         -v "$PWD/$work:/work:ro,Z" \
         -v "$PWD/$out:/out:Z" \
         "$img" /src/build.sh /out /work
       rm -rf "$work"
     else
-      podman run --rm --memory=14g --cpus=8 "${cache[@]}" "${mounts[@]}" \
+      podman run --rm --memory=14g --cpus=6 "${cache[@]}" "${mounts[@]}" \
         -v "$PWD/packages/$1:/src:ro,Z" \
         -v "$PWD/$out:/out:Z" \
         "$img" /src/build.sh /out
     fi
     if [[ -f tests/pkg-$1.sh ]]; then
-      podman run --rm --memory=14g --cpus=8 --security-opt apparmor=unconfined "${mounts[@]}" \
+      podman run --rm --memory=14g --cpus=6 --security-opt apparmor=unconfined "${mounts[@]}" \
         -v "$PWD/tests:/tests:ro,Z" \
         -v "$PWD/$out:/out:ro,Z" \
         "$img" "/tests/pkg-$1.sh" /out
     fi
     rm -rf "$depdir"
     [[ ! -e $out/dirty ]] || dirty=1
-    podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -f build/pkg-wrap.Containerfile --label "microos.dirty=$dirty" -t "$tag" "$out"
+    podman build --memory=14g --cpu-period=100000 --cpu-quota=600000 -f build/pkg-wrap.Containerfile --label "microos.dirty=$dirty" -t "$tag" "$out"
     echo "$tag"
 
 kernel name:
@@ -90,17 +90,17 @@ kernel-dev:
     out=out/pkg/kernel-dev
     tag=localhost/microos-pkg/kernel-dev:$(build/pkg-hash.sh kernel-y700)
     mkdir -p "$tree" "$ccache"
-    podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -t {{builder}} -f build/pkg.Containerfile build
+    podman build --memory=14g --cpu-period=100000 --cpu-quota=600000 -t {{builder}} -f build/pkg.Containerfile build
     rm -rf "$out"
     mkdir -p "$out"
-    podman run --rm --memory=14g --cpus=8 -v "$ccache:/ccache:Z" -e CCACHE_DIR=/ccache \
+    podman run --rm --memory=14g --cpus=6 -v "$ccache:/ccache:Z" -e CCACHE_DIR=/ccache \
       -v "$tree:/kdev:Z" -e MICROOS_KERNEL_DEV=/kdev \
       -v "$PWD/packages/kernel-y700:/src:ro,Z" -v "$PWD/$out:/out:Z" \
       {{builder}} /src/build.sh /out
-    podman run --rm --memory=14g --cpus=8 --security-opt apparmor=unconfined \
+    podman run --rm --memory=14g --cpus=6 --security-opt apparmor=unconfined \
       -v "$PWD/tests:/tests:ro,Z" -v "$PWD/$out:/out:ro,Z" \
       {{builder}} /tests/pkg-kernel-y700.sh /out
-    podman build --memory=14g --cpu-period=100000 --cpu-quota=800000 -f build/pkg-wrap.Containerfile \
+    podman build --memory=14g --cpu-period=100000 --cpu-quota=600000 -f build/pkg-wrap.Containerfile \
       --label microos.dirty=1 -t "$tag" "$out"
     echo "$tag"
     echo "dtbs: $tree/obj/arch/arm64/boot/dts/qcom"
@@ -187,7 +187,7 @@ test-services device="pm2":
     esac
     fedora=registry.fedoraproject.org/fedora:44@sha256:1ff9eb02e4e2d7fb1175becac7139b2960c4fdcccedce81c86ec25b98ef3124d
     dnf="dnf -yq --setopt=install_weak_deps=False install"
-    run() { podman run --rm --memory=14g --cpus=8 --arch "$arch" -v "$PWD/$ctx:/repo:ro,Z" "$@"; }
+    run() { podman run --rm --memory=14g --cpus=6 --arch "$arch" -v "$PWD/$ctx:/repo:ro,Z" "$@"; }
     run "$fedora" sh -c "$dnf python3-gobject python3-evdev dbus-daemon util-linux systemd-udev gstreamer1-plugins-base gstreamer1-plugins-good openssl && /repo/tests/powerd.sh && /repo/tests/vpower.sh && /repo/tests/hotkeyd.sh && /repo/tests/sleep.sh && /repo/tests/audio-policy.sh && /repo/tests/steamos-manager-policy.sh && /repo/tests/steamos-manager-config.sh && /repo/tests/slpi-sensors.sh && /repo/tests/hexagonrpcd-sleep.sh && /repo/tests/dp-audio.sh && /repo/tests/bt-address.sh && /repo/tests/bt-reconnect.sh && /repo/tests/splash-quit.sh && /repo/tests/splash-switch.sh && /repo/tests/splash-gate.sh && /repo/tests/shm-reap.sh && /repo/tests/steam-compat.sh && /repo/tests/proton-hook.sh && /repo/tests/lsfg-detect.sh && /repo/tests/usb-display.sh && /repo/tests/desktop-home.sh && /repo/tests/desktop-ready.sh"
     run docker.io/library/python:3.13-slim@sha256:2d44738ebf4ce5f63b9d9ea871e9c7cfdc0426f7b0c97cac915fd88ded1d86bb \
       python3 /repo/tests/steam-compat/module.py
@@ -202,7 +202,7 @@ test-services device="pm2":
     run "$fedora" sh -c "$dnf jq python3 util-linux systemd && /repo/tests/microos-session.sh"
     FEDORA=$fedora "$ctx/tests/usb-display-units.sh"
     run "$fedora" sh -c "$dnf python3 rpm-build rpm-sign gnupg2 cpio && /repo/tests/openh264.sh"
-    podman run --rm --memory=14g --cpus=8 --arch "$arch" -v "$PWD:/repo:ro,Z" "$fedora" sh -c "$dnf git-core && /repo/tests/pkg-hash.sh"
+    podman run --rm --memory=14g --cpus=6 --arch "$arch" -v "$PWD:/repo:ro,Z" "$fedora" sh -c "$dnf git-core && /repo/tests/pkg-hash.sh"
     just pkg microset
     just pkg gamescope-session
     run -v "$PWD/out/pkg/gamescope-session:/rpms:ro,Z" "$fedora" sh -c "$dnf /rpms/*.noarch.rpm && /repo/tests/session.sh"
