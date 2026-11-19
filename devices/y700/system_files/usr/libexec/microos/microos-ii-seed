@@ -1,50 +1,238 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 me=microos-ii-seed
 log() { echo "$me: $*" >&2; }
 
-version=2
+version=3
+src=${MICROOS_II_SEED_DIR:-/usr/share/microos}
+image=$(cat "${MICROOS_VERSION_FILE:-/usr/lib/microos/version}" 2> /dev/null || echo unknown)
 share=${XDG_DATA_HOME:-$HOME/.local/share}
 config=${XDG_CONFIG_HOME:-$HOME/.config}
-stamp=$share/microos/ii-seed
+state=$share/microos
+sums=$state/ii-seed-sums
+stamp=$state/ii-seed
+want="$version $image"
+trees=(quickshell/ii matugen hypr)
 
-declare -A trees=(
-  ["$config/quickshell/ii"]=/usr/share/microos/quickshell/ii
-  ["$config/matugen"]=/usr/share/microos/matugen
-  ["$config/hypr"]=/usr/share/microos/hypr
-)
+hashes() { (cd "$1" && find -L . -type f -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum -z); }
 
-seed_tree() {
-  local path=$1 from=$2 aside
-  if [[ -L $path ]]; then
-    rm -f "$path"
-    log "removed legacy symlink $path"
-  elif [[ -d $path ]]; then
-    return 0
-  elif [[ -e $path ]]; then
-    aside=$path.pre-ii-$(date -u +%Y%m%dT%H%M%SZ)
-    mv -T "$path" "$aside"
-    log "moved $path to $aside"
-  fi
-  mkdir -p "$(dirname "$path")"
-  cp -rL --no-preserve=mode,ownership "$from" "$path"
-  chmod -R u+w "$path"
-  log "seeded $path from $from"
+digest() {
+  local h
+  h=$(sha256sum < "$1" 2> /dev/null) || return 1
+  printf '%s\n' "${h%% *}"
 }
 
-for path in "${!trees[@]}"; do
-  seed_tree "$path" "${trees[$path]}"
+save() {
+  local tmp=""
+  tmp=$(mktemp "$2.XXXXXX") && hashes "$1" > "$tmp" && [[ -s $tmp ]] && mv -fT "$tmp" "$2" || {
+    rm -f "$tmp"
+    log "cannot write $2"
+    return 1
+  }
+}
+
+put() {
+  local tmp=""
+  mkdir -p "$(dirname "$2")" && tmp=$(mktemp "$2.ii-XXXXXX") && cp -L --preserve=mode "$1" "$tmp" &&
+    chmod u+w "$tmp" && mv -fT "$tmp" "$2" || {
+    rm -f "$tmp"
+    return 1
+  }
+}
+
+seed() {
+  mkdir -p "$(dirname "$2")" && cp -rL --preserve=mode "$1" "$2" && chmod -R u+w "$2" && log "seeded $2 from $1"
+}
+
+modes() {
+  local rel
+  while IFS= read -r -d '' rel; do
+    if [[ -f $2/$rel && ! -L $2/$rel && ! -x $2/$rel ]]; then
+      chmod +x "$2/$rel" || log "cannot restore the exec bit of $2/${rel#./}"
+    fi
+  done < <(cd "$1" && find -L . -type f -perm -u+x -print0)
+}
+
+outputs() {
+  sed -n "s|^output_path = '~/.config/$1/\(.*\)'\$|./\1|p" "$src/matugen/config.toml" 2> /dev/null
+}
+
+refresh() {
+  local from=$1 path=$2 base=$3 new rec hash rel dst have dir
+  local -A was=() now=() bad=()
+  while IFS= read -r -d '' rec; do
+    was[${rec#*  }]=${rec%%  *}
+  done < "$base"
+  new=$(mktemp "$base.XXXXXX") || return 1
+  if ! hashes "$from" > "$new" || [[ ! -s $new ]]; then
+    rm -f "$new"
+    log "cannot hash $from, $path left as is"
+    return 1
+  fi
+  while IFS= read -r -d '' rec; do
+    now[${rec#*  }]=${rec%%  *}
+  done < "$new"
+  for rel in "${!was[@]}"; do
+    [[ -z ${now[$rel]:-} ]] || continue
+    dst=$path/${rel#./}
+    [[ -f $dst && ! -L $dst ]] || continue
+    have=$(digest "$dst") || continue
+    [[ $have == "${was[$rel]}" ]] || continue
+    if rm -f "$dst"; then
+      log "removed $dst, the image no longer ships it"
+      dir=${dst%/*}
+      while [[ $dir == "$path"/* ]] && rmdir "$dir" 2> /dev/null; do
+        dir=${dir%/*}
+      done
+    fi
+  done
+  for rel in "${!now[@]}"; do
+    hash=${now[$rel]}
+    dst=$path/${rel#./}
+    if [[ ! -e $dst && ! -L $dst ]]; then
+      if [[ -n ${was[$rel]:-} ]]; then
+        log "kept $dst deleted"
+      elif put "$from/$rel" "$dst"; then
+        log "added $dst"
+      else
+        log "cannot add $dst"
+        bad[$rel]=add
+      fi
+      continue
+    fi
+    if [[ -L $dst || ! -f $dst ]]; then
+      log "kept $dst, it is not a regular file"
+      continue
+    fi
+    if ! have=$(digest "$dst"); then
+      log "kept $dst, it cannot be read"
+      continue
+    fi
+    [[ $have == "$hash" ]] && continue
+    if [[ $have != "${was[$rel]:-}" ]]; then
+      log "kept $dst, it has local changes"
+    elif put "$from/$rel" "$dst"; then
+      log "updated $dst"
+    else
+      log "cannot update $dst"
+      bad[$rel]=update
+    fi
+  done
+  for rel in "${!now[@]}"; do
+    case ${bad[$rel]:-} in
+      add) ;;
+      update) printf '%s  %s\0' "${was[$rel]}" "$rel" ;;
+      *) printf '%s  %s\0' "${now[$rel]}" "$rel" ;;
+    esac
+  done > "$new" && mv -fT "$new" "$base" || { rm -f "$new"; log "cannot write $base"; return 1; }
+  (( ${#bad[@]} == 0 ))
+}
+
+migrate() {
+  local name=$1 from=$2 path=$3 base=$4 aside rec rel dst have same=1 back=0 kept=0
+  local -A ship=() gen=()
+  while IFS= read -r -d '' rec; do
+    ship[${rec#*  }]=${rec%%  *}
+  done < <(hashes "$from")
+  (( ${#ship[@]} )) || { log "cannot hash $from, $path left as is"; return 1; }
+  for rel in "${!ship[@]}"; do
+    if ! have=$(digest "$path/${rel#./}") || [[ $have != "${ship[$rel]}" ]]; then
+      same=0
+      break
+    fi
+  done
+  if (( same )); then
+    modes "$from" "$path"
+    save "$from" "$base" && log "adopted $path"
+    return
+  fi
+  aside=$path.pre-ii-$(date -u +%Y%m%dT%H%M%SZ)
+  mv -T "$path" "$aside" || { log "cannot move $path aside, left as is"; return 1; }
+  if ! seed "$from" "$path"; then
+    rm -rf "${path:?}"
+    if mv -T "$aside" "$path"; then
+      log "cannot seed $path, put the old one back"
+    else
+      log "cannot seed $path, the old one stays in $aside"
+    fi
+    return 1
+  fi
+  log "moved the old $path to $aside"
+  while IFS= read -r rel; do
+    gen[$rel]=1
+  done < <(outputs "$name")
+  while IFS= read -r -d '' rel; do
+    dst=$path/${rel#./}
+    if [[ -L $aside/$rel ]]; then
+      if [[ -n ${ship[$rel]:-} ]]; then
+        kept=$(( kept + 1 ))
+      elif mkdir -p "${dst%/*}" && cp -P "$aside/$rel" "$dst"; then
+        back=$(( back + 1 ))
+      else
+        log "cannot restore $dst"
+      fi
+    elif [[ -z ${ship[$rel]:-} || -n ${gen[$rel]:-} ]]; then
+      if put "$aside/$rel" "$dst"; then
+        back=$(( back + 1 ))
+      else
+        log "cannot restore $dst"
+      fi
+    elif ! have=$(digest "$aside/$rel") || [[ $have != "${ship[$rel]}" ]]; then
+      kept=$(( kept + 1 ))
+    fi
+  done < <(cd "$aside" && find . \( -type f -o -type l \) -print0)
+  log "restored $back generated or added files into $path; $kept changed shipped files stay in $aside"
+  save "$from" "$base"
+}
+
+tree() {
+  local name=$1 from=$src/$1 path=$config/$1 base=$sums/${1//\//-} aside
+  [[ -d $from ]] || { log "no $from"; return 1; }
+  if [[ -L $path ]]; then
+    if [[ $(readlink -f "$path") == "$src"/* ]]; then
+      rm -f "$path" && log "removed legacy symlink $path"
+    else
+      log "kept $path, a symlink outside $src"
+      return 0
+    fi
+  fi
+  if [[ -d $path && -f $base ]]; then
+    refresh "$from" "$path" "$base"
+  elif [[ -d $path ]]; then
+    migrate "$name" "$from" "$path" "$base"
+  else
+    if [[ -e $path ]]; then
+      aside=$path.pre-ii-$(date -u +%Y%m%dT%H%M%SZ)
+      mv -T "$path" "$aside" || { log "cannot move $path aside"; return 1; }
+      log "moved $path to $aside"
+    fi
+    seed "$from" "$path" && save "$from" "$base"
+  fi
+}
+
+if [[ $(cat "$stamp" 2> /dev/null) == "$want" ]]; then
+  missing=0
+  for t in "${trees[@]}"; do
+    [[ -d $config/$t ]] || missing=1
+  done
+  (( missing )) || exit 0
+fi
+
+mkdir -p "$sums" || { log "cannot create $sums"; exit 0; }
+ok=1
+for t in "${trees[@]}"; do
+  tree "$t" || ok=0
 done
 
 settings=$config/illogical-impulse/config.json
 if [[ ! -e $settings ]]; then
-  mkdir -p "$(dirname "$settings")"
-  printf '%s\n' '{}' > "$settings"
-  log "seeded $settings"
+  mkdir -p "$(dirname "$settings")" && printf '%s\n' '{}' > "$settings" && log "seeded $settings"
 fi
 
-mkdir -p "$(dirname "$stamp")"
-printf '%s\n' "$version" > "$stamp.tmp"
-mv -f "$stamp.tmp" "$stamp"
-log "ii seed $version"
+if (( ok )); then
+  printf '%s\n' "$want" > "$stamp.tmp" && mv -fT "$stamp.tmp" "$stamp" && log "ii seed $want"
+else
+  log "ii seed $want incomplete, it runs again at the next start"
+fi
+exit 0
