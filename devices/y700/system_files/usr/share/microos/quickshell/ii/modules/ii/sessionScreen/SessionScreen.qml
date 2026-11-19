@@ -19,8 +19,10 @@ Scope {
         id: sessionLoader
         active: GlobalStates.sessionOpen
         onActiveChanged: {
-            if (sessionLoader.active)
+            if (sessionLoader.active) {
                 SessionWarnings.refresh();
+                MicroosSessions.refresh();
+            }
         }
 
         Connections {
@@ -100,9 +102,35 @@ Scope {
                 }
 
                 GridLayout {
+                    id: buttonGrid
                     columns: 4
                     columnSpacing: 15
                     rowSpacing: 15
+
+                    function move(dx, dy) {
+                        const buttons = Array.from(buttonGrid.children).filter(c => c.buttonText !== undefined && c.visible);
+                        const i = buttons.findIndex(c => c.activeFocus);
+                        const col = i % buttonGrid.columns;
+                        if (i < 0 || (dx < 0 && col === 0) || (dx > 0 && col === buttonGrid.columns - 1))
+                            return;
+                        const j = i + dx + dy * buttonGrid.columns;
+                        if (j >= 0 && j < buttons.length)
+                            buttons[j].forceActiveFocus();
+                    }
+
+                    Keys.onPressed: event => {
+                        if (event.key === Qt.Key_Left)
+                            move(-1, 0);
+                        else if (event.key === Qt.Key_Right)
+                            move(1, 0);
+                        else if (event.key === Qt.Key_Up)
+                            move(0, -1);
+                        else if (event.key === Qt.Key_Down)
+                            move(0, 1);
+                        else
+                            return;
+                        event.accepted = true;
+                    }
 
                     SessionActionButton {
                         id: sessionLock
@@ -117,8 +145,6 @@ Scope {
                             if (focus)
                                 sessionRoot.subtitle = buttonText;
                         }
-                        KeyNavigation.right: sessionSleep
-                        KeyNavigation.down: sessionHibernate
                     }
                     SessionActionButton {
                         id: sessionSleep
@@ -132,25 +158,28 @@ Scope {
                             if (focus)
                                 sessionRoot.subtitle = buttonText;
                         }
-                        KeyNavigation.left: sessionLock
-                        KeyNavigation.right: sessionLogout
-                        KeyNavigation.down: sessionShutdown
                     }
-                    SessionActionButton {
-                        id: sessionLogout
-                        buttonIcon: "logout"
-                        buttonText: Translation.tr("Logout")
-                        onClicked: {
-                            Session.logout();
-                            sessionRoot.hide();
+                    Repeater {
+                        model: MicroosSessions.entries
+                        delegate: SessionActionButton {
+                            required property var modelData
+                            readonly property string note: MicroosSessions.note(modelData)
+                            opacity: MicroosSessions.actionable(modelData) ? 1 : 0.4
+                            buttonIcon: modelData.name === "steam" ? "gamepad" : modelData.name === "android" ? "android" : "apps"
+                            buttonText: note === "" ? modelData.label : `${modelData.label} (${note})`
+                            onClicked: {
+                                if (!MicroosSessions.actionable(modelData)) {
+                                    sessionRoot.subtitle = buttonText;
+                                    return;
+                                }
+                                MicroosSessions.select(modelData);
+                                sessionRoot.hide();
+                            }
+                            onFocusChanged: {
+                                if (focus)
+                                    sessionRoot.subtitle = buttonText;
+                            }
                         }
-                        onFocusChanged: {
-                            if (focus)
-                                sessionRoot.subtitle = buttonText;
-                        }
-                        KeyNavigation.left: sessionSleep
-                        KeyNavigation.right: sessionTaskManager
-                        KeyNavigation.down: sessionReboot
                     }
                     SessionActionButton {
                         id: sessionTaskManager
@@ -164,8 +193,6 @@ Scope {
                             if (focus)
                                 sessionRoot.subtitle = buttonText;
                         }
-                        KeyNavigation.left: sessionLogout
-                        KeyNavigation.down: sessionFirmwareReboot
                     }
 
                     SessionActionButton {
@@ -180,8 +207,6 @@ Scope {
                             if (focus)
                                 sessionRoot.subtitle = buttonText;
                         }
-                        KeyNavigation.up: sessionLock
-                        KeyNavigation.right: sessionShutdown
                     }
                     SessionActionButton {
                         id: sessionShutdown
@@ -195,9 +220,6 @@ Scope {
                             if (focus)
                                 sessionRoot.subtitle = buttonText;
                         }
-                        KeyNavigation.left: sessionHibernate
-                        KeyNavigation.right: sessionReboot
-                        KeyNavigation.up: sessionSleep
                     }
                     SessionActionButton {
                         id: sessionReboot
@@ -211,9 +233,6 @@ Scope {
                             if (focus)
                                 sessionRoot.subtitle = buttonText;
                         }
-                        KeyNavigation.left: sessionShutdown
-                        KeyNavigation.right: sessionFirmwareReboot
-                        KeyNavigation.up: sessionLogout
                     }
                     SessionActionButton {
                         id: sessionFirmwareReboot
@@ -227,8 +246,6 @@ Scope {
                             if (focus)
                                 sessionRoot.subtitle = buttonText;
                         }
-                        KeyNavigation.up: sessionTaskManager
-                        KeyNavigation.left: sessionReboot
                     }
                 }
 
@@ -245,6 +262,15 @@ Scope {
                     horizontalCenter: contentColumn.horizontalCenter
                 }
                 spacing: 10
+
+                Loader {
+                    Layout.alignment: Qt.AlignHCenter
+                    active: MicroosSessions.switching
+                    visible: active
+                    sourceComponent: DescriptionLabel {
+                        text: Translation.tr("A session switch is in progress")
+                    }
+                }
 
                 Loader {
                     Layout.alignment: Qt.AlignHCenter

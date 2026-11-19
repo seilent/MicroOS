@@ -25,8 +25,7 @@ Singleton {
     }
 
     function logout() {
-        closeAllWindows();
-        Quickshell.execDetached(["pkill", "-i", "Hyprland"]);
+        Quickshell.execDetached(["steamos-session-select", "gamescope"]);
     }
 
     function launchTaskManager() {
