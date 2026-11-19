@@ -69,6 +69,9 @@ GRAB_POLL_MS = 50
 GRAB_WAIT_MS = 2000
 RECHECK_MS = 1000
 SCAN_MS = 5000
+RESUME_MS = 100
+WAKE_BEFORE_MS = 5000
+WAKE_GRACE_MS = 1500
 TRACE = os.environ.get("MICROOS_VPAD_TRACE") == "1"
 MICROSET = os.environ.get("MICROOS_VPAD_MICROSET") == "1"
 
@@ -79,6 +82,10 @@ def log(text):
 
 def ms():
     return time.clock_gettime(time.CLOCK_BOOTTIME) * 1000
+
+
+def slept_ms():
+    return (time.clock_gettime(time.CLOCK_BOOTTIME) - time.clock_gettime(time.CLOCK_MONOTONIC)) * 1000
 
 
 def message(data):
@@ -279,7 +286,12 @@ class Screen:
 
     def wake(self):
         if MICROSET:
-            self.write(0, BL_POWER)
+            try:
+                dark = self.read(BL_POWER) != 0
+            except (OSError, ValueError):
+                dark = True
+            if dark:
+                self.write(0, BL_POWER)
         else:
             self.write(self.load() or DEFAULT_BRIGHTNESS)
         for _, handle, _ in self.pending:
@@ -418,19 +430,36 @@ class Power:
         self.screen = screen
         self.qam = qam
         self.send = send
+        self.woke = None
+        self.held = False
 
     def state(self):
         return "state off" if self.screen.off else "state on"
+
+    def resumed(self, now):
+        self.woke = now
+        self.held = self.screen.off
+
+    def holding(self, now, linked):
+        if self.held and not linked and now >= self.woke + WAKE_GRACE_MS:
+            self.held = False
+        return self.held
 
     def gesture(self, kind, at, down):
         if self.send(f"{kind} {down / 1000:.6f} {'off' if self.screen.off else 'on'}"):
             if kind == "double" and not self.screen.off and not MICROSET:
                 self.qam(at)
             return
+        if self.woke is not None and self.woke - WAKE_BEFORE_MS <= down <= self.woke + WAKE_GRACE_MS:
+            if kind == "down" and self.screen.off:
+                self.held = False
+                self.screen.wake()
+            return
         if kind in ("single", "double"):
             self.screen.tap(kind, at)
 
     def command(self, word, now):
+        self.held = False
         if word == "blank":
             if self.screen.off:
                 self.screen.recheck()
@@ -560,6 +589,7 @@ class Daemon:
         self.link = Link(self.poller)
         self.keys = Power(self.screen, self.qam, self.link.send)
         self.taps = Taps(self.keys.gesture)
+        self.slept = slept_ms()
         self.qam_until = 0
         self.scan_at = 0
         self.stop = False
@@ -574,6 +604,12 @@ class Daemon:
 
     def qam(self, now):
         self.qam_until = now + QAM_MS
+
+    def resumed(self, now):
+        slept = slept_ms()
+        if slept - self.slept >= RESUME_MS:
+            self.slept = slept
+            self.keys.resumed(now)
 
     def scan(self, now):
         found = scan()
@@ -682,6 +718,7 @@ class Daemon:
         report_at = grab_at = check_at = ms()
         while not self.stop:
             now = ms()
+            self.resumed(now)
             if now >= self.scan_at:
                 self.scan(now)
             self.taps.expire(now)
@@ -689,7 +726,8 @@ class Daemon:
                 self.screen.poll(now)
                 grab_at = now + GRAB_POLL_MS
             if self.screen.off and now >= check_at:
-                self.screen.recheck()
+                if not self.keys.holding(now, self.link.client is not None):
+                    self.screen.recheck()
                 check_at = now + RECHECK_MS
             if now >= report_at:
                 self.send(now)
@@ -700,7 +738,9 @@ class Daemon:
             if self.screen.off:
                 deadlines.append(check_at)
             timeout = max(0, math.ceil(min(deadlines) - ms()))
-            for fd, _ in self.poller.poll(timeout):
+            ready = self.poller.poll(timeout)
+            self.resumed(ms())
+            for fd, _ in ready:
                 if fd == self.uhid:
                     self.uhid_events()
                 elif fd == self.power:
@@ -783,6 +823,11 @@ def dryrun(mode, args):
                 screen.level = int(value)
             elif name == "blp":
                 screen.power = int(value)
+            elif name == "resume":
+                power.resumed(int(value))
+            elif name == "check":
+                if screen.off and not power.holding(int(value), bool(helper)):
+                    screen.recheck()
         taps.expire(math.inf)
     elif mode == "link":
         sys.stdout.reconfigure(line_buffering=True)
@@ -839,6 +884,11 @@ def dryrun(mode, args):
         screen.saved = None if args[1] == "none" else int(args[1])
         screen.power = int(args[2])
         restore(screen)
+    elif mode == "resume":
+        daemon = Daemon(os.open(os.devnull, os.O_WRONLY))
+        daemon.slept -= int(args[0])
+        daemon.resumed(5)
+        print(daemon.keys.woke)
     elif mode == "qam":
         daemon = Daemon(os.open(os.devnull, os.O_WRONLY))
         daemon.keys.command("qam", int(args[0]))

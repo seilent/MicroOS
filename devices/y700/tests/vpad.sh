@@ -54,6 +54,16 @@ mset 'helper=1 word=blank blp=0 word=blank' "$dark"$'\nsend state off\nbl_power 
 mset 'helper=1 word=qam' $'qam\nsend state on'
 mset 'helper=1 word=blank key=0:1 key=80:0 key=200:1 key=260:0' \
   "$dark"$'\nsend state off\nsend down 0.000000 off\nsend down 0.200000 off\nsend double 0.200000 off'
+mset 'resume=1000 key=900:1 key=900:0' ''
+mset 'resume=1000 key=9000:1 key=9080:0' "$dark"
+mset 'key=0:1 key=80:0 at=1000 resume=10000 blp=0 check=10100 key=9500:1 key=9500:0' "$dark"$'\nungrab'
+mset 'key=0:1 key=80:0 at=1000 resume=10000 blp=0 check=10500 check=11600' "$dark"$'\nbl_power 4'
+mset 'helper=1 word=blank resume=10000 blp=0 check=20000 key=9500:1 key=9500:0 word=restore' \
+  "$dark"$'\nsend state off\nsend down 9.500000 off\nungrab\nsend state on\nsend single 9.500000 on'
+mset 'helper=1 word=blank resume=10000 blp=0 check=20000 word=blank' "$dark"$'\nsend state off\nbl_power 4\nsend state off'
+mset 'helper=1 word=blank resume=10000 blp=0 helper=0 check=12000' "$dark"$'\nsend state off\nbl_power 4'
+check 'resume=1000 key=900:1 key=900:0' ''
+[[ $(vp resume 0) == None && $(vp resume 200) == 5 ]] || fail "resume detection: $(vp resume 0) $(vp resume 200)"
 
 pulse=$'1000 4\n1099 4\n1100 0'
 [[ $(vp qam 1000 1000 1099 1100) == "$pulse" ]] || fail "qam pulse: $(vp qam 1000 1000 1099 1100 | tr '\n' '|')"
