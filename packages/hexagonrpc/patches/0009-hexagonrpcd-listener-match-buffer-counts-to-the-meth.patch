@@ -1,0 +1,83 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 19 Nov 2026 18:26:57 +0900
+Subject: [PATCH 09/11] hexagonrpcd: listener: match buffer counts to the
+ method definition
+
+A request must carry a primary input buffer, exactly the input buffers
+its definition reads, and exactly one output buffer per sequence output
+plus the primary output buffer when the method has one. Any other count
+is declined with AEE_EBADPARM and empty output buffers, so a handler no
+longer writes past an output array sized from the request.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ hexagonrpcd/listener.c | 27 +++++++++++++++++++++++++--
+ 1 file changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/hexagonrpcd/listener.c b/hexagonrpcd/listener.c
+index 5b3ba6e..4057a53 100644
+--- a/hexagonrpcd/listener.c
++++ b/hexagonrpcd/listener.c
+@@ -102,15 +102,31 @@ static int count_sizes4(const struct hrpc_method_def_interp4 *def,
+ 			const struct fastrpc_io_buffer *inbufs)
+ {
+ 	const struct hrpc_inner_type_def_interp4 *inner_type;
+-	const void *pos = inbufs[0].p;
+-	const void *end = (const char *) inbufs[0].p + inbufs[0].s;
+ 	const struct fastrpc_io_buffer *inbufs_end = &inbufs[n_inbufs];
+ 	const struct fastrpc_io_buffer *curr_inbuf = &inbufs[1];
+ 	size_t size, i, j;
++	const void *pos, *end;
+ 	const void *inner_pos;
+ 	const void *inner_end;
+ 	int ret;
+ 
++	if (n_inbufs == 0)
++		return -1;
++
++	pos = inbufs[0].p;
++	end = (const char *) inbufs[0].p + inbufs[0].s;
++
++	for (i = 0; i < def->n_args; i++) {
++		if (def->args[i].t == HRPC_ARG_OUT_BLOB
++		 || def->args[i].t == HRPC_ARG_OUT_TYPE) {
++			if (n_outbufs == 0)
++				return -1;
++
++			n_outbufs--;
++			break;
++		}
++	}
++
+ 	if (def->msg_id > 30)
+ 		pos = (const uint32_t *) pos + 1;
+ 
+@@ -204,6 +220,9 @@ static int count_sizes4(const struct hrpc_method_def_interp4 *def,
+ 				if (curr_inbuf >= inbufs_end)
+ 					return -1;
+ 
++				if (n_outbufs == 0)
++					return -1;
++
+ 				size = *(const uint32_t *) pos;
+ 				pos = (const uint32_t *) pos + 1;
+ 
+@@ -211,6 +230,7 @@ static int count_sizes4(const struct hrpc_method_def_interp4 *def,
+ 				inner_pos = curr_inbuf->p;
+ 				inner_end = (const char *) curr_inbuf->p + curr_inbuf->s;
+ 				curr_inbuf++;
++				n_outbufs--;
+ 				for (j = 0; j < size; j++) {
+ 					ret = count_sizes_out_type4(inner_type,
+ 								    &n_outbufs,
+@@ -226,6 +246,9 @@ static int count_sizes4(const struct hrpc_method_def_interp4 *def,
+ 		}
+ 	}
+ 
++	if (curr_inbuf != inbufs_end || n_outbufs != 0)
++		return -1;
++
+ 	return 0;
+ }
+ 

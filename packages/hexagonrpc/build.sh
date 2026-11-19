@@ -13,6 +13,7 @@ ref=$HEXAGONRPC_REF
 tarball=$top/SOURCES/hexagonrpc-$ref.tar.gz
 curl -fsSL --retry 3 -o "$tarball" "$HEXAGONRPC_URL/archive/$ref.tar.gz"
 echo "$HEXAGONRPC_SHA256  $tarball" | sha256sum -c -
+cp "$src"/patches/*.patch "$top/SOURCES/"
 
 rpmbuild -ba \
   --define "_topdir $top" \

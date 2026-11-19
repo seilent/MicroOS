@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 19 Nov 2026 18:19:48 +0900
+Subject: [PATCH 07/11] hexagonfs: refuse ".." above an assigned search
+ directory
+
+The parents of a search directory opened from the root are owned by that
+directory's descriptor. A ".." that climbed out of it handed one of them
+out under a new file number or freed it on an error path, leaving the
+search directory pointing at freed memory. Such a ".." now fails with
+EACCES; ".." from the root and from directories walked in the same path
+works as before.
+
+Create, unlink and rename refuse "." and ".." as the final component
+with EISDIR.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ hexagonrpcd/hexagonfs.c | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/hexagonrpcd/hexagonfs.c b/hexagonrpcd/hexagonfs.c
+index 603a40a..f745aa9 100644
+--- a/hexagonrpcd/hexagonfs.c
++++ b/hexagonrpcd/hexagonfs.c
+@@ -167,7 +167,10 @@ int hexagonfs_openat(struct hexagonfs_fd **fds, int rootfd, int dirfd, const cha
+ 		if (!strcmp(segment, ".")) {
+ 			goto next;
+ 		} else if (!strcmp(segment, "..")) {
+-			fd = pop_dir(fd, fds[rootfd]);
++			if (fd->is_assigned && fd != fds[rootfd])
++				ret = -EACCES;
++			else
++				fd = pop_dir(fd, fds[rootfd]);
+ 		} else {
+ 			ret = fd->ops->openat(fd, segment, expect_dir, &fd);
+ 		}
+@@ -300,13 +303,13 @@ static int resolve_parent(struct hexagonfs_fd **fds, int rootfd, int dirfd,
+ 	int fileno;
+ 
+ 	*owned = false;
++	*base = slash == NULL ? name : slash + 1;
+ 
+-	if (slash == NULL) {
+-		*base = name;
+-		return dirfd;
+-	}
++	if (!strcmp(*base, ".") || !strcmp(*base, ".."))
++		return -EISDIR;
+ 
+-	*base = slash + 1;
++	if (slash == NULL)
++		return dirfd;
+ 
+ 	if (slash == name)
+ 		return rootfd;

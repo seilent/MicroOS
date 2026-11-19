@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 19 Nov 2026 18:23:08 +0900
+Subject: [PATCH 08/11] hexagonrpcd: apps_std: keep the root and search
+ directories open
+
+fclose and closedir return AEE_EBADPARM for the root and the two search
+directory descriptors. Closing the root freed the tree every other
+descriptor walks up to, and closing a search directory freed the parents
+its open children still point at.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ hexagonrpcd/apps_std.c | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/hexagonrpcd/apps_std.c b/hexagonrpcd/apps_std.c
+index 5491238..ae81eac 100644
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -47,6 +47,13 @@ static const int apps_std_whence_table[] = {
+ 	SEEK_END,
+ };
+ 
++static bool apps_std_is_reserved_fd(const struct apps_std_ctx *ctx, int fd)
++{
++	return fd == ctx->rootfd
++	    || fd == ctx->adsp_avs_cfg_dirfd
++	    || fd == ctx->adsp_library_dirfd;
++}
++
+ /*
+  * This is a placeholder function used to complete any I/O operations.
+  * File descriptors do not have a flush operation because their reads and
+@@ -75,6 +82,9 @@ static uint32_t apps_std_fclose(void *data,
+ 	const uint32_t *first_in = inbufs[0].p;
+ 	int ret;
+ 
++	if (apps_std_is_reserved_fd(ctx, *first_in))
++		return AEE_EBADPARM;
++
+ 	ret = hexagonfs_close(ctx->fds, *first_in);
+ 	if (ret) {
+ 		fprintf(stderr, "Could not close: %s\n", strerror(-ret));
+@@ -454,6 +464,9 @@ static uint32_t apps_std_closedir(void *data,
+ 	const uint64_t *dir = inbufs[0].p;
+ 	int ret;
+ 
++	if (apps_std_is_reserved_fd(ctx, *dir))
++		return AEE_EBADPARM;
++
+ 	ret = hexagonfs_close(ctx->fds, *dir);
+ 	if (ret)
+ 		return AEE_EFAILED;

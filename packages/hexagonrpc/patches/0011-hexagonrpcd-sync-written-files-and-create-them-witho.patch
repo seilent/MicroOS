@@ -1,0 +1,169 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 19 Nov 2026 18:35:04 +0900
+Subject: [PATCH 11/11] hexagonrpcd: sync written files and create them without
+ following links
+
+fsync syncs the file behind the descriptor. Backends without a sync
+operation, and filesystems that cannot sync (EINVAL, EROFS), still
+succeed as before.
+
+Files opened for writing are opened with O_NOFOLLOW and created with
+mode 0666, so the service's umask sets their permissions.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ hexagonrpcd/apps_std.c         | 17 +++++++++++------
+ hexagonrpcd/hexagonfs.c        | 17 +++++++++++++++++
+ hexagonrpcd/hexagonfs.h        |  2 ++
+ hexagonrpcd/hexagonfs_mapped.c | 24 ++++++++++++++++++++++--
+ 4 files changed, 52 insertions(+), 8 deletions(-)
+
+diff --git a/hexagonrpcd/apps_std.c b/hexagonrpcd/apps_std.c
+index ae81eac..7788df6 100644
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -277,20 +277,25 @@ static uint32_t apps_std_fwrite(void *data,
+ 	return 0;
+ }
+ 
+-/*
+- * Writes are synchronous here and land in the page cache; nothing to wait
+- * for from the DSP's point of view.
+- */
+ static uint32_t apps_std_fsync(void *data,
+ 			       const struct fastrpc_io_buffer *inbufs,
+ 			       struct fastrpc_io_buffer *outbufs)
+ {
+-#ifdef HEXAGONRPC_VERBOSE
++	struct apps_std_ctx *ctx = data;
+ 	const uint32_t *fd = inbufs[0].p;
++	int ret;
++
++	ret = hexagonfs_fsync(ctx->fds, *fd);
+ 
+-	printf("ignore fsync(%u)\n", *fd);
++#ifdef HEXAGONRPC_VERBOSE
++	printf("fsync(%u) -> %d\n", *fd, ret);
+ #endif
+ 
++	if (ret) {
++		fprintf(stderr, "Could not sync: %s\n", strerror(-ret));
++		return AEE_EFAILED;
++	}
++
+ 	return 0;
+ }
+ 
+diff --git a/hexagonrpcd/hexagonfs.c b/hexagonrpcd/hexagonfs.c
+index f745aa9..b28c41a 100644
+--- a/hexagonrpcd/hexagonfs.c
++++ b/hexagonrpcd/hexagonfs.c
+@@ -407,6 +407,23 @@ int hexagonfs_ftruncate(struct hexagonfs_fd **fds, int fileno, off_t len)
+ 	return fd->ops->truncate(fd, len);
+ }
+ 
++int hexagonfs_fsync(struct hexagonfs_fd **fds, int fileno)
++{
++	struct hexagonfs_fd *fd;
++
++	if (fileno < 0 || fileno >= HEXAGONFS_MAX_FD)
++		return -EBADF;
++
++	fd = fds[fileno];
++	if (fd == NULL)
++		return -EBADF;
++
++	if (fd->ops->sync == NULL)
++		return 0;
++
++	return fd->ops->sync(fd);
++}
++
+ int hexagonfs_unlink(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name)
+ {
+ 	struct hexagonfs_fd *dir;
+diff --git a/hexagonrpcd/hexagonfs.h b/hexagonrpcd/hexagonfs.h
+index e24b4b5..a3f4207 100644
+--- a/hexagonrpcd/hexagonfs.h
++++ b/hexagonrpcd/hexagonfs.h
+@@ -42,6 +42,7 @@ struct hexagonfs_file_ops {
+ 	ssize_t (*read)(struct hexagonfs_fd *fd, size_t size, void *ptr);
+ 	int (*stat)(struct hexagonfs_fd *fd, struct stat *stats);
+ 	int (*seek)(struct hexagonfs_fd *fd, off_t off, int whence);
++	int (*sync)(struct hexagonfs_fd *fd);
+ 	/* Writable backends only; NULL here is reported as ENOSYS. */
+ 	int (*create)(struct hexagonfs_fd *dir,
+ 		      const char *name,
+@@ -90,6 +91,7 @@ ssize_t hexagonfs_read(struct hexagonfs_fd **fds, int fileno, size_t size, void
+ int hexagonfs_create(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name, int flags);
+ ssize_t hexagonfs_write(struct hexagonfs_fd **fds, int fileno, size_t size, const void *ptr);
+ int hexagonfs_ftruncate(struct hexagonfs_fd **fds, int fileno, off_t len);
++int hexagonfs_fsync(struct hexagonfs_fd **fds, int fileno);
+ int hexagonfs_unlink(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name);
+ int hexagonfs_rename(struct hexagonfs_fd **fds, int rootfd, int dirfd, const char *name, const char *newname);
+ 
+diff --git a/hexagonrpcd/hexagonfs_mapped.c b/hexagonrpcd/hexagonfs_mapped.c
+index 7596b15..39f8325 100644
+--- a/hexagonrpcd/hexagonfs_mapped.c
++++ b/hexagonrpcd/hexagonfs_mapped.c
+@@ -164,9 +164,9 @@ static int mapped_create(struct hexagonfs_fd *dir,
+ 	}
+ 
+ 	ctx->fd = openat(dir_ctx->fd, name,
+-			 O_RDWR | O_CLOEXEC
++			 O_RDWR | O_CLOEXEC | O_NOFOLLOW
+ 			 | (flags & (O_CREAT | O_TRUNC | O_APPEND)),
+-			 0644);
++			 0666);
+ 	if (ctx->fd == -1) {
+ 		ret = -errno;
+ 		goto err_free_fd;
+@@ -229,6 +229,16 @@ static int mapped_truncate(struct hexagonfs_fd *fd, off_t len)
+ 	return 0;
+ }
+ 
++static int mapped_sync(struct hexagonfs_fd *fd)
++{
++	struct mapped_ctx *ctx = fd->data;
++
++	if (fsync(ctx->fd) && errno != EINVAL && errno != EROFS)
++		return -errno;
++
++	return 0;
++}
++
+ static int mapped_unlink(struct hexagonfs_fd *dir, const char *name)
+ {
+ 	struct mapped_ctx *dir_ctx = mapped_ctx_of(dir);
+@@ -447,6 +457,14 @@ static int mapped_or_empty_truncate(struct hexagonfs_fd *fd, off_t len)
+ 		return -ENOENT;
+ }
+ 
++static int mapped_or_empty_sync(struct hexagonfs_fd *fd)
++{
++	if (fd->data)
++		return mapped_sync(fd);
++	else
++		return 0;
++}
++
+ static int mapped_or_empty_seek(struct hexagonfs_fd *fd, off_t off, int whence)
+ {
+ 	if (fd->data)
+@@ -512,6 +530,7 @@ struct hexagonfs_file_ops hexagonfs_mapped_ops = {
+ 	.read = mapped_read,
+ 	.readdir = mapped_readdir,
+ 	.seek = mapped_seek,
++	.sync = mapped_sync,
+ 	.stat = mapped_stat,
+ 	.create = mapped_create,
+ 	.write = mapped_write,
+@@ -527,6 +546,7 @@ struct hexagonfs_file_ops hexagonfs_mapped_or_empty_ops = {
+ 	.read = mapped_or_empty_read,
+ 	.readdir = mapped_or_empty_readdir,
+ 	.seek = mapped_or_empty_seek,
++	.sync = mapped_or_empty_sync,
+ 	.stat = mapped_or_empty_stat,
+ 	.create = mapped_or_empty_create,
+ 	.write = mapped_or_empty_write,

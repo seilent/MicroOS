@@ -28,6 +28,7 @@ Projects MicroOS builds, with their authors and license.
 | `pipewire-codec-aptx` | PipeWire `spa/plugins/bluez5/a2dp-codec-aptx.c` from Fedora's `pipewire-1.6.9-1.fc44.src.rpm` | Wim Taymans and PipeWire contributors | MIT |
 | `pipewire-codec-aptx` build of the aptX target only (idea, spec written new) | [RPM Fusion pipewire-codec-aptx](https://github.com/rpmfusion/pipewire-codec-aptx) | Pauli Virtanen, Gergely Gombos | MIT |
 | `hexagonrpc` | [linux-msm/hexagonrpc](https://github.com/linux-msm/hexagonrpc) `da7a3742ab` | Richard Acayan and hexagonrpc contributors | GPL-3.0-or-later, BSD-3-Clause (FastRPC error tables, The Linux Foundation and The Sensor Shell Contributors) |
+| `hexagonrpc` file writes for the sensor registry | [hexagonrpc PR 27](https://github.com/linux-msm/hexagonrpc/pull/27) `40e5041281` (unmerged) | Fady Ackad | GPL-3.0-or-later |
 | `es-de` | [ES-DE](https://gitlab.com/es-de/emulationstation-de) `v3.5.0` `50e4b600ae`, from RetroPie EmulationStation and EmulationStation | Leon Styhre, Northwestern Software AB, the RetroPie community, Alec Lofquist | MIT; built in from `external/`: CImg (CeCILL-C), glm (MIT), LunaSVG (MIT), RapidJSON (MIT), rlottie (MIT), UTF8-CPP (BSL-1.0); fonts, sounds and themes under their own licenses in `/usr/share/es-de/licenses/` |
 | Art Book Next theme in `microemu` | [anthonycaccese/art-book-next-es-de](https://github.com/anthonycaccese/art-book-next-es-de) `d772d07109` | Anthony Caccese; system logos from Dan Patrick, ChangaOne font by Eduardo Tunni, artwork by nautipuss, tenlevels (with f8less), Joppa Fallston and theUnBurn, Phosphor Icons | CC-BY-NC-SA-2.0 |
 | Mulish font in the Art Book Next theme, the `microemu` OSD text | [googlefonts/mulish](https://github.com/googlefonts/mulish) 3.603, carried in Art Book Next `_inc/fonts/` | Vernon Adams, The Mulish Project Authors | OFL-1.1 |
@@ -75,11 +76,12 @@ Fedora's packaging patches, six of mine and an OGC patch backported by me (`0003
 `mangohud` carries ten upstream MangoHud patches, five of them backported by me, and five of mine, `plymouth` carries
 Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine, `es-de` carries my launch path escape
 patch, `inputplumber` carries three of mine and my polkit rule, `wvkbd` carries two of mine, `audioreach-topology`
-carries my legacy TDM module and subgraph and my Y700 topology, and `lsfg-vk` and the lsfg-vk layer in
-`microos-android-guestos` are my fork's `microos-layer` branch (`PATCHES.md` in each package); the others are built as
-is. License texts in `packages/audioreach-topology/`, `packages/gamescope/`, `packages/gamescope-session/`,
-`packages/gamescope-session-y700/`, `packages/es-de/`, `packages/hexagonrpc/`, `packages/inputplumber/`,
-`packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and `packages/steamos-manager/`.
+carries my legacy TDM module and subgraph and my Y700 topology, `hexagonrpc` carries the five commits of
+hexagonrpc PR 27 and seven of mine, and `lsfg-vk` and the lsfg-vk layer in `microos-android-guestos` are my fork's `microos-layer`
+branch (`PATCHES.md` in each package); the others are built as is. License texts in `packages/audioreach-topology/`,
+`packages/gamescope/`, `packages/gamescope-session/`, `packages/gamescope-session-y700/`, `packages/es-de/`,
+`packages/hexagonrpc/`, `packages/inputplumber/`, `packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and
+`packages/steamos-manager/`.
 
 
 ## Kernel

@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 19 Nov 2026 18:29:31 +0900
+Subject: [PATCH 10/11] hexagonfs: mapped: report the write bit only when the
+ file is writable
+
+stat sets the owner write bit when this process can write the file
+(faccessat with AT_EACCESS), not when the backing file's mode has it. A
+file on a read only mount or in a read only sandbox stats 0444 again,
+and a directory 0555, as before the write paths were added.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ hexagonrpcd/hexagonfs_mapped.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/hexagonrpcd/hexagonfs_mapped.c b/hexagonrpcd/hexagonfs_mapped.c
+index 400800f..7596b15 100644
+--- a/hexagonrpcd/hexagonfs_mapped.c
++++ b/hexagonrpcd/hexagonfs_mapped.c
+@@ -19,6 +19,8 @@
+  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+  */
+ 
++#define _GNU_SOURCE
++
+ #include <dirent.h>
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -339,7 +341,7 @@ static int mapped_stat(struct hexagonfs_fd *fd, struct stat *stats)
+ 	 * Claiming a write bit the backing file lacks makes the DSP take a
+ 	 * write path that can only fail.
+ 	 */
+-	if (phys.st_mode & S_IWUSR)
++	if (faccessat(ctx->fd, "", W_OK, AT_EMPTY_PATH | AT_EACCESS) == 0)
+ 		stats->st_mode |= S_IWUSR;
+ 
+ 	stats->st_atim.tv_sec = phys.st_atim.tv_sec;

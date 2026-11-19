@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 19 Nov 2026 18:44:03 +0900
+Subject: [PATCH] hexagonrpcd: apps_std: fflush writes no output buffer
+
+fflush has no output buffers, so clearing the first one read past the end of the output array on every call. It now only returns success.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ hexagonrpcd/apps_std.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/hexagonrpcd/apps_std.c b/hexagonrpcd/apps_std.c
+index 7788df6..6e68134 100644
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -69,8 +69,6 @@ static uint32_t apps_std_fflush(void *data,
+ 	printf("ignore fflush(%u)\n", *fd);
+ #endif
+ 
+-	memset(outbufs[0].p, 0, outbufs[0].s);
+-
+ 	return 0;
+ }
+ 

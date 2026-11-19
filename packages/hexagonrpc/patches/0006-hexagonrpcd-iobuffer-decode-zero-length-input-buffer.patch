@@ -1,0 +1,167 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 19 Nov 2026 18:13:26 +0900
+Subject: [PATCH 06/11] hexagonrpcd: iobuffer: decode zero length input buffers
+
+An empty input buffer is only its 4 byte length on the wire. The decoder
+now tracks whether the current buffer's length has been read separately
+from the length itself, so a length of 0 ends the buffer with no
+alignment or data instead of reading the next buffer's length into the
+same slot. Every decoded buffer gets a valid pointer.
+
+The handlers that check a string argument for its terminating NUL
+return AEE_EBADPARM for an empty buffer instead of reading the byte
+before it.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ hexagonrpcd/apps_std.c | 15 +++++++++------
+ hexagonrpcd/iobuffer.c | 12 +++++++++---
+ hexagonrpcd/iobuffer.h |  2 ++
+ hexagonrpcd/localctl.c |  2 +-
+ 4 files changed, 21 insertions(+), 10 deletions(-)
+
+diff --git a/hexagonrpcd/apps_std.c b/hexagonrpcd/apps_std.c
+index f5aeaba..5491238 100644
+--- a/hexagonrpcd/apps_std.c
++++ b/hexagonrpcd/apps_std.c
+@@ -210,7 +210,8 @@ static uint32_t apps_std_fopen(void *data,
+ 	int dirfd, fd;
+ 
+ 	// The name and mode must be NULL-terminated
+-	if (name[inbufs[1].s - 1] != 0 || mode[inbufs[2].s - 1] != 0)
++	if (inbufs[1].s == 0 || inbufs[2].s == 0
++	 || name[inbufs[1].s - 1] != 0 || mode[inbufs[2].s - 1] != 0)
+ 		return AEE_EBADPARM;
+ 
+ 	dirfd = name[0] == '/' ? ctx->rootfd : ctx->adsp_library_dirfd;
+@@ -292,7 +293,7 @@ static uint32_t apps_std_fremove(void *data,
+ 	int ret;
+ 
+ 	// The name must be NULL-terminated
+-	if (name[inbufs[1].s - 1] != 0)
++	if (inbufs[1].s == 0 || name[inbufs[1].s - 1] != 0)
+ 		return AEE_EBADPARM;
+ 
+ 	ret = hexagonfs_unlink(ctx->fds, ctx->rootfd, ctx->rootfd, name);
+@@ -342,7 +343,8 @@ static uint32_t apps_std_frename(void *data,
+ 	int ret;
+ 
+ 	// Both names must be NULL-terminated
+-	if (oldname[inbufs[1].s - 1] != 0 || newname[inbufs[2].s - 1] != 0)
++	if (inbufs[1].s == 0 || inbufs[2].s == 0
++	 || oldname[inbufs[1].s - 1] != 0 || newname[inbufs[2].s - 1] != 0)
+ 		return AEE_EBADPARM;
+ 
+ 	ret = hexagonfs_rename(ctx->fds, ctx->rootfd, ctx->rootfd, oldname, newname);
+@@ -368,7 +370,8 @@ static uint32_t apps_std_fopen_with_env(void *data,
+ 	int dirfd, fd;
+ 
+ 	// The name and environment variable must also be NULL-terminated
+-	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0
++	if (inbufs[1].s == 0 || inbufs[3].s == 0 || inbufs[4].s == 0
++	 || ((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0
+ 	 || ((const char *) inbufs[3].p)[inbufs[3].s - 1] != 0
+ 	 || ((const char *) inbufs[4].p)[inbufs[4].s - 1] != 0)
+ 		return AEE_EBADPARM;
+@@ -423,7 +426,7 @@ static uint32_t apps_std_opendir(void *data,
+ 	int ret;
+ 
+ 	// The name must be NULL-terminated
+-	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0)
++	if (inbufs[1].s == 0 || ((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0)
+ 		return AEE_EBADPARM;
+ 
+ 	ret = hexagonfs_openat(ctx->fds, ctx->rootfd, ctx->rootfd, inbufs[1].p);
+@@ -516,7 +519,7 @@ static uint32_t apps_std_stat(void *data,
+ 	struct stat stats;
+ 	int fd, ret;
+ 
+-	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0)
++	if (inbufs[1].s == 0 || ((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0)
+ 		return AEE_EBADPARM;
+ 
+ 	fd = hexagonfs_openat(ctx->fds, ctx->rootfd, ctx->adsp_library_dirfd, pathname);
+diff --git a/hexagonrpcd/iobuffer.c b/hexagonrpcd/iobuffer.c
+index b4769b6..f697c6c 100644
+--- a/hexagonrpcd/iobuffer.c
++++ b/hexagonrpcd/iobuffer.c
+@@ -54,13 +54,18 @@ static int try_populate_inbuf(struct fastrpc_decoder_context *ctx)
+ 	if (ctx->size_off)
+ 		return 0;
+ 
+-	buf = malloc(ctx->size);
++	buf = malloc(ctx->size ? ctx->size : 1);
+ 	if (buf == NULL)
+ 		return -1;
+ 
+ 	ctx->inbufs[ctx->idx].s = ctx->size;
+ 	ctx->inbufs[ctx->idx].p = buf;
+ 
++	if (ctx->size)
++		ctx->have_size = true;
++	else
++		ctx->idx++;
++
+ 	return 0;
+ }
+ 
+@@ -88,7 +93,7 @@ static size_t consume_buf(struct fastrpc_decoder_context *ctx,
+ 	memcpy(dest, buf, segment);
+ 
+ 	if (ctx->buf_off + segment >= ctx->size) {
+-		ctx->size = 0;
++		ctx->have_size = false;
+ 		ctx->buf_off = 0;
+ 		ctx->idx++;
+ 	} else {
+@@ -142,6 +147,7 @@ struct fastrpc_decoder_context *inbuf_decode_start(uint32_t sc)
+ 	ctx->size_off = 0;
+ 	ctx->buf_off = 0;
+ 	ctx->align = 0;
++	ctx->have_size = false;
+ 
+ 	ctx->inbufs = malloc(sizeof(*ctx->inbufs) * ctx->n_inbufs);
+ 	if (ctx->inbufs == NULL && ctx->n_inbufs != 0)
+@@ -175,7 +181,7 @@ int inbuf_decode(struct fastrpc_decoder_context *ctx, size_t len, const void *sr
+ 	int ret = 0;
+ 
+ 	while (off < len && ctx->idx < ctx->n_inbufs) {
+-		if (!ctx->size || ctx->size_off) {
++		if (!ctx->have_size) {
+ 			off += consume_size(ctx, len - off, &buf[off]);
+ 			ret = try_populate_inbuf(ctx);
+ 		} else if (ctx->align && !ctx->buf_off) {
+diff --git a/hexagonrpcd/iobuffer.h b/hexagonrpcd/iobuffer.h
+index de4218d..b5bd11a 100644
+--- a/hexagonrpcd/iobuffer.h
++++ b/hexagonrpcd/iobuffer.h
+@@ -22,6 +22,7 @@
+ #ifndef IOBUFFER_H
+ #define IOBUFFER_H
+ 
++#include <stdbool.h>
+ #include <stdint.h>
+ #include <stddef.h>
+ #include <sys/types.h>
+@@ -41,6 +42,7 @@ struct fastrpc_decoder_context {
+ 
+ 	unsigned int size_off;
+ 	unsigned int align;
++	bool have_size;
+ };
+ 
+ void iobuf_free(size_t n_iobufs, struct fastrpc_io_buffer *iobufs);
+diff --git a/hexagonrpcd/localctl.c b/hexagonrpcd/localctl.c
+index f90f99e..6ba4286 100644
+--- a/hexagonrpcd/localctl.c
++++ b/hexagonrpcd/localctl.c
+@@ -64,7 +64,7 @@ static uint32_t localctl_open(void *data,
+ 	struct remotectl_open_return *first_out = outbufs[0].p;
+ 	size_t i;
+ 
+-	if (((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0)
++	if (inbufs[1].s == 0 || ((const char *) inbufs[1].p)[inbufs[1].s - 1] != 0)
+ 		return AEE_EBADPARM;
+ 
+ 	memset(outbufs[1].p, 0, first_in->outlen);
