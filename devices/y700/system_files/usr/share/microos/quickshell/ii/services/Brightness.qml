@@ -110,7 +110,7 @@ Singleton {
         }
 
         Behavior on multipliedBrightness {
-            enabled: monitor.animateChanges
+            enabled: monitor.animateChanges && monitor.ready
             NumberAnimation {
                 duration: 200
                 easing.type: Easing.BezierSpline
@@ -118,6 +118,7 @@ Singleton {
             }
         }
         onMultipliedBrightnessChanged: {
+            if (!monitor.ready) return;
             if (monitor.animationEnabled) syncBrightness();
             else setTimer.restart();
         }
@@ -127,7 +128,7 @@ Singleton {
             const match = root.ddcMonitors.find(m => m.name === screen.name && !root.monitors.slice(0, root.monitors.indexOf(this)).some(mon => mon.busNum === m.busNum));
             isDdc = !!match;
             busNum = match?.busNum ?? "";
-            initProc.command = isDdc ? ["ddcutil", "-b", busNum, "getvcp", "10", "--brief"] : ["sh", "-c", `echo "a b c $(brightnessctl g) $(brightnessctl m)"`];
+            initProc.command = isDdc ? ["ddcutil", "-b", busNum, "getvcp", "10", "--brief"] : ["sh", "-c", "echo a b c $(microset get display.brightness) 10000"];
             initProc.running = true;
         }
 
@@ -160,10 +161,7 @@ Singleton {
                 const rawValueRounded = Math.max(Math.floor(brightnessValue * monitor.rawMaxBrightness), 1);
                 setProc.exec(["ddcutil", "-b", busNum, "setvcp", "10", rawValueRounded]);
             } else {
-                const valuePercentNumber = Math.floor(brightnessValue * 100);
-                let valuePercent = `${valuePercentNumber}%`;
-                if (valuePercentNumber == 0) valuePercent = "1"; // Prevent fully black
-                setProc.exec(["brightnessctl", "--class", "backlight", "s", valuePercent, "--quiet"])
+                setProc.exec(["microset", "set", "display.brightness", String(Math.max(1, Math.round(brightnessValue * 10000)))])
             }
         }
 
