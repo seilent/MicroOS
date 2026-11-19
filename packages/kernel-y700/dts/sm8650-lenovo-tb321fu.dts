@@ -609,6 +609,13 @@
 				remote-endpoint = <&cam_main_ep>;
 			};
 		};
+
+		port@5 {
+			csiphy5_ep: endpoint {
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&cam_front_ep>;
+			};
+		};
 	};
 };
 
@@ -715,6 +722,18 @@
 				regulator-max-microvolt = <1216000>;
 			};
 
+			cam_ldo2: ldo2 {
+				regulator-name = "cam_ldo2";
+				regulator-min-microvolt = <1216000>;
+				regulator-max-microvolt = <1216000>;
+			};
+
+			cam_ldo3: ldo3 {
+				regulator-name = "cam_ldo3";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
 			cam_ldo4: ldo4 {
 				regulator-name = "cam_ldo4";
 				regulator-min-microvolt = <2800000>;
@@ -737,6 +756,35 @@
 				regulator-name = "cam_ldo7";
 				regulator-min-microvolt = <1856000>;
 				regulator-max-microvolt = <1856000>;
+			};
+		};
+	};
+
+	camera@36 {
+		compatible = "smartsens,sc820cs";
+		reg = <0x36>;
+
+		clocks = <&camcc CAM_CC_MCLK3_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK3_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 109 GPIO_ACTIVE_LOW>;
+
+		pinctrl-0 = <&cam3_default &cam_front_reset_default>;
+		pinctrl-names = "default";
+
+		avdd-supply = <&cam_ldo3>;
+		dovdd-supply = <&cam_ldo7>;
+		dvdd-supply = <&cam_ldo2>;
+
+		orientation = <0>;
+		rotation = <90>;
+
+		port {
+			cam_front_ep: endpoint {
+				data-lanes = <1 2 3 4>;
+				link-frequencies = /bits/ 64 <364800000>;
+				remote-endpoint = <&csiphy5_ep>;
 			};
 		};
 	};
@@ -1217,6 +1265,14 @@
 			function = "gpio";
 			bias-pull-down;
 		};
+	};
+
+	cam_front_reset_default: cam-front-reset-default-state {
+		pins = "gpio109";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-low;
 	};
 
 	cam_main_reset_default: cam-main-reset-default-state {
