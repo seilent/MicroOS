@@ -358,6 +358,11 @@ feed 'down now on' 'down now+0.2 on' 'double last on'
 [[ $(words) == 'qam qam qam' && $(toggles) == 1 ]] || fail "Toggle after a failed one: $(words) $(toggles) toggles"
 toggle_failed() { grep -c '^microos-powerkey: MicroSet overlay Toggle failed: ' "$tmp/powerkey.err" || true; }
 [[ $(toggle_failed) == 2 ]] || fail "Toggle failed lines: $(cat "$tmp/powerkey.err")"
+start_overlay hang
+feed 'down now on' 'down now+0.2 on' 'double last on'
+sleep 1.2
+[[ $(words) == 'qam qam qam' && $(toggles) == 1 ]] || fail "Toggle timeout while awake sent a word: $(words) $(toggles) toggles"
+stop "$ov"
 stop "$vp"
 for _ in {1..30}; do [[ $(said 'microos-vpad gone') == 1 ]] && break; sleep 0.1; done
 got=$(quick) && fail "OpenQuickAccess with vpad gone: $got"

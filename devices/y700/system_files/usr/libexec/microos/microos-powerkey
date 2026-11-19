@@ -280,7 +280,10 @@ class Powerkey:
             if not self.toggle_logged:
                 log(f"MicroSet overlay Toggle failed: {err.message}")
                 self.toggle_logged = True
-            if not self.off and not self.asleep():
+            absent = err.matches(Gio.dbus_error_quark(), Gio.DBusError.SERVICE_UNKNOWN) or err.matches(
+                Gio.dbus_error_quark(), Gio.DBusError.NAME_HAS_NO_OWNER
+            )
+            if absent and not self.off and not self.asleep():
                 self.send("qam")
             return
         self.toggle_logged = False
