@@ -197,6 +197,7 @@ kept=(
   /usr/lib/systemd/system-sleep/microos-sleep-log
   /usr/lib/systemd/system-sleep/microos-wake-reason
   /usr/lib/systemd/user/gamescope-session-plus@.service.d/10-microos-track.conf
+  /usr/lib/systemd/user/gamescope-session-plus@android.service.d/20-microos-powerkey.conf
   /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/10-microos.conf
   /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/20-microos-powerkey.conf
   /usr/lib/systemd/user/gamescope-session-plus@steam.service.d/30-microos-gameidle.conf
@@ -210,6 +211,7 @@ kept=(
   /usr/lib/microos/sessions.d/desktop.conf
   /usr/lib/systemd/user/microos-desktop.service.d/20-microos-ii-seed.conf
   /usr/lib/systemd/user/microos-desktop.service.d/30-hypr-config.conf
+  /usr/lib/systemd/user/microos-desktop.service.d/40-microos-powerkey.conf
   /usr/lib/systemd/user/microos-ii-seed.service
   /usr/lib/systemd/user/xdg-desktop-portal.service.d/50-microos-desktop.conf
   /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf

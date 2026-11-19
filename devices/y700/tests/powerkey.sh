@@ -6,6 +6,8 @@ tree=${MICROOS_TREE:-$here/../system_files}
 powerkey=$tree/usr/libexec/microos/microos-powerkey
 unit=$tree/usr/lib/systemd/user/microos-powerkey.service
 dropin=$tree/usr/lib/systemd/user/gamescope-session-plus@steam.service.d/20-microos-powerkey.conf
+android=$tree/usr/lib/systemd/user/gamescope-session-plus@android.service.d/20-microos-powerkey.conf
+desktop=$tree/usr/lib/systemd/user/microos-desktop.service.d/40-microos-powerkey.conf
 tmp=$(mktemp -d)
 pids=()
 cleanup() {
@@ -22,7 +24,10 @@ done
 python3 -c 'import gi; gi.require_version("Gio", "2.0"); from gi.repository import Gio' || { echo "FAIL: python3 gi missing" >&2; exit 1; }
 
 [[ $(< "$dropin") == $'[Unit]\nWants=microos-powerkey.service' ]] || fail "20-microos-powerkey.conf"
-for l in BindsTo=gamescope-session-plus@steam.service After=gamescope-session-plus@steam.service \
+[[ $(< "$android") == $'[Unit]\nWants=microos-powerkey.service' ]] || fail "android 20-microos-powerkey.conf"
+[[ $(< "$desktop") == $'[Unit]\nWants=microos-powerkey.service' ]] || fail "40-microos-powerkey.conf"
+! grep -q '^BindsTo=' "$unit" || fail "microos-powerkey.service binds a session unit"
+for l in PartOf=graphical-session.target After=graphical-session.target \
   ExecStart=/usr/libexec/microos/microos-powerkey Restart=always StartLimitIntervalSec=0; do
   grep -qxF "$l" "$unit" || fail "microos-powerkey.service lacks $l"
 done
@@ -60,6 +65,24 @@ cat > "$tmp/bin/steam" <<STEAM
 printf '%s\n' "steam \$*" >> "$tmp/calls.log"
 STEAM
 chmod +x "$tmp/bin/steam"
+cat > "$tmp/bin/hyprctl" <<HYPRCTL
+#!/usr/bin/env bash
+printf '%s\n' "hyprctl \$*" >> "$tmp/hyprctl.log"
+case \$(cat "$tmp/hyprctl.mode" 2> /dev/null) in
+  ok) echo ok ;;
+  hang) exec sleep 5 ;;
+  *) echo 'no such instance'; exit 1 ;;
+esac
+HYPRCTL
+chmod +x "$tmp/bin/hyprctl"
+cat > "$tmp/bin/sessions" <<SESSIONS
+#!/usr/bin/env bash
+[[ \$1 == current ]] || exit 2
+n=\$(cat "$tmp/session.name" 2> /dev/null || echo steam)
+[[ \$n != none ]] || exit 1
+echo "\$n"
+SESSIONS
+chmod +x "$tmp/bin/sessions"
 mkfifo "$tmp/home/.steam/steam.pipe" "$tmp/feed"
 
 waitfor() {
@@ -86,6 +109,7 @@ start_vpad() {
 start_helper() {
   stop "$pk"
   HOME=$tmp/home MICROOS_POWERKEY_SOCKET=$tmp/power MICROOS_POWERKEY_STEAM=$tmp/bin/steam MICROOS_POWERKEY_RESLEEP=${RESLEEP:-1} \
+    MICROOS_POWERKEY_HYPRCTL=$tmp/bin/hyprctl MICROOS_POWERKEY_SESSION=$tmp/bin/sessions \
     MICROOS_POWERKEY_OVERLAY=${OVERLAY:-} DBUS_SESSION_BUS_ADDRESS=${SESSION_BUS:-$session} \
     python3 "$powerkey" 2>> "$tmp/powerkey.err" & pk=$!
   pids+=("$pk")
@@ -244,6 +268,34 @@ waitfor "$tmp/logind.log" "suspend false" || fail "dark wake did not sleep again
 [[ $(words) == 'blank blank' ]] || fail "dark wake words: $(words)"
 [[ $(said 'not a power key wake, dark, sleeping again in 1 s') == 1 ]] || fail "no dark wake line"
 
+echo desktop > "$tmp/session.name"
+boot desktop
+rm -f "$tmp/hyprctl.log"
+echo ok > "$tmp/hyprctl.mode"
+feed 'down now on' 'down now+0.2 on' 'double last on'
+[[ $(cat "$tmp/hyprctl.log" 2> /dev/null) == 'hyprctl -i 0 dispatch hl.dsp.global("quickshell:sessionToggle")' && -z $(words) ]] ||
+  fail "desktop double tap: hyprctl $(cat "$tmp/hyprctl.log" 2> /dev/null), words $(words)"
+menu_failed() { grep -c '^microos-powerkey: session menu: ' "$tmp/powerkey.err" || true; }
+[[ $(menu_failed) == 0 ]] || fail "desktop double tap logged a failure: $(cat "$tmp/powerkey.err")"
+echo hang > "$tmp/hyprctl.mode"
+feed 'down now on' 'down now+0.2 on' 'double last on'
+sleep 1
+[[ $(menu_failed) == 1 && -z $(words) ]] || fail "desktop double tap with a stuck hyprctl: $(words), $(cat "$tmp/powerkey.err")"
+rm -f "$tmp/hyprctl.mode"
+feed 'down now on' 'down now+0.2 on' 'double last on'
+[[ $(menu_failed) == 2 && -z $(words) ]] || fail "desktop double tap with no compositor: $(words), $(cat "$tmp/powerkey.err")"
+feed 'down now on' 'single last on'
+[[ $(suspends) == 1 && $(said 'Steam is not running, suspending') == 1 ]] ||
+  fail "desktop tap did not suspend: $(suspends) suspends, $(cat "$tmp/powerkey.err")"
+rm -f "$tmp/session.name" "$tmp/hyprctl.log"
+
+echo android > "$tmp/session.name"
+boot android
+feed 'down now on' 'single last on'
+[[ $(suspends) == 1 && $(said 'Steam is not running, suspending') == 1 && -z $(calls) && ! -s $tmp/hyprctl.log ]] ||
+  fail "android tap did not suspend: $(suspends) suspends, $(calls), $(cat "$tmp/powerkey.err")"
+rm -f "$tmp/session.name" "$tmp/hyprctl.log"
+
 boot press
 cycle press
 sleep 1.6
@@ -339,10 +391,18 @@ for _ in {1..30}; do [[ $(owned) == '(true,)' ]] && break; sleep 0.1; done
 [[ $(owned) == '(true,)' ]] || fail "PowerKey name not owned with the knob: $(cat "$tmp/powerkey.err")"
 feed 'down now on' 'down now+0.2 on' 'double last on'
 [[ $(toggles) == 1 && -z $(words) && -z $(calls) ]] || fail "double tap with the knob: $(toggles) toggles, $(words) $(calls)"
+echo android > "$tmp/session.name"
+feed 'down now on' 'down now+0.2 on' 'double last on'
+[[ $(toggles) == 2 && -z $(words) && ! -s $tmp/hyprctl.log ]] || fail "android double tap with the knob: $(toggles) toggles, $(words)"
+echo none > "$tmp/session.name"
+feed 'down now on' 'down now+0.2 on' 'double last on'
+[[ $(toggles) == 2 && -z $(words) && ! -s $tmp/hyprctl.log && $(said "session: $tmp/bin/sessions current exit 1") == 1 ]] ||
+  fail "double tap with no current session: $(toggles) toggles, $(words), $(cat "$tmp/powerkey.err")"
+rm -f "$tmp/session.name"
 steam_on
 feed 'down now on' 'single last on'
 feed 'down now on' 'hold last on'
-[[ $(calls) == $'steam -ifrunning steam://shortpowerpress\nsteam -ifrunning steam://longpowerpress' && $(toggles) == 1 ]] \
+[[ $(calls) == $'steam -ifrunning steam://shortpowerpress\nsteam -ifrunning steam://longpowerpress' && $(toggles) == 2 ]] \
   || fail "tap and hold with the knob: $(calls)"
 steam_off
 quick > /dev/null || fail "OpenQuickAccess: $(cat "$tmp/powerkey.err")"
@@ -350,7 +410,7 @@ for _ in {1..30}; do [[ $(words) == qam ]] && break; sleep 0.1; done
 [[ $(words) == qam ]] || fail "OpenQuickAccess words: $(words)"
 stop "$ov"
 feed 'down now on' 'down now+0.2 on' 'double last on'
-[[ $(words) == 'qam qam' && $(toggles) == 1 && ! -e $tmp/activated ]] || fail "failed Toggle: $(words) $(toggles) toggles"
+[[ $(words) == 'qam qam' && $(toggles) == 2 && ! -e $tmp/activated ]] || fail "failed Toggle: $(words) $(toggles) toggles"
 start_overlay
 feed 'down now on' 'down now+0.2 on' 'double last on'
 stop "$ov"
@@ -363,6 +423,7 @@ feed 'down now on' 'down now+0.2 on' 'double last on'
 sleep 1.2
 [[ $(words) == 'qam qam qam' && $(toggles) == 1 ]] || fail "Toggle timeout while awake sent a word: $(words) $(toggles) toggles"
 stop "$ov"
+[[ ! -s $tmp/hyprctl.log ]] || fail "hyprctl ran in the Steam session: $(cat "$tmp/hyprctl.log")"
 stop "$vp"
 for _ in {1..30}; do [[ $(said 'microos-vpad gone') == 1 ]] && break; sleep 0.1; done
 got=$(quick) && fail "OpenQuickAccess with vpad gone: $got"

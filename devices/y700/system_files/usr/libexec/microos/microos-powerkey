@@ -2,6 +2,7 @@
 import os
 import socket
 import stat
+import subprocess
 import sys
 import time
 
@@ -22,6 +23,10 @@ IFACE = Gio.DBusNodeInfo.new_for_xml(
 USE_OVERLAY = os.environ.get("MICROOS_POWERKEY_OVERLAY") == "1"
 SOCKET = os.environ.get("MICROOS_POWERKEY_SOCKET", "/run/microos-vpad/power")
 STEAM = os.environ.get("MICROOS_POWERKEY_STEAM", "/usr/bin/steam")
+HYPRCTL = os.environ.get("MICROOS_POWERKEY_HYPRCTL", "/usr/bin/hyprctl")
+SESSION = os.environ.get("MICROOS_POWERKEY_SESSION", "/usr/bin/microos-session")
+SESSION_MENU = 'hl.dsp.global("quickshell:sessionToggle")'
+CALL_S = 1
 RESLEEP_S = float(os.environ.get("MICROOS_POWERKEY_RESLEEP", "10"))
 PIPE = os.path.expanduser("~/.steam/steam.pipe")
 URIS = {"single": "steam://shortpowerpress", "hold": "steam://longpowerpress"}
@@ -216,7 +221,12 @@ class Powerkey:
         if down == self.used or self.asleep() or self.is_wake(down):
             return
         if kind == "double":
-            if USE_OVERLAY and not self.off:
+            if self.off:
+                return
+            current = self.current_session()
+            if current == "desktop":
+                self.session_menu()
+            elif current and USE_OVERLAY:
                 self.toggle()
             return
         if self.off:
@@ -287,6 +297,28 @@ class Powerkey:
                 self.send("qam")
             return
         self.toggle_logged = False
+
+    def current_session(self):
+        try:
+            done = subprocess.run([SESSION, "current"], capture_output=True, text=True, timeout=CALL_S)
+        except (OSError, subprocess.TimeoutExpired) as err:
+            log(f"session: {err}")
+            return ""
+        if done.returncode != 0:
+            log(f"session: {SESSION} current exit {done.returncode}")
+            return ""
+        return done.stdout.strip()
+
+    def session_menu(self):
+        try:
+            done = subprocess.run(
+                [HYPRCTL, "-i", "0", "dispatch", SESSION_MENU], capture_output=True, text=True, timeout=CALL_S,
+            )
+        except (OSError, subprocess.TimeoutExpired) as err:
+            log(f"session menu: {err}")
+            return
+        if done.returncode != 0 or done.stdout.strip() != "ok":
+            log(f"session menu: hyprctl exit {done.returncode}: {(done.stdout + done.stderr).strip()}")
 
     def own(self):
         Gio.bus_get(Gio.BusType.SESSION, None, self.got_bus, None)
