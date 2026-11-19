@@ -1457,12 +1457,6 @@ hot ""
 [[ $(cat "$run/session-current") == "$s0" ]] && ! hasre 'microos-session-(switch|fallback)' || fail "hold to the current session not a no op"
 grep -q "steam is current" "$tmp/out" || fail "hotkey no op line"
 
-reset
-"$tree/usr/bin/steamos-session-select" gamescope || fail "steamos-session-select gamescope"
-r=0
-"$tree/usr/bin/steamos-session-select" plasma || r=$?
-[[ $r == 1 ]] && has "logger -t steamos-session-select session plasma refused, no desktop yet" || fail "steamos-session-select plasma: $r $(calls)"
-
 re=$(sed -n 's/^  var units = \/\(.*\)\/;$/\1/p' "$tree/usr/share/polkit-1/rules.d/50-microos-session.rules")
 [[ -n $re ]] || fail "polkit unit pattern not found"
 python3 - "$re" << 'EOF' || fail "polkit unit pattern"

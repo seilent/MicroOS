@@ -234,6 +234,67 @@ echo system > "$tmp/class/mmcblk0"
 srun 19 0 "$hw/steamos-format-sdcard" --owner 1000:1000
 slog "" "steamos-format-sdcard as root with only system disks"
 
+cat > "$tmp/bin/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+[[ -z ${SYSTEMCTL_FAIL:-} ]]
+EOF
+cat > "$tmp/bin/sessions" <<'EOF'
+#!/usr/bin/env bash
+[[ $1 == list ]] && printf '%b' "$SESSIONS"
+EOF
+chmod +x "$tmp/bin/systemctl" "$tmp/bin/sessions"
+listed=$'desktop\tDesktop\tyes\nsteam\tSteam OS\tyes\n'
+ssel() {
+  rm -rf "$tmp/sproc"
+  mkdir -p "$tmp/sproc/self"
+  [[ -z $1 ]] || printf '0::%s\n' "$1" > "$tmp/sproc/self/cgroup"
+  : > "$tmp/log"
+  : > "$tmp/systemctl"
+  r=0
+  env -i PATH="$tmp/bin:/usr/bin:/bin" LOGGER_LOG="$tmp/log" SYSTEMCTL_LOG="$tmp/systemctl" MICROOS_PROC="$tmp/sproc" \
+    MICROOS_SESSION_BIN="$tmp/bin/sessions" SESSIONS="${SESSIONS-$listed}" SYSTEMCTL_FAIL="${SYSTEMCTL_FAIL:-}" \
+    "$tree/usr/bin/steamos-session-select" "$2" > "$tmp/out" 2>&1 || r=$?
+}
+app=/user.slice/user-1000.slice/user@1000.service/app.slice
+for n in plasma plasma-persistent desktop; do
+  ssel "$app/gamescope-session-plus@steam.service" "$n"
+  (( r == 0 )) && [[ $(< "$tmp/systemctl") == "start --no-block microos-session-switch@desktop.service" ]] &&
+    [[ $(< "$tmp/log") == "-t steamos-session-select session $n from steam, switching to desktop" ]] ||
+    fail "session-select $n from steam: exit $r, systemctl $(cat "$tmp/systemctl"), log $(cat "$tmp/log")"
+done
+for u in microos-desktop.service microos-desktop.service/app microos-steam-desktop.service; do
+  ssel "$app/$u" gamescope
+  (( r == 0 )) && [[ $(< "$tmp/systemctl") == "start --no-block microos-session-switch@steam.service" ]] &&
+    [[ $(< "$tmp/log") == "-t steamos-session-select session gamescope from the desktop, switching to steam" ]] ||
+    fail "session-select gamescope from $u: exit $r, systemctl $(cat "$tmp/systemctl"), log $(cat "$tmp/log")"
+done
+for u in gamescope-session-plus@steam.service xmicroos-desktop.service other.scope; do
+  ssel "$app/$u" gamescope
+  (( r == 0 )) && [[ ! -s $tmp/systemctl && ! -s $tmp/log ]] ||
+    fail "session-select gamescope from $u is not a no op: exit $r, systemctl $(cat "$tmp/systemctl"), log $(cat "$tmp/log")"
+done
+SESSIONS=$'steam\tSteam OS\tyes\ndesktop\tDesktop\tno\n' ssel "$app/gamescope-session-plus@steam.service" plasma
+(( r == 1 )) && [[ ! -s $tmp/systemctl ]] &&
+  [[ $(< "$tmp/log") == "-t steamos-session-select session plasma refused from $app/gamescope-session-plus@steam.service" ]] ||
+  fail "session-select plasma without a listed desktop: exit $r, systemctl $(cat "$tmp/systemctl"), log $(cat "$tmp/log")"
+SYSTEMCTL_FAIL=1 ssel "$app/gamescope-session-plus@steam.service" plasma
+(( r == 1 )) && [[ $(< "$tmp/log") == "-t steamos-session-select session plasma from steam, the switch to desktop did not start" ]] ||
+  fail "session-select plasma with a failing systemctl: exit $r, log $(cat "$tmp/log")"
+ssel "$app/microos-desktop.service" plasma
+(( r == 1 )) && [[ ! -s $tmp/systemctl ]] &&
+  [[ $(< "$tmp/log") == "-t steamos-session-select session plasma refused from $app/microos-desktop.service" ]] ||
+  fail "session-select plasma from the desktop: exit $r, systemctl $(cat "$tmp/systemctl"), log $(cat "$tmp/log")"
+ssel "$app/xgamescope-session-plus@steam.service" plasma
+(( r == 1 )) && [[ ! -s $tmp/systemctl ]] || fail "session-select plasma from a lookalike unit: exit $r, systemctl $(cat "$tmp/systemctl")"
+ssel "$app/gamescope-session-plus@steam.service" 'x y'
+(( r == 1 )) && [[ ! -s $tmp/systemctl ]] &&
+  [[ $(< "$tmp/log") == "-t steamos-session-select session x\\ y refused from $app/gamescope-session-plus@steam.service" ]] ||
+  fail "session-select 'x y': exit $r, log $(cat "$tmp/log")"
+ssel "" plasma
+(( r == 1 )) && [[ $(< "$tmp/log") == "-t steamos-session-select session plasma refused from an unknown cgroup" ]] ||
+  fail "session-select without a cgroup file: exit $r, log $(cat "$tmp/log")"
+
 if command -v udevadm > /dev/null; then
   udevadm verify --no-summary "$tree/usr/lib/udev/rules.d/60-microos-backlight.rules" || fail "backlight rules do not verify"
 else

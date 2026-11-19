@@ -1,5 +1,29 @@
 #!/usr/bin/env bash
 me=steamos-session-select
-[[ ${1:-} == gamescope ]] && exit 0
-logger -t "$me" "session $(printf %q "${1:-}") refused, no desktop yet"
+arg=${1:-}
+path=$(sed -n 's/^0:://p' "${MICROOS_PROC:-/proc}/self/cgroup" 2> /dev/null)
+inside() { [[ $path/ == */"$1"/* ]]; }
+listed() { "${MICROOS_SESSION_BIN:-/usr/bin/microos-session}" list 2> /dev/null | cut -f 1,3 | grep -qx "$1"$'\tyes'; }
+switch() {
+  if systemctl start --no-block "microos-session-switch@$1.service"; then
+    logger -t "$me" "session $(printf %q "$arg") from $2, switching to $1"
+    exit 0
+  fi
+  logger -t "$me" "session $(printf %q "$arg") from $2, the switch to $1 did not start"
+  exit 1
+}
+case $arg in
+  gamescope)
+    if inside microos-desktop.service || inside microos-steam-desktop.service; then
+      switch steam "the desktop"
+    fi
+    exit 0
+    ;;
+  plasma | plasma-persistent | desktop)
+    if inside gamescope-session-plus@steam.service && listed desktop; then
+      switch desktop steam
+    fi
+    ;;
+esac
+logger -t "$me" "session $(printf %q "$arg") refused from ${path:-an unknown cgroup}"
 exit 1
