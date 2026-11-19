@@ -117,7 +117,6 @@ kept=(
   /usr/bin/microos-session
   /usr/bin/microos-update
   /usr/lib/NetworkManager/conf.d/10-microos.conf
-  /usr/lib/NetworkManager/system-connections/microos-usb0.nmconnection
   /usr/lib/bootc/install/00-microos.toml
   /usr/lib/bootc/kargs.d/10-microos.toml
   /usr/lib/udev/rules.d/60-microos-backlight.rules
@@ -331,11 +330,9 @@ payload=$(( $(sed -n 's/^MICROOS_STUB_PAYLOAD=//p' /usr/lib/microos/stub.conf) )
   || fail "AVB test key sha256"
 [[ $(< /usr/lib/systemd/journald.conf.d/10-microos.conf) == $'[Journal]\nStorage=persistent' ]] || fail "journald 10-microos.conf"
 [[ $(< /usr/lib/bootc/install/00-microos.toml) == $'[install.filesystem.root]\ntype = "btrfs"' ]] || fail "00-microos.toml"
-[[ $(< /usr/lib/NetworkManager/conf.d/10-microos.conf) == $'[keyfile]\npath=/var/lib/NetworkManager/system-connections\n\n[device-microos-usb0]\nmatch-device=interface-name:usb0\nmanaged=1' ]] \
+[[ $(< /usr/lib/NetworkManager/conf.d/10-microos.conf) == $'[keyfile]\npath=/var/lib/NetworkManager/system-connections' ]] \
   || fail "NetworkManager 10-microos.conf"
-nm=/usr/lib/NetworkManager/system-connections/microos-usb0.nmconnection
-[[ $(stat -c '%a %U' "$nm") == '600 root' ]] || fail "$nm mode"
-grep -qx 'method=shared' "$nm" && grep -qx 'address1=10.42.0.1/24' "$nm" || fail "$nm is not shared on 10.42.0.1/24"
+[[ ! -e /usr/lib/NetworkManager/system-connections/microos-usb0.nmconnection ]] || fail "microos-usb0.nmconnection ships"
 for f in microos-slot microos-usb-console microos-vpad microos-powerkey microos-gameidle microos-remoteproc microos-bootimg-update microos-stub-pack; do
   [[ $(stat -c %a "/usr/libexec/microos/$f") == 755 ]] || fail "$f is not 755"
 done

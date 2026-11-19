@@ -25,21 +25,17 @@ run() {
   env MICROOS_CONFIGFS="$cfg" MICROOS_SYSCLASS="$class" MICROOS_CMDLINE="$tmp/cmdline" \
     MICROOS_MODPROBE="$here/usb-console/bin/modprobe" MICROOS_USB_POLLS="${POLLS:-4}" "$script" "$@" 2> "$tmp/err"
 }
-local_mac() { (( (0x${1%%:*} & 3) == 2 )); }
 check_gadget() {
-  local f d h
+  local f
   [[ $(< "$g/idVendor") == 0x1d6b && $(< "$g/idProduct") == 0x0104 ]] || fail "$2: ids $(cat "$g/idVendor" "$g/idProduct" | tr '\n' ' ')"
   [[ $(< "$g/strings/0x409/serialnumber") == "$1" ]] || fail "$2: serial $(cat "$g/strings/0x409/serialnumber")"
   [[ $(ls "$g/strings/0x409") == serialnumber ]] || fail "$2: strings $(ls "$g/strings/0x409" | tr '\n' ' ')"
-  [[ $(ls "$g/configs") == c.1 && $(ls "$g/configs/c.1" | tr '\n' ' ') == "acm.usb0 ncm.usb0 " ]] \
+  [[ $(ls "$g/configs") == c.1 && $(ls "$g/configs/c.1" | tr '\n' ' ') == "acm.usb0 " ]] \
     || fail "$2: config $(ls -R "$g/configs" | tr '\n' ' ')"
-  for f in acm.usb0 ncm.usb0; do
+  [[ $(ls "$g/functions") == acm.usb0 ]] || fail "$2: functions $(ls "$g/functions" | tr '\n' ' ')"
+  for f in acm.usb0; do
     [[ $(readlink "$g/configs/c.1/$f") == "$g/functions/$f" ]] || fail "$2: $f not linked"
   done
-  d=$(< "$g/functions/ncm.usb0/dev_addr")
-  h=$(< "$g/functions/ncm.usb0/host_addr")
-  [[ $d == 02:6e:3a:91:c4:05 && $h == 02:6e:3a:91:c4:06 ]] || fail "$2: MACs $d $h"
-  local_mac "$d" && local_mac "$h" || fail "$2: MACs not locally administered unicast"
   [[ $(< "$g/UDC") == a600000.usb ]] || fail "$2: UDC $(cat "$g/UDC")"
 }
 
@@ -56,10 +52,7 @@ check_gadget TESTSERIAL0-microos rerun
   || fail "rerun on a bound gadget did work: $(cat "$tmp/err")"
 
 : > "$g/UDC"
-echo 02:00:00:00:00:99 > "$g/functions/ncm.usb0/dev_addr"
 run start || fail "rerun unbound: exit $?: $(cat "$tmp/err")"
-[[ $(< "$g/functions/ncm.usb0/dev_addr") == 02:00:00:00:00:99 ]] || fail "rerun wrote dev_addr of a linked function"
-echo 02:6e:3a:91:c4:05 > "$g/functions/ncm.usb0/dev_addr"
 check_gadget TESTSERIAL0-microos "rerun unbound"
 
 run stop || fail "stop: exit $?: $(cat "$tmp/err")"

@@ -2,7 +2,6 @@
 set -euo pipefail
 
 cp -a /ctx/system_files/. /
-chmod 600 /usr/lib/NetworkManager/system-connections/microos-usb0.nmconnection
 
 /usr/libexec/microos/microos-groups
 systemd-sysusers /usr/lib/sysusers.d/microos.conf
