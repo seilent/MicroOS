@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Thu, 19 Nov 2026 15:19:15 +0900
+Subject: [PATCH] dt-bindings: vendor-prefixes: Add SmartSens Technology
+
+Add the vendor prefix for SmartSens Technology (Shanghai) Co., Ltd., a
+maker of CMOS image sensors.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ Documentation/devicetree/bindings/vendor-prefixes.yaml | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/vendor-prefixes.yaml b/Documentation/devicetree/bindings/vendor-prefixes.yaml
+index 5471a06..434ba01 100644
+--- a/Documentation/devicetree/bindings/vendor-prefixes.yaml
++++ b/Documentation/devicetree/bindings/vendor-prefixes.yaml
+@@ -1593,6 +1593,8 @@ patternProperties:
+     description: SmartLabs LLC
+   "^smartrg,.*":
+     description: SmartRG, Inc.
++  "^smartsens,.*":
++    description: SmartSens Technology (Shanghai) Co., Ltd.
+   "^smi,.*":
+     description: Silicon Motion Technology Corporation
+   "^smsc,.*":
+-- 
+2.43.0
+

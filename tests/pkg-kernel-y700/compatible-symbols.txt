@@ -178,5 +178,7 @@ sdw20217010e00 SND_SOC_WCD939X_SDW
 simple-bus -
 simple-framebuffer -
 simple-mfd -
+smartsens,sc202cs VIDEO_SC202CS
 syscon MFD_SYSCON
 usb-c-connector TYPEC
+willsemi,wl2868c REGULATOR_WL2868C

@@ -377,6 +377,16 @@
 						   RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		vreg_l10b_1p8: ldo10 {
+			regulator-name = "vreg_l10b_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
 		vreg_l11b_1p2: ldo11 {
 			regulator-name = "vreg_l11b_1p2";
 			regulator-min-microvolt = <1200000>;
@@ -532,6 +542,7 @@
 		compatible = "qcom,pm8550ve-rpmh-regulators";
 
 		vdd-l1-supply = <&vreg_s3c_0p9>;
+		vdd-l2-supply = <&vreg_s3c_0p9>;
 		vdd-l3-supply = <&vreg_s1c_1p2>;
 		vdd-s4-supply = <&vph_pwr>;
 
@@ -554,6 +565,16 @@
 						   RPMH_REGULATOR_MODE_HPM>;
 		};
 
+		vreg_l2i_0p88: ldo2 {
+			regulator-name = "vreg_l2i_0p88";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <912000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
 		vreg_l3i_1p2: ldo3 {
 			regulator-name = "vreg_l3i_1p2";
 			regulator-min-microvolt = <1200000>;
@@ -564,6 +585,101 @@
 						   RPMH_REGULATOR_MODE_HPM>;
 		};
 	};
+};
+
+&camss {
+	vdd-csiphy01-0p9-supply = <&vreg_l2i_0p88>;
+	vdd-csiphy01-1p2-supply = <&vreg_l3i_1p2>;
+
+	status = "okay";
+
+	ports {
+		port@1 {
+			csiphy1_ep: endpoint {
+				data-lanes = <0>;
+				remote-endpoint = <&cam_macro_ep>;
+			};
+		};
+	};
+};
+
+&cci0 {
+	status = "okay";
+};
+
+&cci0_i2c1 {
+	clock-frequency = <400000>;
+
+	camera@36 {
+		compatible = "smartsens,sc202cs";
+		reg = <0x36>;
+
+		clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK1_CLK>;
+		assigned-clock-rates = <19200000>;
+
+		reset-gpios = <&tlmm 15 GPIO_ACTIVE_LOW>;
+
+		pinctrl-0 = <&cam1_default &cam_macro_reset_default>;
+		pinctrl-names = "default";
+
+		avdd-supply = <&cam_ldo6>;
+		dovdd-supply = <&cam_ldo7>;
+
+		orientation = <1>;
+		rotation = <270>;
+
+		port {
+			cam_macro_ep: endpoint {
+				data-lanes = <1>;
+				link-frequencies = /bits/ 64 <360000000>;
+				remote-endpoint = <&csiphy1_ep>;
+			};
+		};
+	};
+};
+
+&cci1 {
+	pinctrl-0 = <&cci1_0_default>;
+	pinctrl-1 = <&cci1_0_sleep>;
+
+	status = "okay";
+};
+
+&cci1_i2c0 {
+	clock-frequency = <400000>;
+
+	pmic@2f {
+		compatible = "willsemi,wl2868c";
+		reg = <0x2f>;
+
+		reset-gpios = <&tlmm 126 GPIO_ACTIVE_LOW>;
+
+		pinctrl-0 = <&cam_pmic_reset_default>;
+		pinctrl-names = "default";
+
+		vsys-supply = <&vreg_l10b_1p8>;
+		vin6-supply = <&vreg_bob1>;
+		vin7-supply = <&vreg_bob1>;
+
+		regulators {
+			cam_ldo6: ldo6 {
+				regulator-name = "cam_ldo6";
+				regulator-min-microvolt = <2800000>;
+				regulator-max-microvolt = <2800000>;
+			};
+
+			cam_ldo7: ldo7 {
+				regulator-name = "cam_ldo7";
+				regulator-min-microvolt = <1856000>;
+				regulator-max-microvolt = <1856000>;
+			};
+		};
+	};
+};
+
+&cci1_i2c1 {
+	status = "disabled";
 };
 
 &crypto {
@@ -1037,6 +1153,22 @@
 			function = "gpio";
 			bias-pull-down;
 		};
+	};
+
+	cam_macro_reset_default: cam-macro-reset-default-state {
+		pins = "gpio15";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-low;
+	};
+
+	cam_pmic_reset_default: cam-pmic-reset-default-state {
+		pins = "gpio126";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-low;
 	};
 
 	disp0_reset_n_active: disp0-reset-n-active-state {
