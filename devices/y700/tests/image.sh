@@ -27,6 +27,7 @@ grep -qx "$(cat /usr/lib/microos/version)" /usr/lib/os-release || fail "version 
 
 rpm -q android-tools btrfs-progs dosfstools jq util-linux rsync dnsmasq python3 >/dev/null || fail "base rpms missing"
 rpm -q bluez e2fsprogs >/dev/null || fail "bluez or e2fsprogs missing"
+rpm -q libcamera libcamera-ipa libcamera-tools >/dev/null || fail "libcamera rpms missing"
 rpm -q python3-gobject-base >/dev/null || fail "python3-gobject-base missing"
 python3 -c 'import gi; gi.require_version("Gio", "2.0"); from gi.repository import Gio, GLib' || fail "python3 gi has no Gio"
 rpm -q chrony NetworkManager-wifi wpa_supplicant wireless-regdb atheros-firmware qcom-firmware linux-firmware mesa-dri-drivers \

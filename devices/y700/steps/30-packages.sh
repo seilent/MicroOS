@@ -66,6 +66,9 @@ dnf -y install \
   pipewire-alsa \
   wireplumber \
   alsa-ucm \
+  libcamera \
+  libcamera-ipa \
+  libcamera-tools \
   sdl2-compat \
   libXcomposite \
   libXdamage \
