@@ -1,2 +1,3 @@
 #!/usr/bin/env bash
 printf 'blockdev %s\n' "$*" >> "$STUB_LOG"
+[[ -z ${BLOCKDEV_FAIL:-} || $* != "--setro $BLOCKDEV_FAIL" ]] || exit 1

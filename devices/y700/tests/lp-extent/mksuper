@@ -1,0 +1,76 @@
+#!/usr/bin/python3
+import hashlib
+import struct
+import sys
+
+out = sys.argv[1]
+opts = {}
+lists = {None: []}
+cur = None
+for a in sys.argv[2:]:
+    if a.startswith("--slot="):
+        cur = int(a[7:])
+        lists[cur] = []
+    elif a.startswith("--"):
+        k, _, v = a[2:].partition("=")
+        opts[k] = v
+    else:
+        lists[cur].append(a)
+major = int(opts.get("major", 10))
+minor = int(opts.get("minor", 2))
+slots = int(opts.get("slot-count", 3))
+max_size = int(opts.get("max-size", 65536))
+device_size = 16 << 30
+corrupt = opts.get("corrupt", "")
+
+
+def metadata(specs):
+    parts = exts = b""
+    devs = 1
+    for spec in specs:
+        name, ranges = spec.split("=")
+        first = len(exts) // 24
+        for r in filter(None, ranges.split(",")):
+            r, _, src = r.partition("@")
+            start, count = r.split("+")
+            devs = max(devs, int(src or 0) + 1)
+            if start == "zero":
+                exts += struct.pack("<QIQI", int(count), 1, 0, 0)
+            else:
+                exts += struct.pack("<QIQI", int(count), 0, int(start), int(src or 0))
+        parts += struct.pack("<36sIIII", name.encode(), 0, first, len(exts) // 24 - first, 0)
+    groups = struct.pack("<36sIQ", b"default", 0, 0)
+    bdevs = b"".join(struct.pack("<QIIQ36sI", 2048, 1048576, 0, device_size, f"super{i or ''}".encode(), 0)
+                     for i in range(devs))
+    tables = bytearray(parts + exts + groups + bdevs)
+    desc = struct.pack("<12I", 0, len(parts) // 52, 52, len(parts), len(exts) // 24, 24,
+                       len(parts) + len(exts), 1, 48, len(parts) + len(exts) + 48, devs, 64)
+    hsize = 256 if minor >= 2 else 128
+
+    def header(hsum, tsum):
+        h = struct.pack("<IHHI32sI32s", 0x414C5030, major, minor, hsize, hsum, len(tables), tsum) + desc
+        return h + bytes(hsize - len(h))
+
+    tsum = hashlib.sha256(tables).digest()
+    hdr = bytearray(header(hashlib.sha256(header(bytes(32), tsum)).digest(), tsum))
+    target = {"header-magic": (hdr, 0), "header-sum": (hdr, 12), "tables-sum": (tables, len(tables) - 1)}
+    if corrupt in target:
+        buf, at = target[corrupt]
+        buf[at] ^= 1
+    return hdr + tables
+
+
+geo = bytearray(struct.pack("<II32sIII", 0x616C4467, 52, bytes(32), max_size, slots, 4096))
+geo[8:40] = hashlib.sha256(geo).digest()
+target = {"geometry-magic": 0, "geometry-sum": 8}
+if corrupt in target:
+    geo[target[corrupt]] ^= 1
+
+with open(out, "wb") as f:
+    for at in (4096, 8192):
+        f.seek(at)
+        f.write(geo)
+    for i in range(slots):
+        f.seek(12288 + i * max_size)
+        f.write(metadata(lists.get(i, lists[None])))
+    f.truncate(int(opts.get("truncate", device_size)))

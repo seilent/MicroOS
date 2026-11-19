@@ -1,0 +1,116 @@
+#!/usr/bin/python3
+import hashlib
+import os
+import struct
+import sys
+
+SECTOR = 512
+MAX_METADATA = 1 << 20
+GEOMETRY_OFFSET = 4096
+GEOMETRY_SIZE = 4096
+GEOMETRY_MAGIC = 0x616C4467
+GEOMETRY = struct.Struct("<II32sIII")
+HEADER_MAGIC = 0x414C5030
+HEADER_V1_0 = struct.Struct("<IHHI32sI32s12I")
+TABLES = (("partitions", 52), ("extents", 24), ("groups", 48), ("block devices", 64))
+PARTITION = struct.Struct("<36sIIII")
+EXTENT = struct.Struct("<QIQI")
+BLOCK_DEVICE = struct.Struct("<QIIQ36sI")
+
+
+class Bad(Exception):
+    pass
+
+
+def read(f, offset, size, what):
+    f.seek(offset)
+    data = f.read(size)
+    if len(data) != size:
+        raise Bad(f"short read of the {what}")
+    return data
+
+
+def extent(f, want):
+    raw = read(f, GEOMETRY_OFFSET, GEOMETRY.size, "geometry")
+    magic, struct_size, checksum, max_size, slots, _ = GEOMETRY.unpack(raw)
+    if magic != GEOMETRY_MAGIC:
+        raise Bad(f"bad geometry magic {magic:#x}")
+    if struct_size != GEOMETRY.size:
+        raise Bad(f"geometry struct size {struct_size}")
+    if hashlib.sha256(raw[:8] + bytes(32) + raw[40:]).digest() != checksum:
+        raise Bad("bad geometry checksum")
+    if slots == 0 or max_size % SECTOR:
+        raise Bad(f"bad geometry ({slots} slots, metadata size {max_size})")
+    if max_size > MAX_METADATA:
+        raise Bad(f"metadata size {max_size} over {MAX_METADATA}")
+    idx = 1 if want.endswith("_b") else 0
+    if idx >= slots:
+        raise Bad(f"{want} needs metadata slot {idx}, the geometry has {slots}")
+
+    base = GEOMETRY_OFFSET + 2 * GEOMETRY_SIZE + idx * max_size
+    raw = read(f, base, HEADER_V1_0.size, "metadata header")
+    magic, major, minor, header_size, header_sum, tables_size, tables_sum, *desc = HEADER_V1_0.unpack(raw)
+    if magic != HEADER_MAGIC:
+        raise Bad(f"bad metadata magic {magic:#x}")
+    if major != 10 or minor > 2:
+        raise Bad(f"metadata version {major}.{minor}")
+    if header_size != (256 if minor >= 2 else HEADER_V1_0.size):
+        raise Bad(f"metadata header size {header_size} for version {major}.{minor}")
+    raw += read(f, base + HEADER_V1_0.size, header_size - HEADER_V1_0.size, "metadata header")
+    if hashlib.sha256(raw[:12] + bytes(32) + raw[44:]).digest() != header_sum:
+        raise Bad("bad metadata header checksum")
+    if tables_size > max_size:
+        raise Bad(f"metadata tables size {tables_size} over {max_size}")
+    tables = read(f, base + header_size, tables_size, "metadata tables")
+    if hashlib.sha256(tables).digest() != tables_sum:
+        raise Bad("bad metadata tables checksum")
+
+    table = {}
+    for i, (name, entry_size) in enumerate(TABLES):
+        offset, count, size = desc[3 * i:3 * i + 3]
+        if size != entry_size:
+            raise Bad(f"{name} entry size {size}")
+        if offset > tables_size or count * size > tables_size - offset:
+            raise Bad(f"{name} table out of bounds")
+        table[name] = [tables[offset + j * size:offset + (j + 1) * size] for j in range(count)]
+    if not table["block devices"]:
+        raise Bad("no block devices in the metadata")
+
+    for entry in table["partitions"]:
+        label, _, first, count, _ = PARTITION.unpack(entry)
+        if label.split(b"\0", 1)[0] != want.encode():
+            continue
+        if first + count > len(table["extents"]):
+            raise Bad(f"{want} extent list out of bounds")
+        if count != 1:
+            raise Bad(f"{want} has {count} extents")
+        sectors, target_type, start, source = EXTENT.unpack(table["extents"][first])
+        if target_type != 0:
+            raise Bad(f"{want} extent is of target type {target_type}, not linear")
+        if source != 0:
+            raise Bad(f"{want} extent is on block device {source}, not 0")
+        device = BLOCK_DEVICE.unpack(table["block devices"][0])
+        first_logical, limit = device[0], min(device[3], f.seek(0, os.SEEK_END))
+        if start < first_logical:
+            raise Bad(f"{want} extent starts at sector {start}, before the first logical sector {first_logical}")
+        if sectors == 0 or (start + sectors) * SECTOR > limit:
+            raise Bad(f"{want} extent {start}+{sectors} is outside the {limit} byte super")
+        return start, sectors
+    raise Bad(f"no {want} in the metadata")
+
+
+def main():
+    if len(sys.argv) != 3:
+        print("usage: microos-lp-extent <super> <partition>", file=sys.stderr)
+        return 2
+    try:
+        with open(sys.argv[1], "rb") as f:
+            start, sectors = extent(f, sys.argv[2])
+    except (Bad, OSError) as e:
+        print(f"microos-lp-extent: {e}", file=sys.stderr)
+        return 1
+    print(start, sectors)
+    return 0
+
+
+sys.exit(main())

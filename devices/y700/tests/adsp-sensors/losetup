@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+if [[ $1 != -d && -n ${LOSETUP_FAIL:-} ]]; then
+  printf 'losetup failed %s\n' "$*" >> "$STUB_LOG"
+  exit 1
+fi
+printf 'losetup %s\n' "$*" >> "$STUB_LOG"
+[[ $1 == -d ]] || echo /dev/loop7

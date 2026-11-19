@@ -2,4 +2,8 @@
 if [[ -n ${CP_FAIL:-} && " $* " == *" --parents "* && " $* " == *"/hexagonfs/sensors/persist "* ]]; then
   exit 1
 fi
+if [[ -n ${CP_VENDOR_FAIL:-} && " $* " == *" --parents "* && " $* " == *"/gen/sensors/config "* ]]; then
+  /usr/bin/cp "$@"
+  exit 1
+fi
 exec /usr/bin/cp "$@"

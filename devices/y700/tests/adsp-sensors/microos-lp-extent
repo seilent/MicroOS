@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+printf 'microos-lp-extent %s\n' "$*" >> "$STUB_LOG"
+exec "$LP_EXTENT" "$@"

@@ -8,7 +8,8 @@ root=${MICROOS_ADSP_ROOT:-}
 state=$root/run/microos/adsp
 unit=microos-hexagonrpcd-adsp.service
 tries=${MICROOS_ADSP_TRIES:-100}
-layout=2
+lpextent=${MICROOS_LP_EXTENT:-/usr/libexec/microos/microos-lp-extent}
+layout=3
 nosource=75
 
 log() { echo "$me: $*"; }
@@ -53,9 +54,44 @@ pick() {
 
 copy_tree() {
   local src=$1 dst=$2
-  mkdir -p "$dst"
-  (cd -- "$src" && find . -mindepth 1 -type d -print0) | (cd -- "$dst" && xargs -0 -r mkdir -p)
+  mkdir -p "$dst" || return
+  (cd -- "$src" && find . -mindepth 1 -type d -print0) | (cd -- "$dst" && xargs -0 -r mkdir -p) || return
   (cd -- "$src" && find . -type f -print0 | xargs -0 -r cp --no-preserve=all --parents -t "$dst")
+}
+
+vendor_conf() {
+  local ext first count loop dir=$work/vendor conf cfg links
+  ufs_part super || return 1
+  if ! ext=$("$lpextent" "$part" "vendor$slot" 2>&1); then
+    why=${ext##*$'\n'}
+    why=${why#microos-lp-extent: }
+    why=${why:-microos-lp-extent failed on vendor$slot}
+    return 1
+  fi
+  why="vendor$slot extent is '$ext'"
+  read -r first count <<< "$ext"
+  [[ $first =~ ^[0-9]+$ && $count =~ ^[0-9]+$ && $ext == "$first $count" ]] || return 1
+  why="losetup on vendor$slot failed"
+  loop=$(losetup -r -f --show -o "$(( first * 512 ))" --sizelimit "$(( count * 512 ))" "$part") || return 1
+  [[ -n $loop ]] || return 1
+  loops+=("$loop")
+  why="blockdev --setro on $loop failed"
+  blockdev --setro "$loop" || return 1
+  why="mounting vendor$slot failed"
+  mkdir "$dir" || return 1
+  mount -t erofs -o ro,nosuid,nodev,noexec "$loop" "$dir" || return 1
+  mounted+=("$dir")
+  conf=$dir/etc/sensors/sns_reg_config
+  cfg=$dir/etc/sensors/config
+  why="no etc/sensors/sns_reg_config on vendor$slot"
+  [[ -f $conf && $(realpath -e -- "$conf") == "$conf" ]] || return 1
+  why="no etc/sensors/config on vendor$slot"
+  [[ -d $cfg && $(realpath -e -- "$cfg") == "$cfg" ]] || return 1
+  why="copying the vendor$slot sensor config failed"
+  cp --no-preserve=all -- "$conf" "$gen/sensors/sns_reg.conf" || return 1
+  copy_tree "$cfg" "$gen/sensors/config" || return 1
+  links=$(find "$cfg" -type l -printf . | wc -c)
+  (( links == 0 )) || log "skipped $links symlinks in etc/sensors/config on vendor$slot"
 }
 
 sum_tree() {
@@ -68,7 +104,7 @@ sum_tree() {
 }
 
 provision() {
-  found=0 mounted=() tmp=
+  found=0 mounted=() loops=() tmp=
   for f in "$root"/run/microos/adsp-sensors.*; do
     rm -rf --one-file-system -- "${f:?}"
   done
@@ -93,6 +129,7 @@ provision() {
   cleanup() {
     local m
     for m in "${mounted[@]}"; do umount "$m" || true; done
+    for m in "${loops[@]}"; do losetup -d "$m" || true; done
     rm -rf --one-file-system -- "${work:?}"
     [[ -z $tmp ]] || rm -rf --one-file-system -- "${tmp:?}"
   }
@@ -132,7 +169,10 @@ provision() {
   printf 'QRD\n' > "$gen/socinfo/platform_subtype"
   printf '%s\n' "$subtype" > "$gen/socinfo/platform_subtype_id"
   printf '%s\n' "$version" > "$gen/socinfo/platform_version"
-  cat > "$gen/sensors/sns_reg.conf" << 'EOF'
+  if ! vendor_conf; then
+    log "no vendor sensor config ($why), the generated sns_reg.conf is used"
+    rm -rf --one-file-system -- "${gen:?}/sensors/config"
+    cat > "$gen/sensors/sns_reg.conf" << 'EOF'
 version=1
 file=hw_platform=/sys/devices/soc0/hw_platform
 file=platform_subtype=/sys/devices/soc0/platform_subtype
@@ -144,6 +184,7 @@ file=output=/mnt/vendor/persist/sensors/registry/registry
 property=persist.vendor.sensors.enable.property=/mnt/vendor/persist/sensors/registry/file1
 property=persist.vendor.sensors.enable.property1=/mnt/vendor/persist/sensors/registry/file2
 EOF
+  fi
 
   hash=$(
     {

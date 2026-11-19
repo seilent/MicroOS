@@ -252,6 +252,7 @@ kept=(
   /usr/libexec/microos/microos-grow-root
   /usr/libexec/microos/microos-groups
   /usr/libexec/microos/microos-irq
+  /usr/libexec/microos/microos-lp-extent
   /usr/libexec/microos/microos-powerkey
   /usr/libexec/microos/microos-provision
   /usr/libexec/microos/microos-sdam
@@ -530,9 +531,13 @@ rules=/usr/lib/udev/rules.d/91-microos-y700-bdaddr.rules
   || fail "91-microos-y700-bdaddr.rules"
 udevadm verify --no-style "$rules" >/dev/null 2>&1 || fail "$rules does not verify"
 [[ -x /usr/bin/btmgmt && -x /usr/bin/debugfs ]] || fail "btmgmt or debugfs missing"
-for f in /usr/libexec/microos/microos-adsp-sensors /usr/lib/systemd/system-sleep/microos-hexagonrpcd-adsp; do
+for f in /usr/libexec/microos/microos-adsp-sensors /usr/libexec/microos/microos-lp-extent \
+  /usr/lib/systemd/system-sleep/microos-hexagonrpcd-adsp; do
   [[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f missing, mode or owner"
 done
+[[ -x /usr/bin/python3 ]] || fail "/usr/bin/python3 missing, microos-lp-extent needs it"
+python3 -c 'import py_compile, sys; py_compile.compile(sys.argv[1], cfile=sys.argv[2], doraise=True)' \
+  /usr/libexec/microos/microos-lp-extent "$tmp/lp-extent.pyc" || fail "microos-lp-extent does not compile"
 command -v hexagonrpcd >/dev/null || fail "hexagonrpcd is not on PATH"
 adsprules=/usr/lib/udev/rules.d/70-microos-adsp-sensors.rules
 for r in 'SUBSYSTEM=="remoteproc", ATTR{name}=="adsp", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-adsp-sensors.service"' \
