@@ -9,6 +9,7 @@ own=(
   gamescope/gamescope
   gamescope-session-y700/gamescope-session
   gamescope-session-y700/gamescope-session-steam
+  hexagonrpc/hexagonrpc
   microset/microset
   microset/microset-settings
   microset/microset-fonts

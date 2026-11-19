@@ -1,0 +1,32 @@
+[Unit]
+Description=FastRPC file server for the ADSP sensor PD
+BindsTo=dev-fastrpc\x2dadsp.device
+Wants=microos-adsp-sensors.service
+After=dev-fastrpc\x2dadsp.device microos-adsp-sensors.service systemd-sysusers.service microos-groups.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+ConditionPathIsDirectory=/run/microos/adsp/current/hexagonfs
+
+[Service]
+ExecStartPre=+/usr/bin/chown root:hexagonrpc /dev/fastrpc-adsp
+ExecStartPre=+/usr/bin/chmod 0660 /dev/fastrpc-adsp
+ExecStartPre=+/usr/bin/chgrp -R hexagonrpc /run/microos/adsp/current/hexagonfs/sensors/persist
+ExecStartPre=+/usr/bin/chmod -R g+rwX /run/microos/adsp/current/hexagonfs/sensors/persist
+ExecStart=/usr/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -s -R /run/microos/adsp/current/hexagonfs
+Restart=always
+RestartSec=3
+TimeoutStopSec=5s
+DynamicUser=yes
+UMask=0007
+SupplementaryGroups=hexagonrpc
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/microos/adsp
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+DeviceAllow=/dev/fastrpc-adsp rw
+CapabilityBoundingSet=
+NoNewPrivileges=yes
+SystemCallArchitectures=native
+LockPersonality=yes
+MemoryDenyWriteExecute=yes

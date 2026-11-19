@@ -1,0 +1,2 @@
+SUBSYSTEM=="remoteproc", ATTR{name}=="adsp", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-adsp-sensors.service"
+SUBSYSTEM=="misc", KERNEL=="fastrpc-adsp", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-hexagonrpcd-adsp.service"

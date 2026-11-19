@@ -4,7 +4,7 @@ set -euo pipefail
 cp -a /ctx/system_files/. /
 
 /usr/libexec/microos/microos-groups
-systemd-sysusers /usr/lib/sysusers.d/microos.conf
+systemd-sysusers /usr/lib/sysusers.d/microos.conf /usr/lib/sysusers.d/microos-hexagonrpc.conf
 mkdir -p /etc/systemd/system-generators
 ln -sfn /dev/null /etc/systemd/system-generators/systemd-gpt-auto-generator
 

@@ -45,9 +45,9 @@ done
 grep -qx 'install_weak_deps=False' /etc/dnf/libdnf5.conf.d/10-microos.conf || fail "10-microos.conf does not turn off weak deps"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 own=$(rpm -qa --qf '%{NAME}\t%{VENDOR}\n' | awk -F'\t' '$2 == "MicroOS" { print $1 }' | LC_ALL=C sort | paste -sd' ')
-[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hyprcursor hyprgraphics hyprgrass hyprland hyprlang hyprpicker hyprsunset hyprutils hyprwire microos-android microos-android-guestos microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
+[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hexagonrpc hyprcursor hyprgraphics hyprgrass hyprland hyprlang hyprpicker hyprsunset hyprutils hyprwire microos-android microos-android-guestos microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
   fail "MicroOS rpms: $own"
-for p in qbootctl inputplumber steamos-manager mangohud lsfg-vk hexagonrpc microos-eq libfreeaptx \
+for p in qbootctl inputplumber steamos-manager mangohud lsfg-vk microos-eq libfreeaptx \
   pipewire-codec-aptx microos-steam-seed; do
   ! rpm -q "$p" >/dev/null 2>&1 || fail "$p is installed"
 done
@@ -65,7 +65,8 @@ want=$(printf '%s\n' microos-boot-ok.service microos-provision.service microos-u
   microos-update-check.service microos-update-check.timer microos-boot-deadline.service microos-boot-deadline.timer \
   microos-bootlog-efi.path microos-bootlog-efi.service microos-grow-root.service microos-usb-console.service microos-vpad.service \
   microos-remoteproc.service microos-groups.service microos-etc-carry.service microos-update-boot.path \
-  microos-update-boot.service microos-bdaddr@.service microos-sleep-gate.service microos-session-switch@.service \
+  microos-update-boot.service microos-bdaddr@.service microos-sleep-gate.service microos-adsp-sensors.service \
+  microos-hexagonrpcd-adsp.service microos-session-switch@.service \
   microos-session-up@.service microos-session-fallback@.service microos-session-switcher.service \
   microos-session-switcher.path microos-session-boot.service microos-session-watch.service microos-session-attempt.service \
   "${tests[@]}")
@@ -159,6 +160,7 @@ kept=(
   /usr/lib/systemd/system-preset/60-microos-microset.preset
   /usr/lib/systemd/system-preset/60-microos-steam.preset
   /usr/lib/systemd/system/emergency.service.d/10-microos.conf
+  /usr/lib/systemd/system/microos-adsp-sensors.service
   /usr/lib/systemd/system/microos-bdaddr@.service
   /usr/lib/systemd/system/microos-boot-deadline.service
   /usr/lib/systemd/system/microos-boot-deadline.timer
@@ -168,6 +170,7 @@ kept=(
   /usr/lib/systemd/system/microos-grow-root.service
   /usr/lib/systemd/system/microos-etc-carry.service
   /usr/lib/systemd/system/microos-groups.service
+  /usr/lib/systemd/system/microos-hexagonrpcd-adsp.service
   /usr/lib/systemd/system/microos-provision.service
   /usr/lib/systemd/system/microos-session-attempt.service
   /usr/lib/systemd/system/microos-session-boot.service
@@ -196,6 +199,7 @@ kept=(
   /usr/lib/systemd/system/microsetd.service.d/50-microos-y700.conf
   /usr/lib/systemd/system/serial-getty@ttyGS0.service.d/10-microos.conf
   /usr/lib/systemd/system/sshd.service.d/10-microos.conf
+  /usr/lib/systemd/system-sleep/microos-hexagonrpcd-adsp
   /usr/lib/systemd/system-sleep/microos-sleep-log
   /usr/lib/systemd/system-sleep/microos-wake-reason
   /usr/lib/systemd/user/gamescope-session-plus@.service.d/10-microos-track.conf
@@ -227,11 +231,14 @@ kept=(
   /usr/libexec/microos/microos-desktop-session
   /usr/libexec/microos/microos-ii-seed
   /usr/share/wayland-sessions/microos-desktop.desktop
+  /usr/lib/sysusers.d/microos-hexagonrpc.conf
   /usr/lib/sysusers.d/microos.conf
   /usr/lib/tmpfiles.d/microos-session.conf
   /usr/lib/tmpfiles.d/microos.conf
+  /usr/lib/udev/rules.d/70-microos-adsp-sensors.rules
   /usr/lib/udev/rules.d/90-microos-usb-console.rules
   /usr/lib/udev/rules.d/91-microos-y700-bdaddr.rules
+  /usr/libexec/microos/microos-adsp-sensors
   /usr/libexec/microos/microos-bdaddr
   /usr/libexec/microos/microos-boot-ok
   /usr/libexec/microos/microos-bootb
@@ -441,7 +448,7 @@ grep -qxF 'SUBSYSTEM=="hidraw", KERNELS=="000[356]:28DE:*", MODE="0660", TAG+="u
 compgen -G "/usr/lib/modules/$kver/kernel/drivers/hid/hid-steam.ko*" >/dev/null || fail "hid-steam module missing"
 [[ $(< /usr/lib/udev/rules.d/90-microos-usb-console.rules) == \
   'SUBSYSTEM=="tty", KERNEL=="ttyGS0", ENV{SYSTEMD_WANTS}+="serial-getty@ttyGS0.service"' ]] || fail "90-microos-usb-console.rules"
-[[ $(< /usr/lib/tmpfiles.d/microos.conf) == $'d /run/microos 0755 root root -\nf /run/microos/system-card 0644 root root - internal\nd /var/home/micro 0700 micro micro -\nd /var/lib/microos 0755 root root -\nd /var/cache/libX11 0755 root root -\nd /var/cache/libX11/compose 0755 root root -\nd /var/lib/geoclue 0755 geoclue geoclue -\nw /sys/power/pm_freeze_timeout - - - - 5000' ]] \
+[[ $(< /usr/lib/tmpfiles.d/microos.conf) == $'d /run/microos 0755 root root -\nd /run/microos/adsp 0755 root root -\nf /run/microos/system-card 0644 root root - internal\nd /var/home/micro 0700 micro micro -\nd /var/lib/microos 0755 root root -\nd /var/cache/libX11 0755 root root -\nd /var/cache/libX11/compose 0755 root root -\nd /var/lib/geoclue 0755 geoclue geoclue -\nw /sys/power/pm_freeze_timeout - - - - 5000' ]] \
   || fail "tmpfiles microos.conf"
 [[ $(< /usr/lib/systemd/sleep.conf.d/50-microos.conf) == $'[Sleep]\nAllowHibernation=no\nAllowSuspendThenHibernate=no\nAllowHybridSleep=no\nMemorySleepMode=s2idle' ]] \
   || fail "sleep.conf.d 50-microos.conf"
@@ -453,7 +460,7 @@ for k in RuntimeWatchdogSec RebootWatchdogSec; do
   last=$(systemd-analyze cat-config systemd/system.conf | awk -F= -v k="$k" '$1 == k { v = $2 } END { print v }')
   [[ $last == 30s ]] || fail "effective $k is $last"
 done
-for f in microos-sleep-log microos-wake-reason; do
+for f in microos-sleep-log microos-wake-reason microos-hexagonrpcd-adsp; do
   [[ $(stat -c %a "/usr/lib/systemd/system-sleep/$f") == 755 ]] || fail "system-sleep/$f is not 755"
 done
 dtb=/usr/lib/modules/$kver/dtb/$(sed -n 's/^MICROOS_DTB=//p' /usr/lib/microos/bootimg.conf)
@@ -523,6 +530,28 @@ rules=/usr/lib/udev/rules.d/91-microos-y700-bdaddr.rules
   || fail "91-microos-y700-bdaddr.rules"
 udevadm verify --no-style "$rules" >/dev/null 2>&1 || fail "$rules does not verify"
 [[ -x /usr/bin/btmgmt && -x /usr/bin/debugfs ]] || fail "btmgmt or debugfs missing"
+for f in /usr/libexec/microos/microos-adsp-sensors /usr/lib/systemd/system-sleep/microos-hexagonrpcd-adsp; do
+  [[ -f $f && ! -L $f && $(stat -c '%a %U %G' "$f") == '755 root root' ]] || fail "$f missing, mode or owner"
+done
+command -v hexagonrpcd >/dev/null || fail "hexagonrpcd is not on PATH"
+adsprules=/usr/lib/udev/rules.d/70-microos-adsp-sensors.rules
+for r in 'SUBSYSTEM=="remoteproc", ATTR{name}=="adsp", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-adsp-sensors.service"' \
+  'SUBSYSTEM=="misc", KERNEL=="fastrpc-adsp", TAG+="systemd", ENV{SYSTEMD_WANTS}+="microos-hexagonrpcd-adsp.service"'; do
+  grep -qxF "$r" "$adsprules" || fail "$adsprules lacks $r"
+done
+hexunit=/usr/lib/systemd/system/microos-hexagonrpcd-adsp.service
+grep -qx 'ExecStart=/usr/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -s -R /run/microos/adsp/current/hexagonfs' \
+  "$hexunit" || fail "microos-hexagonrpcd-adsp.service ExecStart"
+grep -qx 'DynamicUser=yes' "$hexunit" || fail "microos-hexagonrpcd-adsp.service is not DynamicUser"
+for l in 'ExecStartPre=+/usr/bin/chown root:hexagonrpc /dev/fastrpc-adsp' 'ExecStartPre=+/usr/bin/chmod 0660 /dev/fastrpc-adsp' \
+  'ExecStartPre=+/usr/bin/chgrp -R hexagonrpc /run/microos/adsp/current/hexagonfs/sensors/persist' \
+  'ExecStartPre=+/usr/bin/chmod -R g+rwX /run/microos/adsp/current/hexagonfs/sensors/persist' \
+  'ReadWritePaths=/run/microos/adsp' 'UMask=0007'; do
+  grep -qxF "$l" "$hexunit" || fail "microos-hexagonrpcd-adsp.service lacks $l"
+done
+grep -qx 'Wants=microos-adsp-sensors.service' "$hexunit" || fail "microos-hexagonrpcd-adsp.service does not want microos-adsp-sensors.service"
+grep -qx 'ConditionPathIsDirectory=/run/microos/adsp/current/hexagonfs' "$hexunit" ||
+  fail "microos-hexagonrpcd-adsp.service does not need the hexagonfs tree"
 pw=/usr/bin/steamos-polkit-helpers/steamos-priv-write
 [[ $(stat -c %a "$pw") == 755 ]] || fail "$pw is not 755"
 ! "$pw" /etc/passwd 1 2>/dev/null || fail "$pw writes outside backlight brightness"
@@ -646,7 +675,8 @@ done
 for u in microos-openh264; do
   ! getent passwd "$u" >/dev/null || fail "user $u exists"
 done
-! getent group hexagonrpc >/dev/null || fail "group hexagonrpc exists"
+hexgid=$(getent group hexagonrpc | cut -d: -f3) || fail "group hexagonrpc missing"
+(( hexgid < 1000 )) || fail "hexagonrpc is not a system group"
 rules=$(sudo -l -U micro)
 grep -q '(ALL) ALL' <<< "$rules" || fail "micro has no wheel sudo rule"
 ! grep -q NOPASSWD <<< "$rules" || fail "micro has a NOPASSWD rule"
