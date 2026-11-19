@@ -6,7 +6,6 @@
 0006-backlight-ktz8866-Set-boost-OVP-inductor-and-LED-cur.patch
 0013-iommu-arm-smmu-qcom-Add-SM8650-MDSS-compatible-to-cl.patch
 0014-drm-msm-dsi-Run-bonded-links-on-their-own-PLLs-when-.patch
-0015-drm-msm-dsi-phy-Unprepare-the-iface-clk-across-system-.patch
 0007-dt-bindings-input-touchscreen-Add-Novatek-NT36523-SP.patch
 0008-Input-add-Novatek-NT36523-SPI-touchscreen-driver.patch
 0009-dt-bindings-input-awinic-aw86927-Add-AW86937.patch
