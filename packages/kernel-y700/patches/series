@@ -37,3 +37,5 @@
 0092-dt-bindings-vendor-prefixes-Add-SmartSens-Technology.patch
 0093-media-dt-bindings-i2c-Add-SmartSens-SC202CS-image-se.patch
 0094-media-i2c-Add-SmartSens-SC202CS-image-sensor-driver.patch
+0095-media-dt-bindings-i2c-Add-GalaxyCore-GC13A0-image-se.patch
+0096-media-i2c-Add-GalaxyCore-GC13A0-image-sensor-driver.patch
