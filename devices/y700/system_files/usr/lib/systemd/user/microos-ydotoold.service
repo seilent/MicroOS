@@ -1,0 +1,6 @@
+[Unit]
+Description=ydotoold for the desktop shell
+PartOf=microos-desktop.service
+
+[Service]
+ExecStart=/usr/bin/ydotoold

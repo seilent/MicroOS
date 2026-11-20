@@ -25,6 +25,10 @@ fail() { echo "FAIL: $*" >&2; rc=1; }
   fail "tmpfiles.d/microos-session.conf"
 [[ $(< "$tree/usr/lib/systemd/user/gamescope-session-plus@.service.d/10-microos-track.conf") == $'[Unit]\nWants=microos-session-alive@%i.timer\n\n[Service]\nExecStopPost=/usr/libexec/microos/microos-session-track stop %i' ]] ||
   fail "gamescope-session-plus@ 10-microos-track.conf"
+[[ $(< "$tree/usr/lib/systemd/user/microos-ydotoold.service") == $'[Unit]\nDescription=ydotoold for the desktop shell\nPartOf=microos-desktop.service\n\n[Service]\nExecStart=/usr/bin/ydotoold' ]] ||
+  fail "microos-ydotoold.service"
+[[ $(< "$tree/usr/lib/systemd/user/microos-desktop.service.d/50-microos-ydotoold.conf") == $'[Unit]\nWants=microos-ydotoold.service' ]] ||
+  fail "microos-desktop 50-microos-ydotoold.conf"
 bl='sys-subsystem-backlight-devices-ktz8866\x2dbacklight.device'
 d=$tree/usr/lib/systemd/system/microsetd.service.d/50-microos-y700.conf
 for l in "Wants=$bl" "After=$bl" Environment=MICROSET_BACKLIGHT=/sys/class/backlight/ktz8866-backlight Environment=MICROSET_ALSA_CARD= \

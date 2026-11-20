@@ -107,7 +107,7 @@ for u in pipewire.socket pipewire-pulse.socket wireplumber.service; do
 done
 null=/usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
 grep -qF 'factory.name = support.null-audio-sink' "$null" && grep -qF 'priority.session = 1' "$null" || fail "$null"
-[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-desktop.service\n/usr/lib/systemd/user/microos-desktop.service.d\n/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-ii-seed.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service' ]] \
+[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-desktop.service\n/usr/lib/systemd/user/microos-desktop.service.d\n/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-ii-seed.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service\n/usr/lib/systemd/user/microos-ydotoold.service' ]] \
   || fail "MicroOS user units: $(compgen -G '/usr/lib/systemd/user/microos-*' | tr '\n' ' ')"
 [[ $(< /usr/lib/systemd/system-preset/50-microos.preset) == 'enable microos-*' ]] || fail "50-microos.preset"
 
@@ -212,7 +212,9 @@ kept=(
   /usr/lib/systemd/user/microos-desktop.service.d/20-microos-ii-seed.conf
   /usr/lib/systemd/user/microos-desktop.service.d/30-hypr-config.conf
   /usr/lib/systemd/user/microos-desktop.service.d/40-microos-powerkey.conf
+  /usr/lib/systemd/user/microos-desktop.service.d/50-microos-ydotoold.conf
   /usr/lib/systemd/user/microos-ii-seed.service
+  /usr/lib/systemd/user/microos-ydotoold.service
   /usr/lib/systemd/user/xdg-desktop-portal.service.d/50-microos-desktop.conf
   /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf
   /usr/lib/systemd/user/microos-desktop.service
