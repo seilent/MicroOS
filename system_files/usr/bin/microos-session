@@ -560,8 +560,12 @@ up() {
   [[ $name =~ $namere ]] || exit 2
   ids || exit 1
   read_current
-  if [[ $cur_name != "$name" || $cur_unit != "gamescope-session-plus@$name.service" ]]; then
+  if [[ $cur_name != "$name" ]]; then
     log "up: $name is not the current session"
+    exit 1
+  fi
+  if ! load "$name" || [[ $cur_unit != "$UNIT" ]]; then
+    log "up: $name does not run the unit its entry lists"
     exit 1
   fi
   out=$(as_user systemctl --user show -p ActiveState -p ActiveEnterTimestampMonotonic -p InvocationID "$cur_unit" \

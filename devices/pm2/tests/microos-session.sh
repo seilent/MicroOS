@@ -911,6 +911,30 @@ rm -f "$FAKE/sddm-up"
 r=0
 "$session" up steam 2> /dev/null || r=$?
 [[ $r == 1 ]] || fail "up of an inactive session accepted"
+printf 'DESKTOP=desk.desktop\nUNIT=microos-desk.service\nSTOP=unit\nDEFAULT=no\n' > "$sd/desk.conf"
+echo '[Desktop Entry]' > "$root/usr/share/wayland-sessions/desk.desktop"
+echo '[Service]' > "$root/usr/lib/systemd/user/microos-desk.service"
+rm -f "$run/session-up" "$state/session/attempt"
+printf 'desk microos-desk.service %s %s\n' "$s" "$(mono)" > "$run/session-current"
+echo active > "$FAKE/units/microos-desk.service"
+echo $(( $(mono) - 61000000 )) > "$FAKE/enter/microos-desk.service"
+printf 'name=desk\ncount=2\nfallback=0\ntarget=desk\n' > "$state/session/attempt"
+"$session" up desk 2> /dev/null || fail "up of a session on its own unit refused"
+[[ $(cat "$run/session-up" 2> /dev/null) == "desk $s 0123456789abcdef0123456789abcdef" ]] || fail "session-up of desk: $(cat "$run/session-up" 2> /dev/null)"
+[[ ! -e $state/session/attempt ]] || fail "up of desk kept its attempt"
+rm -f "$run/session-up"
+printf 'desk gamescope-session-plus@desk.service %s %s\n' "$s" "$(mono)" > "$run/session-current"
+echo active > "$FAKE/units/gamescope-session-plus@desk.service"
+echo $(( $(mono) - 61000000 )) > "$FAKE/enter/gamescope-session-plus@desk.service"
+r=0
+"$session" up desk 2> /dev/null || r=$?
+[[ $r == 1 && ! -e $run/session-up ]] || fail "up of a current unit that is not the entry's unit accepted"
+printf 'desk microos-desk.service %s %s\n' "$s" "$(mono)" > "$run/session-current"
+rm -f "$root/usr/share/wayland-sessions/desk.desktop"
+r=0
+"$session" up desk 2> /dev/null || r=$?
+[[ $r == 1 && ! -e $run/session-up ]] || fail "up of a current session whose entry does not load accepted"
+rm -f "$sd/desk.conf" "$root/usr/share/wayland-sessions/desk.desktop" "$root/usr/lib/systemd/user/microos-desk.service"
 
 giveup() { r=0; "$libexec/microos-session-giveup" "$1" > "$tmp/out" 2>&1 || r=$?; }
 starts() {
