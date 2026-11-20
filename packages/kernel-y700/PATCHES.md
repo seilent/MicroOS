@@ -54,3 +54,4 @@ Config: `tb321fu.config` holds the board lines, `microos.config` the image level
 | `0096-media-i2c-Add-GalaxyCore-GC13A0-image-sensor-driver.patch` | mine | chip ID 0x13a0 at probe on CCI0 master 0; `cam -l` lists the sensor; one 4208x3120 capture at 30 fps with no CSID or CSIPHY errors in dmesg |
 | `0097-media-dt-bindings-i2c-Add-SmartSens-SC820CS-image-se.patch` | mine | `dt_binding_check` of the binding; `dt-validate` on the TB321FU DTBs |
 | `0098-media-i2c-Add-SmartSens-SC820CS-image-sensor-driver.patch` | mine | chip ID 0xd154 at probe on CCI1 master 0; `cam -l` lists the sensor; one 3264x2448 capture at 30 fps with no CSID or CSIPHY errors in dmesg |
+| `0099-drm-msm-dpu-program-DSC-once-per-encoder-enable.patch` | mine | no `vblank timeout: 400000` (the CTL DSC flush left set for six frames) in 27 min of the Steam session, against 3 pairs in 14 min without it |

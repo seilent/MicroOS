@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 20 Nov 2026 18:20:00 +0900
+Subject: [PATCH] drm/msm/dpu: program DSC once per encoder enable
+
+The encoder rewrote both DSC engines and flushed them on every kickoff.
+Program them on the first kickoff after enable or a hardware reset and
+leave the DSC flush out of later commits.
+
+Signed-off-by: seilent <github@seilent.net>
+---
+ drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+--- a/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
++++ b/drivers/gpu/drm/msm/disp/dpu1/dpu_encoder.c
+@@ -215,6 +215,7 @@
+ 
+ 	/* DSC configuration */
+ 	struct drm_dsc_config *dsc;
++	bool dsc_programmed;
+ };
+ 
+ #define to_dpu_encoder_virt(x) container_of(x, struct dpu_encoder_virt, base)
+@@ -1342,6 +1343,7 @@
+ 
+ 	dpu_enc = to_dpu_encoder_virt(drm_enc);
+ 	dpu_enc->dsc = dpu_encoder_get_dsc_config(drm_enc);
++	dpu_enc->dsc_programmed = false;
+ 
+ 	atomic_set(&dpu_enc->frame_done_timeout_cnt, 0);
+ 
+@@ -2094,10 +2096,13 @@
+ 		for (i = 0; i < dpu_enc->num_phys_encs; i++) {
+ 			dpu_encoder_helper_hw_reset(dpu_enc->phys_encs[i]);
+ 		}
++		dpu_enc->dsc_programmed = false;
+ 	}
+ 
+-	if (dpu_enc->dsc)
++	if (dpu_enc->dsc && !dpu_enc->dsc_programmed) {
+ 		dpu_encoder_prep_dsc(dpu_enc, dpu_enc->dsc);
++		dpu_enc->dsc_programmed = true;
++	}
+ }
+ 
+ /**
+-- 
+2.47.0
