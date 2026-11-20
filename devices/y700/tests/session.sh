@@ -25,6 +25,10 @@ fail() { echo "FAIL: $*" >&2; rc=1; }
   fail "tmpfiles.d/microos-session.conf"
 [[ $(< "$tree/usr/lib/systemd/user/gamescope-session-plus@.service.d/10-microos-track.conf") == $'[Unit]\nWants=microos-session-alive@%i.timer\n\n[Service]\nExecStopPost=/usr/libexec/microos/microos-session-track stop %i' ]] ||
   fail "gamescope-session-plus@ 10-microos-track.conf"
+[[ $(< "$tree/usr/lib/systemd/user/microos-desktop.service.d/10-microos-track.conf") == $'[Unit]\nWants=microos-session-alive-desktop.timer\n\n[Service]\nExecStopPost=/usr/libexec/microos/microos-session-track stop desktop' ]] ||
+  fail "microos-desktop 10-microos-track.conf"
+[[ $(< "$tree/usr/lib/systemd/user/microos-session-alive-desktop.timer") == $'[Unit]\nDescription=The desktop session up for 60 s\nDefaultDependencies=no\nBindsTo=microos-desktop.service\nAfter=microos-desktop.service\n\n[Timer]\nOnActiveSec=60\nAccuracySec=1s\nUnit=microos-session-alive@desktop.service' ]] ||
+  fail "microos-session-alive-desktop.timer"
 [[ $(< "$tree/usr/lib/systemd/user/microos-ydotoold.service") == $'[Unit]\nDescription=ydotoold for the desktop shell\nPartOf=microos-desktop.service\n\n[Service]\nExecStart=/usr/bin/ydotoold' ]] ||
   fail "microos-ydotoold.service"
 [[ $(< "$tree/usr/lib/systemd/user/microos-desktop.service.d/50-microos-ydotoold.conf") == $'[Unit]\nWants=microos-ydotoold.service' ]] ||

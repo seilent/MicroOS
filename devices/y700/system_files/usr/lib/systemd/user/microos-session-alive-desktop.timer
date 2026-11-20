@@ -1,0 +1,10 @@
+[Unit]
+Description=The desktop session up for 60 s
+DefaultDependencies=no
+BindsTo=microos-desktop.service
+After=microos-desktop.service
+
+[Timer]
+OnActiveSec=60
+AccuracySec=1s
+Unit=microos-session-alive@desktop.service
