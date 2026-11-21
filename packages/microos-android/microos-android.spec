@@ -20,6 +20,7 @@ Requires:       podman
 Requires:       passt
 Requires:       catatonit
 Requires:       android-tools
+Requires:       which
 Requires:       attr
 Requires:       curl
 Requires:       unzip
@@ -28,6 +29,7 @@ Requires:       python3-gobject
 Requires:       gtk3
 Requires:       rsync
 Requires:       procps-ng
+Requires:       inotify-tools
 
 %description
 The Android session of MicroOS: Valve's Lepton runtime in a rootless
@@ -51,6 +53,8 @@ test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-android-session-wa
 test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-android-lsfg)" = 755
 test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-android-perf)" = 755
 test "$(stat -c %a %{buildroot}%{_datadir}/microos-android/cmd)" = 755
+test "$(stat -c %a %{buildroot}%{_bindir}/steamvr)" = 755
+test "$(readlink %{buildroot}%{_prefix}/lib/android-sdk/platform-tools/adb)" = ../../../bin/adb
 test -z "$(find %{buildroot}%{_libexecdir}/microos %{buildroot}%{_bindir} -type f -perm /022)"
 test -f %{buildroot}%{_datadir}/microos-android/restrictions-stub.jar
 test -f %{buildroot}%{_datadir}/microos-android/restrictions-stub.rc
@@ -65,6 +69,8 @@ test -f %{buildroot}%{_datadir}/microos-android/restrictions-stub.rc
 %{_libexecdir}/microos/microos-lepton-steam
 %{_libexecdir}/microos/microos-liblepton.sh
 %{_bindir}/microos-android
+%{_bindir}/steamvr
+%{_prefix}/lib/android-sdk/
 %{_userunitdir}/microos-android.service
 %{_userunitdir}/microos-android-gapps-setup.service
 %{_userunitdir}/microos-android-pad.service

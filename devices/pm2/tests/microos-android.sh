@@ -15,6 +15,7 @@ scripts=(
   "$repo/packages/microos-android/build.sh"
   "$repo/packages/microos-android/build/stub.sh"
   "$repo/packages/microos-android/data/usr/bin/microos-android"
+  "$repo/packages/microos-android/data/usr/bin/steamvr"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-check"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-install"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-keyboard"

@@ -9,7 +9,7 @@ chmod 755 "$top"
 trap 'rm -rf "${top:?}"' EXIT
 mkdir -p "$top/SOURCES" "$top/assets"
 
-tar -C "$src/data" --owner=0 --group=0 --mode=go-w --transform 's,^\.,microos-android-data,' \
+tar -C "$src/data" --owner=0 --group=0 --mode=go-w --transform 's,^\.,microos-android-data,S' \
   -czf "$top/SOURCES/microos-android-data.tar.gz" .
 tar -C "$src/restrictions-stub" --owner=0 --group=0 --mode=go-w --transform 's,^\.,microos-android-stub,' \
   -czf "$top/SOURCES/microos-android-stub.tar.gz" .

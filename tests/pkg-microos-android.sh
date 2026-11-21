@@ -26,7 +26,8 @@ want=$(printf '%s\n' microos-android-data.tar.gz microos-android-stub.tar.gz mic
 if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$sources")"; fi
 
 requires=$(rpm -qp --requires "$rpm" | awk '{ print $1 }')
-need=(microos-android-guestos podman passt catatonit android-tools attr curl unzip python3 python3-gobject gtk3 rsync procps-ng)
+need=(microos-android-guestos podman passt catatonit android-tools which attr curl unzip python3 python3-gobject gtk3 rsync procps-ng
+  inotify-tools)
 for r in "${need[@]}"; do
   if ! grep -qx "$r" <<<"$requires"; then fail "does not require $r"; fi
 done
@@ -46,6 +47,8 @@ for f in \
   /usr/libexec/microos/microos-lepton-steam \
   /usr/libexec/microos/microos-liblepton.sh \
   /usr/bin/microos-android \
+  /usr/bin/steamvr \
+  /usr/lib/android-sdk/platform-tools/adb \
   /usr/lib/systemd/user/microos-android.service \
   /usr/lib/systemd/user/microos-lepton-prepare.service \
   /usr/lib/systemd/user/microos-android-gapps-setup.service \
@@ -116,9 +119,17 @@ for f in microos-liblepton.sh microos-lepton-lib.sh; do
     fail "/usr/libexec/microos/$f carries a shebang, it is sourced"
   fi
 done
-if [[ $(stat -c %a "$root/usr/bin/microos-android" 2>/dev/null) != 755 ]]; then
-  fail "/usr/bin/microos-android is not 755"
+for f in microos-android steamvr; do
+  if [[ $(stat -c %a "$root/usr/bin/$f" 2>/dev/null) != 755 ]]; then
+    fail "/usr/bin/$f is not 755"
+  fi
+done
+if [[ ! -L $root/usr/lib/android-sdk/platform-tools/adb || $(readlink "$root/usr/lib/android-sdk/platform-tools/adb") != ../../../bin/adb ]]; then
+  fail "/usr/lib/android-sdk/platform-tools/adb is not the link to ../../../bin/adb"
 fi
+vr=$(env -u XDG_DATA_HOME HOME="$tmp/steamvr" "$root/usr/bin/steamvr" path) || fail "steamvr path failed"
+if [[ $vr != "$tmp/steamvr/.local/share/microos-lepton/steamvr/runtime" || ! -d $vr ]]; then fail "steamvr path printed $vr"; fi
+if env HOME="$tmp/steamvr" "$root/usr/bin/steamvr" launch > /dev/null 2>&1; then fail "steamvr launch did not refuse"; fi
 if [[ $(stat -c %a "$root/usr/share/microos-android/cmd" 2>/dev/null) != 755 ]]; then
   fail "/usr/share/microos-android/cmd is not 755"
 fi

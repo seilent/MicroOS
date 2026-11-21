@@ -284,7 +284,7 @@ extra=$(LC_ALL=C comm -23 <(printf '%s\n' "${ours[@]}") <(printf '%s\n' "${kept[
 [[ -z $extra ]] || fail "MicroOS files outside the M2 set: $(tr '\n' ' ' <<< "$extra")"
 [[ -f /usr/share/microos/quickshell/ii/shell.qml && -d /usr/share/microos/matugen \
   && -f /usr/share/microos/hypr/hyprland.lua ]] || fail "ii shell, matugen, or hypr tree not shipped"
-for f in /usr/bin/steamvr /usr/lib/hwsupport /usr/lib/android-sdk /usr/share/inputplumber /usr/share/steamos-manager \
+for f in /usr/lib/hwsupport /usr/share/inputplumber /usr/share/steamos-manager \
   /usr/share/gamescope-session-plus/sessions.d/recovery /usr/libexec/microos/microos-steam-compat \
   /usr/libexec/microos/microos-pad-lib /usr/share/plymouth/themes/microos \
   /usr/lib/udev/rules.d/59-microos-y700-input.rules; do
