@@ -33,8 +33,23 @@ copy() {
   done < "$src"
 }
 
+subids() {
+  local db=$1 name l src=$root/usr/etc/$1 dst=$root/etc/$1
+  [[ -f $src && -f $dst ]] || return 0
+  while IFS=: read -r name _; do
+    [[ -n $name ]] || continue
+    has 1 "$name" "$dst" && continue
+    l=$(line "$name" "$src")
+    [[ ! -s $dst || -z $(tail -c 1 "$dst") ]] || printf '\n' >> "$dst"
+    printf '%s\n' "$l" >> "$dst"
+    say "added $name to $db from /usr/etc/$db"
+  done < "$src"
+}
+
 copy group gshadow
 copy passwd shadow
+subids subuid
+subids subgid
 
 while read -r t u g _; do
   if [[ $t == m && $u == micro ]] && ! has 1 "$g" "$root/etc/group"; then

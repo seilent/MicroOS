@@ -76,6 +76,39 @@ run
 [[ $code == 0 ]] || fail "build root without /usr/etc: exit $code"
 grep -qx 'video:x:39:' "$r/etc/group" || fail "build root: video not copied from /usr/lib/group"
 
+mk
+printf 'micro:524288:65536\n' > "$r/usr/etc/subuid"
+printf 'micro:524288:65536\n' > "$r/usr/etc/subgid"
+: > "$r/etc/subuid"
+printf 'other:100000:65536\n' > "$r/etc/subgid"
+run
+[[ $code == 0 ]] || fail "subordinate ids: exit $code: $out"
+[[ $(< "$r/etc/subuid") == 'micro:524288:65536' ]] || fail "an empty /etc/subuid did not get micro: $(cat "$r/etc/subuid")"
+[[ $(< "$r/etc/subgid") == $'other:100000:65536\nmicro:524288:65536' ]] || fail "/etc/subgid: $(cat "$r/etc/subgid")"
+grep -q 'added micro to subuid from /usr/etc/subuid' <<< "$out" || fail "no message for subuid: $out"
+cp "$r/etc/subuid" "$tmp/subuid.once"
+cp "$r/etc/subgid" "$tmp/subgid.once"
+run
+cmp -s "$r/etc/subuid" "$tmp/subuid.once" || fail "second run changed /etc/subuid"
+cmp -s "$r/etc/subgid" "$tmp/subgid.once" || fail "second run changed /etc/subgid"
+
+mk
+printf 'micro:524288:65536\n' > "$r/usr/etc/subuid"
+printf 'other:100000:65536' > "$r/etc/subuid"
+run
+[[ $(< "$r/etc/subuid") == $'other:100000:65536\nmicro:524288:65536' ]] || fail "no newline before micro: $(cat "$r/etc/subuid")"
+
+mk
+printf 'micro:524288:65536\n' > "$r/usr/etc/subuid"
+printf 'micro:100000:65536\n' > "$r/etc/subuid"
+run
+[[ $(< "$r/etc/subuid") == 'micro:100000:65536' ]] || fail "a local micro range was changed: $(cat "$r/etc/subuid")"
+
+mk
+printf 'micro:524288:65536\n' > "$r/usr/etc/subuid"
+run
+[[ ! -e $r/etc/subuid ]] || fail "/etc/subuid made where the install has none"
+
 if command -v systemd-sysusers > /dev/null; then
   mk
   sed -i '/^video:/d' "$r/usr/etc/group"

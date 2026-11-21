@@ -41,7 +41,7 @@ while IFS= read -r -d '' f; do
     n=$(( n + 1 ))
     echo "$me: ${f#./} from $from"
     case $f in
-      ./group|./gshadow|./passwd|./shadow) accounts=1 ;;
+      ./group|./gshadow|./passwd|./shadow|./subuid|./subgid) accounts=1 ;;
     esac
   else
     say "${f#./} not carried"
