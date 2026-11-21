@@ -142,10 +142,15 @@ storage_flag() {
     [[ -n "${value}" ]] || { say "system card flag is empty, ignoring it"; return 1; }
     case "${value}" in
         none) return 2 ;;
+        internal) ;;
         mmcblk[0-9]*) [[ "${value}" =~ ^mmcblk[0-9]+$ ]] || { say "system card flag reads ${value}, ignoring it"; return 1; } ;;
         *) say "system card flag reads ${value}, ignoring it"; return 1 ;;
     esac
     printf '%s\n' "${value}"
+}
+
+storage_internal() {
+    [[ "$(storage_flag 0 2>/dev/null)" == internal ]]
 }
 
 storage_card_words() {
@@ -214,14 +219,14 @@ storage_state() {
         flag=
     fi
     if [[ -n "${card}" ]]; then
-        if [[ "${flag}" =~ ^mmcblk[0-9]+$ ]]; then
+        if [[ "${flag}" =~ ^mmcblk[0-9]+$ || "${flag}" == internal ]]; then
             printf 'no-card\n'
             return 0
         fi
         storage_card_words "${id}" "${card}"
         return 0
     fi
-    if [[ "${flag}" =~ ^mmcblk[0-9]+$ ]]; then
+    if [[ "${flag}" =~ ^mmcblk[0-9]+$ || "${flag}" == internal ]]; then
         printf 'on-os-card\n%s/external\n' "${STORAGE_CONTEXT}"
         return 0
     fi

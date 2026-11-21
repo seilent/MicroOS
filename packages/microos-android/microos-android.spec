@@ -22,6 +22,7 @@ Requires:       catatonit
 Requires:       android-tools
 Requires:       which
 Requires:       attr
+Requires:       btrfs-progs
 Requires:       curl
 Requires:       unzip
 Requires:       python3

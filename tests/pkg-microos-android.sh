@@ -26,7 +26,7 @@ want=$(printf '%s\n' microos-android-data.tar.gz microos-android-stub.tar.gz mic
 if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$sources")"; fi
 
 requires=$(rpm -qp --requires "$rpm" | awk '{ print $1 }')
-need=(microos-android-guestos podman passt catatonit android-tools which attr curl unzip python3 python3-gobject gtk3 rsync procps-ng
+need=(microos-android-guestos podman passt catatonit android-tools which attr btrfs-progs curl unzip python3 python3-gobject gtk3 rsync procps-ng
   inotify-tools)
 for r in "${need[@]}"; do
   if ! grep -qx "$r" <<<"$requires"; then fail "does not require $r"; fi

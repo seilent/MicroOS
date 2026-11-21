@@ -516,6 +516,21 @@ stop_client
 
 reset
 echo none > "${STATE}/job-result"
+session_serial
+background
+wait_for "^start " || true
+printf 'low-space\n' > "${MICROOS_RUNTIME_DIR}/end-reason.new"
+mv -T "${MICROOS_RUNTIME_DIR}/end-reason.new" "${MICROOS_RUNTIME_DIR}/end-reason"
+echo "microos-android-run: 19G free under /x, below the 20G floor, refusing" > "${MICROOS_RUNTIME_DIR}/start-failed"
+for _ in {1..100}; do grep -q "refusing:" "${T}/out" 2>/dev/null && break; sleep 0.05; done
+grep -q "refusing: low-space" "${T}/out" || fail "the space floor: $(cat "${T}/out")"
+state_ok 'd["last"]["result"] == "refused" and d["last"]["reason"] == "low-space"' \
+    || fail "the space floor: state $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
+grep -qx "track refuse android 4242 low-space" "${STATE}/calls" || fail "the space floor: not recorded: $(cat "${STATE}/calls")"
+stop_client
+
+reset
+echo none > "${STATE}/job-result"
 background
 wait_for "^start " || true
 echo "android exited during boot, see the boot log" > "${MICROOS_RUNTIME_DIR}/start-failed"

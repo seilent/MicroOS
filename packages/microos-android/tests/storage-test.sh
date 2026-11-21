@@ -100,7 +100,17 @@ cat > "${T}/bin/stat" <<'STUB'
 if [[ " $* " == *" -c %u "* ]]; then
     [[ ! -e "${STATE}/other-owner" ]] || { echo 4242; exit 0; }
 fi
+if [[ "$1 $2 $3" == "-f -c %T" && -e "${STATE}/fstype" ]]; then
+    cat "${STATE}/fstype"
+    exit 0
+fi
 exec /usr/bin/stat "$@"
+STUB
+cat > "${T}/bin/btrfs" <<'STUB'
+#!/usr/bin/bash
+printf 'btrfs %s\n' "$*" >> "${STATE}/btrfs"
+[[ "$1 $2" == "subvolume create" ]] || exit 1
+mkdir "$3" && echo "Create subvolume '$3'"
 STUB
 cat > "${T}/bin/cp" <<'STUB'
 #!/usr/bin/bash
@@ -391,6 +401,40 @@ resolve
 word_is on-os-card
 [[ "$(folder)" == "${MICROOS_ANDROID_CONTEXT}/external" ]] || fail "the folder reads $(folder)"
 
+case_name="internal flag"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+rm -f "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+echo internal > "${MICROOS_SYSTEM_CARD}"
+resolve
+word_is on-os-card
+[[ "$(folder)" == "${MICROOS_ANDROID_CONTEXT}/external" ]] || fail "the folder reads $(folder)"
+[[ -z "${err}" ]] || fail "the internal flag logged: ${err}"
+
+case_name="internal flag, no context"
+reset
+rm -rf "${T}/content"
+echo internal > "${MICROOS_SYSTEM_CARD}"
+resolve
+word_is on-os-card
+[[ "$(folder)" == "${MICROOS_ANDROID_CONTEXT}/external" ]] || fail "the folder reads $(folder)"
+
+case_name="internal flag, a card tie"
+reset
+card_folder
+context
+echo internal > "${MICROOS_SYSTEM_CARD}"
+resolve
+word_is no-card
+
+case_name="internal flag with more"
+reset
+mkdir -p "${MICROOS_ANDROID_CONTEXT}"
+echo internal0 > "${MICROOS_SYSTEM_CARD}"
+resolve
+word_is on-internal
+grep -q "system card flag reads internal0" "${STATE}/stderr" || fail "no log line: ${err}"
+
 case_name="flag none, context there"
 reset
 mkdir -p "${MICROOS_ANDROID_CONTEXT}"
@@ -540,6 +584,10 @@ rm -f "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
 rc=0
 out=$(MICROOS_LEPTON_STEAM_DIR_CMD="${T}/bin/o/lepton-dir" "${check}" 2> "${STATE}/stderr") || rc=$?
 [[ "${rc}" == 0 && -z "${out}" ]] || fail "the check on an SD install: exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
+echo internal > "${MICROOS_SYSTEM_CARD}"
+rc=0
+out=$(MICROOS_LEPTON_STEAM_DIR_CMD="${T}/bin/o/lepton-dir" "${check}" 2> "${STATE}/stderr") || rc=$?
+[[ "${rc}" == 0 && -z "${out}" ]] || fail "the check on an internal install: exit ${rc}, out ${out}: $(cat "${STATE}/stderr")"
 
 cli() {
     rc=0
@@ -975,6 +1023,50 @@ new_id=$(sed -n 's/^storage=//p' "${MICROOS_ANDROID_CONTEXT}/microos-android-sto
     || fail "the card folder is $(stat -c %a "${T}/content/MicroOS/Android/${new_id}" 2>/dev/null)"
 [[ ! -e "${MICROOS_ANDROID_CONTEXT}.tmp" ]] || fail "the temp dir is left"
 [[ ! -e "${T}/content/MicroOS/Android/0123456789abcdef" ]] || fail "the stale card folder is left"
+
+case_name="context creation, internal on btrfs"
+reset
+rm -rf "${MICROOS_ANDROID_CONTEXT}" "${T}/content"
+echo internal > "${MICROOS_SYSTEM_CARD}"
+echo btrfs > "${STATE}/fstype"
+: > "${STATE}/btrfs"
+run_create
+rm -f "${STATE}/fstype"
+[[ "${rc}" == 0 ]] || fail "the creation: exit ${rc}: ${err}"
+[[ "$(cat "${STATE}/btrfs")" == "btrfs subvolume create ${MICROOS_ANDROID_CONTEXT}.tmp/external" ]] \
+    || fail "external is not made as a subvolume: $(cat "${STATE}/btrfs")"
+[[ "$(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external")" == 770 ]] \
+    || fail "external is $(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external" 2>/dev/null)"
+grep -q '^card=' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" && fail "the tie names a card: $(tie)"
+grep -qE '^storage=[0-9a-f]{16}$' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" || fail "the tie has no id: $(tie)"
+[[ -z "${out}" ]] || fail "the subvolume line reached stdout: ${out}"
+[[ ! -e "${MICROOS_ANDROID_CONTEXT}.tmp" ]] || fail "the temp dir is left"
+
+case_name="context creation, internal on another filesystem"
+reset
+rm -rf "${MICROOS_ANDROID_CONTEXT}" "${T}/content"
+echo internal > "${MICROOS_SYSTEM_CARD}"
+echo ext2/ext3 > "${STATE}/fstype"
+: > "${STATE}/btrfs"
+run_create
+rm -f "${STATE}/fstype"
+[[ "${rc}" == 0 ]] || fail "the creation: exit ${rc}: ${err}"
+[[ ! -s "${STATE}/btrfs" ]] || fail "btrfs ran off btrfs: $(cat "${STATE}/btrfs")"
+[[ -d "${MICROOS_ANDROID_CONTEXT}/external" && "$(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external")" == 770 ]] \
+    || fail "external is $(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external" 2>/dev/null)"
+
+case_name="context creation, the SD install on btrfs"
+reset
+rm -rf "${MICROOS_ANDROID_CONTEXT}" "${T}/content"
+echo mmcblk0 > "${MICROOS_SYSTEM_CARD}"
+echo btrfs > "${STATE}/fstype"
+: > "${STATE}/btrfs"
+run_create
+rm -f "${STATE}/fstype"
+[[ "${rc}" == 0 ]] || fail "the creation: exit ${rc}: ${err}"
+[[ ! -s "${STATE}/btrfs" ]] || fail "a subvolume was made on the SD install: $(cat "${STATE}/btrfs")"
+[[ -d "${MICROOS_ANDROID_CONTEXT}/external" && "$(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external")" == 770 ]] \
+    || fail "external is $(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external" 2>/dev/null)"
 
 case_name="context creation, a stale id that is not hex"
 reset

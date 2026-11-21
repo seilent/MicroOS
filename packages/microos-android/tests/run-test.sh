@@ -106,7 +106,24 @@ cat > "${T}/bin/stat" <<'STUB'
 if [[ " $* " == *" -c %u "* ]]; then
     [[ ! -e "${STATE}/other-owner" ]] || { echo 4242; exit 0; }
 fi
+if [[ "$1 $2 $3" == "-f -c %T" ]]; then
+    cat "${STATE}/fstype" 2>/dev/null || echo ext2/ext3
+    exit 0
+fi
 exec /usr/bin/stat "$@"
+STUB
+cat > "${T}/bin/btrfs" <<'STUB'
+#!/usr/bin/bash
+printf 'btrfs %s\n' "$*" >> "${STATE}/btrfs"
+[[ "$1 $2" == "subvolume create" ]] || exit 1
+mkdir "$3" && echo "Create subvolume '$3'"
+STUB
+cat > "${T}/bin/df" <<'STUB'
+#!/usr/bin/bash
+printf 'df %s\n' "$*" >> "${STATE}/df"
+[[ ! -e "${STATE}/df-fail" ]] || { echo "df: cannot read" >&2; exit 1; }
+avail=$(cat "${STATE}/avail" 2>/dev/null || echo 107374182400)
+printf '%*s\n%s\n' "${#avail}" Avail "${avail}"
 STUB
 cat > "${T}/bin/pgrep" <<'STUB'
 #!/usr/bin/bash
@@ -1181,6 +1198,102 @@ run
 grep -q '^storage=[0-9a-f]\{16\}$' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" || fail "the SD tie: $(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" 2>/dev/null)"
 grep -q '^card=' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" && fail "the SD tie holds a card line"
 [[ "$(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external")" == 770 ]] || fail "the SD external is $(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external" 2>/dev/null)"
+
+case_name="context creation on internal storage"
+reset
+rm -rf "${MICROOS_ANDROID_CONTEXT}"
+echo internal > "${MICROOS_SYSTEM_CARD}"
+echo btrfs > "${STATE}/fstype"
+run
+[[ "${rc}" == 0 ]] || fail "the creation: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(cat "${STATE}/btrfs" 2>/dev/null)" == "btrfs subvolume create ${MICROOS_ANDROID_CONTEXT}.tmp/external" ]] \
+    || fail "external is not made as a subvolume: $(cat "${STATE}/btrfs" 2>/dev/null)"
+grep -q '^storage=[0-9a-f]\{16\}$' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" \
+    || fail "the internal tie: $(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" 2>/dev/null)"
+grep -q '^card=' "${MICROOS_ANDROID_CONTEXT}/microos-android-storage" && fail "the internal tie holds a card line"
+[[ "$(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external")" == 770 ]] \
+    || fail "the internal external is $(stat -c %a "${MICROOS_ANDROID_CONTEXT}/external" 2>/dev/null)"
+grep -qx "MICROOS_ANDROID_EXTERNAL=${MICROOS_ANDROID_CONTEXT}/external" "${STATE}/env" \
+    || fail "the internal folder is not the override: $(grep MICROOS_ANDROID_EXTERNAL "${STATE}/env" 2>/dev/null)"
+
+case_name="internal storage, a second start"
+reset
+echo internal > "${MICROOS_SYSTEM_CARD}"
+mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+printf 'storage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+run
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "lepton start android" "${STATE}/events" || fail "lepton not started: $(cat "${STATE}/events")"
+[[ ! -e "${STATE}/btrfs" ]] || fail "btrfs ran for an existing context: $(cat "${STATE}/btrfs")"
+
+case_name="space floor"
+internal_context() {
+    echo internal > "${MICROOS_SYSTEM_CARD}"
+    mkdir -p "${MICROOS_ANDROID_CONTEXT}/external"
+    printf 'storage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+}
+reset
+internal_context
+echo $(( (20 << 30) - 1 )) > "${STATE}/avail"
+run
+[[ "${rc}" == 1 ]] || fail "below the floor exited ${rc}: $(cat "${STATE}/stderr")"
+[[ "$(reason_of)" == low-space ]] || fail "below the floor wrote $(reason_of)"
+grep -qF "19G free under ${MICROOS_ANDROID_CONTEXT}, below the 20G floor, refusing" "${STATE}/stderr" \
+    || fail "below the floor: no log: $(cat "${STATE}/stderr")"
+grep -qxF -- "df -B1 --output=avail -- ${MICROOS_ANDROID_CONTEXT}" "${STATE}/df" || fail "df asked about $(cat "${STATE}/df")"
+[[ ! -s "${STATE}/events" ]] || fail "below the floor: lepton started: $(cat "${STATE}/events")"
+reset
+internal_context
+echo $(( 20 << 30 )) > "${STATE}/avail"
+run
+[[ "${rc}" == 0 ]] || fail "at the floor exited ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "lepton start android" "${STATE}/events" || fail "at the floor: lepton not started: $(cat "${STATE}/events")"
+reset
+internal_context
+echo 4096 > "${STATE}/avail"
+MICROOS_SPACE_FLOOR=4096 run
+[[ "${rc}" == 0 ]] || fail "a lower floor exited ${rc}: $(cat "${STATE}/stderr")"
+
+case_name="space floor before the context is made"
+reset
+rm -rf "${T}/contexts"
+echo internal > "${MICROOS_SYSTEM_CARD}"
+echo btrfs > "${STATE}/fstype"
+echo $(( 1 << 30 )) > "${STATE}/avail"
+run
+[[ "${rc}" == 1 && "$(reason_of)" == low-space ]] || fail "exit ${rc}, reason $(reason_of): $(cat "${STATE}/stderr")"
+grep -qxF -- "df -B1 --output=avail -- ${T}" "${STATE}/df" || fail "df asked about $(cat "${STATE}/df")"
+[[ ! -e "${MICROOS_ANDROID_CONTEXT}" && ! -e "${MICROOS_ANDROID_CONTEXT}.tmp" ]] || fail "the context was made below the floor"
+[[ ! -e "${STATE}/btrfs" ]] || fail "a subvolume was made below the floor: $(cat "${STATE}/btrfs")"
+
+case_name="space floor off internal storage"
+for flag in mmcblk0 none; do
+    reset
+    echo "${flag}" > "${MICROOS_SYSTEM_CARD}"
+    echo btrfs > "${STATE}/fstype"
+    echo 4096 > "${STATE}/avail"
+    if [[ "${flag}" == none ]]; then
+        mkdir -p "${MICROOS_CONTENT}/MicroOS/Android/0123456789abcdef" "${MICROOS_ANDROID_CONTEXT}/external"
+        printf 'card=CARD1-0000\nstorage=0123456789abcdef\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-storage"
+        chmod 0555 "${MICROOS_ANDROID_CONTEXT}/external"
+    fi
+    run
+    rm -rf "${MICROOS_CONTENT:?}"
+    [[ "${rc}" == 0 ]] || fail "${flag}: exit ${rc}: $(cat "${STATE}/stderr")"
+    [[ ! -e "${STATE}/df" ]] || fail "${flag}: df ran: $(cat "${STATE}/df")"
+    [[ ! -e "${STATE}/btrfs" ]] || fail "${flag}: a subvolume was made: $(cat "${STATE}/btrfs")"
+    grep -qx "lepton start android" "${STATE}/events" || fail "${flag}: lepton not started: $(cat "${STATE}/events")"
+done
+
+case_name="space unreadable"
+reset
+internal_context
+: > "${STATE}/df-fail"
+run
+[[ "${rc}" == 1 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qF "cannot read the free space under ${MICROOS_ANDROID_CONTEXT}, refusing" "${STATE}/stderr" \
+    || fail "no log: $(cat "${STATE}/stderr")"
+[[ ! -s "${STATE}/events" ]] || fail "lepton started: $(cat "${STATE}/events")"
 
 case_name="context creation, a stale id that is not hex"
 reset

@@ -21,6 +21,7 @@ STUB_DIR="${MICROOS_STUB_DIR:-/usr/share/microos-android}"
 DISPLAY_FILE="${MICROOS_DISPLAY_FILE:-/usr/share/microos-android/display}"
 OPTS="${MICROOS_OPTS:-/usr/share/microos-android/opts}"
 OPTS_TIMEOUT_S="${MICROOS_OPTS_TIMEOUT_S:-30}"
+SPACE_FLOOR="${MICROOS_SPACE_FLOOR:-21474836480}"
 EXTEND_USEC="${MICROOS_EXTEND_USEC:-240000000}"
 GMS_GRANTS="android.permission.ACCESS_FINE_LOCATION android.permission.ACCESS_COARSE_LOCATION android.permission.ACCESS_BACKGROUND_LOCATION android.permission.READ_CONTACTS android.permission.WRITE_CONTACTS"
 LEPTON_NOT_INSTALLED="Lepton is not installed. Install it in Steam."
@@ -148,7 +149,8 @@ emptying_step() {
 
 context_create() {
     local tmp="${CONTEXT}.tmp" card="" id="" kind content="" row="" stale_row="" stale_uuid=""
-    local stale="" stale_card="" stale_id="" storage_word storage_folder
+    local stale="" stale_card="" stale_id="" storage_word storage_folder fs
+    local -a make
     if [[ -e "${tmp}" || -L "${tmp}" ]]; then
         stale_card=$(sed -n 's/^card=//p' "${tmp}/microos-android-storage" 2>/dev/null | head -n 1) || stale_card=
         stale_id=$(sed -n 's/^storage=//p' "${tmp}/microos-android-storage" 2>/dev/null | head -n 1) || stale_id=
@@ -191,9 +193,16 @@ context_create() {
             rm -rf "${tmp:?}"
             fail "cannot make ${content}/MicroOS/Android/${id}, refusing"
         fi
-    elif ! mkdir "${tmp}/external" || ! chmod 0770 "${tmp}/external"; then
-        rm -rf "${tmp:?}"
-        fail "cannot make ${tmp}/external, refusing"
+    else
+        make=(mkdir)
+        if storage_internal; then
+            fs=$(stat -f -c %T "${tmp}") || { rm -rf "${tmp:?}"; fail "cannot read the filesystem of ${tmp}, refusing"; }
+            [[ "${fs}" != btrfs ]] || make=(btrfs subvolume create)
+        fi
+        if ! "${make[@]}" "${tmp}/external" > /dev/null || ! chmod 0770 "${tmp}/external"; then
+            rm -rf "${tmp:?}"
+            fail "cannot make ${tmp}/external, refusing"
+        fi
     fi
     sync "${tmp}" || { rm -rf "${tmp:?}"; fail "cannot sync ${tmp}, refusing"; }
     mv -T "${tmp}" "${CONTEXT}" || { rm -rf "${tmp:?}"; fail "cannot move ${tmp} into ${CONTEXT}, refusing"; }
@@ -531,6 +540,16 @@ odm_source="${lepton_runtime}/images/rootfs/vendor/odm/etc/build.prop"
 [[ -f "${odm_source}" ]] || fail "${odm_source} missing"
 
 mkdir -p "${RUN}" "${DATA}"
+if storage_internal; then
+    space=${CONTEXT}
+    until [[ -d "${space}" ]]; do
+        space=$(dirname "${space}")
+    done
+    free=$(df -B1 --output=avail -- "${space}" 2>/dev/null | awk 'NR == 2 { print $1 }')
+    [[ "${free}" =~ ^[0-9]+$ ]] || fail "cannot read the free space under ${CONTEXT}, refusing"
+    (( free >= SPACE_FLOOR )) \
+        || reason low-space "$((free >> 30))G free under ${CONTEXT}, below the $((SPACE_FLOOR >> 30))G floor, refusing"
+fi
 if [[ ! -e "${CONTEXT}" && ! -L "${CONTEXT}" ]]; then
     legacy_context > /dev/null && reason old-path "the context is at an older path, refusing"
     context_create

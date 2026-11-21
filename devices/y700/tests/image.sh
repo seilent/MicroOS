@@ -419,7 +419,7 @@ grep -qxF 'SUBSYSTEM=="hidraw", KERNELS=="000[356]:28DE:*", MODE="0660", TAG+="u
 compgen -G "/usr/lib/modules/$kver/kernel/drivers/hid/hid-steam.ko*" >/dev/null || fail "hid-steam module missing"
 [[ $(< /usr/lib/udev/rules.d/90-microos-usb-console.rules) == \
   'SUBSYSTEM=="tty", KERNEL=="ttyGS0", ENV{SYSTEMD_WANTS}+="serial-getty@ttyGS0.service"' ]] || fail "90-microos-usb-console.rules"
-[[ $(< /usr/lib/tmpfiles.d/microos.conf) == $'d /run/microos 0755 root root -\nd /var/home/micro 0700 micro micro -\nd /var/lib/microos 0755 root root -\nd /var/cache/libX11 0755 root root -\nd /var/cache/libX11/compose 0755 root root -\nd /var/lib/geoclue 0755 geoclue geoclue -\nw /sys/power/pm_freeze_timeout - - - - 5000' ]] \
+[[ $(< /usr/lib/tmpfiles.d/microos.conf) == $'d /run/microos 0755 root root -\nf /run/microos/system-card 0644 root root - internal\nd /var/home/micro 0700 micro micro -\nd /var/lib/microos 0755 root root -\nd /var/cache/libX11 0755 root root -\nd /var/cache/libX11/compose 0755 root root -\nd /var/lib/geoclue 0755 geoclue geoclue -\nw /sys/power/pm_freeze_timeout - - - - 5000' ]] \
   || fail "tmpfiles microos.conf"
 [[ $(< /usr/lib/systemd/sleep.conf.d/50-microos.conf) == $'[Sleep]\nAllowHibernation=no\nAllowSuspendThenHibernate=no\nAllowHybridSleep=no\nMemorySleepMode=s2idle' ]] \
   || fail "sleep.conf.d 50-microos.conf"
