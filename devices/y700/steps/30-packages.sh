@@ -20,6 +20,8 @@ own=(
   hyprland/hyprwire
   hyprland/aquamarine
   hyprland/hyprcursor
+  hyprland-guiutils/hyprtoolkit
+  hyprland-guiutils/hyprland-guiutils
   hyprgrass/hyprgrass
   hyprsunset/hyprsunset
   hyprpicker/hyprpicker
@@ -198,5 +200,5 @@ dnf -y install \
   unzip \
   "${rpms[@]}"
 
-printf '[main]\nexcludepkgs=hyprland,hyprutils,hyprlang,hyprgraphics,hyprwire,hyprcursor,aquamarine,hyprgrass,hyprsunset,hyprpicker,xdg-desktop-portal-hyprland,udis86\n' \
+printf '[main]\nexcludepkgs=hyprland,hyprutils,hyprlang,hyprgraphics,hyprwire,hyprcursor,aquamarine,hyprgrass,hyprsunset,hyprpicker,xdg-desktop-portal-hyprland,hyprtoolkit,hyprland-guiutils,udis86\n' \
   > /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf

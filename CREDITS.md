@@ -59,6 +59,8 @@ Projects MicroOS builds, with their authors and license.
 | `hyprsunset` | [hyprwm/hyprsunset](https://github.com/hyprwm/hyprsunset) `v0.4.0` `25f704346e` | Hypr Development | BSD-3-Clause |
 | `hyprpicker` | [hyprwm/hyprpicker](https://github.com/hyprwm/hyprpicker) `v0.4.8` `838147963f` | Hypr Development | BSD-3-Clause |
 | `xdg-desktop-portal-hyprland` | [hyprwm/xdg-desktop-portal-hyprland](https://github.com/hyprwm/xdg-desktop-portal-hyprland) `v1.4.1` `cc8e5ef8fb` | Hypr Development | BSD-3-Clause |
+| `hyprland-guiutils` | [hyprwm/hyprland-guiutils](https://github.com/hyprwm/hyprland-guiutils) `v0.2.2` `a16ad89ed5` | Hypr Development | BSD-3-Clause |
+| `hyprtoolkit` in the `hyprland-guiutils` package | [hyprwm/hyprtoolkit](https://github.com/hyprwm/hyprtoolkit) `v0.6.0` `f8cbaf42e1` | Hypr Development | BSD-3-Clause |
 | illogical-impulse desktop config on the Y700 (`usr/share/microos/{quickshell/ii,hypr}`) | [end-4/dots-hyprland](https://github.com/end-4/dots-hyprland) | end-4 and dots-hyprland contributors | GPL-3.0 |
 | Material shapes in the Quickshell config (`modules/common/widgets/shapes`) | QML port of [Knugel/rounded-polygon-ts](https://github.com/Knugel/rounded-polygon-ts), Androidx shape library | The Android Open Source Project | Apache-2.0 |
 | Material Symbols (Outlined, Rounded, Sharp) in `microos-fonts` | [google/material-design-icons](https://github.com/google/material-design-icons) `10ecc14790` | Google | Apache-2.0 |

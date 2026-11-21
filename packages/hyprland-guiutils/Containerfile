@@ -1,0 +1,11 @@
+FROM localhost/microos-pkg-builder
+
+RUN dnf -y --setopt=install_weak_deps=False install \
+      cmake gcc-c++ pkgconf-pkg-config \
+      pugixml-devel \
+      wayland-devel wayland-protocols-devel libxkbcommon-devel \
+      cairo-devel pango-devel pixman-devel libdrm-devel mesa-libgbm-devel libglvnd-devel \
+      iniparser-devel abseil-cpp-devel \
+      hwdata-devel libdisplay-info-devel libseat-devel libinput-devel systemd-devel \
+      libpng-devel libjpeg-turbo-devel libwebp-devel librsvg2-devel file-devel libjxl-devel libheif-devel \
+ && dnf clean all

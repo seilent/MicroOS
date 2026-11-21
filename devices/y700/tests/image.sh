@@ -42,10 +42,11 @@ for c in mkbootimg unpack_bootimg avbtool skopeo jq flock python3 btrfs mkfs.vfa
   chronyd wpa_supplicant gamescope gamescope-session-plus vulkaninfo pgrep zstd; do
   command -v "$c" >/dev/null || fail "$c missing"
 done
+[[ $(rpm -qf "$(command -v hyprland-dialog)" 2>/dev/null) == hyprland-guiutils-* ]] || fail "hyprland-dialog is not on PATH from hyprland-guiutils"
 grep -qx 'install_weak_deps=False' /etc/dnf/libdnf5.conf.d/10-microos.conf || fail "10-microos.conf does not turn off weak deps"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 own=$(rpm -qa --qf '%{NAME}\t%{VENDOR}\n' | awk -F'\t' '$2 == "MicroOS" { print $1 }' | LC_ALL=C sort | paste -sd' ')
-[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hexagonrpc hyprcursor hyprgraphics hyprgrass hyprland hyprlang hyprpicker hyprsunset hyprutils hyprwire microos-android microos-android-guestos microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
+[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hexagonrpc hyprcursor hyprgraphics hyprgrass hyprland hyprland-guiutils hyprlang hyprpicker hyprsunset hyprtoolkit hyprutils hyprwire microos-android microos-android-guestos microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
   fail "MicroOS rpms: $own"
 for p in qbootctl inputplumber steamos-manager mangohud lsfg-vk microos-eq libfreeaptx \
   pipewire-codec-aptx microos-steam-seed; do
