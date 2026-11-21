@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+echo "modprobe $*" >> "$FAKE_STATE/modprobe.log"
+if [[ $1 == -r ]]; then
+  rm -rf "${MICROOS_SYSMODULE:?}/dummy_hcd"
+  exit 0
+fi
+[[ ! -d $MICROOS_SYSMODULE/dummy_hcd ]] || exit 0
+mkdir -p "$MICROOS_SYSMODULE/dummy_hcd/parameters"
+for a in "${@:2}"; do
+  if [[ $a == tick_us=* ]]; then
+    echo "${a#tick_us=}" > "$MICROOS_SYSMODULE/dummy_hcd/parameters/tick_us"
+  fi
+done
+exit 0

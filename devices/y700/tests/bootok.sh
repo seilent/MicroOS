@@ -520,8 +520,9 @@ indev() {
 kround() {
   reset
   rm -rf "$tmp/sys"
-  mkdir -p "$tmp/sys/udc/a600000.usb" "$tmp/sys/net/wlp1s0/wireless" "$tmp/sys/drm/card1-DSI-1" "$tmp/sys/input"
+  mkdir -p "$tmp/sys/udc/a600000.usb" "$tmp/sys/udc/dummy_udc.0" "$tmp/sys/net/wlp1s0/wireless" "$tmp/sys/drm/card1-DSI-1" "$tmp/sys/input"
   echo configured > "$tmp/sys/udc/a600000.usb/state"
+  echo configured > "$tmp/sys/udc/dummy_udc.0/state"
   echo disconnected > "$tmp/sys/drm/card1-DSI-1/status"
   echo "root=PARTLABEL=microos rootwait ro init=/init microos.id=$ID microos.kround=$1" > "$tmp/proc-cmdline"
   st "$B b" "$P p"
@@ -570,7 +571,7 @@ for u in microos-usb-console.service NetworkManager-wait-online.service; do
   FAKE_SYSTEM=degraded FAKE_FAILED_UNITS=$u run || fail "$u failed outside kround: $(cat "$tmp/out")"
 done
 kround p1a
-FAKE_SYSTEM=degraded FAKE_FAILED_UNITS="chronyd.service sddm.service" run || fail "kround with allowed failures: $(cat "$tmp/out")"
+FAKE_SYSTEM=degraded FAKE_FAILED_UNITS="chronyd.service sddm.service microos-vpad-gadget.service" run || fail "kround with allowed failures: $(cat "$tmp/out")"
 kround p1a
 echo "not attached" > "$tmp/sys/udc/a600000.usb/state"
 kfail "kround p1a gadget down" "kround p1a: no UDC configured after 2 s"

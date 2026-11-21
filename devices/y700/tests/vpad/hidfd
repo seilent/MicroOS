@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+import errno
+import fcntl
+import os
+import runpy
+import select
+import sys
+
+FD = 99
+READ_ID = 0x80016741
+WRITE_REPLY = 0x40486742
+queues = {"read": [], "write": [], "id": []}
+read = os.read
+write = os.write
+ioctl = fcntl.ioctl
+poll = select.poll
+
+
+def result(name, default):
+    item = queues[name].pop(0) if queues[name] else default
+    if item in errno.errorcode.values():
+        code = getattr(errno, item)
+        raise OSError(code, os.strerror(code))
+    return item
+
+
+def fake_read(fd, size):
+    if fd != FD:
+        return read(fd, size)
+    try:
+        data = bytes.fromhex(result("read", "EAGAIN"))[:size]
+    except OSError as err:
+        print("read", errno.errorcode[err.errno])
+        raise
+    print("read", data.hex())
+    return data
+
+
+def fake_write(fd, data):
+    if fd != FD:
+        return write(fd, data)
+    try:
+        result("write", "ok")
+    except OSError as err:
+        print("write", len(data), errno.errorcode[err.errno])
+        raise
+    print("write", len(data), "ok")
+    return len(data)
+
+
+def fake_ioctl(fd, request, arg=0, mutate=True):
+    if fd != FD:
+        return ioctl(fd, request, arg, mutate)
+    if request == READ_ID:
+        arg[0] = int(result("id", "0"))
+        print("ioctl id", arg[0])
+        return 0
+    if request == WRITE_REPLY:
+        print("ioctl reply", bytes(arg).hex())
+        return 0
+    raise OSError(errno.ENOTTY, os.strerror(errno.ENOTTY))
+
+
+def words(mask):
+    return " ".join(word for bit, word in ((select.POLLIN, "in"), (select.POLLPRI, "pri")) if mask & bit)
+
+
+class Poll:
+    def __init__(self):
+        self.poller = poll()
+
+    def register(self, fd, mask):
+        if fd == FD:
+            print("register", words(mask))
+        self.poller.register(fd, mask)
+
+    def unregister(self, fd):
+        self.poller.unregister(fd)
+
+    def modify(self, fd, mask):
+        if fd == FD:
+            print("modify", words(mask))
+        self.poller.modify(fd, mask)
+
+
+sys.stdout.reconfigure(line_buffering=True)
+path, steps = sys.argv[1], " ".join(sys.argv[2:]).split()
+os.environ["MICROOS_VPAD_DRYRUN"] = "haptic"
+sys.argv = [path]
+real_exit = sys.exit
+sys.exit = lambda code=0: None
+vpad = runpy.run_path(path)
+sys.exit = real_exit
+os.read = fake_read
+os.write = fake_write
+fcntl.ioctl = fake_ioctl
+select.poll = Poll
+daemon = vpad["Daemon"](FD, "hidg")
+daemon.play = lambda side, length, strong: print("play", side, length, strong)
+masks = {"in": select.POLLIN, "pri": select.POLLPRI}
+for step in steps:
+    name, _, value = step.partition("=")
+    if name in queues:
+        queues[name].append(value)
+    elif name == "send":
+        daemon.send(0)
+    else:
+        mask = 0
+        for word in name.split("+"):
+            mask |= masks[word]
+        daemon.hid_events(mask)

@@ -158,6 +158,7 @@ kround_ok() {
       udc)
         up=0
         for f in "$udcdir"/*/state; do
+          [[ ${f#"$udcdir"/} != dummy_udc* ]] || continue
           [[ $(cat "$f" 2> /dev/null) != configured ]] || up=1
         done
         (( up )) || { why="kround $kround: no UDC configured"; return 1; }

@@ -63,7 +63,7 @@ tests=(microos-test-bootloader.service microos-test-emergency.service microos-te
 want=$(printf '%s\n' microos-boot-ok.service microos-provision.service microos-update-applied.service microos-update.service \
   microos-update-check.service microos-update-check.timer microos-boot-deadline.service microos-boot-deadline.timer \
   microos-bootlog-efi.path microos-bootlog-efi.service microos-grow-root.service microos-usb-console.service microos-vpad.service \
-  microos-remoteproc.service microos-groups.service microos-etc-carry.service microos-update-boot.path \
+  microos-vpad-gadget.service microos-remoteproc.service microos-groups.service microos-etc-carry.service microos-update-boot.path \
   microos-update-boot.service microos-bdaddr@.service microos-sleep-gate.service microos-session-switch@.service \
   microos-session-up@.service microos-session-fallback@.service microos-session-switcher.service \
   microos-session-switcher.path microos-session-boot.service microos-session-watch.service microos-session-attempt.service \
@@ -188,6 +188,7 @@ kept=(
   /usr/lib/systemd/system/microos-update.service
   /usr/lib/systemd/system/microos-usb-console.service
   /usr/lib/systemd/system/microos-vpad.service
+  /usr/lib/systemd/system/microos-vpad-gadget.service
   /usr/lib/systemd/system/microos-remoteproc.service
   /usr/lib/systemd/system/microos-sleep-gate.service
   /usr/lib/systemd/system/microos-vpad.service.d/50-microos-microset.conf
@@ -367,23 +368,21 @@ vp() { MICROOS_VPAD_DRYRUN=$1 "$vpad" "${@:2}"; }
 evioc() { echo $(( ($1 << 30) | ($3 << 16) | (0x45 << 8) | $2 )); }
 desc=06ffff0901a10109020903150026ff00750895408102090609071500
 desc+=26ff0075089540b102c0
-[[ $(vp 1) == "$((4 + 128 + 64 + 64 + 2 + 2 + 4 * 4 + 4096)) $(evioc 1 0x80 48) $(evioc 1 0x90 4) $(evioc 2 0x18 96) $(evioc 1 0xa0 4) 48 24 $desc" ]] \
-  || fail "microos-vpad event sizes, ioctl numbers or descriptor: $(vp 1)"
-c=$(vp uhid create)
-[[ ${c:0:8} == 0b000000 && ${c:520:4} == 2600 && ${c:524:4} == 0300 && ${c:528:8} == de280000 && ${c:536:8} == 05120000 \
-  && ${c:560} == "$desc" ]] || fail "microos-vpad CREATE2 event: $c"
+kbd=05010906a101050719e029e715002501750195088102950175088101950575010508190129059102950175039101
+kbd+=95067508150025650507190029658100c0
+[[ $(vp 1) == "2147575617 1078486850 $(evioc 1 0x80 48) $(evioc 1 0x90 4) $(evioc 2 0x18 96) $(evioc 1 0xa0 4) 48 24 $desc $kbd" ]] \
+  || fail "microos-vpad ioctl numbers, struct sizes or descriptors: $(vp 1)"
 serial=4d4943524f4f5359373030
-[[ $(vp uhid 0d000000070000000000040000ae1501 09000000080000000000) == \
-  "$(printf '0e000000070000000000%0140d' 0)"$'\n'"$(printf '0a000000080000000000410000ae0c01%s00%0104d' "$serial" 0)" ]] \
-  || fail "microos-vpad SET_REPORT and GET_REPORT replies: $(vp uhid 0d000000070000000000040000ae1501 09000000080000000000)"
+[[ $(vp hid set=ae1501 get=0) == "$(printf 'ae1501%0122d' 0)"$'\n'"$(printf '00014000ae0c01%s00%0106d' "$serial" 0)" ]] \
+  || fail "microos-vpad SET_REPORT and GET_REPORT replies: $(vp hid set=ae1501 get=0)"
 mapfile -t fr < <(vp feature ae1501 8300 8703080700)
-[[ ${fr[0]} == "$(printf '00ae0c01%s00%098d' "$serial" 0)" ]] || fail "microos-vpad serial reply: ${fr[0]}"
+[[ ${fr[0]} == "$(printf 'ae0c01%s00%098d' "$serial" 0)" ]] || fail "microos-vpad serial reply: ${fr[0]}"
 recs=" "
-for ((i = 6; i < 6 + 2 * 16#${fr[1]:4:2}; i += 10)); do
+for ((i = 4; i < 4 + 2 * 16#${fr[1]:2:2}; i += 10)); do
   recs+="${fr[1]:i:10} "
 done
-[[ ${fr[1]:0:4} == 0083 && $recs == *' 0105120000 '* && $recs == *' 0ba00f0000 '* ]] || fail "microos-vpad attributes reply: ${fr[1]}"
-[[ ${fr[2]} == "$(printf '008703080700%0118d' 0)" ]] || fail "microos-vpad settings echo: ${fr[2]}"
+[[ ${fr[1]:0:2} == 83 && $recs == *' 0105120000 '* && $recs == *' 0ba00f0000 '* ]] || fail "microos-vpad attributes reply: ${fr[1]}"
+[[ ${fr[2]} == "$(printf '8703080700%0118d' 0)" ]] || fail "microos-vpad settings echo: ${fr[2]}"
 [[ $(vp haptic 8f0801a00f0000010000) == 'left 8 40960' && $(vp haptic 8f0801a00f0000000000) == 'left 8 40960' \
   && $(vp haptic 8f0800a00f0000010000) == 'right 8 40960' && $(vp haptic 8f0802a00f0000010000) == $'left 8 40960\nright 8 40960' \
   && $(vp haptic 8f0801a00f00000100fa) == 'left 8 20529' && $(vp haptic 8f0801a00fa00f050000) == 'left 40 40960' \
@@ -404,18 +403,24 @@ done
 [[ $(vp restore 0 1200) == 1200 && $(vp restore 0 none) == 512 && $(vp restore 0 0) == 512 && -z $(vp restore 900 1200) ]] \
   || fail "microos-vpad restore values"
 unit=/usr/lib/systemd/system/microos-vpad.service
-for l in 'DeviceAllow=/dev/uhid rw' 'DeviceAllow=char-input rw' 'ReadWritePaths=-/sys/class/backlight/ktz8866-backlight/' \
-  'StartLimitIntervalSec=0' 'RuntimeDirectory=microos-vpad' 'RuntimeDirectoryPreserve=yes' \
-  'ExecStopPost=/usr/libexec/microos/microos-vpad restore' 'MemoryDenyWriteExecute=yes' 'CapabilityBoundingSet=' \
-  'RestrictAddressFamilies=AF_UNIX'; do
+for l in 'Requires=microos-vpad-gadget.service' 'After=microos-vpad-gadget.service' 'DeviceAllow=char-hidg rw' \
+  'DeviceAllow=char-input rw' 'ReadWritePaths=-/sys/class/backlight/ktz8866-backlight/' 'StartLimitIntervalSec=0' \
+  'RuntimeDirectory=microos-vpad' 'RuntimeDirectoryPreserve=yes' 'ExecStopPost=/usr/libexec/microos/microos-vpad restore' \
+  'MemoryDenyWriteExecute=yes' 'CapabilityBoundingSet=' 'RestrictAddressFamilies=AF_UNIX'; do
   grep -qxF "$l" "$unit" || fail "microos-vpad.service lacks $l"
 done
 ! grep -q uinput "$unit" || fail "microos-vpad.service still allows uinput"
+for l in 'StopWhenUnneeded=yes' 'Type=oneshot' 'RemainAfterExit=yes' 'ExecStart=/usr/libexec/microos/microos-vpad gadget start' \
+  'ExecStop=/usr/libexec/microos/microos-vpad gadget stop'; do
+  grep -qxF "$l" /usr/lib/systemd/system/microos-vpad-gadget.service || fail "microos-vpad-gadget.service lacks $l"
+done
 [[ $(< /usr/lib/systemd/logind.conf.d/50-microos.conf) == $'[Login]\nHandlePowerKey=ignore\nHandlePowerKeyLongPress=ignore' ]] \
   || fail "logind 50-microos.conf"
 grep -qxF 'SUBSYSTEM=="hidraw", KERNELS=="000[356]:28DE:*", MODE="0660", TAG+="uaccess"' /usr/lib/udev/rules.d/60-steam-input.rules \
   || fail "60-steam-input.rules has no hidraw rule for 28DE"
 compgen -G "/usr/lib/modules/$kver/kernel/drivers/hid/hid-steam.ko*" >/dev/null || fail "hid-steam module missing"
+compgen -G "/usr/lib/modules/$kver/kernel/drivers/usb/gadget/udc/dummy_hcd.ko*" >/dev/null || fail "dummy_hcd module missing"
+grep -qE '/usb_f_hid\.ko$' "/usr/lib/modules/$kver/modules.builtin" || fail "usb_f_hid is not built in"
 [[ $(< /usr/lib/udev/rules.d/90-microos-usb-console.rules) == \
   'SUBSYSTEM=="tty", KERNEL=="ttyGS0", ENV{SYSTEMD_WANTS}+="serial-getty@ttyGS0.service"' ]] || fail "90-microos-usb-console.rules"
 [[ $(< /usr/lib/tmpfiles.d/microos.conf) == $'d /run/microos 0755 root root -\nd /var/home/micro 0700 micro micro -\nd /var/lib/microos 0755 root root -\nd /var/cache/libX11 0755 root root -\nd /var/cache/libX11/compose 0755 root root -\nd /var/lib/geoclue 0755 geoclue geoclue -\nw /sys/power/pm_freeze_timeout - - - - 5000' ]] \

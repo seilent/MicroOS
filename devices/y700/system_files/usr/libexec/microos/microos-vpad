@@ -10,28 +10,26 @@ import struct
 import sys
 import time
 
-UHID_SET_REPORT_REPLY = 14
-UHID_SET_REPORT = 13
-UHID_INPUT2 = 12
-UHID_CREATE2 = 11
-UHID_GET_REPORT_REPLY = 10
-UHID_GET_REPORT = 9
-EVENT_SIZE = 4376
 DESC = bytes.fromhex("06ffff 0901 a101 0902 0903 1500 26ff00 7508 9540 8102 0906 0907 1500 26ff00 7508 9540 b102 c0")
+KEYBOARD = bytes.fromhex("0501 0906 a101 0507 19e0 29e7 1500 2501 7501 9508 8102 9501 7508 8101 9505 7501 0508 1901 2905 9102 "
+                         "9501 7503 9101 9506 7508 1500 2565 0507 1900 2965 8100 c0")
+FUNCTIONS = (("hid.kbd", KEYBOARD, 8), ("hid.kbd2", KEYBOARD, 8), ("hid.ctl", DESC, 64))
 UNIT_SERIAL = b"MICROOSY700"
 SERIALS = {0: b"MICROOSY700B", 1: UNIT_SERIAL}
 REPORT_US = 4000
 ATTRIBUTES = ((1, 0x1205), (2, 0), (4, 0x65E4F1AD), (9, 0x2E), (10, 0x62A9122B), (11, REPORT_US), (12, 0), (13, 0), (14, 0))
 
 
-def ioc(direction, nr, size):
-    return (direction << 30) | (size << 16) | (0x45 << 8) | nr
+def ioc(direction, nr, size, kind=0x45):
+    return (direction << 30) | (size << 16) | (kind << 8) | nr
 
 
 EVIOCSFF = ioc(1, 0x80, 48)
 EVIOCGRAB = ioc(1, 0x90, 4)
 EVIOCGKEY = ioc(2, 0x18, 96)
 EVIOCSCLOCKID = ioc(1, 0xA0, 4)
+GADGET_HID_READ_GET_REPORT_ID = ioc(2, 0x41, 1, 0x67)
+GADGET_HID_WRITE_GET_REPORT = ioc(1, 0x42, 72, 0x67)
 EV_KEY = 0x01
 EV_FF = 0x15
 FF_RUMBLE = 0x50
@@ -39,6 +37,7 @@ KEY_POWER = 116
 EBUSY = 16
 ENODEV = 19
 EROFS = 30
+ESHUTDOWN = 108
 
 MOTORS = {"left": "vibrator@5b", "right": "vibrator@5a"}
 BOTH = ("left", "right")
@@ -53,6 +52,11 @@ SAVED = "/run/microos-vpad/brightness"
 SOCKET = os.environ.get("MICROOS_VPAD_SOCKET", "/run/microos-vpad/power")
 HELPER = os.environ.get("MICROOS_VPAD_HELPER", "micro")
 HELPER_UNIT = os.environ.get("MICROOS_VPAD_HELPER_UNIT", "microos-powerkey.service")
+CONFIGFS = os.environ.get("MICROOS_CONFIGFS", "/sys/kernel/config")
+SYSCLASS = os.environ.get("MICROOS_SYSCLASS", "/sys/class")
+SYSMODULE = os.environ.get("MICROOS_SYSMODULE", "/sys/module")
+MODPROBE = os.environ.get("MICROOS_MODPROBE", "modprobe")
+GADGET = f"{CONFIGFS}/usb_gadget/microos-vpad"
 DEFAULT_BRIGHTNESS = 512
 
 BASE = 0xA000
@@ -92,14 +96,6 @@ def message(data):
     return bytes(data).ljust(64, b"\0")[:64]
 
 
-def create_event():
-    ev = bytearray(EVENT_SIZE)
-    struct.pack_into("<I128s64s64sHHIIII", ev, 0, UHID_CREATE2, b"Steam Deck Controller", b"", UNIT_SERIAL,
-                     len(DESC), 3, 0x28DE, 0x1205, 0x1000, 0)
-    ev[280:280 + len(DESC)] = DESC
-    return ev
-
-
 def feature(msg):
     if msg[0] == 0xAE:
         text = SERIALS.get(msg[2], b"") + b"\0"
@@ -118,22 +114,14 @@ class Pad:
     def __init__(self):
         self.last = message(b"")
 
-    def handle(self, ev):
-        kind, rid = struct.unpack_from("<II", ev)
-        if kind == UHID_SET_REPORT:
-            size = struct.unpack_from("<H", ev, 10)[0]
-            self.last = message(ev[13:12 + size])
-            if TRACE:
-                log("set " + self.last[:12].hex(" "))
-            reply = bytearray(EVENT_SIZE)
-            struct.pack_into("<IIH", reply, 0, UHID_SET_REPORT_REPLY, rid, 0)
-            return [reply], self.last
-        if kind == UHID_GET_REPORT:
-            reply = bytearray(EVENT_SIZE)
-            struct.pack_into("<IIHH", reply, 0, UHID_GET_REPORT_REPLY, rid, 0, 65)
-            reply[13:77] = feature(self.last)
-            return [reply], None
-        return [], None
+    def set(self, data):
+        self.last = message(data)
+        if TRACE:
+            log("set " + self.last[:12].hex(" "))
+        return self.last
+
+    def get(self, rid):
+        return struct.pack("<BBH64s4x", rid, 1, 64, feature(self.last))
 
 
 def clamp(length):
@@ -576,10 +564,12 @@ class Link:
 
 
 class Daemon:
-    def __init__(self, uhid):
-        self.uhid = uhid
+    def __init__(self, hid, path):
+        self.hid = hid
+        self.path = path
         self.poller = select.poll()
-        self.poller.register(uhid, select.POLLIN)
+        self.poller.register(hid, select.POLLIN | select.POLLPRI)
+        self.reading = True
         self.power = None
         self.clock = False
         self.motors = {}
@@ -594,8 +584,7 @@ class Daemon:
         self.scan_at = 0
         self.stop = False
         self.seq = 0
-        self.report = bytearray(EVENT_SIZE)
-        struct.pack_into("<IH4B", self.report, 0, UHID_INPUT2, 64, 0x01, 0x00, 0x09, 0x40)
+        self.report = bytearray(message(bytes((0x01, 0x00, 0x09, 0x40))))
 
     def note(self, text):
         if text not in self.noted:
@@ -675,18 +664,32 @@ class Daemon:
             pass
         os.close(fd)
 
-    def uhid_events(self):
-        while True:
+    def resume_reading(self):
+        if not self.reading:
+            self.reading = True
+            self.poller.modify(self.hid, select.POLLIN | select.POLLPRI)
+
+    def hid_events(self, mask):
+        if mask & select.POLLPRI:
+            self.resume_reading()
+        while self.reading:
             try:
-                ev = os.read(self.uhid, EVENT_SIZE)
+                data = os.read(self.hid, 64)
             except BlockingIOError:
-                return
-            replies, msg = self.pad.handle(ev)
-            for reply in replies:
-                os.write(self.uhid, reply)
-            if msg is not None:
-                for side, length, strong in pulses(msg):
-                    self.play(side, length, strong)
+                break
+            except OSError:
+                self.reading = False
+                self.poller.modify(self.hid, select.POLLPRI)
+                break
+            for side, length, strong in pulses(self.pad.set(data)):
+                self.play(side, length, strong)
+        if mask & select.POLLPRI:
+            rid = bytearray(1)
+            try:
+                fcntl.ioctl(self.hid, GADGET_HID_READ_GET_REPORT_ID, rid)
+                fcntl.ioctl(self.hid, GADGET_HID_WRITE_GET_REPORT, self.pad.get(rid[0]))
+            except OSError as err:
+                self.note(f"{self.path}: get report: {err.strerror}")
 
     def power_events(self):
         try:
@@ -707,13 +710,20 @@ class Daemon:
 
     def send(self, now):
         self.seq = (self.seq + 1) & 0xFFFFFFFF
-        struct.pack_into("<I", self.report, 10, self.seq)
-        self.report[20] = 0x04 if now < self.qam_until else 0
-        os.write(self.uhid, self.report)
+        struct.pack_into("<I", self.report, 4, self.seq)
+        self.report[14] = 0x04 if now < self.qam_until else 0
+        try:
+            os.write(self.hid, self.report)
+        except BlockingIOError:
+            pass
+        except OSError as err:
+            if err.errno == ESHUTDOWN:
+                return
+            self.note(f"{self.path}: {err.strerror}")
+        self.resume_reading()
 
     def run(self):
         signal.signal(signal.SIGTERM, lambda *_: setattr(self, "stop", True))
-        os.write(self.uhid, create_event())
         self.link.listen()
         report_at = grab_at = check_at = ms()
         while not self.stop:
@@ -740,16 +750,16 @@ class Daemon:
             timeout = max(0, math.ceil(min(deadlines) - ms()))
             ready = self.poller.poll(timeout)
             self.resumed(ms())
-            for fd, _ in ready:
-                if fd == self.uhid:
-                    self.uhid_events()
+            for fd, mask in ready:
+                if fd == self.hid:
+                    self.hid_events(mask)
                 elif fd == self.power:
                     self.power_events()
                 else:
                     self.link.ready(fd, self.keys, ms())
         if self.screen.off:
             self.screen.wake()
-        os.close(self.uhid)
+        os.close(self.hid)
         return 0
 
 
@@ -770,23 +780,148 @@ def restore(screen):
     return 0
 
 
+def put(path, value):
+    try:
+        with open(path, "wb") as f:
+            f.write(value if isinstance(value, bytes) else f"{value}\n".encode())
+    except OSError as err:
+        raise OSError(err.errno, err.strerror, path)
+
+
+def children(path):
+    try:
+        return [f"{path}/{name}" for name in sorted(os.listdir(path))]
+    except FileNotFoundError:
+        return []
+
+
+def modprobe(*args):
+    if os.spawnvp(os.P_WAIT, MODPROBE, [MODPROBE, *args]):
+        log(f"modprobe {' '.join(args)} failed")
+        return False
+    return True
+
+
+def dummy_udc():
+    for path in children(f"{SYSCLASS}/udc"):
+        name = os.path.basename(path)
+        if name.startswith("dummy_udc"):
+            return name
+    return None
+
+
+def teardown():
+    if not os.path.isdir(GADGET):
+        return
+    try:
+        with open(f"{GADGET}/UDC") as f:
+            bound = f.read().strip()
+    except FileNotFoundError:
+        bound = ""
+    if bound:
+        put(f"{GADGET}/UDC", "")
+    for config in children(f"{GADGET}/configs"):
+        for path in children(config):
+            if os.path.islink(path):
+                os.unlink(path)
+        for path in children(f"{config}/strings"):
+            os.rmdir(path)
+        os.rmdir(config)
+    for path in children(f"{GADGET}/functions") + children(f"{GADGET}/strings"):
+        os.rmdir(path)
+    os.rmdir(GADGET)
+
+
+def gadget_start():
+    try:
+        teardown()
+    except OSError as err:
+        log(f"{err.filename}: {err.strerror}")
+        return 1
+    if not modprobe("dummy_hcd", "tick_us=1000"):
+        return 1
+    try:
+        with open(f"{SYSMODULE}/dummy_hcd/parameters/tick_us") as f:
+            tick = f.read().strip()
+    except OSError as err:
+        log(f"{err.filename}: {err.strerror}")
+        return 1
+    if tick != "1000":
+        log(f"dummy_hcd runs with tick_us {tick}, not 1000")
+        return 1
+    udc = dummy_udc()
+    if udc is None:
+        log(f"no dummy_udc in {SYSCLASS}/udc after modprobe")
+        return 1
+    config = f"{GADGET}/configs/c.1"
+    try:
+        os.mkdir(GADGET)
+        os.mkdir(f"{GADGET}/strings/0x409")
+        os.mkdir(config)
+        for name, value in (("idVendor", "0x28de"), ("idProduct", "0x1205"), ("bcdDevice", "0x0300"), ("bcdUSB", "0x0200")):
+            put(f"{GADGET}/{name}", value)
+        for name, value in (("manufacturer", "Valve Software"), ("product", "Steam Deck Controller"),
+                            ("serialnumber", UNIT_SERIAL.decode())):
+            put(f"{GADGET}/strings/0x409/{name}", value)
+        for name, desc, length in FUNCTIONS:
+            function = f"{GADGET}/functions/{name}"
+            os.mkdir(function)
+            put(f"{function}/report_length", length)
+            put(f"{function}/report_desc", desc)
+            put(f"{function}/no_out_endpoint", 1)
+            os.symlink(function, f"{config}/{name}")
+        put(f"{GADGET}/UDC", udc)
+    except OSError as err:
+        log(f"{err.filename}: {err.strerror}")
+        try:
+            teardown()
+        except OSError as err:
+            log(f"{err.filename}: {err.strerror}")
+        return 1
+    log(f"bound to {udc}")
+    return 0
+
+
+def gadget_stop():
+    try:
+        teardown()
+    except OSError as err:
+        log(f"{err.filename}: {err.strerror}")
+        return 1
+    if not os.path.isdir(f"{SYSMODULE}/dummy_hcd"):
+        return 0
+    return 0 if modprobe("-r", "dummy_hcd") else 1
+
+
+def hid_node():
+    with open(f"{GADGET}/functions/hid.ctl/dev") as f:
+        want = f.read().strip()
+    for path in children(f"{SYSCLASS}/hidg"):
+        with open(f"{path}/dev") as f:
+            if f.read().strip() == want:
+                return f"/dev/{os.path.basename(path)}"
+    return None
+
+
 def dryrun(mode, args):
     if mode == "1":
-        print(EVENT_SIZE, EVIOCSFF, EVIOCGRAB, EVIOCGKEY, EVIOCSCLOCKID, len(effect(-1, 0, 0)), len(input_event(0, 0, 0)), DESC.hex())
-    elif mode == "uhid":
+        print(GADGET_HID_READ_GET_REPORT_ID, GADGET_HID_WRITE_GET_REPORT, EVIOCSFF, EVIOCGRAB, EVIOCGKEY, EVIOCSCLOCKID,
+              len(effect(-1, 0, 0)), len(input_event(0, 0, 0)), DESC.hex(), KEYBOARD.hex())
+    elif mode == "hid":
         pad = Pad()
         for arg in args:
-            if arg == "create":
-                print(create_event()[:280 + len(DESC)].hex())
-                continue
-            for reply in pad.handle(bytes.fromhex(arg).ljust(EVENT_SIZE, b"\0"))[0]:
-                print(reply[:80].hex())
+            name, _, value = arg.partition("=")
+            if name == "set":
+                print(pad.set(bytes.fromhex(value)).hex())
+            elif name == "get":
+                print(pad.get(int(value)).hex())
     elif mode == "feature":
         pad = Pad()
         for arg in args:
-            data = b"\0" + bytes.fromhex(arg)
-            pad.handle(struct.pack("<IIBBH", UHID_SET_REPORT, 1, 0, 0, len(data)) + data)
-            print(pad.handle(struct.pack("<IIBB", UHID_GET_REPORT, 2, 0, 0))[0][0][12:77].hex())
+            pad.set(bytes.fromhex(arg))
+            print(pad.get(0)[4:68].hex())
+    elif mode == "node":
+        print(hid_node())
     elif mode == "haptic":
         for arg in args:
             for side, length, strong in pulses(message(bytes.fromhex(arg))):
@@ -885,16 +1020,16 @@ def dryrun(mode, args):
         screen.power = int(args[2])
         restore(screen)
     elif mode == "resume":
-        daemon = Daemon(os.open(os.devnull, os.O_WRONLY))
+        daemon = Daemon(os.open(os.devnull, os.O_WRONLY), os.devnull)
         daemon.slept -= int(args[0])
         daemon.resumed(5)
         print(daemon.keys.woke)
     elif mode == "qam":
-        daemon = Daemon(os.open(os.devnull, os.O_WRONLY))
+        daemon = Daemon(os.open(os.devnull, os.O_WRONLY), os.devnull)
         daemon.keys.command("qam", int(args[0]))
         for at in args[1:]:
             daemon.send(int(at))
-            print(at, daemon.report[20])
+            print(at, daemon.report[14])
     else:
         log(f"unknown MICROOS_VPAD_DRYRUN {mode}")
         return 2
@@ -907,12 +1042,27 @@ def main():
         return dryrun(mode, sys.argv[1:])
     if sys.argv[1:] == ["restore"]:
         return restore(Screen(None))
+    if sys.argv[1:] == ["gadget", "start"]:
+        return gadget_start()
+    if sys.argv[1:] == ["gadget", "stop"]:
+        return gadget_stop()
+    if sys.argv[1:2] == ["gadget"]:
+        log("usage: microos-vpad gadget start|stop")
+        return 2
     try:
-        uhid = os.open("/dev/uhid", os.O_RDWR | os.O_NONBLOCK)
+        path = hid_node()
     except OSError as err:
-        log(f"/dev/uhid: {err.strerror}")
+        log(f"{err.filename}: {err.strerror}")
         return 1
-    return Daemon(uhid).run()
+    if path is None:
+        log(f"no {SYSCLASS}/hidg entry for {GADGET}/functions/hid.ctl")
+        return 1
+    try:
+        hid = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+    except OSError as err:
+        log(f"{path}: {err.strerror}")
+        return 1
+    return Daemon(hid, path).run()
 
 
 sys.exit(main())

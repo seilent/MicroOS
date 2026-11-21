@@ -17,7 +17,7 @@ role=$class/usb_role/a600000.usb-role-switch/role
 
 reset() {
   rm -rf "$cfg" "$class" "$FAKE_STATE"
-  mkdir -p "$cfg/usb_gadget" "$class/udc/a600000.usb" "${role%/*}" "$FAKE_STATE"
+  mkdir -p "$cfg/usb_gadget" "$class/udc/a600000.usb" "$class/udc/dummy_udc.0" "${role%/*}" "$FAKE_STATE"
   echo host > "$role"
   echo "root=PARTLABEL=microos rootwait androidboot.serialno=TESTSERIAL0 microos.test=1" > "$tmp/cmdline"
 }
@@ -107,7 +107,7 @@ run start || fail "no cmdline: exit $?: $(cat "$tmp/err")"
 check_gadget microos "no cmdline"
 
 reset
-rm -rf "${class:?}/udc" "${class:?}/usb_role"
+rm -rf "${class:?}/udc/a600000.usb" "${class:?}/usb_role"
 if POLLS=2 run start; then
   fail "start passed without a UDC"
 fi

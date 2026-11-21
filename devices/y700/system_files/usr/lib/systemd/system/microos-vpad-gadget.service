@@ -1,0 +1,9 @@
+[Unit]
+Description=USB gadget of the virtual Steam Deck controller
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microos/microos-vpad gadget start
+ExecStop=/usr/libexec/microos/microos-vpad gadget stop

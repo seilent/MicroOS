@@ -17,7 +17,7 @@ put() { printf '%s\n' "$2" > "$1"; }
 first_udc() {
   local u
   for u in "$class"/udc/*; do
-    [[ -e $u ]] || continue
+    [[ -e $u && ${u##*/} != dummy_udc* ]] || continue
     echo "${u##*/}"
     return 0
   done
