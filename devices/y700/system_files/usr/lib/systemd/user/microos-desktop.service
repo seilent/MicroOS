@@ -5,8 +5,9 @@ Before=graphical-session.target
 
 [Service]
 Type=notify
+NotifyAccess=all
 Environment=XDG_CURRENT_DESKTOP=Hyprland XDG_SESSION_TYPE=wayland LIBSEAT_BACKEND=logind
-ExecStart=/usr/bin/Hyprland --config /usr/share/microos/hypr/hyprland.lua
+ExecStart=/usr/bin/start-hyprland --path /usr/libexec/microos/microos-hyprland --no-nixgl -- --config /usr/share/microos/hypr/hyprland.lua
 ExecStopPost=-/usr/bin/systemctl --user unset-environment WAYLAND_DISPLAY DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 TimeoutStopSec=15
 TimeoutStopFailureMode=kill

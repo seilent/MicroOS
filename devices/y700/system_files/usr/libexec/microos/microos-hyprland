@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+me=microos-hyprland
+
+for a in "$@"; do
+  if [[ $a == --safe-mode ]]; then
+    echo "$me: Hyprland crashed, the desktop session ends" >&2
+    exit 1
+  fi
+done
+exec /usr/bin/Hyprland "$@"

@@ -27,6 +27,15 @@ fail() { echo "FAIL: $*" >&2; rc=1; }
   fail "gamescope-session-plus@ 10-microos-track.conf"
 [[ $(< "$tree/usr/lib/systemd/user/microos-desktop.service.d/10-microos-track.conf") == $'[Unit]\nWants=microos-session-alive-desktop.timer\n\n[Service]\nExecStopPost=/usr/libexec/microos/microos-session-track stop desktop' ]] ||
   fail "microos-desktop 10-microos-track.conf"
+d=$tree/usr/lib/systemd/user/microos-desktop.service
+for l in Type=notify NotifyAccess=all \
+  'ExecStart=/usr/bin/start-hyprland --path /usr/libexec/microos/microos-hyprland --no-nixgl -- --config /usr/share/microos/hypr/hyprland.lua' \
+  TimeoutStopSec=15 TimeoutStopFailureMode=kill; do
+  grep -qxF -- "$l" "$d" || fail "microos-desktop.service lacks $l"
+done
+[[ $(grep -c '^ExecStart=' "$d") == 1 ]] || fail "microos-desktop.service ExecStart: $(grep '^ExecStart=' "$d" | tr '\n' ' ')"
+[[ $(< "$tree/usr/lib/systemd/user/microos-desktop.service.d/30-hypr-config.conf") == $'[Service]\nExecStart=\nExecStart=/usr/bin/start-hyprland --path /usr/libexec/microos/microos-hyprland --no-nixgl -- --config %h/.config/hypr/hyprland.lua' ]] ||
+  fail "microos-desktop 30-hypr-config.conf"
 [[ $(< "$tree/usr/lib/systemd/user/microos-session-alive-desktop.timer") == $'[Unit]\nDescription=The desktop session up for 60 s\nDefaultDependencies=no\nBindsTo=microos-desktop.service\nAfter=microos-desktop.service\n\n[Timer]\nOnActiveSec=60\nAccuracySec=1s\nUnit=microos-session-alive@desktop.service' ]] ||
   fail "microos-session-alive-desktop.timer"
 [[ $(< "$tree/usr/lib/systemd/user/microos-ydotoold.service") == $'[Unit]\nDescription=ydotoold for the desktop shell\nPartOf=microos-desktop.service\n\n[Service]\nExecStart=/usr/bin/ydotoold' ]] ||
@@ -154,6 +163,43 @@ printf 'steam failed\n%.0s' 1 2 3 4 5 > "$tmp/t/chimeraos-short-session-tracker"
 session "$tmp/gsp-noetc" "$y700"
 grep -q "steamosctl switch-to-desktop-mode" "$tmp/out/steamosctl.log" 2> /dev/null ||
   fail "upstream recovery did not run without the override, the case proves nothing"
+
+hl=$root/usr/bin/start-hyprland
+[[ -x $hl ]] || fail "no start-hyprland under $root"
+sed "s|/usr/bin/Hyprland|$tmp/bin/Hyprland|" "$tree/usr/libexec/microos/microos-hyprland" > "$tmp/microos-hyprland"
+grep -qxF "exec $tmp/bin/Hyprland \"\$@\"" "$tmp/microos-hyprland" || fail "Hyprland exec line not found in microos-hyprland"
+cat > "$tmp/bin/Hyprland" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_DIR/hyprland.argv"
+safe=0
+while (( $# )); do
+  [[ $1 == --watchdog-fd ]] && fd=$2
+  [[ $1 == --safe-mode ]] && safe=1
+  shift
+done
+echo vax >&"$fd"
+sleep 0.2
+if (( safe )); then
+  echo end >&"$fd"
+  exit 0
+fi
+kill -KILL $$
+EOF
+chmod +x "$tmp/microos-hyprland" "$tmp/bin/Hyprland"
+hypr() {
+  rm -rf "${tmp:?}/out"
+  mkdir -p "$tmp/out"
+  r=0
+  env -i PATH="$tmp/bin:/usr/bin:/bin" STUB_DIR="$tmp/out" timeout 20 "$hl" --path "$1" --no-nixgl -- --config /c > "$tmp/log" 2>&1 || r=$?
+}
+hypr "$tmp/microos-hyprland"
+(( r == 0 )) || fail "start-hyprland exit $r after a crash: $(tail -n 3 "$tmp/log")"
+[[ $(cat "$tmp/out/hyprland.argv" 2> /dev/null) =~ ^--watchdog-fd\ [0-9]+\ --config\ /c$ ]] ||
+  fail "Hyprland ran again after a crash: $(paste -sd'|' "$tmp/out/hyprland.argv" 2> /dev/null)"
+grep -qx "microos-hyprland: Hyprland crashed, the desktop session ends" "$tmp/log" || fail "no crash line: $(tail -n 5 "$tmp/log")"
+hypr "$tmp/bin/Hyprland"
+[[ $(sed -n 2p "$tmp/out/hyprland.argv" 2> /dev/null) == *" --safe-mode "* ]] ||
+  fail "start-hyprland did not restart a crash in safe mode, the case proves nothing"
 
 if (( rc == 0 )); then
   echo "session: ok"

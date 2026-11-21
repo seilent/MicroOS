@@ -39,7 +39,7 @@ rpm -q chrony NetworkManager-wifi wpa_supplicant wireless-regdb atheros-firmware
   google-noto-sans-thai-vf-fonts google-noto-sans-devanagari-vf-fonts google-noto-sans-mono-vf-fonts upower procps-ng \
   zstd pipewire pipewire-pulseaudio pipewire-alsa wireplumber alsa-ucm >/dev/null || fail "Steam path rpms missing"
 for c in mkbootimg unpack_bootimg avbtool skopeo jq flock python3 btrfs mkfs.vfat rsync dnsmasq sshd NetworkManager sudo \
-  chronyd wpa_supplicant gamescope gamescope-session-plus vulkaninfo pgrep zstd; do
+  chronyd wpa_supplicant gamescope gamescope-session-plus vulkaninfo pgrep zstd start-hyprland; do
   command -v "$c" >/dev/null || fail "$c missing"
 done
 [[ $(rpm -qf "$(command -v hyprland-dialog)" 2>/dev/null) == hyprland-guiutils-* ]] || fail "hyprland-dialog is not on PATH from hyprland-guiutils"
@@ -230,6 +230,7 @@ kept=(
   /usr/lib/systemd/user/microos-desktop.service
   /usr/libexec/microos/microos-desktop-env
   /usr/libexec/microos/microos-desktop-session
+  /usr/libexec/microos/microos-hyprland
   /usr/libexec/microos/microos-ii-seed
   /usr/share/wayland-sessions/microos-desktop.desktop
   /usr/lib/sysusers.d/microos-hexagonrpc.conf
