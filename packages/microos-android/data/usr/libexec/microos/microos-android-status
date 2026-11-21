@@ -63,6 +63,19 @@ def gapps_dir():
     return os.path.join(data_dir(), "gapps")
 
 
+def run_dir():
+    base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return os.environ.get("MICROOS_RUNTIME_DIR") or os.path.join(base, "microos-android")
+
+
+def install_mark():
+    try:
+        with open(os.path.join(run_dir(), "gapps-install")) as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
 def builds_dir():
     base = os.environ.get("XDG_DATA_HOME") or os.path.join(home(), ".local/share")
     return os.environ.get("MICROOS_LEPTON_SNAPSHOTS") or os.path.join(base, "microos-lepton", "builds")
@@ -112,12 +125,23 @@ def lepton_values(data):
     return "ready", build
 
 
-def google_play(data):
-    if text(data, "gapps", "setup") == "running":
+def activation():
+    try:
+        with open(os.path.join(state_dir(), "activate")) as handle:
+            wanted = handle.read().strip()
+    except OSError:
+        return ""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", wanted) or not os.path.isdir(os.path.join(gapps_dir(), wanted)):
+        return ""
+    return wanted
+
+
+def google_play(data, install):
+    if install == "running" or activation() or text(data, "gapps", "setup") == "running":
         return "updating"
     current = gapps_set()
     if not current:
-        return "off"
+        return "failed" if install == "failed" else "off"
     if text(data, "gapps", "set") != current:
         return "updating"
     return "on"
@@ -200,7 +224,7 @@ class Status:
         return {
             "Lepton": word,
             "LeptonBuild": build,
-            "GooglePlay": google_play(data),
+            "GooglePlay": google_play(data, install_mark()),
             "GsfId": text(data, "gsf_id"),
             "LastResult": text(data, "last", "result"),
             "LastReason": text(data, "last", "reason"),
@@ -257,7 +281,8 @@ class Status:
         flag = os.environ.get("MICROOS_SYSTEM_CARD") or "/run/microos/system-card"
         return (directory_stamp(state_dir()), directory_stamp(gapps_dir()),
                 link_stamp(os.path.join(gapps_dir(), "current")), link_stamp(card), link_stamp(flag),
-                link_stamp(directory_tie()), link_stamp(state_dir() + "/storage-move"))
+                link_stamp(directory_tie()), link_stamp(state_dir() + "/storage-move"),
+                link_stamp(os.path.join(run_dir(), "gapps-install")))
 
     def emit(self):
         values = self.values()
@@ -274,7 +299,7 @@ class Status:
         return False
 
     def arm(self):
-        for directory in (state_dir(), data_dir(), gapps_dir()):
+        for directory in (state_dir(), data_dir(), gapps_dir(), run_dir()):
             if directory in self.armed:
                 continue
             if self.watch(directory):

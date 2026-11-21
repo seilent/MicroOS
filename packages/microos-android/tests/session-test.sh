@@ -111,6 +111,25 @@ grep -qx 'ExecStart=/usr/bin/microos-android gapps install' "${gapps}" || fail "
 for line in TimeoutStartSec=30min Nice=19 IOSchedulingClass=idle CPUWeight=idle; do
     grep -qx "${line}" "${gapps}" || fail "gapps ${line%%=*}"
 done
+marker="${T}/xdg/microos-android/gapps-install"
+unit_run() {
+    local line
+    line=$(sed -n "s/^$1=//p" "${gapps}" | sed -e 's/\$\$/$/g' -e "s|%t|${T}/xdg|g")
+    [[ -n "${line}" ]] || { fail "gapps has no $1"; return; }
+    SERVICE_RESULT=$2 bash -c "${line}" || fail "gapps $1 with ${2:-no result} exited $?"
+}
+unit_run ExecStartPre ""
+[[ "$(cat "${marker}" 2>/dev/null)" == running && ! -e "${marker}.new" ]] || fail "gapps ExecStartPre: $(cat "${marker}" 2>&1)"
+unit_run ExecStopPost success
+[[ ! -e "${marker}" ]] || fail "gapps ExecStopPost on success left $(cat "${marker}")"
+for result in exit-code signal timeout; do
+    unit_run ExecStartPre ""
+    unit_run ExecStopPost "${result}"
+    [[ "$(cat "${marker}" 2>/dev/null)" == failed ]] || fail "gapps ExecStopPost on ${result}: $(cat "${marker}" 2>&1)"
+done
+unit_run ExecStartPre ""
+unit_run ExecStopPost success
+[[ ! -e "${marker}" ]] || fail "a successful run after a failed one left $(cat "${marker}")"
 grep -qE '^(Requisite|BindsTo|Requires|WantedBy)=' "${gapps}" && fail "the gapps unit is tied to a session or enabled"
 grep -qx 'ExecStart=/usr/libexec/microos/microos-pad-target xb360 keyboard' "${pm2_units}/microos-android-pad.service" \
     || fail "pad ExecStart"
