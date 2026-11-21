@@ -7,4 +7,6 @@ TimeoutStartSec=30min
 Nice=19
 IOSchedulingClass=idle
 CPUWeight=idle
+ExecStartPre=/usr/bin/sh -c 'mkdir -p "$$1" && echo running > "$$1/gapps-install.new" && mv -T "$$1/gapps-install.new" "$$1/gapps-install"' _ %t/microos-android
 ExecStart=/usr/bin/microos-android gapps install
+ExecStopPost=/usr/bin/sh -c 'if [ "$$SERVICE_RESULT" = success ]; then rm -f "$$1/gapps-install"; else echo failed > "$$1/gapps-install.new" && mv -T "$$1/gapps-install.new" "$$1/gapps-install"; fi' _ %t/microos-android

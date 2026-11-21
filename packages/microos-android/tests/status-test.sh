@@ -48,6 +48,7 @@ export MICROOS_ANDROID_DATA="${T}/home/.local/share/microos-android"
 export MICROOS_CONTENT="${T}/content"
 export MICROOS_SYSTEM_CARD="${T}/system-card"
 export MICROOS_ANDROID_CONTEXT="${T}/contexts/android"
+export MICROOS_RUNTIME_DIR="${T}/run/microos-android"
 mkdir -p "${MICROOS_ANDROID_CONTEXT}"
 export MICROOS_LEPTON_REVIEWED="${T}/reviewed"
 export MICROOS_LEPTON_SNAPSHOTS="${T}/snaps"
@@ -238,6 +239,55 @@ sleep 0.5
 mkdir -p "${MICROOS_LEPTON_SNAPSHOTS}/1"
 sleep 0.5
 [[ "$(prop Lepton)" == not-reviewed ]] || fail "a snapshot build with a snapshot: $(prop Lepton)"
+
+play() {
+    for _ in {1..60}; do [[ "$(prop GooglePlay)" == "$1" ]] && return 0; sleep 0.05; done
+    return 1
+}
+mark() {
+    mkdir -p "${MICROOS_RUNTIME_DIR}"
+    if [[ -n "$1" ]]; then
+        echo "$1" > "${MICROOS_RUNTIME_DIR}/gapps-install"
+    else
+        rm -f "${MICROOS_RUNTIME_DIR}/gapps-install"
+    fi
+}
+rm -f "${MICROOS_ANDROID_DATA}/gapps/current"
+set_state "gapps.set=" "gapps.setup=done"
+play off || fail "no set and no install: $(prop GooglePlay)"
+reset_monitor
+mark running
+play updating || fail "the install running: $(prop GooglePlay)"
+for _ in {1..40}; do grep -q "GooglePlay" "${T}/monitor" && break; sleep 0.05; done
+grep -q "GooglePlay" "${T}/monitor" || fail "the install running emitted no signal: $(cat "${T}/monitor")"
+mkdir -p "${MICROOS_ANDROID_DATA}/gapps/mtg11.tmp"
+mark failed
+play failed || fail "a failed install with a stale .tmp: $(prop GooglePlay)"
+sleep 1.5
+[[ "$(prop GooglePlay)" == failed ]] || fail "a failed install with a stale .tmp later: $(prop GooglePlay)"
+echo mtg11 > "${MICROOS_ANDROID_STATE}/activate"
+play updating || fail "a failed install with a pending activation: $(prop GooglePlay)"
+rm -f "${MICROOS_ANDROID_STATE}/activate"
+play failed || fail "a failed install after the activation: $(prop GooglePlay)"
+ln -sfn mtg11 "${MICROOS_ANDROID_DATA}/gapps/current"
+set_state "gapps.set=mtg11" "gapps.setup=done"
+play on || fail "a failed install with a current set: $(prop GooglePlay)"
+rm -f "${MICROOS_ANDROID_DATA}/gapps/current"
+set_state "gapps.set=" "gapps.setup=done"
+play failed || fail "a failed install with no current set: $(prop GooglePlay)"
+mark ""
+play off || fail "the mark removed by a later successful run: $(prop GooglePlay)"
+mark failed
+play failed || fail "a failed install before a reboot: $(prop GooglePlay)"
+rm -rf "${MICROOS_RUNTIME_DIR:?}"
+play off || fail "a failed install after a reboot emptied the runtime dir: $(prop GooglePlay)"
+echo mtg11 > "${MICROOS_ANDROID_STATE}/activate"
+play updating || fail "a pending activation: $(prop GooglePlay)"
+echo mtg99 > "${MICROOS_ANDROID_STATE}/activate"
+play off || fail "an activation of a set that is not staged: $(prop GooglePlay)"
+rm -f "${MICROOS_ANDROID_STATE}/activate"
+rmdir "${MICROOS_ANDROID_DATA}/gapps/mtg11.tmp"
+ln -sfn mtg11 "${MICROOS_ANDROID_DATA}/gapps/current"
 
 big="${T}/late"
 export MICROOS_ANDROID_DATA="${big}"
