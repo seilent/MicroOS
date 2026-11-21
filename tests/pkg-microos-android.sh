@@ -51,6 +51,7 @@ for f in \
   /usr/lib/android-sdk/platform-tools/adb \
   /usr/lib/systemd/user/microos-android.service \
   /usr/lib/systemd/user/microos-lepton-prepare.service \
+  /usr/lib/systemd/user/microos-android-gapps.service \
   /usr/lib/systemd/user/microos-android-gapps-setup.service \
   /usr/lib/systemd/user/microos-android-status.service \
   /usr/lib/systemd/user/microos-android-battery.service \
