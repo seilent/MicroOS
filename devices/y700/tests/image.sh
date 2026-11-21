@@ -264,6 +264,7 @@ kept=(
   /usr/share/microos/keys/microos-backup.pub
   /usr/share/microos/keys/microos-next.pub
   /usr/share/microos/keys/microos.pub
+  /usr/share/microos-android/display
   /usr/share/licenses/microos-steam-seed/steam_subscriber_agreement.txt
   /usr/share/microos-seed/steam-seed.tar.zst
   /usr/share/microos-seed/steam-seed.version
@@ -323,6 +324,8 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "microos-vpad 50-microos-microset.conf"
 [[ $(< /usr/lib/systemd/user/microos-powerkey.service.d/50-microos-microset.conf) == $'[Service]\nEnvironment=MICROOS_POWERKEY_OVERLAY=1' ]] ||
   fail "microos-powerkey 50-microos-microset.conf"
+[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165' ]] ||
+  fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
 grep -q MICROOS_VPAD_MICROSET /usr/libexec/microos/microos-vpad || fail "microos-vpad has no MICROOS_VPAD_MICROSET knob"
 grep -q MICROOS_POWERKEY_OVERLAY /usr/libexec/microos/microos-powerkey || fail "microos-powerkey has no MICROOS_POWERKEY_OVERLAY knob"
 

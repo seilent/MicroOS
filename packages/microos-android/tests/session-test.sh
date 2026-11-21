@@ -45,6 +45,28 @@ grep -qx 'Wants=microos-android-pad.service' "${pad}" || fail "pad drop-in Wants
 
 bash "${plain}" --help > /dev/null 2>&1 || true
 grep -q -- '--steam' "${plain}" || fail "the plain wrapper does not strip --steam"
+cat > "${T}/gamescope" <<'STUB'
+#!/usr/bin/bash
+printf '%s\n' "$*"
+STUB
+chmod 0755 "${T}/gamescope"
+printf 'width=2560\nheight=1600\ndensity=400\nhz=165\n' > "${T}/display-hz"
+printf 'width=960\nheight=640\ndensity=213\n' > "${T}/display"
+got=$(MICROOS_GAMESCOPE="${T}/gamescope" MICROOS_DISPLAY_FILE="${T}/display-hz" bash "${plain}" --prefer-output '*,DSI-1' --steam -R x)
+[[ "${got}" == "-r 165 --prefer-output *,DSI-1 -R x" ]] || fail "the plain wrapper with hz=165 ran gamescope ${got}"
+got=$(MICROOS_GAMESCOPE="${T}/gamescope" MICROOS_DISPLAY_FILE="${T}/display" bash "${plain}" --prefer-output '*,DSI-1' --steam -R x)
+[[ "${got}" == "--prefer-output *,DSI-1 -R x" ]] || fail "the plain wrapper with no hz ran gamescope ${got}"
+for value in 0 fast; do
+    printf 'density=400\nhz=%s\n' "${value}" > "${T}/display-bad"
+    rc=0
+    got=$(MICROOS_GAMESCOPE="${T}/gamescope" MICROOS_DISPLAY_FILE="${T}/display-bad" bash "${plain}" -R x 2>&1) || rc=$?
+    [[ "${rc}" == 1 && "${got}" == "microos-gamescope-plain: hz=${value} in ${T}/display-bad is not a rate" ]] \
+        || fail "the plain wrapper with hz=${value}: exit ${rc}: ${got}"
+done
+rc=0
+got=$(MICROOS_GAMESCOPE="${T}/gamescope" MICROOS_DISPLAY_FILE="${T}/absent-display" bash "${plain}" -R x 2>&1) || rc=$?
+[[ "${rc}" == 1 && "${got}" == "microos-gamescope-plain: ${T}/absent-display missing" ]] \
+    || fail "the plain wrapper with no display file: exit ${rc}: ${got}"
 
 unit="${units}/gamescope-session-plus@android.service.d/20-microos-android-pad.conf"
 [[ -f "${unit}" ]] || fail "the pad drop-in is not under the session's unit dir"

@@ -1,8 +1,18 @@
 #!/usr/bin/bash
 set -eu
 
+display="${MICROOS_DISPLAY_FILE:-/usr/share/microos-android/display}"
+[[ -f "${display}" ]] || { echo "microos-gamescope-plain: ${display} missing" >&2; exit 1; }
 args=()
+hz=$(sed -n 's/^hz=//p' "${display}" | head -n 1)
+if [[ -n "${hz}" ]]; then
+    if [[ ! "${hz}" =~ ^[0-9]+$ ]] || (( 10#${hz} == 0 )); then
+        echo "microos-gamescope-plain: hz=${hz} in ${display} is not a rate" >&2
+        exit 1
+    fi
+    args+=(-r "$((10#${hz}))")
+fi
 for arg in "$@"; do
     [[ "${arg}" == --steam ]] || args+=("${arg}")
 done
-exec /usr/bin/gamescope "${args[@]}"
+exec "${MICROOS_GAMESCOPE:-/usr/bin/gamescope}" "${args[@]}"

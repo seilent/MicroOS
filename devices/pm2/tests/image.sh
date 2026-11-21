@@ -697,6 +697,7 @@ guestcmd=/usr/share/microos-android/cmd
 [[ -f $guestcmd && ! -L $guestcmd && $(stat -c '%a %U %G' "$guestcmd") == '755 root root' ]] \
   || fail "/usr/share/microos-android/cmd missing, mode or owner"
 [[ $(head -n 1 "$guestcmd") == '#!/system/bin/sh' ]] || fail "the guest cmd has no /system/bin/sh shebang"
+[[ $(< /usr/share/microos-android/display) == $'width=960\nheight=640\ndensity=213' ]] || fail "/usr/share/microos-android/display"
 
 seedrpm=(/seed-rpm/microos-steam-seed-*.aarch64.rpm)
 [[ ${#seedrpm[@]} -eq 1 && -f ${seedrpm[0]} ]] || fail "expected one microos-steam-seed RPM in /seed-rpm"

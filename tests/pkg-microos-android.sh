@@ -68,7 +68,6 @@ for f in \
   /usr/lib/microos/sessions.d/android.conf \
   /usr/share/wayland-sessions/microos-android.desktop \
   /usr/share/gamescope-session-plus/sessions.d/android \
-  /usr/share/microos-android/display \
   /usr/share/microos-android/opts \
   /usr/share/microos-android/cmd \
   /usr/share/microos-android/restrictions-stub.jar \
@@ -77,6 +76,7 @@ for f in \
   /usr/share/microos-lepton/steam-empty; do
   if ! grep -qxF "$f" <<<"$files"; then fail "missing $f"; fi
 done
+if grep -qxF /usr/share/microos-android/display <<<"$files"; then fail "the display file is device data, not the package's"; fi
 if grep -qE '^/usr/lib/(armada|extension-release\.d|extensions|microemu)|^/var/|^/etc/|^/usr/share/microemu|^/usr/bin/microemu-|^/usr/libexec/microemu' <<<"$files"; then
   fail "MicroEMU, sysext, Armada or host state paths: $(grep -E '^/usr/lib/(armada|extension-release\.d|extensions|microemu)|^/var/|^/etc/|^/usr/share/microemu|^/usr/bin/microemu-|^/usr/libexec/microemu' <<<"$files" | head -n5)"
 fi

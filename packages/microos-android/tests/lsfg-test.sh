@@ -46,6 +46,8 @@ for _ in {1..50}; do [[ -S "${T}/system" ]] && break; sleep 0.1; done
 export DBUS_SYSTEM_BUS_ADDRESS="unix:path=${T}/system"
 
 export STATE="${T}/state" GUEST="${T}/guest"
+export MICROOS_DISPLAY_FILE="${T}/display"
+printf 'width=960\nheight=640\ndensity=213\n' > "${MICROOS_DISPLAY_FILE}"
 export MICROOS_RUNTIME_DIR="${T}/run/microos-android"
 mkdir -p "${STATE}/settings" "${STATE}/props" "${GUEST}" "${T}/bin" "${MICROOS_RUNTIME_DIR}"
 echo 1 > "${STATE}/debuggable"
@@ -360,6 +362,34 @@ is_cleared || fail "not cleared: $(ls -A "${STATE}/settings")"
 start_microsetd
 waitout "cleared, no app chosen" || fail "no reconcile on the return: $(cat "${T}/out")"
 stop_writer
+
+case_name="panel rate from the display file"
+printf 'width=2560\nheight=1600\ndensity=400\nhz=165\n' > "${T}/display-165"
+poke lsfg.android_app "<'${on_app}'>"
+poke lsfg.android_state "<true>"
+MICROOS_DISPLAY_FILE="${T}/display-165" start_writer
+waitout "frame generation 2x for ${on_app}, base cap 82" || fail "no 165 Hz cap at 2x: $(cat "${T}/out")"
+step lsfg.multiplier "<uint32 3>"
+bad=$(props_are multiplier=3 fps=55) || fail "3x at 165 Hz: ${bad}"
+step lsfg.multiplier "<uint32 2>"
+bad=$(props_are multiplier=2 fps=82) || fail "2x at 165 Hz: ${bad}"
+stop_writer
+
+case_name="a bad panel rate"
+for value in 0 fast; do
+    printf 'density=400\nhz=%s\n' "${value}" > "${T}/display-bad"
+    : > "${STATE}/scripts"
+    rc=0
+    MICROOS_DISPLAY_FILE="${T}/display-bad" timeout 10 "${writer}" 2> "${T}/out" || rc=$?
+    [[ "${rc}" == 1 ]] || fail "hz=${value}: exit ${rc}: $(cat "${T}/out")"
+    grep -qxF "microos-android-lsfg: cannot read the panel rate: hz=${value} in ${T}/display-bad is not a rate" "${T}/out" \
+        || fail "hz=${value}: not logged: $(cat "${T}/out")"
+    [[ ! -s "${STATE}/scripts" ]] || fail "hz=${value}: the guest was called: $(cat "${STATE}/scripts")"
+done
+rc=0
+MICROOS_DISPLAY_FILE="${T}/absent-display" timeout 10 "${writer}" 2> "${T}/out" || rc=$?
+[[ "${rc}" == 1 ]] && grep -q "^microos-android-lsfg: cannot read the panel rate: " "${T}/out" \
+    || fail "no display file: exit ${rc}: $(cat "${T}/out")"
 
 on() {
     poke lsfg.android_app "<'${on_app}'>"
