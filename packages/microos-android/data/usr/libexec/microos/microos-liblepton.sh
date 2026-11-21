@@ -30,6 +30,10 @@ for microos_var in SteamAppId STEAM_COMPAT_INSTALL_PATH STEAM_COMPAT_LIBRARY_PAT
     fi
 done
 unset microos_var
+if [[ -v MICROOS_ANDROID_ADB && "${MICROOS_ANDROID_ADB}" != remote ]]; then
+    microos_say "MICROOS_ANDROID_ADB=${MICROOS_ANDROID_ADB} is not remote, refusing"
+    exit 1
+fi
 case "${LEPTON_CONTEXT:-}" in
     dev|sysbake|steamlaunch-*)
         microos_say "${LEPTON_CONTEXT} is a context name Lepton treats specially, refusing"
@@ -596,8 +600,10 @@ wipe_baked_system_data() {
 }
 
 podman_network_options() {
-    local options
+    local options adb
+    adb="127.0.0.1/$(adb_port)"
+    [[ "${MICROOS_ANDROID_ADB:-}" != remote ]] || adb=$(adb_port)
     options="-I eth0 --ipv4-only --no-ndp -a $(podman_ip) -g $(podman_subnet).1 -m 1500 --no-dhcpv6 --no-dhcp"
-    options+=" -t 127.0.0.1/$(adb_port) --no-splice --map-guest-addr none --dns-forward $(podman_subnet).1"
+    options+=" -t ${adb} --no-splice --map-guest-addr none --dns-forward $(podman_subnet).1"
     printf '%s' "--network=pasta:${options// /,}"
 }

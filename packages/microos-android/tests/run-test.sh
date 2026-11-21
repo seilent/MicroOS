@@ -242,6 +242,24 @@ run
 printf 'on boot\n' > "${STATE}/want-rc"
 cmp -s "${derived}" "${STATE}/want-rc" || fail "derived file differs: $(diff "${STATE}/want-rc" "${derived}")"
 
+case_name="remote adb"
+reset
+printf 'density=213\nadb=remote\n' > "${T}/display-adb"
+MICROOS_DISPLAY_FILE="${T}/display-adb" run
+[[ "${rc}" == 0 ]] || fail "adb=remote: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "MICROOS_ANDROID_ADB=remote" "${STATE}/env" || fail "adb=remote: $(grep MICROOS_ANDROID_ADB "${STATE}/env")"
+reset
+MICROOS_ANDROID_ADB=remote run
+[[ "${rc}" == 0 ]] || fail "no adb key: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -q '^MICROOS_ANDROID_ADB=' "${STATE}/env" && fail "no adb key: the caller's MICROOS_ANDROID_ADB reached lepton"
+reset
+printf 'density=213\nadb=all\n' > "${T}/display-adb"
+MICROOS_DISPLAY_FILE="${T}/display-adb" run
+[[ "${rc}" == 1 ]] && grep -qF "adb=all in ${T}/display-adb is not remote" "${STATE}/stderr" \
+    || fail "adb=all: exit ${rc}: $(cat "${STATE}/stderr")"
+[[ ! -s "${STATE}/events" ]] || fail "adb=all: lepton started: $(cat "${STATE}/events")"
+rm -f "${T}/display-adb"
+
 case_name="no overlay tree"
 reset
 rm -rf "${T}/lepton/images/rootfs_overlay"

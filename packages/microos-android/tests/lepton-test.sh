@@ -21,7 +21,7 @@ mkdir -p "${STATE}/steamvr/runtime" "${STATE}/steamvr/logs" "${STATE}/steamvr/co
 unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME DBUS_SESSION_BUS_ADDRESS MICROOS_RUNTIME_DIR MICROOS_LEPTON_HOME \
     STEAM_COMPAT_DATA_PATH APP_WANTS_FLATSCREEN GAMESCOPE_WAYLAND_DISPLAY CONTAINERS_CONF_OVERRIDE MICROOS_GUEST_CMD \
     LEPTON_ADB_PORT LEPTON_GDB_PORT LEPTON_LLDB_PORT LEPTON_NO_CLEANUP LEPTON_KEEP_CONTEXT IS_PARENT SteamAppId \
-    STEAM_COMPAT_INSTALL_PATH STEAM_COMPAT_LIBRARY_PATHS STEAM_COMPAT_SHADER_PATH LEPTON_PREFIX MICROOS_LEPTON_REVIEWED
+    STEAM_COMPAT_INSTALL_PATH STEAM_COMPAT_LIBRARY_PATHS STEAM_COMPAT_SHADER_PATH LEPTON_PREFIX MICROOS_LEPTON_REVIEWED MICROOS_ANDROID_ADB
 for var in $(compgen -v LEPTON_ENV_ || true); do
     unset "${var}"
 done
@@ -954,6 +954,16 @@ diff <(grep -v '^STEAM_COMPAT_DATA_PATH=\|^LEPTON_.*_PORT=\|^APP_WANTS\|^GAMESCO
     <(sort "${STATE}/env-probe-lh-proto" | grep -v '^STEAM_COMPAT_DATA_PATH=') > "${STATE}/env-diff" \
     || fail "environment without optional variables: $(cat "${STATE}/env-diff")"
 [[ "$(views)" != "${view}" && "$(views | wc -l)" == 1 ]] || fail "the views of finished starts were kept: $(views)"
+cycle probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" LEPTON_ADB_PORT=15655 MICROOS_ANDROID_ADB=remote \
+    "${launcher}" start probe-lh-proto
+[[ "${rc}" == 0 ]] || fail "remote adb: exit ${rc}: $(out probe-lh-proto)"
+grep -qx "MICROOS_ANDROID_ADB=remote" "${STATE}/env-probe-lh-proto" || fail "remote adb: MICROOS_ANDROID_ADB did not reach Lepton"
+remote=$(grep '^--network=' "${STATE}/run-lepton-probe-lh-proto")
+[[ "${remote}" != "${network}" && "${remote}" == "${network/,-t,127.0.0.1\/15655,/,-t,15655,}" ]] \
+    || fail "remote adb network options: ${remote}"
+refused probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" MICROOS_ANDROID_ADB=all "${launcher}" start probe-lh-proto
+grep -qxF "microos-liblepton: MICROOS_ANDROID_ADB=all is not remote, refusing" "${STATE}/out-probe-lh-proto" \
+    || fail "MICROOS_ANDROID_ADB=all: $(out probe-lh-proto)"
 
 echo outside > "${T}/outside/file"
 before=$(snapshot "${T}/outside")

@@ -531,6 +531,12 @@ case "${navbar}" in
     1) mainkeys=0 ;;
     *) fail "navbar=${navbar} in ${DISPLAY_FILE} is not 0 or 1" ;;
 esac
+adb=$(sed -n 's/^adb=//p' "${DISPLAY_FILE}" 2>/dev/null | head -n 1)
+case "${adb}" in
+    "") unset MICROOS_ANDROID_ADB ;;
+    remote) export MICROOS_ANDROID_ADB=remote ;;
+    *) fail "adb=${adb} in ${DISPLAY_FILE} is not remote" ;;
+esac
 [[ -x "${LEPTON}" ]] || fail "${LEPTON} missing"
 lepton_err=$(mktemp) || fail "cannot make a temp file"
 rc=0
