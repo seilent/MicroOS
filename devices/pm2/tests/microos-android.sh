@@ -30,6 +30,7 @@ scripts=(
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-lepton-steam"
 )
 python=(
+  "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-battery"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-client"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-lsfg"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-perf"
@@ -78,7 +79,7 @@ out=$(mktemp)
 trap 'rm -f "${out:?}"' EXIT
 for t in stub-test keyboard-test sideload-test reset-test gapps-install-test play-unit-test run-test lepton-test \
   check-test prepare-test install-request-test status-test state-test client-test session-test cli-test \
-  session-watch-test storage-test lsfg-test perf-test; do
+  session-watch-test storage-test lsfg-test perf-test battery-test; do
   if ! bash "${tests}/${t}.sh" > "$out" 2>&1; then
     fail "${t}.sh: $(tail -n 5 "$out" | tr '\n' ' ')"
   fi

@@ -17,6 +17,7 @@ ME = "microos-android-client"
 UNIT = "microos-android.service"
 SESSION = "gamescope-session-plus@android.service"
 SETUP = "microos-android-gapps-setup.service"
+BATTERY = "microos-android-battery.service"
 TRACK = os.environ.get("MICROOS_TRACK") or "/usr/libexec/microos/microos-session-track"
 CONTAINER = "lepton-android"
 MANGOHUD_CONFIG = re.compile(r"/tmp/mangohud\.[A-Za-z0-9]{8}")
@@ -436,6 +437,7 @@ class Client:
         self.run_start_tasks()
 
     def run_start_tasks(self):
+        self.start_unit_named(BATTERY, "fail")
         keyboard = env("MICROOS_KEYBOARD_INSTALL", "/usr/libexec/microos/microos-android-keyboard")
         try:
             pid = GLib.spawn_async([keyboard, CONTAINER], flags=GLib.SpawnFlags.DO_NOT_REAP_CHILD,
@@ -459,10 +461,10 @@ class Client:
         if read_text(os.path.join(run_dir(), "first-boot")) == "gapps":
             self.start_unit_named(SETUP)
 
-    def start_unit_named(self, unit):
+    def start_unit_named(self, unit, mode="replace"):
         try:
             self.bus.call_sync(MANAGER[0], MANAGER[1], MANAGER[2], "StartUnit",
-                               GLib.Variant("(ss)", (unit, "replace")), None, Gio.DBusCallFlags.NONE, 5000, None)
+                               GLib.Variant("(ss)", (unit, mode)), None, Gio.DBusCallFlags.NONE, 5000, None)
         except GLib.Error as error:
             log(f"StartUnit {unit} failed: {error.message}")
 

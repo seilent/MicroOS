@@ -408,6 +408,8 @@ for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/ready" ]] && break; sleep 0.
 for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/start-done" ]] && break; sleep 0.05; done
 [[ -f "${MICROOS_RUNTIME_DIR}/start-done" ]] || fail "ready: start-done not written: $(cat "${T}/out")"
 grep -qx "keyboard lepton-android" "${STATE}/calls" || fail "ready: the keyboard did not run: $(cat "${STATE}/calls")"
+grep -qx "start microos-android-battery.service fail" "${STATE}/calls" \
+    || fail "ready: the battery mirror did not start: $(cat "${STATE}/calls")"
 grep -q "start microos-android-gapps-setup.service" "${STATE}/calls" && fail "ready: the setup unit ran with no first boot"
 state_ok 'd["last"]["result"] == "ready"' || fail "ready: state not ready: $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
 [[ "$(stat -c %a "${MICROOS_ANDROID_STATE}")" == 700 ]] \
@@ -634,6 +636,9 @@ for _ in {1..100}; do [[ "$(readlink "${MICROOS_GAPPS}/current" 2>/dev/null)" ==
 for _ in {1..200}; do [[ "$(grep -c '^start microos-android.service' "${STATE}/calls")" -ge 2 ]] && break; sleep 0.05; done
 [[ "$(grep -c '^start microos-android.service' "${STATE}/calls")" -ge 2 ]] \
     || fail "a GApps activation while ready: the unit was not started again: $(cat "${STATE}/calls")"
+for _ in {1..200}; do [[ "$(grep -c '^start microos-android-battery.service' "${STATE}/calls")" -ge 2 ]] && break; sleep 0.05; done
+[[ "$(grep -c '^start microos-android-battery.service' "${STATE}/calls")" -ge 2 ]] \
+    || fail "a GApps activation while ready: the battery mirror was not started again: $(cat "${STATE}/calls")"
 [[ -f "${MICROOS_RUNTIME_DIR}/session.env" ]] || fail "a GApps activation while ready: session.env lost"
 stop_client
 

@@ -1,0 +1,8 @@
+[Unit]
+Description=Mirror the host power supplies into the Android guest
+BindsTo=microos-android.service
+After=microos-android.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/microos/microos-android-battery

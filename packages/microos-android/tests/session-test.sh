@@ -76,7 +76,7 @@ got=$(MICROOS_GAMESCOPE="${T}/gamescope" MICROOS_DISPLAY_FILE="${T}/absent-displ
     && ! -e "${units}/microos-android-pad.service" ]] || fail "the package ships the PM2 pad target units"
 
 for u in microos-android.service microos-lepton-prepare.service microos-android-gapps-setup.service \
-    microos-android-status.service "${pm2_units}/microos-android-pad.service"; do
+    microos-android-status.service microos-android-battery.service "${pm2_units}/microos-android-pad.service"; do
     [[ "${u}" == /* ]] || u="${units}/${u}"
     [[ -f "${u}" ]] || { fail "${u##*/} missing"; continue; }
     grep -qx '\[Unit\]' "${u}" || fail "${u##*/} has no [Unit]"
@@ -99,6 +99,11 @@ grep -qx 'StopPropagatedFrom=gamescope-session-plus@android.service' "${units}/m
     || fail "prepare StopPropagatedFrom"
 grep -qx 'BindsTo=gamescope-session-plus@android.service' "${pm2_units}/microos-android-pad.service" \
     || fail "pad BindsTo"
+battery="${units}/microos-android-battery.service"
+grep -qx 'BindsTo=microos-android.service' "${battery}" || fail "battery BindsTo"
+grep -qx 'After=microos-android.service' "${battery}" || fail "battery After"
+grep -qx 'ExecStart=/usr/libexec/microos/microos-android-battery' "${battery}" || fail "battery ExecStart"
+grep -q '^WantedBy=' "${battery}" && fail "the battery mirror is enabled"
 grep -qx 'ExecStart=/usr/libexec/microos/microos-pad-target xb360 keyboard' "${pm2_units}/microos-android-pad.service" \
     || fail "pad ExecStart"
 [[ -f "${pm2}/usr/libexec/microos/microos-pad-target" ]] || fail "the pad watcher is not in the image"

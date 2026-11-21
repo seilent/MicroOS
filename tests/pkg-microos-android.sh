@@ -53,6 +53,7 @@ for f in \
   /usr/lib/systemd/user/microos-lepton-prepare.service \
   /usr/lib/systemd/user/microos-android-gapps-setup.service \
   /usr/lib/systemd/user/microos-android-status.service \
+  /usr/lib/systemd/user/microos-android-battery.service \
   /usr/libexec/microos/microos-android-check \
   /usr/libexec/microos/microos-android-install \
   /usr/libexec/microos/microos-android-client \
@@ -60,6 +61,7 @@ for f in \
   /usr/libexec/microos/microos-android-lsfg \
   /usr/libexec/microos/microos-android-perf \
   /usr/libexec/microos/microos-android-status \
+  /usr/libexec/microos/microos-android-battery \
   /usr/libexec/microos/microos-lepton-prepare \
   /usr/libexec/microos/microos-gamescope-plain \
   /usr/libexec/microos/microos-lepton-lib.sh \
