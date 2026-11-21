@@ -23,6 +23,12 @@ export MICROOS_POLL_S=0.05
 export MICROOS_STEAM_PIPE="${T}/steam.pipe"
 export MICROOS_GAPPS="${T}/gapps"
 export MICROOS_STUB_DIR="${T}/stub"
+stub_files() {
+    mkdir -p "${MICROOS_STUB_DIR}"
+    echo jar > "${MICROOS_STUB_DIR}/restrictions-stub.jar"
+    echo rc > "${MICROOS_STUB_DIR}/restrictions-stub.rc"
+}
+stub_files
 export MICROOS_OPTS="${repo}/data/usr/share/microos-android/opts"
 export MICROOS_SYSTEM_CARD="${T}/system-card"
 export MICROOS_CONTENT="${T}/content"
@@ -182,7 +188,7 @@ grep -q '^LD_LIBRARY_PATH=' "${STATE}/env" && fail "LD_LIBRARY_PATH reached lept
 grep -qx "lepton start android" "${STATE}/events" || fail "lepton not run as start android"
 [[ "$(sed -n '1p' "${conf}")" == "[containers]" ]] || fail "conf header"
 grep -qx 'annotations = \["run.oci.systemd.subgroup=app-steam-app1-1.scope"\]' "${conf}" || fail "annotation missing: $(cat "${conf}")"
-expected_mounts="mounts = [\"type=bind,source=/dev/input/event10,destination=/dev/input/event10,rw\",\"type=bind,source=/dev/input/event12,destination=/dev/input/event12,rw\",\"type=bind,source=${rc_override},destination=/system/etc/init/lineage-system.rc,ro\",\"type=bind,source=${odm},destination=/vendor/odm/etc/build.prop,ro\",\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\"]"
+expected_mounts="mounts = [\"type=bind,source=/dev/input/event10,destination=/dev/input/event10,rw\",\"type=bind,source=/dev/input/event12,destination=/dev/input/event12,rw\",\"type=bind,source=${rc_override},destination=/system/etc/init/lineage-system.rc,ro\",\"type=bind,source=${odm},destination=/vendor/odm/etc/build.prop,ro\",\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\",\"type=bind,source=${MICROOS_STUB_DIR}/restrictions-stub.jar,destination=/system/framework/restrictions-stub.jar,ro\",\"type=bind,source=${MICROOS_STUB_DIR}/restrictions-stub.rc,destination=/system/etc/init/restrictions-stub.rc,ro\"]"
 grep -qxF "${expected_mounts}" "${conf}" || fail "mounts: $(cat "${conf}")"
 [[ "$(cat "${odm}")" == $'ro.odm.build.id=RQ3A\nro.product.odm.model=lepton\nro.sf.lcd_density=213\nqemu.hw.mainkeys=1\npm.dexopt.install=speed\nro.adb.secure=1' ]] || fail "odm prop: $(cat "${odm}")"
 expected_events="notify EXTEND_TIMEOUT_USEC=120000000
@@ -372,7 +378,7 @@ grep -q "notify --ready" "${STATE}/events" && fail "ready sent before sys.boot_c
 reset "exit 0"
 : > "${STATE}/nodes"
 run
-grep -qxF "mounts = [\"type=bind,source=${rc_override},destination=/system/etc/init/lineage-system.rc,ro\",\"type=bind,source=${odm},destination=/vendor/odm/etc/build.prop,ro\",\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\"]" "${conf}" || fail "no pad: mounts $(cat "${conf}")"
+grep -qxF "mounts = [\"type=bind,source=${rc_override},destination=/system/etc/init/lineage-system.rc,ro\",\"type=bind,source=${odm},destination=/vendor/odm/etc/build.prop,ro\",\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\",\"type=bind,source=${MICROOS_STUB_DIR}/restrictions-stub.jar,destination=/system/framework/restrictions-stub.jar,ro\",\"type=bind,source=${MICROOS_STUB_DIR}/restrictions-stub.rc,destination=/system/etc/init/restrictions-stub.rc,ro\"]" "${conf}" || fail "no pad: mounts $(cat "${conf}")"
 
 reset "sleep 0.5;exit 1"
 printf 'I x: ok\nE SystemServer: Signature|privileged permissions not in privapp-permissions whitelist: {x}\n' > "${STATE}/logcat"
@@ -468,8 +474,7 @@ gapps_tree() {
         done
     } > "${set}/STAMP"
     ln -s mtg11-20230922.vending-36.6.25 "${MICROOS_GAPPS}/current"
-    echo jar > "${MICROOS_STUB_DIR}/restrictions-stub.jar"
-    echo rc > "${MICROOS_STUB_DIR}/restrictions-stub.rc"
+    stub_files
 }
 gset="${MICROOS_GAPPS}/mtg11-20230922.vending-36.6.25"
 
@@ -501,7 +506,7 @@ run
 grep -q "a grant failed, the stamp stays unchanged" "${STATE}/stderr" || fail "failed grant not logged: $(cat "${STATE}/stderr")"
 [[ ! -e "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp" ]] || fail "stamp written after a failed grant"
 
-for broken in current stamp file size jar rc; do
+for broken in current stamp file size; do
     reset "exit 0"
     gapps_tree
     case "${broken}" in
@@ -509,15 +514,24 @@ for broken in current stamp file size jar rc; do
         stamp) rm "${gset}/STAMP" ;;
         file) chmod u+w "${gset}/system/product/priv-app/Phonesky"; rm "${gset}/system/product/priv-app/Phonesky/Phonesky.apk" ;;
         size) echo longer >> "${gset}/system/product/priv-app/Phonesky/Phonesky.apk" ;;
-        jar) rm "${MICROOS_STUB_DIR}/restrictions-stub.jar" ;;
-        rc) rm "${MICROOS_STUB_DIR}/restrictions-stub.rc" ;;
     esac
     run
     [[ "${rc}" == 1 ]] || fail "gapps ${broken} broken: exit ${rc}"
     grep -q "gapps tree incomplete, run microos-android gapps install" "${STATE}/stderr" || fail "gapps ${broken} broken: no refusal line"
     grep -q "lepton start" "${STATE}/events" && fail "gapps ${broken} broken: container started"
 done
-rm -rf "${MICROOS_GAPPS}" "${MICROOS_STUB_DIR}" "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp"
+for missing in jar rc; do
+    reset "exit 0"
+    rm -rf "${MICROOS_GAPPS}"
+    stub_files
+    rm "${MICROOS_STUB_DIR}/restrictions-stub.${missing}"
+    run
+    [[ "${rc}" == 1 ]] || fail "stub ${missing} missing: exit ${rc}"
+    grep -q "no restrictions stub in ${MICROOS_STUB_DIR}, refusing" "${STATE}/stderr" || fail "stub ${missing} missing: no refusal line"
+    grep -q "lepton start" "${STATE}/events" && fail "stub ${missing} missing: container started"
+done
+rm -rf "${MICROOS_GAPPS}" "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp"
+stub_files
 
 reset "Boot complete!;hold;exit 4"
 start=$(date +%s%3N)

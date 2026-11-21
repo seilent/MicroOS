@@ -340,7 +340,6 @@ gapps_check() {
     local dir path sha size
     dir=$(readlink -f "${GAPPS}/current" 2>/dev/null) || return 1
     [[ -d "${dir}" && -f "${dir}/STAMP" ]] || return 1
-    [[ -f "${STUB_DIR}/restrictions-stub.jar" && -f "${STUB_DIR}/restrictions-stub.rc" ]] || return 1
     while read -r sha size path; do
         [[ "${sha}" == set=* ]] && continue
         [[ -n "${path}" && "${path}" == system/* && "${path}" != *..* ]] || return 1
@@ -564,6 +563,10 @@ done < <("${PAD_NODES}")
 mounts+=("\"type=bind,source=${RUN}/lineage-system.rc,destination=/system/etc/init/lineage-system.rc,ro\"")
 mounts+=("\"type=bind,source=${RUN}/odm-build.prop,destination=/vendor/odm/etc/build.prop,ro\"")
 mounts+=("\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\"")
+[[ -f "${STUB_DIR}/restrictions-stub.jar" && -f "${STUB_DIR}/restrictions-stub.rc" ]] \
+    || fail "no restrictions stub in ${STUB_DIR}, refusing"
+mounts+=("\"type=bind,source=${STUB_DIR}/restrictions-stub.jar,destination=/system/framework/restrictions-stub.jar,ro\"")
+mounts+=("\"type=bind,source=${STUB_DIR}/restrictions-stub.rc,destination=/system/etc/init/restrictions-stub.rc,ro\"")
 lsfg_layer=0
 if lsfg_source_ok "${LSFG_DIR}" "no frame generation layer"; then
     if [[ -f "${LSFG_DIR}/libVkLayer_lsfg.so" ]]; then
@@ -597,8 +600,6 @@ if [[ -e "${GAPPS}/current" || ( -n "${old_gapps}" && "${old_gapps}" != none ) ]
     for path in "${gapps_files[@]}"; do
         mounts+=("\"type=bind,source=${gapps_dir}/${path},destination=/${path},ro\"")
     done
-    mounts+=("\"type=bind,source=${STUB_DIR}/restrictions-stub.jar,destination=/system/framework/restrictions-stub.jar,ro\"")
-    mounts+=("\"type=bind,source=${STUB_DIR}/restrictions-stub.rc,destination=/system/etc/init/restrictions-stub.rc,ro\"")
     say "gapps ${gapps_set} on"
 fi
 {

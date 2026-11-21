@@ -2199,6 +2199,9 @@ chmod 0755 "${T}/play-bin/"*
 mkdir -p "${rt}/images/rootfs/system/etc/init"
 printf 'on boot\n    keycodes 114 115 116\n' > "${rt}/images/rootfs/system/etc/init/lineage-system.rc"
 python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${XDG_RUNTIME_DIR}/play-gamescope-0"
+mkdir -p "${T}/play-stub"
+echo jar > "${T}/play-stub/restrictions-stub.jar"
+echo rc > "${T}/play-stub/restrictions-stub.rc"
 rc=0
 XDG_STATE_HOME="${T}/play-state" MICROOS_ANDROID_DATA="${play_data}" MICROOS_POLL_S=0.05 \
     GAMESCOPE_WAYLAND_DISPLAY=play-gamescope-0 \
