@@ -1,0 +1,194 @@
+#!/usr/bin/python3
+import os
+import re
+import signal
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-android-battery"
+CONTAINER = "lepton-android"
+SUPPLY = os.environ.get("MICROOS_POWER_SUPPLY") or "/sys/class/power_supply"
+POLL_MS = int(os.environ.get("MICROOS_BATTERY_POLL_MS") or 300000)
+SETTLE_MS = int(os.environ.get("MICROOS_BATTERY_SETTLE_MS") or 50)
+EXEC_TIMEOUT = 10
+MONITOR = ["udevadm", "monitor", "--udev", "--subsystem-match=power_supply"]
+KEYS = ("ac", "usb", "wireless", "status", "level", "temp", "counter")
+STATUS = {"Charging": "2", "Discharging": "3", "Not charging": "4", "Full": "5"}
+TEMP_STEP = 10
+MARK = re.compile(r"@([a-z]+) ([0-9]+)")
+
+
+def log(message):
+    print(f"{ME}: {message}", file=sys.stderr, flush=True)
+
+
+def read(path):
+    try:
+        with open(path) as handle:
+            return handle.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def charger(kind):
+    if kind == "Mains":
+        return "ac"
+    if kind.startswith("USB"):
+        return "usb"
+    if kind == "Wireless":
+        return "wireless"
+    return ""
+
+
+def values():
+    found = {"ac": "0", "usb": "0", "wireless": "0"}
+    battery = None
+    try:
+        names = sorted(os.listdir(SUPPLY))
+    except OSError:
+        names = []
+    for name in names:
+        path = os.path.join(SUPPLY, name)
+        if read(os.path.join(path, "scope")) == "Device":
+            continue
+        kind = read(os.path.join(path, "type"))
+        if kind == "Battery":
+            if battery is None and read(os.path.join(path, "present")) != "0":
+                battery = path
+            continue
+        key = charger(kind)
+        if key and read(os.path.join(path, "online")) not in ("", "0"):
+            found[key] = "1"
+    if battery is not None:
+        status = read(os.path.join(battery, "status"))
+        if status:
+            found["status"] = STATUS.get(status, "1")
+        for key, name in (("level", "capacity"), ("temp", "temp"), ("counter", "charge_counter")):
+            value = read(os.path.join(battery, name))
+            if re.fullmatch(r"-?[0-9]+", value):
+                found[key] = value
+    return found
+
+
+def send(changes):
+    script = "".join(f'/system/bin/cmd battery set {key} {value} 2>&1; echo "@{key} $?"\n' for key, value in changes)
+    command = ["podman", "exec", CONTAINER, "/system/bin/sh", "-c", script]
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=EXEC_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f"battery set failed: {error}")
+        return set()
+    wanted = dict(changes)
+    done = set()
+    marked = set()
+    output = []
+    for line in result.stdout.decode(errors="replace").splitlines():
+        found = MARK.fullmatch(line)
+        if not found or found.group(1) not in wanted:
+            if line:
+                output.append(line)
+            continue
+        key, code = found.groups()
+        marked.add(key)
+        if code == "0":
+            done.add(key)
+        else:
+            log(f"battery set {key} {wanted[key]} exited {code}: {' '.join(output)}")
+        output = []
+    left = [f"{key} {value}" for key, value in changes if key not in marked]
+    if left:
+        log(f"battery set {', '.join(left)}: podman exec exited {result.returncode}: {' '.join(output)}")
+    return done
+
+
+class Mirror:
+    def __init__(self, loop):
+        self.loop = loop
+        self.sent = {}
+        self.pending = 0
+        self.code = 0
+        self.monitor = None
+        self.lines = None
+
+    def update(self):
+        current = values()
+        changes = []
+        for key in KEYS:
+            if key not in current or self.sent.get(key) == current[key]:
+                continue
+            if key == "temp" and key in self.sent and abs(int(current[key]) - int(self.sent[key])) < TEMP_STEP:
+                continue
+            changes.append((key, current[key]))
+        if not changes:
+            return
+        done = send(changes)
+        for key, value in changes:
+            if key in done:
+                self.sent[key] = value
+        if done:
+            log(f"set {', '.join(f'{key} {value}' for key, value in changes if key in done)}")
+
+    def flush(self):
+        self.pending = 0
+        self.update()
+        return False
+
+    def poll(self):
+        self.update()
+        return True
+
+    def watch(self):
+        try:
+            self.monitor = Gio.Subprocess.new(MONITOR, Gio.SubprocessFlags.STDOUT_PIPE)
+        except GLib.Error as error:
+            log(f"{' '.join(MONITOR)} did not run: {error.message}")
+            return False
+        self.lines = Gio.DataInputStream.new(self.monitor.get_stdout_pipe())
+        self.lines.read_line_async(GLib.PRIORITY_DEFAULT, None, self.line)
+        return True
+
+    def line(self, stream, result):
+        try:
+            data = stream.read_line_finish_utf8(result)[0]
+        except GLib.Error as error:
+            data = None
+            log(f"reading {MONITOR[0]} failed: {error.message}")
+        if data is None:
+            log(f"{' '.join(MONITOR)} ended")
+            self.code = 1
+            self.loop.quit()
+            return
+        if data.rstrip().endswith("(power_supply)") and not self.pending:
+            self.pending = GLib.timeout_add(SETTLE_MS, self.flush)
+        stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self.line)
+
+    def quit(self):
+        self.loop.quit()
+        return GLib.SOURCE_REMOVE
+
+    def stop(self):
+        if self.monitor is not None:
+            self.monitor.force_exit()
+
+
+def main():
+    loop = GLib.MainLoop()
+    mirror = Mirror(loop)
+    for number in (signal.SIGTERM, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, number, mirror.quit)
+    if not mirror.watch():
+        return 1
+    mirror.update()
+    GLib.timeout_add(POLL_MS, mirror.poll)
+    loop.run()
+    mirror.stop()
+    return mirror.code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

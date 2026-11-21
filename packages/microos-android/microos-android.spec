@@ -54,6 +54,7 @@ test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-lepton)" = 755
 test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-android-session-watch)" = 755
 test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-android-lsfg)" = 755
 test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-android-perf)" = 755
+test "$(stat -c %a %{buildroot}%{_libexecdir}/microos/microos-android-battery)" = 755
 test "$(stat -c %a %{buildroot}%{_datadir}/microos-android/cmd)" = 755
 test "$(stat -c %a %{buildroot}%{_bindir}/steamvr)" = 755
 test "$(readlink %{buildroot}%{_prefix}/lib/android-sdk/platform-tools/adb)" = ../../../bin/adb
@@ -74,6 +75,7 @@ test -f %{buildroot}%{_datadir}/microos-android/restrictions-stub.rc
 %{_bindir}/steamvr
 %{_prefix}/lib/android-sdk/
 %{_userunitdir}/microos-android.service
+%{_userunitdir}/microos-android-battery.service
 %{_userunitdir}/microos-android-gapps-setup.service
 %{_userunitdir}/microos-android-status.service
 %{_userunitdir}/microos-lepton-prepare.service
