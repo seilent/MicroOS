@@ -18,6 +18,7 @@ export MICROOS_GAPPS="${T}/gapps"
 export MICROOS_GAPPS_CACHE="${T}/cache"
 export HOME="${T}/home"
 export MICROOS_HOME="${T}/home"
+export MICROOS_ANDROID_STATE="${T}/android-state"
 mkdir -p "${HOME}"
 export MICROOS_FETCH="${repo}/data/usr/libexec/microos/microos-fetch"
 set_dir="${MICROOS_GAPPS}/mtg11-20230922.vending-36.6.25"
@@ -72,19 +73,33 @@ merged system/product/etc/permissions/privapp-permissions-google-p.xml ${merged_
 cat > "${T}/bin/curl" <<'STUB'
 #!/usr/bin/bash
 echo "curl $*" >> "${STATE}/curl"
-out= url=
+out= url= resume=0
 while (( $# )); do
     case "$1" in
         -o) out=$2; shift ;;
+        -C) resume=1; shift ;;
         https://*) url=$1 ;;
     esac
     shift
 done
 [[ -e "${STATE}/curl_fail" ]] && exit 22
+[[ ! -e "${STATE}/unit_during" ]] || cp "${STATE}/unit_during" "${STATE}/unit"
 case "${url}" in
-    *11.0.0*) cp "${T_ZIP11}" "${out}" ;;
-    *14.0.0*) cp "${T_ZIP14}" "${out}" ;;
+    *11.0.0*) src=${T_ZIP11} ;;
+    *14.0.0*) src=${T_ZIP14} ;;
 esac
+offset=0
+if (( resume )) && [[ -f "${out}" ]]; then
+    offset=$(stat -c %s "${out}")
+else
+    : > "${out}"
+fi
+if [[ -e "${STATE}/curl_cut" ]]; then
+    tail -c +$((offset + 1)) "${src}" | head -c 100 >> "${out}"
+    exit 18
+fi
+(( ! offset )) || [[ ! -e "${STATE}/curl_norange" ]] || exit 33
+tail -c +$((offset + 1)) "${src}" >> "${out}"
 [[ ! -e "${STATE}/corrupt" ]] || echo x >> "${out}"
 STUB
 cat > "${T}/bin/systemctl" <<'STUB'
@@ -111,7 +126,7 @@ fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
 
 reset() {
     [[ ! -d "${MICROOS_GAPPS}" ]] || chmod -R u+w "${MICROOS_GAPPS}"
-    rm -rf "${STATE}" "${MICROOS_GAPPS}" "${MICROOS_GAPPS_CACHE}" "${MICROOS_ANDROID_ROMS:-${T}/roms}"
+    rm -rf "${STATE}" "${MICROOS_GAPPS}" "${MICROOS_GAPPS_CACHE}" "${MICROOS_ANDROID_ROMS:-${T}/roms}" "${MICROOS_ANDROID_STATE}"
     mkdir -p "${STATE}"
     : > "${STATE}/curl"
     echo inactive > "${STATE}/unit"
@@ -124,10 +139,13 @@ run() {
     "${install_cmd}" gapps install > "${STATE}/out" 2>&1 || rc=$?
 }
 
+activate="${MICROOS_ANDROID_STATE}/activate"
+
 reset
 run
 [[ "${rc}" == 0 ]] || fail "install exit ${rc}: $(cat "${STATE}/out")"
-[[ "$(readlink "${MICROOS_GAPPS}/current")" == mtg11-20230922.vending-36.6.25 ]] || fail "current not switched"
+[[ "$(cat "${activate}" 2>/dev/null)" == mtg11-20230922.vending-36.6.25 ]] || fail "no activation request: $(cat "${activate}" 2>/dev/null)"
+[[ ! -e "${MICROOS_GAPPS}/current" ]] || fail "the install flipped current"
 [[ "$(head -n 1 "${set_dir}/STAMP")" == "set=mtg11-20230922.vending-36.6.25" ]] || fail "STAMP header"
 [[ "$(grep -c . "${set_dir}/STAMP")" == 4 ]] || fail "STAMP lines: $(cat "${set_dir}/STAMP")"
 grep -qx "$(sha "${set_dir}/system/product/priv-app/Phonesky/Phonesky.apk") 9 system/product/priv-app/Phonesky/Phonesky.apk" "${set_dir}/STAMP" \
@@ -137,7 +155,6 @@ grep -q 'com.google.android.gms' "${set_dir}/system/product/etc/permissions/priv
 [[ ! -w "${set_dir}/system/product/priv-app/Phonesky/Phonesky.apk" && ! -w "${set_dir}" ]] || fail "set is writable"
 [[ ! -e "${MICROOS_GAPPS}/mtg11-20230922.vending-36.6.25.tmp" ]] || fail ".tmp left"
 [[ -z "$(ls -A "${MICROOS_GAPPS_CACHE}")" ]] || fail "zips not deleted: $(ls -A "${MICROOS_GAPPS_CACHE}")"
-[[ "$(readlink "${MICROOS_GAPPS}/current")" == mtg11-20230922.vending-36.6.25 ]] || fail "current not switched"
 [[ "$(grep -c -- '--proto =https --proto-redir =https' "${STATE}/curl")" == 2 ]] || fail "curl not https only: $(cat "${STATE}/curl")"
 stamp_mtime=$(stat -c %Y "${set_dir}/STAMP")
 newest=$(find "${set_dir}" -type f -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2)
@@ -180,24 +197,99 @@ reset
 run
 [[ "${rc}" == 1 ]] && grep -q "download failed" "${STATE}/out" || fail "download failure: exit ${rc}"
 
+staged() {
+    [[ "$(head -n 1 "${set_dir}/STAMP" 2>/dev/null)" == "set=mtg11-20230922.vending-36.6.25" ]]
+}
+requested() {
+    [[ "${rc}" == 0 ]] || { fail "$1: exit ${rc}: $(cat "${STATE}/out")"; return; }
+    [[ "$(tail -n 1 "${STATE}/out")" == "microos-android gapps install: $2" ]] || fail "$1: printed: $(cat "${STATE}/out")"
+    staged || fail "$1: the set is not staged"
+    [[ "$(cat "${activate}" 2>/dev/null)" == mtg11-20230922.vending-36.6.25 ]] || fail "$1: the request: $(cat "${activate}" 2>/dev/null)"
+    [[ ! -e "${activate}.new" ]] || fail "$1: the request temp file was left"
+    [[ ! -e "${MICROOS_GAPPS}/current" ]] || fail "$1: the install flipped current"
+}
+
+reset
+run
+requested "nothing live" "the next Android start binds mtg11-20230922.vending-36.6.25"
+[[ "$(stat -c %a "${MICROOS_ANDROID_STATE}")" == 700 ]] || fail "the state dir is $(stat -c %a "${MICROOS_ANDROID_STATE}")"
 reset
 echo active > "${STATE}/unit"
 run
-[[ "${rc}" == 1 ]] && grep -q "running, refusing" "${STATE}/out" || fail "unit running: exit ${rc}"
+requested "unit running" "Android restarts with mtg11-20230922.vending-36.6.25"
 reset
 echo activating > "${STATE}/prepare_unit"
 run
-[[ "${rc}" == 1 ]] && grep -q "microos-lepton-prepare.service is running, refusing" "${STATE}/out" || fail "prepare running: exit ${rc}"
+requested "prepare running" "Android restarts with mtg11-20230922.vending-36.6.25"
 reset
 echo 0 > "${STATE}/exists_rc"
 run
-[[ "${rc}" == 1 ]] && grep -q "exists, refusing" "${STATE}/out" || fail "container present: exit ${rc}"
-[[ ! -s "${STATE}/curl" ]] || fail "downloaded with the container present"
+requested "a container left from an ended session" "the next Android start binds mtg11-20230922.vending-36.6.25"
 reset
-: > "${STATE}/ps_fail"
+echo lepton-steam-2357 > "${STATE}/leptons"
 run
-[[ "${rc}" == 1 ]] && grep -qx "microos-android gapps install: podman ps failed, refusing" "${STATE}/out" || fail "podman ps error: exit ${rc}"
-[[ ! -s "${STATE}/curl" ]] || fail "podman ps error: downloaded"
+requested "another Lepton container" "the next Android start binds mtg11-20230922.vending-36.6.25"
+reset
+echo active > "${STATE}/unit_during"
+run
+requested "Android started during the download" "Android restarts with mtg11-20230922.vending-36.6.25"
+[[ ! -s "${STATE}/podman" ]] || fail "the install called podman: $(cat "${STATE}/podman")"
+
+reset
+run
+ln -s mtg11-20230922.vending-36.6.25 "${MICROOS_GAPPS}/current"
+rm -f "${activate}"
+echo active > "${STATE}/unit"
+run
+[[ "${rc}" == 0 ]] && grep -qx "microos-android gapps install: mtg11-20230922.vending-36.6.25 is already the current set" "${STATE}/out" \
+    || fail "the current set with Android live: exit ${rc}: $(cat "${STATE}/out")"
+[[ ! -e "${activate}" ]] || fail "the current set with Android live: a request was written"
+
+reset
+mkdir -p "${MICROOS_GAPPS}"
+exec {held}> "${MICROOS_GAPPS}/.install.lock"
+flock -n "${held}"
+run
+exec {held}>&-
+[[ "${rc}" == 1 ]] && grep -qx "microos-android gapps install: another gapps install holds ${MICROOS_GAPPS}/.install.lock, refusing" "${STATE}/out" \
+    || fail "a held install lock: exit ${rc}: $(cat "${STATE}/out")"
+[[ ! -s "${STATE}/curl" && ! -e "${activate}" ]] || fail "a held install lock: downloaded or requested"
+run
+requested "the lock released" "the next Android start binds mtg11-20230922.vending-36.6.25"
+
+zip11_part="${MICROOS_GAPPS_CACHE}/MindTheGapps-11.0.0-arm64-20230922_081122.zip.part"
+reset
+: > "${STATE}/curl_cut"
+run
+[[ "${rc}" == 1 ]] && grep -q "download failed" "${STATE}/out" || fail "a cut download: exit ${rc}: $(cat "${STATE}/out")"
+[[ "$(stat -c %s "${zip11_part}" 2>/dev/null)" == 100 ]] || fail "a cut download: the part is $(stat -c %s "${zip11_part}" 2>&1)"
+rm -f "${STATE}/curl_cut"
+: > "${STATE}/curl"
+run
+requested "a resumed download" "the next Android start binds mtg11-20230922.vending-36.6.25"
+grep -q -- "-C - -o ${zip11_part} " "${STATE}/curl" || fail "a resumed download: curl ran $(cat "${STATE}/curl")"
+reset
+: > "${STATE}/curl_cut"
+run
+rm -f "${STATE}/curl_cut"
+: > "${STATE}/curl_norange"
+run
+[[ "${rc}" == 1 ]] && grep -qx "microos-fetch: MindTheGapps-11.0.0-arm64-20230922_081122.zip: the server refuses to resume, the next try starts over" "${STATE}/out" \
+    || fail "a server that refuses ranges: exit ${rc}: $(cat "${STATE}/out")"
+[[ ! -e "${zip11_part}" ]] || fail "a server that refuses ranges: the part was kept"
+run
+requested "the try after a refused resume" "the next Android start binds mtg11-20230922.vending-36.6.25"
+reset
+mkdir -p "${MICROOS_GAPPS_CACHE}"
+head -c "$((MICROOS_GAPPS_MTG11_SIZE + 10))" /dev/zero > "${zip11_part}"
+run
+requested "a part longer than the file" "the next Android start binds mtg11-20230922.vending-36.6.25"
+reset
+mkdir -p "${MICROOS_GAPPS_CACHE}"
+cp "${T_ZIP11}" "${zip11_part}"
+run
+requested "a complete part" "the next Android start binds mtg11-20230922.vending-36.6.25"
+grep -q "11.0.0" "${STATE}/curl" && fail "a complete part was downloaded again: $(cat "${STATE}/curl")"
 
 reset
 MICROOS_TEST='' run

@@ -146,8 +146,10 @@ reset inactive
 printf 'verb=move-card\nid=0123456789abcdef\ncard=CARD1-0000\nkeep-card=0\nstep=emptying\nmanifest=%s\n' \
     "${MICROOS_ANDROID_STATE}/storage-move.manifest" > "${MICROOS_ANDROID_STATE}/storage-move"
 printf 'x\n' > "${MICROOS_ANDROID_STATE}/storage-move.manifest"
+echo set > "${MICROOS_ANDROID_STATE}/activate"
 run --yes
 [[ "${rc}" == 0 ]] || fail "reset exit ${rc}: $(cat "${STATE}/out")"
+[[ ! -e "${MICROOS_ANDROID_STATE}/activate" ]] || fail "reset kept a pending activation"
 [[ ! -e "${MICROOS_ANDROID_CONTEXT}" ]] || fail "context left"
 [[ -d "${T}/contexts" ]] || fail "contexts directory removed"
 [[ ! -e "${MICROOS_ANDROID_DATA}/sideload" && ! -e "${MICROOS_ANDROID_DATA}/prune" ]] || fail "sideload state left"

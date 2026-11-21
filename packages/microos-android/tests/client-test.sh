@@ -603,6 +603,21 @@ background
 for _ in {1..100}; do [[ -e "${MICROOS_GAPPS}/current" ]] && break; sleep 0.05; done
 [[ "$(readlink "${MICROOS_GAPPS}/current" 2>/dev/null)" == mtg11 ]] || fail "the activation request: not applied"
 [[ ! -e "${XDG_STATE_HOME}/microos-android/activate" ]] || fail "the activation request: kept"
+wait_for "^start microos-android.service replace$" || fail "the activation request: no start: $(cat "${STATE}/calls")"
+state_ok '"set" not in d.get("gapps", {})' || fail "the activation wrote gapps.set: $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
+stop_client
+
+reset
+mkdir -p "${MICROOS_GAPPS}/mtg10" "${MICROOS_GAPPS}/mtg11" "${XDG_STATE_HOME}/microos-android"
+ln -s mtg10 "${MICROOS_GAPPS}/current"
+echo mtg11 > "${XDG_STATE_HOME}/microos-android/activate"
+chmod 0500 "${MICROOS_GAPPS}"
+background
+wait_for "^start microos-android.service replace$" || fail "a failed flip at the start: no start: $(cat "${STATE}/calls")"
+chmod 0755 "${MICROOS_GAPPS}"
+grep -q "cannot activate mtg11" "${T}/out" || fail "a failed flip at the start: not logged: $(cat "${T}/out")"
+[[ "$(readlink "${MICROOS_GAPPS}/current")" == mtg10 ]] || fail "a failed flip at the start: current is $(readlink "${MICROOS_GAPPS}/current")"
+[[ -e "${XDG_STATE_HOME}/microos-android/activate" ]] || fail "a failed flip at the start: the request was dropped"
 stop_client
 
 reset

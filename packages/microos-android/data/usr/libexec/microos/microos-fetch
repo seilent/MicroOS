@@ -18,9 +18,21 @@ fail() {
 if [[ "$(stat -c %s "${file}" 2>/dev/null)" == "${size}" ]] && echo "${sha}  ${file}" | sha256sum -c --status 2>/dev/null; then
     exit 0
 fi
-say "downloading ${url##*/}"
-curl -sS --proto =https --proto-redir =https -fL --retry 3 --connect-timeout 30 -o "${file}.part" "${url}" \
-    || fail "download failed: ${url}"
+part=$(stat -c %s "${file}.part" 2>/dev/null) || part=0
+(( part <= size )) || { rm -f "${file}.part"; part=0; }
+if (( part < size )); then
+    say "downloading ${url##*/}"
+    rc=0
+    curl -sS --proto =https --proto-redir =https -fL --retry 3 --connect-timeout 30 -C - -o "${file}.part" "${url}" || rc=$?
+    if (( rc == 33 )); then
+        rm -f "${file}.part"
+        printf 'microos-fetch: %s: the server refuses to resume, the next try starts over\n' "${url##*/}" >&2
+    fi
+    if (( rc )); then
+        printf 'microos-fetch: download failed: %s\n' "${url}" >&2
+        exit 1
+    fi
+fi
 [[ "$(stat -c %s "${file}.part")" == "${size}" ]] || fail "${url##*/}: size differs from ${size}"
 echo "${sha}  ${file}.part" | sha256sum -c --status || fail "${url##*/}: sha256 mismatch"
 mv "${file}.part" "${file}"

@@ -114,8 +114,10 @@ grep -q "refusing without --yes" "${STATE}/stderr" || fail "gapps remove without
 
 reset
 printf 'tool 3.0.3 gapps=mtg11\n' > "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp"
+echo mtg11 > "${MICROOS_ANDROID_STATE}/activate"
 run gapps remove --yes
 [[ "${rc}" == 0 ]] || fail "gapps remove: exit ${rc}: ${err}"
+[[ ! -e "${MICROOS_ANDROID_STATE}/activate" ]] || fail "gapps remove: a pending activation was kept"
 grep -qx 'tool 3.0.3 gapps=none' "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp" \
     || fail "gapps remove: the stamp: $(cat "${MICROOS_ANDROID_CONTEXT}/microos-android-stamp")"
 

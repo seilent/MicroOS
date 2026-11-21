@@ -410,7 +410,6 @@ class Client:
             log(f"cannot activate {wanted}: {error}")
             self.failed_activation = wanted
             return False
-        update_state({"gapps.set": wanted})
         log(f"activated the GApps set {wanted}")
         return True
 
