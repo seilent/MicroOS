@@ -45,10 +45,10 @@ done
 grep -qx 'install_weak_deps=False' /etc/dnf/libdnf5.conf.d/10-microos.conf || fail "10-microos.conf does not turn off weak deps"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 own=$(rpm -qa --qf '%{NAME}\t%{VENDOR}\n' | awk -F'\t' '$2 == "MicroOS" { print $1 }' | LC_ALL=C sort | paste -sd' ')
-[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hyprcursor hyprgraphics hyprgrass hyprland hyprlang hyprpicker hyprsunset hyprutils hyprwire microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
+[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hyprcursor hyprgraphics hyprgrass hyprland hyprlang hyprpicker hyprsunset hyprutils hyprwire microos-android microos-android-guestos microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
   fail "MicroOS rpms: $own"
 for p in qbootctl inputplumber steamos-manager mangohud lsfg-vk hexagonrpc microos-eq libfreeaptx \
-  pipewire-codec-aptx microos-android-guestos microos-steam-seed; do
+  pipewire-codec-aptx microos-steam-seed; do
   ! rpm -q "$p" >/dev/null 2>&1 || fail "$p is installed"
 done
 
@@ -108,7 +108,7 @@ for u in pipewire.socket pipewire-pulse.socket wireplumber.service; do
 done
 null=/usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
 grep -qF 'factory.name = support.null-audio-sink' "$null" && grep -qF 'priority.session = 1' "$null" || fail "$null"
-[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-desktop.service\n/usr/lib/systemd/user/microos-desktop.service.d\n/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-ii-seed.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive-desktop.timer\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service\n/usr/lib/systemd/user/microos-ydotoold.service' ]] \
+[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-android-gapps-setup.service\n/usr/lib/systemd/user/microos-android-pad.service\n/usr/lib/systemd/user/microos-android-status.service\n/usr/lib/systemd/user/microos-android.service\n/usr/lib/systemd/user/microos-desktop.service\n/usr/lib/systemd/user/microos-desktop.service.d\n/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-ii-seed.service\n/usr/lib/systemd/user/microos-lepton-prepare.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive-desktop.timer\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service\n/usr/lib/systemd/user/microos-ydotoold.service' ]] \
   || fail "MicroOS user units: $(compgen -G '/usr/lib/systemd/user/microos-*' | tr '\n' ' ')"
 [[ $(< /usr/lib/systemd/system-preset/50-microos.preset) == 'enable microos-*' ]] || fail "50-microos.preset"
 
@@ -307,13 +307,17 @@ done
 [[ $(rpm -qf /usr/lib/firmware/qcom/sm8650/Lenovo-Y700-TB321FU-tplg.bin 2>/dev/null) == audioreach-topology-* ]] \
   || fail "TB321FU topology is not from audioreach-topology"
 [[ -z $ucm ]] || fail "PM2 UCM files in the image: $ucm"
-! grep -qs '^micro:' /etc/subuid /etc/subgid || fail "micro has subordinate ids"
+for f in /etc/subuid /etc/subgid; do
+  [[ $(< "$f") == micro:524288:65536 ]] || fail "$f is not micro:524288:65536"
+  [[ $(stat -c '%a %U %G' "$f") == '644 root root' ]] || fail "$f mode or owner"
+done
 words=$(grep -lIiE 'PocketMICRO2|sm8250|ayaneo|aya-keys|fastrpc-sdsp|mmcblk' "${ours[@]}" || true)
 [[ -z $words ]] || fail "MicroOS files name PM2 hardware: $(tr '\n' ' ' <<< "$words")"
 for c in jq setpriv flock python3 loginctl busctl; do
   command -v "$c" > /dev/null || fail "$c missing, the session switcher needs it"
 done
 grep -qxF $'steam\tSteam OS\tyes' <<< "$(microos-session list)" || fail "microos-session list lacks steam as Steam OS"
+grep -qxF $'android\tAndroid\tyes' <<< "$(microos-session list)" || fail "microos-session list lacks android"
 [[ $(readlink /etc/sddm.conf.d/zzz-microos-autologin.conf) == /run/microos/sddm-autologin.conf ]] ||
   fail "zzz-microos-autologin.conf is not the link to /run/microos/sddm-autologin.conf"
 getent passwd microset > /dev/null || fail "user microset missing"
@@ -326,6 +330,14 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "microos-powerkey 50-microos-microset.conf"
 [[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165' ]] ||
   fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
+rpm -q podman passt catatonit attr android-tools inotify-tools >/dev/null || fail "Lepton host rpms missing"
+for c in podman pasta setpgid flock pgrep pkill tput setfattr inotifywait which jq ip adb; do
+  command -v "$c" >/dev/null || fail "$c is not on PATH (Lepton)"
+done
+adb=/usr/lib/android-sdk/platform-tools/adb
+[[ -L $adb && $adb -ef /usr/bin/adb ]] || fail "$adb does not resolve to /usr/bin/adb"
+[[ $(stat -c '%a %U %G' /usr/bin/steamvr) == '755 root root' ]] || fail "/usr/bin/steamvr mode or owner"
+[[ -f /usr/share/microos-lepton/reviewed/25772114 ]] || fail "no reviewed list for Lepton build 25772114"
 grep -q MICROOS_VPAD_MICROSET /usr/libexec/microos/microos-vpad || fail "microos-vpad has no MICROOS_VPAD_MICROSET knob"
 grep -q MICROOS_POWERKEY_OVERLAY /usr/libexec/microos/microos-powerkey || fail "microos-powerkey has no MICROOS_POWERKEY_OVERLAY knob"
 

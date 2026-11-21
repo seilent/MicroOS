@@ -25,9 +25,9 @@ the ABL before MicroOS boots; `rocknix_abl/README` on the card has those steps.
 
 ## Legion Y700
 
-It boots from slot b, next to the stock Android on slot a. Sessions: Steam game mode and a Hyprland desktop
-(illogical-impulse). MicroSet > System > Boot into picks the one it boots. Switch to Desktop in Steam's power menu and
-Steam OS in the desktop's session menu switch between them. The desktop config is in `~/.config/hypr`,
+It boots from slot b, next to the stock Android on slot a. Sessions: Steam game mode, Android and a Hyprland
+desktop (illogical-impulse). MicroSet > System > Boot into picks the one it boots. Switch to Desktop in Steam's
+power menu and Steam OS in the desktop's session menu switch between them. The desktop config is in `~/.config/hypr`,
 `~/.config/quickshell/ii` and `~/.config/matugen`; an update replaces only the files you have not changed.
 
 CI builds the `testing` channel, `ghcr.io/seilent/microos-y700:testing`, from `main`,
