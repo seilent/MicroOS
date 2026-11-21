@@ -53,8 +53,6 @@ for f in \
   /usr/lib/systemd/user/microos-lepton-prepare.service \
   /usr/lib/systemd/user/microos-android-gapps-setup.service \
   /usr/lib/systemd/user/microos-android-status.service \
-  /usr/lib/systemd/user/microos-android-pad.service \
-  /usr/lib/systemd/user/gamescope-session-plus@android.service.d/20-microos-android-pad.conf \
   /usr/libexec/microos/microos-android-check \
   /usr/libexec/microos/microos-android-install \
   /usr/libexec/microos/microos-android-client \
@@ -76,7 +74,10 @@ for f in \
   /usr/share/microos-lepton/steam-empty; do
   if ! grep -qxF "$f" <<<"$files"; then fail "missing $f"; fi
 done
-if grep -qxF /usr/share/microos-android/display <<<"$files"; then fail "the display file is device data, not the package's"; fi
+for f in /usr/share/microos-android/display /usr/lib/systemd/user/microos-android-pad.service \
+  /usr/lib/systemd/user/gamescope-session-plus@android.service.d/20-microos-android-pad.conf; do
+  if grep -qxF "$f" <<<"$files"; then fail "$f is device data, not the package's"; fi
+done
 if grep -qE '^/usr/lib/(armada|extension-release\.d|extensions|microemu)|^/var/|^/etc/|^/usr/share/microemu|^/usr/bin/microemu-|^/usr/libexec/microemu' <<<"$files"; then
   fail "MicroEMU, sysext, Armada or host state paths: $(grep -E '^/usr/lib/(armada|extension-release\.d|extensions|microemu)|^/var/|^/etc/|^/usr/share/microemu|^/usr/bin/microemu-|^/usr/libexec/microemu' <<<"$files" | head -n5)"
 fi
@@ -185,8 +186,6 @@ for line in export\ GAMESCOPE_BIN=/usr/libexec/microos/microos-gamescope-plain \
   export\ CLIENTCMD=/usr/libexec/microos/microos-android-client; do
   if ! grep -qxF "$line" "$client"; then fail "the android client file lacks $line"; fi
 done
-pad=$root/usr/lib/systemd/user/gamescope-session-plus@android.service.d/20-microos-android-pad.conf
-if ! grep -qxF Wants=microos-android-pad.service "$pad"; then fail "the pad drop-in lacks its Wants="; fi
 
 rc_file=$root/usr/share/microos-android/restrictions-stub.rc
 if ! grep -qx 'service microos_restrictions_stub /system/bin/app_process -Djava.class.path=/system/framework/restrictions-stub.jar /system/bin RestrictionsStub' "$rc_file"; then

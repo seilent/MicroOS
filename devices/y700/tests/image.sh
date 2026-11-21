@@ -108,7 +108,7 @@ for u in pipewire.socket pipewire-pulse.socket wireplumber.service; do
 done
 null=/usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
 grep -qF 'factory.name = support.null-audio-sink' "$null" && grep -qF 'priority.session = 1' "$null" || fail "$null"
-[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-android-gapps-setup.service\n/usr/lib/systemd/user/microos-android-pad.service\n/usr/lib/systemd/user/microos-android-status.service\n/usr/lib/systemd/user/microos-android.service\n/usr/lib/systemd/user/microos-desktop.service\n/usr/lib/systemd/user/microos-desktop.service.d\n/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-ii-seed.service\n/usr/lib/systemd/user/microos-lepton-prepare.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive-desktop.timer\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service\n/usr/lib/systemd/user/microos-ydotoold.service' ]] \
+[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-android-gapps-setup.service\n/usr/lib/systemd/user/microos-android-status.service\n/usr/lib/systemd/user/microos-android.service\n/usr/lib/systemd/user/microos-desktop.service\n/usr/lib/systemd/user/microos-desktop.service.d\n/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-ii-seed.service\n/usr/lib/systemd/user/microos-lepton-prepare.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive-desktop.timer\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service\n/usr/lib/systemd/user/microos-ydotoold.service' ]] \
   || fail "MicroOS user units: $(compgen -G '/usr/lib/systemd/user/microos-*' | tr '\n' ' ')"
 [[ $(< /usr/lib/systemd/system-preset/50-microos.preset) == 'enable microos-*' ]] || fail "50-microos.preset"
 
@@ -328,7 +328,7 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "microos-vpad 50-microos-microset.conf"
 [[ $(< /usr/lib/systemd/user/microos-powerkey.service.d/50-microos-microset.conf) == $'[Service]\nEnvironment=MICROOS_POWERKEY_OVERLAY=1' ]] ||
   fail "microos-powerkey 50-microos-microset.conf"
-[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4' ]] ||
+[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\ngamepads=joystick' ]] ||
   fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
 rpm -q podman passt catatonit attr android-tools inotify-tools >/dev/null || fail "Lepton host rpms missing"
 for c in podman pasta setpgid flock pgrep pkill tput setfattr inotifywait which jq ip adb; do
@@ -339,6 +339,8 @@ adb=/usr/lib/android-sdk/platform-tools/adb
 [[ $(stat -c '%a %U %G' /usr/bin/steamvr) == '755 root root' ]] || fail "/usr/bin/steamvr mode or owner"
 [[ -f /usr/share/microos-lepton/reviewed/25772114 ]] || fail "no reviewed list for Lepton build 25772114"
 command -v xprop >/dev/null || fail "xprop missing, the Android client sets the touch mode with it"
+[[ ! -e /usr/lib/systemd/user/gamescope-session-plus@android.service.d/20-microos-android-pad.conf ]] \
+  || fail "the PM2 pad target drop-in is in the image"
 grep -q MICROOS_VPAD_MICROSET /usr/libexec/microos/microos-vpad || fail "microos-vpad has no MICROOS_VPAD_MICROSET knob"
 grep -q MICROOS_POWERKEY_OVERLAY /usr/libexec/microos/microos-powerkey || fail "microos-powerkey has no MICROOS_POWERKEY_OVERLAY knob"
 

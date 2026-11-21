@@ -3,12 +3,26 @@ set -u
 
 SYS_INPUT="${MICROOS_SYS_INPUT:-/sys/class/input}"
 DEV_INPUT="${MICROOS_DEV_INPUT:-/dev/input}"
+UDEV_DATA="${MICROOS_UDEV_DATA:-/run/udev/data}"
+DISPLAY_FILE="${MICROOS_DISPLAY_FILE:-/usr/share/microos-android/display}"
+
+rule=$(sed -n 's/^gamepads=//p' "${DISPLAY_FILE}" | head -n 1)
+case "${rule}" in
+    ""|joystick) ;;
+    *) echo "microos-android-pad-nodes: gamepads=${rule} in ${DISPLAY_FILE} is not a rule" >&2; exit 1 ;;
+esac
 
 for dir in "${SYS_INPUT}"/event*; do
     [[ -d "${dir}" ]] || continue
-    [[ "$(cat "${dir}/device/name" 2>/dev/null)" == "Microsoft X-Box 360 pad" ]] || continue
-    [[ "$(cat "${dir}/device/id/vendor" 2>/dev/null)" == 045e ]] || continue
-    [[ "$(cat "${dir}/device/id/product" 2>/dev/null)" == 028e ]] || continue
+    name=$(cat "${dir}/device/name" 2>/dev/null)
+    if [[ "${rule}" == joystick ]]; then
+        [[ "${name}" != "Steam Deck"* ]] || continue
+        grep -qx 'E:ID_INPUT_JOYSTICK=1' "${UDEV_DATA}/c$(cat "${dir}/dev" 2>/dev/null)" 2>/dev/null || continue
+    else
+        [[ "${name}" == "Microsoft X-Box 360 pad" ]] || continue
+        [[ "$(cat "${dir}/device/id/vendor" 2>/dev/null)" == 045e ]] || continue
+        [[ "$(cat "${dir}/device/id/product" 2>/dev/null)" == 028e ]] || continue
+    fi
     [[ -e "${DEV_INPUT}/${dir##*/}" ]] && printf '%s\n' "${DEV_INPUT}/${dir##*/}"
 done
 exit 0

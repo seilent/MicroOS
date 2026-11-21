@@ -1370,6 +1370,47 @@ done
     || fail "a podman child kept the lock fd: $(cat "${STATE}/child-lock-podman" 2>/dev/null)"
 lock_free || fail "the lock was not released"
 
+case_name="pad nodes"
+pads="${T}/pads"
+mkdir -p "${pads}/sys" "${pads}/dev" "${pads}/udev"
+pad() {
+    mkdir -p "${pads}/sys/event$1/device/id"
+    printf '%s\n' "$2" > "${pads}/sys/event$1/device/name"
+    printf '13:%s\n' "$((64 + $1))" > "${pads}/sys/event$1/dev"
+    printf '%s\n' "${4:-0000}" > "${pads}/sys/event$1/device/id/vendor"
+    printf '%s\n' "${5:-0000}" > "${pads}/sys/event$1/device/id/product"
+    : > "${pads}/dev/event$1"
+    printf 'E:ID_INPUT=1\n' > "${pads}/udev/c13:$((64 + $1))"
+    [[ "$3" != 1 ]] || printf 'E:ID_INPUT_JOYSTICK=1\n' >> "${pads}/udev/c13:$((64 + $1))"
+}
+pads_bound() {
+    MICROOS_SYS_INPUT="${pads}/sys" MICROOS_DEV_INPUT="${pads}/dev" MICROOS_UDEV_DATA="${pads}/udev" \
+        MICROOS_DISPLAY_FILE="$1" "${libexec}/microos-android-pad-nodes" 2> "${pads}/err"
+}
+pad 1 "Microsoft X-Box 360 pad" 1 045e 028e
+pad 2 "Steam Deck" 1
+pad 3 "Steam Deck Motion Sensors" 1
+pad 4 "NVTCapacitiveTouchScreen" 0
+pad 5 "Xbox Wireless Controller" 1 045e 0b13
+pad 6 "8BitDo Pro 2" 1
+rm -f "${pads}/dev/event6"
+pad 7 "DualSense Wireless Controller" 1
+rm -f "${pads}/udev/c13:71"
+pad 8 "Microsoft X-Box 360 pad" 1 045e 0b12
+printf 'density=400\ngamepads=joystick\n' > "${pads}/display-joystick"
+got=$(pads_bound "${pads}/display-joystick")
+[[ "${got}" == "${pads}/dev/event1"$'\n'"${pads}/dev/event5"$'\n'"${pads}/dev/event8" ]] \
+    || fail "gamepads=joystick bound: ${got//$'\n'/ }"
+got=$(pads_bound "${MICROOS_DISPLAY_FILE}")
+[[ "${got}" == "${pads}/dev/event1" ]] || fail "no gamepads key bound: ${got//$'\n'/ }"
+printf 'density=400\ngamepads=all\n' > "${pads}/display-bad"
+rc=0
+got=$(pads_bound "${pads}/display-bad") || rc=$?
+[[ "${rc}" == 1 && -z "${got}" ]] || fail "gamepads=all: exit ${rc}, bound ${got//$'\n'/ }"
+grep -qxF "microos-android-pad-nodes: gamepads=all in ${pads}/display-bad is not a rule" "${pads}/err" \
+    || fail "gamepads=all: $(cat "${pads}/err")"
+rm -rf "${pads:?}"
+
 if (( failures )); then
     echo "run-test: ${failures} failure(s), ${skipped} skipped" >&2
     exit 1

@@ -7,7 +7,11 @@ data="${repo}/data"
 conf="${data}/usr/lib/microos/sessions.d/android.conf"
 desktop="${data}/usr/share/wayland-sessions/microos-android.desktop"
 client="${data}/usr/share/gamescope-session-plus/sessions.d/android"
-pad="${data}/usr/lib/systemd/user/gamescope-session-plus@android.service.d/20-microos-android-pad.conf"
+root=$(cd "${repo}/../.." && pwd)
+pm2="${root}/devices/pm2/system_files"
+[[ -d "${pm2}" ]] || pm2="${root}/system_files"
+pm2_units="${pm2}/usr/lib/systemd/user"
+pad="${pm2_units}/gamescope-session-plus@android.service.d/20-microos-android-pad.conf"
 plain="${data}/usr/libexec/microos/microos-gamescope-plain"
 units="${data}/usr/lib/systemd/user"
 libexec="${data}/usr/libexec/microos"
@@ -68,15 +72,16 @@ got=$(MICROOS_GAMESCOPE="${T}/gamescope" MICROOS_DISPLAY_FILE="${T}/absent-displ
 [[ "${rc}" == 1 && "${got}" == "microos-gamescope-plain: ${T}/absent-display missing" ]] \
     || fail "the plain wrapper with no display file: exit ${rc}: ${got}"
 
-unit="${units}/gamescope-session-plus@android.service.d/20-microos-android-pad.conf"
-[[ -f "${unit}" ]] || fail "the pad drop-in is not under the session's unit dir"
+[[ ! -e "${units}/gamescope-session-plus@android.service.d/20-microos-android-pad.conf" \
+    && ! -e "${units}/microos-android-pad.service" ]] || fail "the package ships the PM2 pad target units"
 
 for u in microos-android.service microos-lepton-prepare.service microos-android-gapps-setup.service \
-    microos-android-status.service microos-android-pad.service; do
-    [[ -f "${units}/${u}" ]] || { fail "${u} missing"; continue; }
-    grep -qx '\[Unit\]' "${units}/${u}" || fail "${u} has no [Unit]"
-    grep -qx '\[Service\]' "${units}/${u}" || fail "${u} has no [Service]"
-    if grep -q '^#' "${units}/${u}"; then fail "${u} carries a comment"; fi
+    microos-android-status.service "${pm2_units}/microos-android-pad.service"; do
+    [[ "${u}" == /* ]] || u="${units}/${u}"
+    [[ -f "${u}" ]] || { fail "${u##*/} missing"; continue; }
+    grep -qx '\[Unit\]' "${u}" || fail "${u##*/} has no [Unit]"
+    grep -qx '\[Service\]' "${u}" || fail "${u##*/} has no [Service]"
+    if grep -q '^#' "${u}"; then fail "${u##*/} carries a comment"; fi
 done
 
 [[ -f "${units}/microos-android.service" ]] && {
@@ -92,11 +97,11 @@ grep -qx 'Requisite=gamescope-session-plus@android.service' "${units}/microos-le
 grep -qx 'TimeoutStartSec=30min' "${units}/microos-lepton-prepare.service" || fail "prepare TimeoutStartSec"
 grep -qx 'StopPropagatedFrom=gamescope-session-plus@android.service' "${units}/microos-lepton-prepare.service" \
     || fail "prepare StopPropagatedFrom"
-grep -qx 'BindsTo=gamescope-session-plus@android.service' "${units}/microos-android-pad.service" \
+grep -qx 'BindsTo=gamescope-session-plus@android.service' "${pm2_units}/microos-android-pad.service" \
     || fail "pad BindsTo"
-grep -qx 'ExecStart=/usr/libexec/microos/microos-pad-target xb360 keyboard' "${units}/microos-android-pad.service" \
+grep -qx 'ExecStart=/usr/libexec/microos/microos-pad-target xb360 keyboard' "${pm2_units}/microos-android-pad.service" \
     || fail "pad ExecStart"
-[[ -f "${repo}/../../system_files/usr/libexec/microos/microos-pad-target" ]] || fail "the pad watcher is not in the image"
+[[ -f "${pm2}/usr/libexec/microos/microos-pad-target" ]] || fail "the pad watcher is not in the image"
 
 if grep -q '^WantedBy=' "${units}/microos-android-status.service"; then
     grep -qx 'WantedBy=default.target' "${units}/microos-android-status.service" || fail "status WantedBy"
@@ -104,7 +109,7 @@ else
     fail "the status service is not enabled"
 fi
 
-preset="${repo}/../../system_files/usr/lib/systemd/user-preset/50-microos.preset"
+preset="${pm2}/usr/lib/systemd/user-preset/50-microos.preset"
 [[ -f "${preset}" ]] || fail "the user preset ${preset} is missing"
 grep -qx 'enable microos-android-status.service' "${preset}" || fail "the user preset does not enable the status service"
 grep -qx 'enable game.slice' "${preset}" || fail "the user preset lost game.slice"

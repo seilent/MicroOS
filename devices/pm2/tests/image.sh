@@ -698,6 +698,8 @@ guestcmd=/usr/share/microos-android/cmd
   || fail "/usr/share/microos-android/cmd missing, mode or owner"
 [[ $(head -n 1 "$guestcmd") == '#!/system/bin/sh' ]] || fail "the guest cmd has no /system/bin/sh shebang"
 [[ $(< /usr/share/microos-android/display) == $'width=960\nheight=640\ndensity=213' ]] || fail "/usr/share/microos-android/display"
+systemctl --global cat gamescope-session-plus@android.service | grep -qxF Wants=microos-android-pad.service \
+  || fail "gamescope-session-plus@android.service does not want microos-android-pad.service"
 
 seedrpm=(/seed-rpm/microos-steam-seed-*.aarch64.rpm)
 [[ ${#seedrpm[@]} -eq 1 && -f ${seedrpm[0]} ]] || fail "expected one microos-steam-seed RPM in /seed-rpm"

@@ -35,8 +35,8 @@ Requires:       xprop
 
 %description
 The Android session of MicroOS: Valve's Lepton runtime in a rootless
-container, the reviewed build gate and its snapshots, the pad and init
-override, the keyboard installer, the sideload and the Play layer.
+container, the reviewed build gate and its snapshots, the gamepad binds,
+the init override, the keyboard installer, the sideload and the Play layer.
 
 %prep
 %setup -q -c -T
@@ -75,10 +75,8 @@ test -f %{buildroot}%{_datadir}/microos-android/restrictions-stub.rc
 %{_prefix}/lib/android-sdk/
 %{_userunitdir}/microos-android.service
 %{_userunitdir}/microos-android-gapps-setup.service
-%{_userunitdir}/microos-android-pad.service
 %{_userunitdir}/microos-android-status.service
 %{_userunitdir}/microos-lepton-prepare.service
-%{_userunitdir}/gamescope-session-plus@android.service.d/20-microos-android-pad.conf
 %{_prefix}/lib/microos/sessions.d/android.conf
 %{_datadir}/wayland-sessions/microos-android.desktop
 %{_datadir}/gamescope-session-plus/sessions.d/android

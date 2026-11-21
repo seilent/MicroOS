@@ -574,11 +574,12 @@ export MICROOS_ANDROID_EXTERNAL
 
 derive_rc "${lepton_runtime}"
 
+pad_nodes=$("${PAD_NODES}") || fail "${PAD_NODES} failed, refusing"
 mounts=()
 while IFS= read -r node; do
     [[ -n "${node}" ]] || continue
     mounts+=("\"type=bind,source=${node},destination=${node},rw\"")
-done < <("${PAD_NODES}")
+done <<< "${pad_nodes}"
 mounts+=("\"type=bind,source=${RUN}/lineage-system.rc,destination=/system/etc/init/lineage-system.rc,ro\"")
 mounts+=("\"type=bind,source=${RUN}/odm-build.prop,destination=/vendor/odm/etc/build.prop,ro\"")
 mounts+=("\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\"")
