@@ -81,6 +81,7 @@ dnf -y install \
   libcamera \
   libcamera-ipa \
   libcamera-tools \
+  libcamera-qcam \
   sdl2-compat \
   libXcomposite \
   libXdamage \
