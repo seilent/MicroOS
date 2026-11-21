@@ -6,7 +6,9 @@ repo=$(dirname "${here}")
 libexec="${repo}/data/usr/libexec/microos"
 writer="${libexec}/microos-android-perf"
 stop_script="${libexec}/microos-android-stop"
-microsetd="$(dirname "$(dirname "${repo}")")/tests/audio-policy/microsetd"
+root=$(cd "${repo}/../.." && pwd)
+microsetd="${root}/devices/pm2/tests/audio-policy/microsetd"
+[[ -f "${microsetd}" ]] || microsetd="${root}/tests/audio-policy/microsetd"
 
 T=$(mktemp -d)
 cfg=$(mktemp /tmp/mangohud.XXXXXXXX)
