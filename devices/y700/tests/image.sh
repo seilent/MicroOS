@@ -103,7 +103,7 @@ for c in zstd cpio systemd-run systemd-inhibit; do
   command -v "$c" > /dev/null || fail "$c missing, microos-update --auto needs it"
 done
 [[ ! -e /usr/lib/systemd/user-preset/50-microos.preset ]] || fail "user 50-microos.preset in the image"
-for u in pipewire.socket pipewire-pulse.socket wireplumber.service; do
+for u in pipewire.socket pipewire-pulse.socket wireplumber.service microos-android-status.service; do
   [[ $(systemctl --global is-enabled "$u") == enabled ]] || fail "user $u is not enabled"
 done
 null=/usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
@@ -123,6 +123,7 @@ kept=(
   /usr/lib/bootc/kargs.d/10-microos.toml
   /usr/lib/udev/rules.d/60-microos-backlight.rules
   /usr/lib/udev/rules.d/60-microos-y700-pcie-wakeup.rules
+  /usr/lib/systemd/user-preset/60-microos-android.preset
   /usr/lib/systemd/user-preset/60-microos-audio.preset
   /usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
   /usr/lib/dracut/dracut.conf.d/90-microos.conf
