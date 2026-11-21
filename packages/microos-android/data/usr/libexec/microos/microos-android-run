@@ -21,7 +21,7 @@ STUB_DIR="${MICROOS_STUB_DIR:-/usr/share/microos-android}"
 DISPLAY_FILE="${MICROOS_DISPLAY_FILE:-/usr/share/microos-android/display}"
 OPTS="${MICROOS_OPTS:-/usr/share/microos-android/opts}"
 OPTS_TIMEOUT_S="${MICROOS_OPTS_TIMEOUT_S:-30}"
-EXTEND_USEC="${MICROOS_EXTEND_USEC:-120000000}"
+EXTEND_USEC="${MICROOS_EXTEND_USEC:-240000000}"
 GMS_GRANTS="android.permission.ACCESS_FINE_LOCATION android.permission.ACCESS_COARSE_LOCATION android.permission.ACCESS_BACKGROUND_LOCATION android.permission.READ_CONTACTS android.permission.WRITE_CONTACTS"
 LEPTON_NOT_INSTALLED="Lepton is not installed. Install it in Steam."
 NAME=android
@@ -662,6 +662,7 @@ handle() {
         return 0
     fi
     printf '%s\n' "${line}" >&2
+    [[ -z "${line}" ]] || last_line=${line}
     [[ "${line}" == "Boot complete!" ]] || return 0
     if container_running && boot_completed; then
         ready=1
@@ -690,6 +691,7 @@ handle() {
 
 ready=0
 partial=
+last_line=
 : > "${DATA}/lepton.log"
 stopping=0
 trap 'stopping=1; say "stop requested, waiting for lepton start"' TERM
@@ -741,6 +743,6 @@ if (( stopping )); then
     exit 143
 fi
 if (( ! ready )); then
-    fail "android exited during boot, see ${DATA}/boot.log"
+    fail "android exited during boot, see ${DATA}/boot.log${last_line:+, the last line from lepton: ${last_line}}"
 fi
 exit "${rc}"

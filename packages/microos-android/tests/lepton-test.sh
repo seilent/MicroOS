@@ -88,6 +88,7 @@ case "$1" in
         printf '%s\n' "$@" > "${state}/run-${name}"
         printf '%s\n' "${prefix}" > "${state}/prefix-${name}"
         printf '%s running %s\n' "${name}" "${scdp}" >> "${reg}"
+        [[ ! -e "${state}/run-rc" ]] || exit "$(cat "${state}/run-rc")"
         ;;
     stop)
         [[ -e "${state}/stop-fail" && -n "${IS_PARENT:-}" ]] && exit 0
@@ -275,8 +276,10 @@ is_steamlaunch() { [[ "${1:-${LEPTON_CONTEXT:-}}" == steamlaunch-* ]]; }
 
 create_prefix()
 {
+    local dir=${FAKE_STATE}
+    [[ ! -e "${FAKE_STATE}/prefix-tmp" ]] || dir=/tmp
     if [[ -z "${LEPTON_PREFIX:-}" ]]; then
-        LEPTON_PREFIX=$(mktemp -d "${FAKE_STATE}/lepton-context.XXXXXX")
+        LEPTON_PREFIX=$(mktemp -d "${dir}/lepton-context.XXXXXX")
         export LEPTON_PREFIX
     fi
 }
@@ -531,14 +534,26 @@ setup_container()
     setup_props
 }
 
+run_guest()
+{
+    podman run --replace --name "lepton-${LEPTON_CONTEXT}" "${PODMAN_CMDLINE[@]}" --label lepton=true \
+        --label "STEAM_COMPAT_DATA_PATH=${STEAM_COMPAT_DATA_PATH:-}" --label "PREFIX=${LEPTON_PREFIX:-}" \
+        --rootfs "${LEPTON_DIR}/../images/rootfs:O" /init
+}
+
 start_container()
 {
     rm -f "$(onexit_path)"
     cp "$(props_file)" "${FAKE_STATE}/props-${LEPTON_CONTEXT}"
     podman rm -fi "lepton-${LEPTON_CONTEXT}" 2>/dev/null || true
-    podman run --replace --name "lepton-${LEPTON_CONTEXT}" "${PODMAN_CMDLINE[@]}" --label lepton=true \
-        --label "STEAM_COMPAT_DATA_PATH=${STEAM_COMPAT_DATA_PATH:-}" --label "PREFIX=${LEPTON_PREFIX:-}" \
-        --rootfs "${LEPTON_DIR}/../images/rootfs:O" /init
+    if [[ -e "${FAKE_STATE}/run-bg" ]]; then
+        run_guest &
+        until podman container exists "lepton-${LEPTON_CONTEXT}"; do
+            sleep 0.1
+        done
+    else
+        run_guest
+    fi
     if [[ -e "${FAKE_STATE}/after-run" ]]; then
         bash "${FAKE_STATE}/after-run"
     fi
@@ -1191,6 +1206,36 @@ cycle probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" "${launcher}" start pro
 grep -qxF "type=bind,source=${XDG_RUNTIME_DIR}/microos-android/lineage-system.rc,destination=/system/etc/init/lineage-system.rc,ro" \
     "${STATE}/run-lepton-probe-lh-proto" || fail "the runtime dir bind did not reach podman"
 rm -f "${STATE}/extra-mounts" "${T}/linked"
+: > "${STATE}/run-bg"
+: > "${STATE}/prefix-tmp"
+printf '%s\n' --mount "type=bind,source=${T}/absent-source,destination=/x,ro" > "${STATE}/extra-mounts"
+rm -f "${android_run_dir}/lepton-prefix"
+start_s=${SECONDS}
+rc=0
+timeout -k 2 20 env STEAM_COMPAT_DATA_PATH="${ctx}" "${launcher}" start probe-lh-proto > "${STATE}/out-probe-lh-proto" 2>&1 || rc=$?
+[[ "${rc}" == 137 ]] && (( SECONDS - start_s < 10 )) \
+    || fail "a refused podman run: exit ${rc} after $((SECONDS - start_s)) s: $(out probe-lh-proto)"
+grep -qxF "microos-liblepton: podman run exited 125, lepton-probe-lh-proto never ran, ending the start" \
+    "${STATE}/out-probe-lh-proto" || fail "a refused podman run: no reason: $(out probe-lh-proto)"
+grep -qx "Boot complete!" "${STATE}/out-probe-lh-proto" && fail "a refused podman run: Boot complete! printed"
+refused_prefix=$(cat "${android_run_dir}/lepton-prefix" 2>/dev/null)
+[[ "${refused_prefix}" =~ ^/tmp/lepton-context\.[A-Za-z0-9]+$ && -d "${refused_prefix}" ]] \
+    || fail "a refused podman run: the prefix is not recorded for the stop: ${refused_prefix}"
+rc=0
+"${libexec}/microos-android-stop" --post 2> "${STATE}/stop-post.err" || rc=$?
+[[ "${rc}" == 0 ]] || fail "a refused podman run: stop --post exit ${rc}: $(cat "${STATE}/stop-post.err")"
+[[ -n "${refused_prefix}" && ! -e "${refused_prefix}" ]] || fail "a refused podman run: stop --post kept ${refused_prefix}"
+[[ ! -e "${android_run_dir}/lepton-prefix" ]] || fail "a refused podman run: stop --post kept the record"
+grep -qxF "microos-android-stop: removed the leftover ${refused_prefix}" "${STATE}/stop-post.err" \
+    || fail "a refused podman run: stop --post: $(cat "${STATE}/stop-post.err")"
+rm -f "${STATE}/extra-mounts" "${STATE}/prefix-tmp"
+echo 125 > "${STATE}/run-rc"
+cycle probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" "${launcher}" start probe-lh-proto
+rm -f "${STATE}/run-rc" "${STATE}/run-bg"
+[[ "${rc}" == 0 ]] || fail "podman run 125 with the container made: exit ${rc}: $(out probe-lh-proto)"
+grep -q "ending the start" "${STATE}/out-probe-lh-proto" && fail "podman run 125 with the container made ended the start"
+cycle probe-lh-proto env STEAM_COMPAT_DATA_PATH="${ctx}" "${launcher}" start probe-lh-proto
+[[ "${rc}" == 0 ]] || fail "a start after a refused podman run: exit ${rc}: $(out probe-lh-proto)"
 for conf in "mounts = [\"type=bind,source=${contexts}/probe-lh-a,destination=/x,ro\"]|${contexts}/probe-lh-a" \
     "mounts = [\"type=bind,source=${T}/odm.prop,destination=/y,ro\", \"type=bind,src=${valve_home}/.local,destination=/x\"]|${valve_home}/.local"; do
     printf '[containers]\n%s\n' "${conf%|*}" > "${T}/bad.conf"

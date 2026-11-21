@@ -191,7 +191,7 @@ grep -qx 'annotations = \["run.oci.systemd.subgroup=app-steam-app1-1.scope"\]' "
 expected_mounts="mounts = [\"type=bind,source=/dev/input/event10,destination=/dev/input/event10,rw\",\"type=bind,source=/dev/input/event12,destination=/dev/input/event12,rw\",\"type=bind,source=${rc_override},destination=/system/etc/init/lineage-system.rc,ro\",\"type=bind,source=${odm},destination=/vendor/odm/etc/build.prop,ro\",\"type=bind,source=/dev/net/tun,destination=/dev/tun,rw\",\"type=bind,source=${MICROOS_STUB_DIR}/restrictions-stub.jar,destination=/system/framework/restrictions-stub.jar,ro\",\"type=bind,source=${MICROOS_STUB_DIR}/restrictions-stub.rc,destination=/system/etc/init/restrictions-stub.rc,ro\"]"
 grep -qxF "${expected_mounts}" "${conf}" || fail "mounts: $(cat "${conf}")"
 [[ "$(cat "${odm}")" == $'ro.odm.build.id=RQ3A\nro.product.odm.model=lepton\nro.sf.lcd_density=213\nqemu.hw.mainkeys=1\npm.dexopt.install=speed\nro.adb.secure=1' ]] || fail "odm prop: $(cat "${odm}")"
-expected_events="notify EXTEND_TIMEOUT_USEC=120000000
+expected_events="notify EXTEND_TIMEOUT_USEC=240000000
 lepton start android
 out starting
 out Boot complete!
@@ -407,6 +407,11 @@ reset "exit 0"
 run
 grep -qx "microos-android-run: android exited during boot, see ${MICROOS_ANDROID_DATA}/boot.log" "${MICROOS_RUNTIME_DIR}/start-failed" \
     || fail "early exit reason not written"
+reset "starting;microos-liblepton: podman run exited 125, lepton-android never ran, ending the start;exit 137"
+run
+[[ "${rc}" == 1 ]] || fail "a refused podman run: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qxF "microos-android-run: android exited during boot, see ${MICROOS_ANDROID_DATA}/boot.log, the last line from lepton: microos-liblepton: podman run exited 125, lepton-android never ran, ending the start" \
+    "${MICROOS_RUNTIME_DIR}/start-failed" || fail "a refused podman run: start-failed $(cat "${MICROOS_RUNTIME_DIR}/start-failed" 2>/dev/null)"
 [[ ! -e "${STATE_HOME}/microos-lepton/lepton-install-requested" ]] || fail "a boot failure asked for a Lepton install"
 reset "exit 0"
 : > "${STATE}/no-lepton-dir"

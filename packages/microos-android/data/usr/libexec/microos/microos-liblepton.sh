@@ -166,6 +166,26 @@ create_prefix() {
     [[ -z "${microos_prefix}" ]] || microos_record_prefix "${microos_prefix}"
 }
 
+podman() {
+    local rc=0 made
+    if [[ "${1:-}" != run ]]; then
+        command podman "$@"
+        return
+    fi
+    command podman "$@" || rc=$?
+    case "${rc}" in
+        125|126|127)
+            made=0
+            command podman container exists "lepton-${LEPTON_CONTEXT}" 2>/dev/null || made=$?
+            if (( made == 1 )); then
+                microos_say "podman run exited ${rc}, lepton-${LEPTON_CONTEXT} never ran, ending the start"
+                kill -KILL -- "-$$"
+            fi
+            ;;
+    esac
+    return "${rc}"
+}
+
 microos_holds_files() {
     local rc=0
     podman unshare bash -c '[[ -L "$1" || ! -e "$1" ]] && exit 1; [[ -d "$1" ]] || exit 0; c=$(ls -A -- "$1") || exit 2
