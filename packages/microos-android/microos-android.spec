@@ -76,6 +76,7 @@ test -f %{buildroot}%{_datadir}/microos-android/restrictions-stub.rc
 %{_prefix}/lib/android-sdk/
 %{_userunitdir}/microos-android.service
 %{_userunitdir}/microos-android-battery.service
+%{_userunitdir}/microos-android-gapps.service
 %{_userunitdir}/microos-android-gapps-setup.service
 %{_userunitdir}/microos-android-status.service
 %{_userunitdir}/microos-lepton-prepare.service

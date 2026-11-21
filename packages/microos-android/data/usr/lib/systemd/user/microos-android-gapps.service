@@ -1,0 +1,10 @@
+[Unit]
+Description=Install the Google apps set
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30min
+Nice=19
+IOSchedulingClass=idle
+CPUWeight=idle
+ExecStart=/usr/bin/microos-android gapps install
