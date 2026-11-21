@@ -1,0 +1,24 @@
+FROM localhost/microos-pkg-builder
+
+COPY SOURCE.env /tmp/android-guest-apks/
+RUN --mount=type=cache,id=microos-android-sdk,target=/var/cache/android-sdk \
+    dnf -y --setopt=install_weak_deps=False install java-25-openjdk-headless unzip \
+ && dnf clean all \
+ && . /tmp/android-guest-apks/SOURCE.env \
+ && tools=/var/cache/android-sdk/${BUILD_TOOLS_URL##*/} \
+ && platform=/var/cache/android-sdk/${PLATFORM_URL##*/} \
+ && if ! echo "$BUILD_TOOLS_SHA256  $tools" | sha256sum -c --status - 2>/dev/null; then \
+      curl -fsSL --retry 3 -o "$tools" "$BUILD_TOOLS_URL" \
+      && echo "$BUILD_TOOLS_SHA256  $tools" | sha256sum -c -; \
+    fi \
+ && if ! echo "$PLATFORM_SHA256  $platform" | sha256sum -c --status - 2>/dev/null; then \
+      curl -fsSL --retry 3 -o "$platform" "$PLATFORM_URL" \
+      && echo "$PLATFORM_SHA256  $platform" | sha256sum -c -; \
+    fi \
+ && find /var/cache/android-sdk -maxdepth 1 -type f -name '*.zip' ! -name "${tools##*/}" ! -name "${platform##*/}" -delete \
+ && unzip -q "$tools" -d /tmp/android-guest-apks/build-tools \
+ && mv /tmp/android-guest-apks/build-tools/android-11 "/opt/android-build-tools-$BUILD_TOOLS_VERSION" \
+ && grep -qx "Pkg.Revision=$BUILD_TOOLS_VERSION" "/opt/android-build-tools-$BUILD_TOOLS_VERSION/source.properties" \
+ && unzip -q -j "$platform" 'android-11/android.jar' 'android-11/source.properties' -d "/opt/android-platform-$ANDROID_API" \
+ && grep -qx "AndroidVersion.ApiLevel=$ANDROID_API" "/opt/android-platform-$ANDROID_API/source.properties" \
+ && rm -rf /tmp/android-guest-apks
