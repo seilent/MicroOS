@@ -27,7 +27,7 @@ if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$source
 
 requires=$(rpm -qp --requires "$rpm" | awk '{ print $1 }')
 need=(microos-android-guestos podman passt catatonit android-tools which attr btrfs-progs curl unzip python3 python3-gobject gtk3 rsync procps-ng
-  inotify-tools)
+  inotify-tools xprop)
 for r in "${need[@]}"; do
   if ! grep -qx "$r" <<<"$requires"; then fail "does not require $r"; fi
 done

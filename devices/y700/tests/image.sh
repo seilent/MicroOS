@@ -328,7 +328,7 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "microos-vpad 50-microos-microset.conf"
 [[ $(< /usr/lib/systemd/user/microos-powerkey.service.d/50-microos-microset.conf) == $'[Service]\nEnvironment=MICROOS_POWERKEY_OVERLAY=1' ]] ||
   fail "microos-powerkey 50-microos-microset.conf"
-[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165' ]] ||
+[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4' ]] ||
   fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
 rpm -q podman passt catatonit attr android-tools inotify-tools >/dev/null || fail "Lepton host rpms missing"
 for c in podman pasta setpgid flock pgrep pkill tput setfattr inotifywait which jq ip adb; do
@@ -338,6 +338,7 @@ adb=/usr/lib/android-sdk/platform-tools/adb
 [[ -L $adb && $adb -ef /usr/bin/adb ]] || fail "$adb does not resolve to /usr/bin/adb"
 [[ $(stat -c '%a %U %G' /usr/bin/steamvr) == '755 root root' ]] || fail "/usr/bin/steamvr mode or owner"
 [[ -f /usr/share/microos-lepton/reviewed/25772114 ]] || fail "no reviewed list for Lepton build 25772114"
+command -v xprop >/dev/null || fail "xprop missing, the Android client sets the touch mode with it"
 grep -q MICROOS_VPAD_MICROSET /usr/libexec/microos/microos-vpad || fail "microos-vpad has no MICROOS_VPAD_MICROSET knob"
 grep -q MICROOS_POWERKEY_OVERLAY /usr/libexec/microos/microos-powerkey || fail "microos-powerkey has no MICROOS_POWERKEY_OVERLAY knob"
 

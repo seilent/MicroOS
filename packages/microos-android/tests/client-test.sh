@@ -218,6 +218,8 @@ export MICROOS_SYSTEM_CARD="${T}/system-card"
 : > "${MICROOS_SYSTEM_CARD}"
 export DISPLAY=:0
 export GAMESCOPE_WAYLAND_DISPLAY=gamescope-0
+export MICROOS_DISPLAY_FILE="${T}/display"
+printf 'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\n' > "${MICROOS_DISPLAY_FILE}"
 unset MANGOHUD_CONFIGFILE
 mkdir -p "${T}/bin" "${MICROOS_RUNDIR}" "${MICROOS_RUNTIME_DIR}" "${MICROOS_ANDROID_STATE}" "${T}/xdg"
 
@@ -238,6 +240,12 @@ cat > "${T}/bin/keyboard-gapps" <<STUB
 echo "keyboard \$*" >> "${STATE}/calls"
 printf 'gapps\n' > "${MICROOS_RUNTIME_DIR}/first-boot"
 exit 0
+STUB
+cat > "${T}/bin/xprop" <<STUB
+#!/usr/bin/bash
+echo "DISPLAY=\${DISPLAY:-} xprop \$*" >> "${STATE}/xprop"
+cat "${STATE}/xprop-err" >&2 2>/dev/null || true
+exit "\$(cat "${STATE}/xprop-rc" 2>/dev/null || echo 0)"
 STUB
 cat > "${T}/bin/microos-session-track" <<STUB
 #!/usr/bin/bash
@@ -261,6 +269,7 @@ reset() {
     echo none > "${STATE}/job-result"
     echo 1 > "${STATE}/track-rc"
     rm -f "${STATE}/stop-delay" "${STATE}/stop-result" "${STATE}/stop-error" "${STATE}/job-delay"
+    rm -f "${STATE}/xprop" "${STATE}/xprop-err" "${STATE}/xprop-rc"
 }
 
 state_ok() {
@@ -306,6 +315,41 @@ grep -q "^MANGOHUD_CONFIGFILE=" "${MICROOS_RUNTIME_DIR}/session.env" \
     && fail "session.env MANGOHUD_CONFIGFILE with none set: $(cat "${MICROOS_RUNTIME_DIR}/session.env")"
 wait_for "^start microos-android.service replace$" || fail "StartUnit was not called: $(cat "${STATE}/calls")"
 stop_client
+[[ "$(cat "${STATE}/xprop" 2>/dev/null)" == "DISPLAY=:0 xprop -root -f STEAM_TOUCH_CLICK_MODE 32c -set STEAM_TOUCH_CLICK_MODE 4" ]] \
+    || fail "touch mode: $(cat "${STATE}/xprop" 2>/dev/null)"
+grep -qx "microos-android-client: touch mode 4 set on :0" "${T}/out" || fail "touch mode not logged: $(cat "${T}/out")"
+state_ok 'd["touch"] == {"result": "set", "reason": ""}' || fail "touch mode: state $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
+
+reset
+echo 1 > "${STATE}/xprop-rc"
+echo "xprop: unable to open display ':0'" > "${STATE}/xprop-err"
+background
+wait_for "^start microos-android.service replace$" || fail "a failed touch mode stopped the start: $(cat "${T}/out")"
+stop_client
+grep -qxF "microos-android-client: touch mode not set on :0: xprop exited 1: xprop: unable to open display ':0'" "${T}/out" \
+    || fail "a failed touch mode not logged: $(cat "${T}/out")"
+state_ok 'd["touch"] == {"result": "failed", "reason": "xprop exited 1: xprop: unable to open display \x27:0\x27"}' \
+    || fail "a failed touch mode: state $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
+
+reset
+printf 'width=960\nheight=640\ndensity=213\n' > "${T}/display-pm2"
+MICROOS_DISPLAY_FILE="${T}/display-pm2" background
+wait_for "^start microos-android.service replace$" || fail "no touch mode: no start: $(cat "${T}/out")"
+stop_client
+[[ ! -e "${STATE}/xprop" ]] || fail "no touch mode: xprop ran: $(cat "${STATE}/xprop")"
+grep -q "touch mode" "${T}/out" && fail "no touch mode: logged: $(cat "${T}/out")"
+[[ ! -e "${MICROOS_ANDROID_STATE}/state.json" ]] || state_ok '"touch" not in d' \
+    || fail "no touch mode: state $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
+
+reset
+printf 'density=400\ntouch_mode=passthrough\n' > "${T}/display-bad"
+MICROOS_DISPLAY_FILE="${T}/display-bad" background
+wait_for "^start microos-android.service replace$" || fail "a bad touch mode: no start: $(cat "${T}/out")"
+stop_client
+[[ ! -e "${STATE}/xprop" ]] || fail "a bad touch mode: xprop ran: $(cat "${STATE}/xprop")"
+grep -qxF "microos-android-client: touch mode not set on :0: touch_mode=passthrough in ${T}/display-bad is not a gamescope touch mode" "${T}/out" \
+    || fail "a bad touch mode not logged: $(cat "${T}/out")"
+state_ok 'd["touch"]["result"] == "failed"' || fail "a bad touch mode: state $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
 
 reset
 MANGOHUD_CONFIGFILE=/tmp/mangohud.Ab3dE5fG background

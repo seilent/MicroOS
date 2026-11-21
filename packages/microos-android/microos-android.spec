@@ -31,6 +31,7 @@ Requires:       gtk3
 Requires:       rsync
 Requires:       procps-ng
 Requires:       inotify-tools
+Requires:       xprop
 
 %description
 The Android session of MicroOS: Valve's Lepton runtime in a rootless
