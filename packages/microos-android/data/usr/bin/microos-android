@@ -146,6 +146,7 @@ gapps_remove() {
     local stamp="${CONTEXT}/microos-android-stamp"
     [[ -f "${stamp}" ]] || fail "${stamp} missing, refusing"
     stamp_set "${stamp}" none
+    rm -f "${STATE_DIR}/activate"
     state_write "gapps.set=" "gapps.gms=" "gapps.play=" || say "cannot write the state"
     say "the next Android start boots without the Google apps layer"
 }
@@ -196,14 +197,22 @@ open(out, "w").write(base_text.replace(base_blocks[0], donor_blocks[0]))
 PY
 }
 
-no_live() {
-    local unit rc container leptons
+live_unit() {
+    local unit
     for unit in microos-android.service microos-lepton-prepare.service; do
         case "$(systemctl --user show -P ActiveState "${unit}" 2>/dev/null)" in
             inactive|failed|"") ;;
-            *) fail "${unit} is running, refusing" ;;
+            *) printf '%s\n' "${unit}"; return 0 ;;
         esac
     done
+    return 1
+}
+
+no_live() {
+    local unit rc container leptons
+    if unit=$(live_unit); then
+        fail "${unit} is running, refusing"
+    fi
     rc=0
     podman container exists lepton-android 2>/dev/null || rc=$?
     case "${rc}" in
@@ -216,8 +225,10 @@ no_live() {
 }
 
 gapps_install() {
-    no_live
+    local lock
     mkdir -p "${GAPPS}" "${CACHE}"
+    exec {lock}> "${GAPPS}/.install.lock" || fail "cannot open ${GAPPS}/.install.lock"
+    flock -n "${lock}" || fail "another gapps install holds ${GAPPS}/.install.lock, refusing"
     if complete; then
         say "${SET} already installed"
     else
@@ -256,9 +267,18 @@ gapps_install() {
         rm -f "${CACHE}/${MTG11_URL##*/}" "${CACHE}/${MTG14_URL##*/}"
         say "${SET} installed in ${GAPPS}/${SET}"
     fi
-    ln -sfn "${SET}" "${GAPPS}/current.new"
-    mv -T "${GAPPS}/current.new" "${GAPPS}/current"
-    say "the next Android start binds ${SET}"
+    if [[ "$(readlink "${GAPPS}/current" 2>/dev/null)" == "${SET}" ]]; then
+        say "${SET} is already the current set"
+        return 0
+    fi
+    [[ -d "${STATE_DIR}" ]] || { mkdir -p "${STATE_DIR}" && chmod 700 "${STATE_DIR}"; } || fail "cannot make ${STATE_DIR}"
+    printf '%s\n' "${SET}" > "${STATE_DIR}/activate.new" && mv -T "${STATE_DIR}/activate.new" "${STATE_DIR}/activate" \
+        || fail "cannot write ${STATE_DIR}/activate"
+    if live_unit > /dev/null; then
+        say "Android restarts with ${SET}"
+    else
+        say "the next Android start binds ${SET}"
+    fi
 }
 
 prune() {
@@ -319,7 +339,7 @@ reset() {
     esac
     storage_remove_tree "${CONTEXT}" || fail "cannot remove ${CONTEXT}"
     rm -rf "${DATA}/sideload" "${DATA}/prune"
-    rm -f "${STORAGE_STEP}" "${STORAGE_MANIFEST}" "${STATE_DIR}/storage-manifest.diff"
+    rm -f "${STORAGE_STEP}" "${STORAGE_MANIFEST}" "${STATE_DIR}/storage-manifest.diff" "${STATE_DIR}/activate"
     say "the next Android start boots a fresh context and installs every .apk again"
 }
 
