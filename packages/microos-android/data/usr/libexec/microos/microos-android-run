@@ -525,6 +525,12 @@ if [[ -z "${display}" || "${display}" == /* || "${display}" == *..* || ! -S "${X
 fi
 density=$(sed -n 's/^density=//p' "${DISPLAY_FILE}" 2>/dev/null | head -n 1)
 [[ "${density}" =~ ^[0-9]+$ ]] || fail "no density in ${DISPLAY_FILE}"
+navbar=$(sed -n 's/^navbar=//p' "${DISPLAY_FILE}" 2>/dev/null | head -n 1)
+case "${navbar}" in
+    ""|0) mainkeys=1 ;;
+    1) mainkeys=0 ;;
+    *) fail "navbar=${navbar} in ${DISPLAY_FILE} is not 0 or 1" ;;
+esac
 [[ -x "${LEPTON}" ]] || fail "${LEPTON} missing"
 lepton_err=$(mktemp) || fail "cannot make a temp file"
 rc=0
@@ -563,7 +569,7 @@ export MICROOS_ANDROID_EXTERNAL
 {
     cat "${odm_source}"
     echo "ro.sf.lcd_density=${density}"
-    echo qemu.hw.mainkeys=1
+    echo "qemu.hw.mainkeys=${mainkeys}"
     echo pm.dexopt.install=speed
     echo ro.adb.secure=1
     if [[ -e "${DATA}/privapp-log" ]]; then

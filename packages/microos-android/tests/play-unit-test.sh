@@ -300,6 +300,23 @@ MICROOS_DISPLAY_FILE="${T}/display" run
 [[ "${rc}" == 0 ]] || fail "density: exit ${rc}: $(cat "${STATE}/stderr")"
 grep -qx "ro.sf.lcd_density=240" "${odm}" || fail "density not taken from the display file: $(cat "${odm}")"
 
+for pair in 0:1 1:0; do
+    printf 'density=240\nnavbar=%s\n' "${pair%:*}" > "${T}/display"
+    reset "Boot complete!;exit 0"
+    MICROOS_DISPLAY_FILE="${T}/display" run
+    [[ "${rc}" == 0 ]] || fail "navbar=${pair%:*}: exit ${rc}: $(cat "${STATE}/stderr")"
+    [[ "$(grep -c '^qemu\.hw\.mainkeys=' "${odm}")" == 1 ]] && grep -qx "qemu.hw.mainkeys=${pair#*:}" "${odm}" \
+        || fail "navbar=${pair%:*}: $(cat "${odm}")"
+done
+
+printf 'density=240\nnavbar=yes\n' > "${T}/display"
+reset "Boot complete!;exit 0"
+MICROOS_DISPLAY_FILE="${T}/display" run
+[[ "${rc}" == 1 ]] && grep -qF "navbar=yes in ${T}/display is not 0 or 1" "${STATE}/stderr" \
+    || fail "navbar=yes: exit ${rc}: $(cat "${STATE}/stderr")"
+grep -q "lepton start" "${STATE}/events" && fail "navbar=yes: lepton started"
+[[ ! -e "${odm}" ]] || fail "navbar=yes: the odm prop was written"
+
 reset "Boot complete!;exit 0"
 echo 125 > "${STATE}/other_rc"
 run
