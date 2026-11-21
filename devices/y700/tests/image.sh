@@ -46,7 +46,7 @@ done
 grep -qx 'install_weak_deps=False' /etc/dnf/libdnf5.conf.d/10-microos.conf || fail "10-microos.conf does not turn off weak deps"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 own=$(rpm -qa --qf '%{NAME}\t%{VENDOR}\n' | awk -F'\t' '$2 == "MicroOS" { print $1 }' | LC_ALL=C sort | paste -sd' ')
-[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hexagonrpc hyprcursor hyprgraphics hyprgrass hyprland hyprland-guiutils hyprlang hyprpicker hyprsunset hyprtoolkit hyprutils hyprwire microos-android microos-android-guestos microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
+[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hexagonrpc hyprcursor hyprgraphics hyprgrass hyprland hyprland-guiutils hyprlang hyprpicker hyprsunset hyprtoolkit hyprutils hyprwire microos-android microos-android-guest-apks microos-android-guestos microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
   fail "MicroOS rpms: $own"
 for p in qbootctl inputplumber steamos-manager mangohud lsfg-vk microos-eq libfreeaptx \
   pipewire-codec-aptx microos-steam-seed; do
@@ -345,6 +345,13 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "microos-powerkey 50-microos-microset.conf"
 [[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\ngamepads=joystick\nnavbar=1\nadb=remote' ]] ||
   fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
+product=/usr/share/guestos/android/system/product
+for f in overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk overlay/NavigationBarMode3Button/NavigationBarMode3ButtonOverlay.apk \
+  app/LineagePartsStub/LineagePartsStub.apk; do
+  [[ -f $product/$f && ! -L $product/$f ]] || fail "$product/$f missing"
+  [[ $(rpm -qf --qf '%{NAME}' "$product/$f" 2>/dev/null) == microos-android-guest-apks ]] || fail "$product/$f is not microos-android-guest-apks's"
+done
+[[ $(find /usr/share/guestos/android/system -type f | wc -l) == 3 ]] || fail "/usr/share/guestos/android/system holds more than the three guest APKs"
 rpm -q podman passt catatonit attr android-tools inotify-tools >/dev/null || fail "Lepton host rpms missing"
 for c in podman pasta setpgid flock pgrep pkill tput setfattr inotifywait which jq ip adb; do
   command -v "$c" >/dev/null || fail "$c is not on PATH (Lepton)"

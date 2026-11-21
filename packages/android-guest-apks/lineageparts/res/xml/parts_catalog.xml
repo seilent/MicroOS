@@ -1,0 +1,10 @@
+<parts-catalog xmlns:android="http://schemas.android.com/apk/res/android">
+    <part android:key="battery_lights" />
+    <part android:key="charging_sounds_settings" />
+    <part android:key="livedisplay" />
+    <part android:key="long_screen_settings" />
+    <part android:key="notification_lights" />
+    <part android:key="perf_profile_settings" />
+    <part android:key="rotation" />
+    <part android:key="touchscreen_gesture_settings" />
+</parts-catalog>

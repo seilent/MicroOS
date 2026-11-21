@@ -27,6 +27,7 @@ own=(
   hyprpicker/hyprpicker
   xdg-desktop-portal-hyprland/xdg-desktop-portal-hyprland
   microos-fonts/microos-fonts
+  android-guest-apks/microos-android-guest-apks
   android-guestos/microos-android-guestos
   microos-android/microos-android
 )
