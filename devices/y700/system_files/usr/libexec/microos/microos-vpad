@@ -19,9 +19,10 @@ UHID_GET_REPORT = 9
 EVENT_SIZE = 4376
 DESC = bytes.fromhex("06ffff 0901 a101 0902 0903 1500 26ff00 7508 9540 8102 0906 0907 1500 26ff00 7508 9540 b102 c0")
 UNIT_SERIAL = b"MICROOSY700"
+PRODUCT = 0x12F0
 SERIALS = {0: b"MICROOSY700B", 1: UNIT_SERIAL}
 REPORT_US = 4000
-ATTRIBUTES = ((1, 0x1205), (2, 0), (4, 0x65E4F1AD), (9, 0x2E), (10, 0x62A9122B), (11, REPORT_US), (12, 0), (13, 0), (14, 0))
+ATTRIBUTES = ((1, PRODUCT), (2, 0), (4, 0x65E4F1AD), (9, 0x2E), (10, 0x62A9122B), (11, REPORT_US), (12, 0), (13, 0), (14, 0))
 
 
 def ioc(direction, nr, size):
@@ -95,7 +96,7 @@ def message(data):
 def create_event():
     ev = bytearray(EVENT_SIZE)
     struct.pack_into("<I128s64s64sHHIIII", ev, 0, UHID_CREATE2, b"Steam Deck Controller", b"", UNIT_SERIAL,
-                     len(DESC), 3, 0x28DE, 0x1205, 0x1000, 0)
+                     len(DESC), 3, 0x28DE, PRODUCT, 0x1000, 0)
     ev[280:280 + len(DESC)] = DESC
     return ev
 

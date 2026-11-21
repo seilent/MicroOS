@@ -370,7 +370,7 @@ desc+=26ff0075089540b102c0
 [[ $(vp 1) == "$((4 + 128 + 64 + 64 + 2 + 2 + 4 * 4 + 4096)) $(evioc 1 0x80 48) $(evioc 1 0x90 4) $(evioc 2 0x18 96) $(evioc 1 0xa0 4) 48 24 $desc" ]] \
   || fail "microos-vpad event sizes, ioctl numbers or descriptor: $(vp 1)"
 c=$(vp uhid create)
-[[ ${c:0:8} == 0b000000 && ${c:520:4} == 2600 && ${c:524:4} == 0300 && ${c:528:8} == de280000 && ${c:536:8} == 05120000 \
+[[ ${c:0:8} == 0b000000 && ${c:520:4} == 2600 && ${c:524:4} == 0300 && ${c:528:8} == de280000 && ${c:536:8} == f0120000 \
   && ${c:560} == "$desc" ]] || fail "microos-vpad CREATE2 event: $c"
 serial=4d4943524f4f5359373030
 [[ $(vp uhid 0d000000070000000000040000ae1501 09000000080000000000) == \
@@ -382,7 +382,7 @@ recs=" "
 for ((i = 6; i < 6 + 2 * 16#${fr[1]:4:2}; i += 10)); do
   recs+="${fr[1]:i:10} "
 done
-[[ ${fr[1]:0:4} == 0083 && $recs == *' 0105120000 '* && $recs == *' 0ba00f0000 '* ]] || fail "microos-vpad attributes reply: ${fr[1]}"
+[[ ${fr[1]:0:4} == 0083 && $recs == *' 01f0120000 '* && $recs == *' 0ba00f0000 '* ]] || fail "microos-vpad attributes reply: ${fr[1]}"
 [[ ${fr[2]} == "$(printf '008703080700%0118d' 0)" ]] || fail "microos-vpad settings echo: ${fr[2]}"
 [[ $(vp haptic 8f0801a00f0000010000) == 'left 8 40960' && $(vp haptic 8f0801a00f0000000000) == 'left 8 40960' \
   && $(vp haptic 8f0800a00f0000010000) == 'right 8 40960' && $(vp haptic 8f0802a00f0000010000) == $'left 8 40960\nright 8 40960' \
