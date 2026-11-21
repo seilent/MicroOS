@@ -4,13 +4,13 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
 data="${repo}/data"
-conf="${data}/usr/lib/microos/sessions.d/android.conf"
 desktop="${data}/usr/share/wayland-sessions/microos-android.desktop"
 client="${data}/usr/share/gamescope-session-plus/sessions.d/android"
 root=$(cd "${repo}/../.." && pwd)
 pm2="${root}/devices/pm2/system_files"
 [[ -d "${pm2}" ]] || pm2="${root}/system_files"
 pm2_units="${pm2}/usr/lib/systemd/user"
+conf="${pm2}/usr/lib/microos/sessions.d/android.conf"
 pad="${pm2_units}/gamescope-session-plus@android.service.d/20-microos-android-pad.conf"
 plain="${data}/usr/libexec/microos/microos-gamescope-plain"
 units="${data}/usr/lib/systemd/user"

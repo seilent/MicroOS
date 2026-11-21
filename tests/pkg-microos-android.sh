@@ -63,7 +63,6 @@ for f in \
   /usr/libexec/microos/microos-lepton-prepare \
   /usr/libexec/microos/microos-gamescope-plain \
   /usr/libexec/microos/microos-lepton-lib.sh \
-  /usr/lib/microos/sessions.d/android.conf \
   /usr/share/wayland-sessions/microos-android.desktop \
   /usr/share/gamescope-session-plus/sessions.d/android \
   /usr/share/microos-android/opts \
@@ -75,7 +74,8 @@ for f in \
   if ! grep -qxF "$f" <<<"$files"; then fail "missing $f"; fi
 done
 for f in /usr/share/microos-android/display /usr/lib/systemd/user/microos-android-pad.service \
-  /usr/lib/systemd/user/gamescope-session-plus@android.service.d/20-microos-android-pad.conf; do
+  /usr/lib/systemd/user/gamescope-session-plus@android.service.d/20-microos-android-pad.conf \
+  /usr/lib/microos/sessions.d/android.conf; do
   if grep -qxF "$f" <<<"$files"; then fail "$f is device data, not the package's"; fi
 done
 if grep -qE '^/usr/lib/(armada|extension-release\.d|extensions|microemu)|^/var/|^/etc/|^/usr/share/microemu|^/usr/bin/microemu-|^/usr/libexec/microemu' <<<"$files"; then
@@ -170,13 +170,6 @@ for line in Requisite=gamescope-session-plus@android.service Requires=microos-le
 done
 if grep -qE '^(BindsTo|Wants)=' "$unit"; then fail "microos-android.service pulls a start"; fi
 if grep -q 'SuccessExitStatus=.*137' "$unit"; then fail "microos-android.service hides a 137"; fi
-conf=$root/usr/lib/microos/sessions.d/android.conf
-for line in LABEL=Android DESKTOP=microos-android.desktop UNIT=gamescope-session-plus@android.service \
-  STOP=unit DEFAULT=yes CHECK=/usr/libexec/microos/microos-android-check \
-  INSTALL=/usr/libexec/microos/microos-android-install; do
-  if ! grep -qxF "$line" "$conf"; then fail "android.conf lacks $line"; fi
-done
-if grep -qE '^(GAME_SCOPE|INPUT_PROFILE)=' "$conf"; then fail "android.conf carries a key the plan drops"; fi
 desktop=$root/usr/share/wayland-sessions/microos-android.desktop
 for line in Exec=gamescope-session-plus\ android Type=Application DesktopNames=android NoDisplay=true; do
   if ! grep -qxF "$line" "$desktop"; then fail "microos-android.desktop lacks $line"; fi

@@ -210,6 +210,7 @@ kept=(
   /usr/lib/systemd/user/microos-session-install@.service
   /usr/lib/systemd/user/microos-steam-seed.service
   /usr/lib/microos/sessions.d/desktop.conf
+  /usr/lib/microos/sessions.d/android.conf
   /usr/lib/systemd/user/microos-desktop.service.d/10-microos-track.conf
   /usr/lib/systemd/user/microos-desktop.service.d/20-microos-ii-seed.conf
   /usr/lib/systemd/user/microos-desktop.service.d/30-hypr-config.conf
@@ -318,6 +319,8 @@ for c in jq setpriv flock python3 loginctl busctl; do
 done
 grep -qxF $'steam\tSteam OS\tyes' <<< "$(microos-session list)" || fail "microos-session list lacks steam as Steam OS"
 grep -qxF $'android\tAndroid\tyes' <<< "$(microos-session list)" || fail "microos-session list lacks android"
+[[ $(< /usr/lib/microos/sessions.d/android.conf) == $'LABEL=Android\nDESKTOP=microos-android.desktop\nUNIT=gamescope-session-plus@android.service\nSTOP=unit\nDEFAULT=yes\nCHECK=/usr/libexec/microos/microos-android-check' ]] \
+  || fail "android.conf is not the Y700 entry with no install action"
 [[ $(readlink /etc/sddm.conf.d/zzz-microos-autologin.conf) == /run/microos/sddm-autologin.conf ]] ||
   fail "zzz-microos-autologin.conf is not the link to /run/microos/sddm-autologin.conf"
 getent passwd microset > /dev/null || fail "user microset missing"

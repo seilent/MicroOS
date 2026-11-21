@@ -77,7 +77,6 @@ test -f %{buildroot}%{_datadir}/microos-android/restrictions-stub.rc
 %{_userunitdir}/microos-android-gapps-setup.service
 %{_userunitdir}/microos-android-status.service
 %{_userunitdir}/microos-lepton-prepare.service
-%{_prefix}/lib/microos/sessions.d/android.conf
 %{_datadir}/wayland-sessions/microos-android.desktop
 %{_datadir}/gamescope-session-plus/sessions.d/android
 %{_datadir}/microos-android/
