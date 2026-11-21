@@ -1,0 +1,1 @@
+SUBSYSTEM=="input", KERNEL=="event*", DEVPATH!="/devices/virtual/*", ATTRS{id/bustype}=="001c", ATTRS{name}=="Novatek NT36523 Touchscreen|Novatek NT36523 Pen", ENV{LIBINPUT_CALIBRATION_MATRIX}="0 -1 1 1 0 0"
