@@ -345,6 +345,89 @@ derive_rc() {
     say "stripped keycodes from line ${stripped} of ${source} (${rc_hash})"
 }
 
+lineageparts_check() {
+    local runtime=$1 overlay found rc=0
+    local -a trees
+    trees=("${runtime}/images/rootfs")
+    overlay="${runtime}/images/rootfs_overlay"
+    [[ ! -d "${overlay}" ]] || trees+=("${overlay}")
+    found=$(python3 -I - "${trees[@]}" <<'PY'
+import os
+import struct
+import sys
+import zipfile
+
+
+def strings(data, off):
+    header = struct.unpack_from("<H", data, off + 2)[0]
+    start, flags = struct.unpack_from("<I", data, off + 20)[0], struct.unpack_from("<I", data, off + 16)[0]
+
+    def get(i):
+        p = off + start + struct.unpack_from("<I", data, off + header + 4 * i)[0]
+        if flags & 0x100:
+            p += 2 if data[p] & 0x80 else 1
+            n = data[p]
+            if n & 0x80:
+                n = ((n & 0x7F) << 8) | data[p + 1]
+                p += 1
+            return data[p + 1:p + 1 + n].decode("utf-8")
+        n = struct.unpack_from("<H", data, p)[0]
+        if n & 0x8000:
+            n = ((n & 0x7FFF) << 16) | struct.unpack_from("<H", data, p + 2)[0]
+            p += 2
+        return data[p + 2:p + 2 + 2 * n].decode("utf-16-le")
+
+    return get
+
+
+def package(path):
+    data = zipfile.ZipFile(path).read("AndroidManifest.xml")
+    off = struct.unpack_from("<H", data, 2)[0]
+    get = None
+    while off < len(data):
+        kind, _, size = struct.unpack_from("<HHI", data, off)
+        if kind == 0x0001:
+            get = strings(data, off)
+        elif kind == 0x0102:
+            name, start, width, count = struct.unpack_from("<IHHH", data, off + 20)
+            if get(name) != "manifest":
+                raise ValueError("the first element is not manifest")
+            for i in range(count):
+                attr, raw, kind, value = struct.unpack_from("<4xII3xBI", data, off + 16 + start + i * width)
+                if get(attr) == "package":
+                    return get(raw if raw != 0xFFFFFFFF else value)
+            raise ValueError("no package attribute")
+        off += size
+    raise ValueError("no manifest element")
+
+
+for tree in sys.argv[1:]:
+    for top, _, files in os.walk(tree):
+        for name in sorted(files):
+            if not name.endswith(".apk"):
+                continue
+            path = os.path.join(top, name)
+            if os.path.islink(path):
+                print(path)
+                sys.exit(3)
+            try:
+                found = package(path)
+            except Exception:
+                print(path)
+                sys.exit(2)
+            if found == "org.lineageos.lineageparts":
+                print(path)
+                sys.exit(4)
+PY
+) || rc=$?
+    case "${rc}" in
+        0) ;;
+        4) reason lineageparts "Lepton in ${runtime} ships org.lineageos.lineageparts in ${found}, refusing" ;;
+        3) reason lineageparts "${found} is a link, refusing" ;;
+        *) reason lineageparts "cannot read the package of ${found:-an APK under ${trees[*]}}, refusing" ;;
+    esac
+}
+
 gapps_check() {
     local dir path sha size
     dir=$(readlink -f "${GAPPS}/current" 2>/dev/null) || return 1
@@ -585,6 +668,7 @@ export MICROOS_ANDROID_EXTERNAL
 [[ ! -e "${DATA}/privapp-log" ]] || say "privapp log mode"
 
 derive_rc "${lepton_runtime}"
+lineageparts_check "${lepton_runtime}"
 
 pad_nodes=$("${PAD_NODES}") || fail "${PAD_NODES} failed, refusing"
 mounts=()
