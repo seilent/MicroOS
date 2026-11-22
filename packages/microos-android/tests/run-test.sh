@@ -217,6 +217,31 @@ lock_free() {
 }
 mounted() { sed -n 's/^mounts = \[\(.*\)\]$/\1/p' "${conf}" 2>/dev/null; }
 
+make_apk() {
+    mkdir -p "$(dirname "$1")"
+    python3 - "$1" "$2" <<'PY'
+import struct
+import sys
+import zipfile
+
+names = ["package", "manifest", sys.argv[2]]
+body = b"".join(struct.pack("<H", len(n)) + n.encode("utf-16-le") + b"\0\0" for n in names)
+body += b"\0" * (-len(body) % 4)
+offsets, at = [], 0
+for n in names:
+    offsets.append(at)
+    at += 4 + 2 * len(n)
+head = 28 + 4 * len(names)
+pool = struct.pack("<HHIIIIII", 1, 28, head + len(body), len(names), 0, 0, head, 0)
+pool += struct.pack("<%dI" % len(names), *offsets) + body
+attr = struct.pack("<iIIHBBI", -1, 0, 2, 8, 0, 3, 2)
+element = struct.pack("<HHIIiiIHHHHHH", 0x0102, 16, 36 + len(attr), 1, -1, -1, 1, 20, 20, 1, 0, 0, 0) + attr
+manifest = struct.pack("<HHI", 3, 8, 8 + len(pool) + len(element)) + pool + element
+with zipfile.ZipFile(sys.argv[1], "w") as apk:
+    apk.writestr("AndroidManifest.xml", manifest)
+PY
+}
+
 case_name="keycodes derived"
 reset
 run
@@ -384,6 +409,77 @@ run
 [[ "$(reason_of)" == rc-keycodes ]] || fail "reason $(reason_of)"
 grep -q "ships system/etc/init/lineage-system.rc in images/rootfs_overlay" "${STATE}/stderr" || fail "no log: $(cat "${STATE}/stderr")"
 [[ ! -e "${derived}" ]] || fail "a file was written on a refusal"
+
+lineageparts="${T}/lepton/images/rootfs/system/system_ext/priv-app/LineageParts/LineageParts.apk"
+
+case_name="other packages start"
+reset
+make_apk "${lineageparts}" org.lineageos.lineagesettings
+make_apk "${T}/lepton/images/rootfs_overlay/system/app/Other/Other.apk" com.example.other
+run
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${STATE}/stderr")"
+grep -qx "lepton start android" "${STATE}/events" || fail "lepton not started: $(cat "${STATE}/events")"
+rm -rf "${T}/lepton/images/rootfs/system/system_ext"
+
+case_name="lineageparts in the rootfs"
+reset
+make_apk "${lineageparts}" org.lineageos.lineageparts
+run
+[[ "${rc}" == 1 ]] || fail "exit ${rc}"
+[[ "$(reason_of)" == lineageparts ]] || fail "reason $(reason_of)"
+grep -qF "Lepton in ${T}/lepton ships org.lineageos.lineageparts in ${lineageparts}, refusing" "${STATE}/stderr" \
+    || fail "no log: $(cat "${STATE}/stderr")"
+if grep -q '^lepton ' "${STATE}/events"; then fail "lepton ran on a refusal: $(cat "${STATE}/events")"; fi
+rm -rf "${T}/lepton/images/rootfs/system/system_ext"
+
+case_name="lineageparts in the overlay"
+reset
+make_apk "${T}/lepton/images/rootfs_overlay/system/product/app/Parts/Parts.apk" org.lineageos.lineageparts
+run
+[[ "${rc}" == 1 ]] || fail "exit ${rc}"
+[[ "$(reason_of)" == lineageparts ]] || fail "reason $(reason_of)"
+grep -qF "ships org.lineageos.lineageparts in ${T}/lepton/images/rootfs_overlay/system/product/app/Parts/Parts.apk" "${STATE}/stderr" \
+    || fail "no log: $(cat "${STATE}/stderr")"
+
+case_name="unreadable apk"
+reset
+mkdir -p "${T}/lepton/images/rootfs/system/app/Bad"
+printf 'not a zip\n' > "${T}/lepton/images/rootfs/system/app/Bad/Bad.apk"
+run
+[[ "${rc}" == 1 ]] || fail "exit ${rc}"
+[[ "$(reason_of)" == lineageparts ]] || fail "reason $(reason_of)"
+grep -qF "cannot read the package of ${T}/lepton/images/rootfs/system/app/Bad/Bad.apk, refusing" "${STATE}/stderr" \
+    || fail "no log: $(cat "${STATE}/stderr")"
+rm -rf "${T}/lepton/images/rootfs/system/app"
+
+case_name="zero size chunk"
+reset
+mkdir -p "${T}/lepton/images/rootfs/system/app/Zero"
+python3 - "${T}/lepton/images/rootfs/system/app/Zero/Zero.apk" <<'PY2'
+import struct
+import sys
+import zipfile
+
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("AndroidManifest.xml", struct.pack("<HHI", 3, 8, 16) + struct.pack("<HHI", 0x0180, 8, 0))
+PY2
+run
+[[ "${rc}" == 1 ]] || fail "exit ${rc}"
+[[ "$(reason_of)" == lineageparts ]] || fail "reason $(reason_of)"
+grep -qF "cannot read the package of ${T}/lepton/images/rootfs/system/app/Zero/Zero.apk, refusing" "${STATE}/stderr" \
+    || fail "no log: $(cat "${STATE}/stderr")"
+rm -rf "${T}/lepton/images/rootfs/system/app"
+
+case_name="linked apk"
+reset
+make_apk "${T}/outside.apk" com.example.other
+mkdir -p "${T}/lepton/images/rootfs/system/app/Link"
+ln -s "${T}/outside.apk" "${T}/lepton/images/rootfs/system/app/Link/Link.apk"
+run
+[[ "${rc}" == 1 ]] || fail "exit ${rc}"
+[[ "$(reason_of)" == lineageparts ]] || fail "reason $(reason_of)"
+grep -qF "${T}/lepton/images/rootfs/system/app/Link/Link.apk is a link, refusing" "${STATE}/stderr" || fail "no log: $(cat "${STATE}/stderr")"
+rm -rf "${T}/lepton/images/rootfs/system/app" "${T}/outside.apk"
 
 case_name="second start keeps the stamp"
 reset
