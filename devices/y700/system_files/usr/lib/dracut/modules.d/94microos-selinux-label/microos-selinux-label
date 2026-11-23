@@ -1,0 +1,307 @@
+#!/bin/sh
+set -u
+
+cmdline=${MICROOS_CMDLINE:-/proc/cmdline}
+lsm=${MICROOS_LSM:-/sys/kernel/security/lsm}
+sysroot=${MICROOS_SYSROOT:-/sysroot}
+rundir=${MICROOS_RUNDIR:-/run/microos}
+rootdev=${MICROOS_ROOT_DEV:-/dev/disk/by-partlabel/microos}
+efidev=${MICROOS_EFI_DEV:-/dev/disk/by-partlabel/microos_efi}
+lmnt=${MICROOS_LABEL_MNT:-/run/microos-label}
+emnt=${MICROOS_LABEL_EFI:-/run/microos-label-efi}
+isel=${MICROOS_INITRD_SELINUX:-/etc/selinux}
+mounts=${MICROOS_MOUNTS:-/proc/self/mounts}
+uptime=${MICROOS_UPTIME:-/proc/uptime}
+kmsg=${MICROOS_KMSG:-/dev/kmsg}
+env=$rundir/selinux-label.env
+res=$rundir/selinux-label.var
+errs=$rundir/selinux-label.err
+cap=270
+
+say() { echo "microos-selinux-label: $*" >&2; }
+
+now() {
+  read -r u _ < "$uptime"
+  echo "${u%.*}"
+}
+
+kv() { sed -n "/^$1=/{s/^$1=//p;q;}" "$2" 2> /dev/null; }
+
+unmount() {
+  mountpoint -q "$1" || return 0
+  umount "$1" && return 0
+  say "cannot unmount $1"
+}
+
+linked() {
+  [ "$(readlink "$isel")" != "$sysroot/etc/selinux" ] || return 0
+  say "$isel is not a link to $sysroot/etc/selinux, customizable types are relabeled"
+  echo "$isel is not a link to $sysroot/etc/selinux" >> "$errs"
+  return 1
+}
+
+label() {
+  n=$( { "$@" 2> "$errs.new"; echo "$?" > "$errs.rc"; } |
+    sed -n -e "/^Read only filesystem/w $errs.ro" -e '/^Relabeled /p' | sed -n '$=')
+  n=${n:-0}
+  rc=$(cat "$errs.rc" 2> /dev/null) || rc=1
+  o=""
+  while read -r _ m _ opts _; do
+    [ "$m" != "$lmnt" ] || o=$opts
+  done < "$mounts"
+  ro=""
+  case ,$o, in
+    *,rw,*) ;;
+    *) ro="$lmnt is not mounted read write: ${o:-no mount}" ;;
+  esac
+  e=$(cat "$errs.new" "$errs.ro" 2> /dev/null | sed -n '$=')
+  e=${e:-0}
+  [ -z "$ro" ] || e=$((e + 1))
+  { [ -z "$ro" ] || echo "$ro"; cat "$errs.new" "$errs.ro" 2> /dev/null; } | sed 20q >> "$errs"
+  rm -f "$errs.new" "$errs.rc" "$errs.ro"
+}
+
+config() {
+  mode=""
+  policy=targeted
+  [ -r "$conf" ] || return 0
+  while IFS= read -r l || [ -n "$l" ]; do
+    case $l in
+      SELINUX=*)
+        v=${l#SELINUX=}
+        v=${v#"${v%%[![:space:]]*}"}
+        [ -n "$mode" ] || case $v in
+          [Ee][Nn][Ff][Oo][Rr][Cc][Ii][Nn][Gg]*) mode=enforcing ;;
+          [Pp][Ee][Rr][Mm][Ii][Ss][Ss][Ii][Vv][Ee]*) mode=permissive ;;
+          [Dd][Ii][Ss][Aa][Bb][Ll][Ee][Dd]*) mode=disabled ;;
+        esac
+        ;;
+    esac
+    t=${l#"${l%%[![:space:]]*}"}
+    case $t in
+      [Ss][Ee][Ll][Ii][Nn][Uu][Xx][Tt][Yy][Pp][Ee]=*)
+        v=${t#*=}
+        v=${v#"${v%%[![:space:]]*}"}
+        policy=${v%"${v##*[![:space:][:cntrl:]]}"}
+        ;;
+    esac
+  done < "$conf"
+}
+
+fchash() {
+  (
+    cd "${fc%/*}" || exit 1
+    b=${fc##*/}
+    set --
+    for s in "" .homedirs .local .subs .subs_dist; do
+      for x in "" .bin; do
+        [ ! -f "$b$s$x" ] || set -- "$@" "$b$s$x"
+      done
+    done
+    sha256sum "$@" | sha256sum
+  ) | { read -r h _; printf '%.12s' "$h"; }
+}
+
+label_etc() {
+  start=$(now)
+  if [ -r "$lsm" ]; then
+    case ",$(cat "$lsm")," in
+      *,selinux,*) ;;
+      *) say "selinux is not in $lsm, nothing labeled"; exit 0 ;;
+    esac
+  fi
+  off=""
+  set -f
+  for w in $(cat "$cmdline" 2> /dev/null); do
+    [ "$w" != selinux=0 ] || off=1
+  done
+  set +f
+  [ -z "$off" ] || { say "selinux=0, nothing labeled"; exit 0; }
+  conf=$sysroot/etc/selinux/config
+  config
+  case $mode in
+    enforcing|permissive) ;;
+    *) say "SELINUX=$mode in $conf, nothing labeled"; exit 0 ;;
+  esac
+  fc=$sysroot/etc/selinux/$policy/contexts/files/file_contexts
+  [ -r "$fc" ] || { say "cannot read $fc"; exit 1; }
+  mkdir -p "$rundir" "$lmnt"
+  [ -e "$isel" ] || ln -s "$sysroot/etc/selinux" "$isel"
+  if ! mount -t btrfs -o rw,subvol=root "$rootdev" "$lmnt"; then
+    say "cannot mount $rootdev read write at $lmnt"
+    exit 1
+  fi
+
+  want=$(stat -c %d:%i "$sysroot/etc") || want=""
+  dep=""
+  k=0
+  for d in "$lmnt"/ostree/deploy/*/deploy/*; do
+    [ -n "$want" ] && [ -d "$d/etc" ] && [ "$(stat -c %d:%i "$d/etc")" = "$want" ] || continue
+    dep=$d
+    k=$((k + 1))
+  done
+  if [ "$k" != 1 ]; then
+    say "$k deployments under $lmnt hold $sysroot/etc"
+    unmount "$lmnt"
+    exit 1
+  fi
+  sr=${dep%/deploy/*}
+  hash=$(fchash)
+
+  rm -f "$errs"
+  lk=0
+  linked || lk=1
+  label setfiles -m -v -T 0 -r "$dep" "$fc" "$dep/etc"
+  etcn=$n
+  etcerr=$((e + lk))
+  etc=ok
+  [ "$rc" = 0 ] && [ "$etcerr" = 0 ] || etc=partial
+
+  set --
+  for f in "$dep/etc/passwd" "$dep/etc/shadow" "$dep/etc/group" "$dep/etc/gshadow" "$dep/etc/ssh/sshd_config" \
+    "$dep"/etc/ssh/ssh_host_*_key "$dep/etc/selinux/config"; do
+    [ ! -e "$f" ] || set -- "$@" "$f"
+  done
+  if ! out=$(setfiles -m -n -v -r "$dep" "$fc" "$@"); then
+    say "cannot check the labels of $* against $fc"
+    unmount "$lmnt"
+    exit 1
+  fi
+  bad=$(printf '%s\n' "$out" | sed -n 's/^Would relabel \([^ ]*\) .*/\1/p')
+  if [ -n "$bad" ]; then
+    say "left without their labels: $bad"
+    unmount "$lmnt"
+    exit 1
+  fi
+
+  printf 'start=%s\ndep=%s\nsr=%s\nfc=%s\nhash=%s\netcn=%s\netc=%s\netcerr=%s\n' "$start" "$dep" "$sr" "$fc" "$hash" \
+    "$etcn" "$etc" "$etcerr" > "$env.tmp" && mv -f "$env.tmp" "$env" || say "cannot write $env, /var not labeled"
+  unmount "$lmnt"
+  exit 0
+}
+
+gate() {
+  [ -n "$hash" ] && mountpoint -q "$emnt" && [ -r "$rundir/guard-line" ] || return 1
+  read -r line < "$rundir/guard-line"
+  log=$emnt/logs/guard.txt
+  last=$(sed -n '/^initrd=/{=;p;}' "$log" 2> /dev/null | sed 'N;s/\n/:/' | tail -n 1)
+  [ -n "$last" ] && [ "${last#*:}" = "$line" ] || return 1
+  case " $line " in
+    *" test=none "*) ;;
+    *) return 1 ;;
+  esac
+  case " $line " in
+    *" count=1 "*) ;;
+    *) return 1 ;;
+  esac
+  k=${last%%:*}
+  [ "$k" -gt 1 ] || return 1
+  prev=$(sed -n "$((k - 1))p" "$log")
+  case "$prev " in
+    "selinux-label fc=$hash "*" var=walked "|"selinux-label fc=$hash "*" var=skipped ") return 0 ;;
+  esac
+  return 1
+}
+
+walk() {
+  left=$((deadline - $(now)))
+  if [ "$left" -le 0 ]; then
+    say "the $cap s deadline passed, $2 not walked"
+    var=partial
+    return
+  fi
+  r=$1
+  path=$2
+  shift 2
+  label timeout -k 10 "$left" setfiles -m -v -T 0 -r "$r" "$@" "$fc" "$path"
+  vn=$((vn + n))
+  verr=$((verr + e))
+  [ "$rc" = 0 ] && [ "$e" = 0 ] || var=partial
+  [ "$rc" != 124 ] && [ "$rc" != 137 ] || say "$path stopped at the $cap s deadline"
+}
+
+label_var() {
+  sr=$(kv sr "$env")
+  fc=$(kv fc "$env")
+  hash=$(kv hash "$env")
+  [ -n "$sr" ] || { say "no sr= in $env, /var not labeled"; exit 1; }
+  mkdir -p "$lmnt" "$emnt"
+  if ! mount -t btrfs -o rw,subvol=root "$rootdev" "$lmnt"; then
+    say "cannot mount $rootdev read write at $lmnt, /var not labeled"
+    exit 1
+  fi
+  [ -d "$sr/var" ] || { say "no $sr/var, /var not labeled"; exit 1; }
+  mount -t vfat -o umask=0077 "$efidev" "$emnt" || say "cannot mount $efidev at $emnt"
+  if gate; then
+    say "the boot before labeled /var with the same file_contexts, /var not walked"
+    echo var=skipped > "$res"
+    exit 0
+  fi
+
+  deadline=$(( $(now) + cap ))
+  var=walked
+  vn=0
+  verr=0
+  linked || { var=partial; verr=1; }
+  for p in lib log home/micro/.ssh; do
+    [ ! -e "$sr/var/$p" ] || walk "$sr" "$sr/var/$p"
+  done
+  [ ! -e "$lmnt/boot" ] || walk "$lmnt" "$lmnt/boot"
+  set --
+  for p in lib log home/micro/.ssh; do
+    [ ! -e "$sr/var/$p" ] || set -- "$@" -e "$sr/var/$p"
+  done
+  walk "$sr" "$sr/var" "$@"
+  printf 'var=%s\nvarn=%s\nvarerr=%s\n' "$var" "$vn" "$verr" > "$res"
+  exit 0
+}
+
+label_result() {
+  dep=$(kv dep "$env")
+  sr=$(kv sr "$env")
+  hash=$(kv hash "$env")
+  start=$(kv start "$env")
+  etc=$(kv etc "$env")
+  etcn=$(kv etcn "$env")
+  etcerr=$(kv etcerr "$env")
+  var=$(kv var "$res")
+  vn=$(kv varn "$res")
+  verr=$(kv varerr "$res")
+  [ "${SERVICE_RESULT:-}" = success ] && [ -n "$var" ] || var=partial
+  code=0
+  if [ -z "$sr" ] || [ ! -d "$sr/var" ]; then
+    say "no var dir under sr=$sr from $env"
+    var=partial
+    code=1
+  fi
+  sync
+
+  mkdir -p "$emnt"
+  mountpoint -q "$emnt" || mount -t vfat -o umask=0077 "$efidev" "$emnt" || say "cannot mount $efidev at $emnt"
+  if mountpoint -q "$emnt"; then
+    mkdir -p "$emnt/logs" && echo "selinux-label fc=$hash dep=${dep##*/} etc=$etc var=$var" >> "$emnt/logs/guard.txt" ||
+      say "cannot append to $emnt/logs/guard.txt"
+    t=$(( ${etcerr:-0} + ${verr:-0} ))
+    txt=$emnt/logs/selinux-label.txt
+    { [ "$t" = 0 ] || { echo "errors $t"; sed 20q "$errs" 2> /dev/null; }; } > "$txt.tmp" && mv -f "$txt.tmp" "$txt" ||
+      say "cannot write $txt"
+    sync
+  fi
+  case $var in
+    walked) v=$vn ;;
+    *) v=$var ;;
+  esac
+  (printf 'selinux-label: dep %s etc %s %s var %s in %s s\n' "${dep##*/}" "$etcn" "$etc" "$v" "$(( $(now) - start ))" \
+    > "$kmsg") 2> /dev/null
+  unmount "$emnt"
+  unmount "$lmnt"
+  exit "$code"
+}
+
+case ${1:-} in
+  etc) label_etc ;;
+  var) label_var ;;
+  result) label_result ;;
+esac
+say "usage: microos-selinux-label etc|var|result"
+exit 2

@@ -340,7 +340,7 @@ jobs:
           "$RUNNER_TEMP/ctx/tests/android-return.sh"
           $PODMAN run --rm -e "MICROOS_IMAGE=$IMAGE" -e "MICROOS_DEVICE=$DEVICE" -e MICROOS_REPO=/repo -v "$PWD:/repo:ro" \
             -v "$RUNNER_TEMP/ctx/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/steam-bootstrap:/seed-rpm:ro" "$IMAGE:$TAG" /tests/image.sh
-          for t in bootimg bootimg-update bootok stub-lib etc-carry groups guard slot update usb-console bdaddr session steam-launcher steam-seed ii-seed vpad sleep-gate sleep-hooks adsp-sensors lp-extent hexagonrpcd-adsp-sleep; do
+          for t in bootimg bootimg-update bootok stub-lib etc-carry groups guard selinux-label slot update usb-console bdaddr session steam-launcher steam-seed ii-seed vpad sleep-gate sleep-hooks adsp-sensors lp-extent hexagonrpcd-adsp-sleep; do
             $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" "/tests/$t.sh"
           done
           $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" \

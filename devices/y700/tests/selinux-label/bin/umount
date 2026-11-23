@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+echo "umount $*" >> "$FAKE_STATE/umount.log"
+[[ -z ${FAKE_UMOUNT_FAIL:-} ]] || exit 32
+awk -v d="$1" '$2 != d' "$FAKE_STATE/mounts" > "$FAKE_STATE/mounts.new"
+mv "$FAKE_STATE/mounts.new" "$FAKE_STATE/mounts"

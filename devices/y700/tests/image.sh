@@ -143,6 +143,10 @@ kept=(
   /usr/lib/dracut/modules.d/93microos-y700-usbcon/microos-initrd-usbcon
   /usr/lib/dracut/modules.d/93microos-y700-usbcon/microos-initrd-usbcon.service
   /usr/lib/dracut/modules.d/93microos-y700-usbcon/module-setup.sh
+  /usr/lib/dracut/modules.d/94microos-selinux-label/microos-selinux-label
+  /usr/lib/dracut/modules.d/94microos-selinux-label/microos-selinux-label-etc.service
+  /usr/lib/dracut/modules.d/94microos-selinux-label/microos-selinux-label-var.service
+  /usr/lib/dracut/modules.d/94microos-selinux-label/module-setup.sh
   /usr/lib/microos/boot-ok.conf
   /usr/lib/microos/bootimg.conf
   /usr/lib/microos/sessions.d/steam.conf
@@ -755,6 +759,45 @@ lsinitrd -f usr/lib/systemd/system/microos-guard.service "$img" | grep -qx 'Time
 [[ $(lsinitrd -f etc/microos-initrd-id "$img") =~ ^$kver\ [0-9]{8}T[0-9]{6}Z$ ]] || fail "initramfs microos-initrd-id"
 lsinitrd -f usr/lib/systemd/system/ostree-prepare-root.service "$img" | grep -qx 'ExecStart=/usr/lib/ostree/ostree-prepare-root /sysroot' \
   || fail "ostree-prepare-root.service ExecStart changed"
+grep -qx microos-selinux-label <<< "$(lsinitrd -m "$img")" || fail "initramfs lacks the microos-selinux-label module"
+grep -qE " usr/s?bin/setfiles( |$)" <<< "$list" || fail "initramfs lacks setfiles"
+label=/usr/lib/dracut/modules.d/94microos-selinux-label/microos-selinux-label
+[[ $(lsinitrd -f usr/libexec/microos/microos-selinux-label "$img" | sha256sum) == $(sha256sum < "$label") ]] \
+  || fail "initramfs microos-selinux-label is not $label"
+for l in 'unmount "$lmnt"' 'unmount "$emnt"'; do
+  grep -qF "$l" "$label" || fail "$label has no $l"
+done
+grep -qx 'cap=270' "$label" || fail "$label /var cap is not 270 s"
+st=$tmp/setfiles
+sfc=/etc/selinux/targeted/contexts/files/file_contexts
+mkdir -p "$st/dep/etc" "$st/var/lib/microos" "$st/var/log" "$st/boot/loader/entries"
+cp /etc/passwd "$st/dep/etc/passwd"
+: > "$st/var/lib/microos/state"
+: > "$st/var/log/boot.log"
+: > "$st/boot/loader/entries/ostree-1.conf"
+setfiles -m -n -v -T 0 -r "$st/dep" "$sfc" "$st/dep/etc" > /dev/null || fail "setfiles refuses the /etc pass flags"
+setfiles -m -n -v -r "$st/dep" "$sfc" "$st/dep/etc/passwd" > /dev/null || fail "setfiles refuses the /etc check flags"
+setfiles -m -n -v -T 0 -r "$st" "$sfc" "$st/var/lib" > /dev/null || fail "setfiles refuses the /var path flags"
+setfiles -m -n -v -T 0 -r "$st" -e "$st/var/lib" -e "$st/var/log" "$sfc" "$st/var" > /dev/null \
+  || fail "setfiles refuses the /var walk flags"
+setfiles -m -n -v -T 0 -r "$st" "$sfc" "$st/boot" > /dev/null || fail "setfiles refuses the /boot walk flags"
+for u in etc var; do
+  unit=$(lsinitrd -f "usr/lib/systemd/system/microos-selinux-label-$u.service" "$img")
+  lines=(Type=oneshot DefaultDependencies=no 'After=ostree-prepare-root.service microos-guard.service' Before=initrd.target
+    Conflicts=shutdown.target Before=shutdown.target WantedBy=initrd.target "ExecStart=/usr/libexec/microos/microos-selinux-label $u")
+  if [[ $u == etc ]]; then
+    lines+=(OnFailure=emergency.target OnFailureJobMode=replace-irreversibly TimeoutStartSec=120 RemainAfterExit=yes)
+  else
+    lines+=(After=microos-selinux-label-etc.service ConditionPathExists=/run/microos/selinux-label.env TimeoutStartSec=330
+      TimeoutStopSec=60 RemainAfterExit=no 'ExecStopPost=/usr/libexec/microos/microos-selinux-label result')
+    ! grep -q '^OnFailure' <<< "$unit" || fail "initramfs microos-selinux-label-var.service has an OnFailure= line"
+  fi
+  for l in "${lines[@]}"; do
+    grep -qxF "$l" <<< "$unit" || fail "initramfs microos-selinux-label-$u.service lacks $l"
+  done
+  grep -qE "/initrd\.target\.wants/microos-selinux-label-$u\.service( |$)" <<< "$list" \
+    || fail "initramfs does not enable microos-selinux-label-$u.service"
+done
 
 [[ -x /usr/bin/microos-update ]] || fail "/usr/bin/microos-update missing"
 scripts=()

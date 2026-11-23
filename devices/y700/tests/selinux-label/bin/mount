@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+echo "mount $*" >> "$FAKE_STATE/mount.log"
+[[ " $* " != *" -t ${FAKE_MOUNT_FAIL:-none} "* ]] || exit 32
+t="" o=""
+while getopts t:o: a; do
+  case $a in
+    t) t=$OPTARG ;;
+    o) o=$OPTARG ;;
+  esac
+done
+shift $((OPTIND - 1))
+o=${o#rw,}
+rw=rw
+[[ -z ${FAKE_MOUNT_RO:-} ]] || rw=ro
+echo "$1 $2 $t $rw,$o 0 0" >> "$FAKE_STATE/mounts"

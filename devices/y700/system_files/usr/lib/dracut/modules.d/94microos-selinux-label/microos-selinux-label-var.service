@@ -1,0 +1,20 @@
+[Unit]
+Description=Label /var and /boot for SELinux before the policy loads
+DefaultDependencies=no
+After=ostree-prepare-root.service microos-guard.service
+After=microos-selinux-label-etc.service
+Before=initrd.target
+Conflicts=shutdown.target
+Before=shutdown.target
+ConditionPathExists=/run/microos/selinux-label.env
+
+[Service]
+Type=oneshot
+TimeoutStartSec=330
+TimeoutStopSec=60
+RemainAfterExit=no
+ExecStart=/usr/libexec/microos/microos-selinux-label var
+ExecStopPost=/usr/libexec/microos/microos-selinux-label result
+
+[Install]
+WantedBy=initrd.target

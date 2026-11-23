@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+awk -v d="${!#}" '$2 == d { f = 1 } END { exit !f }' "$FAKE_STATE/mounts" 2> /dev/null

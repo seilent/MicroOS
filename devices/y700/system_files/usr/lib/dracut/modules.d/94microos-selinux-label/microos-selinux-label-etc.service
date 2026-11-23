@@ -1,0 +1,18 @@
+[Unit]
+Description=Label the booted /etc for SELinux before the policy loads
+DefaultDependencies=no
+After=ostree-prepare-root.service microos-guard.service
+Before=initrd.target
+Conflicts=shutdown.target
+Before=shutdown.target
+OnFailure=emergency.target
+OnFailureJobMode=replace-irreversibly
+
+[Service]
+Type=oneshot
+TimeoutStartSec=120
+RemainAfterExit=yes
+ExecStart=/usr/libexec/microos/microos-selinux-label etc
+
+[Install]
+WantedBy=initrd.target

@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+exec "$(type -P -a stat | grep -vxF "$0" | head -n 1)" -L "$@"

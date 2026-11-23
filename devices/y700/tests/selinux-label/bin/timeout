@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+echo "timeout $*" >> "$FAKE_STATE/timeout.log"
+[[ $1 != -k ]] || shift 2
+left=$1
+shift
+d=$(awk -v p="${!#}" '$1 == p { print $2; exit }' "$FAKE_STATE/dur" 2> /dev/null)
+d=${d:-1}
+read -r t _ < "$MICROOS_UPTIME"
+t=${t%.*}
+if (( d > left )); then
+  echo "$(( t + left )).00 0.00" > "$MICROOS_UPTIME"
+  exit 124
+fi
+echo "$(( t + d )).00 0.00" > "$MICROOS_UPTIME"
+exec "$@"

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+echo "setfiles $*" >> "$FAKE_STATE/setfiles.log"
+check=0
+ex=()
+while getopts mnvT:r:e: o; do
+  case $o in
+    n) check=1 ;;
+    e) ex+=("$OPTARG") ;;
+    \?) exit 255 ;;
+  esac
+done
+shift $((OPTIND - 1))
+spec=$1
+shift
+if grep -q broken "$spec"; then
+  echo "$spec: line 2 has invalid context broken" >&2
+  exit 255
+fi
+touch "$FAKE_STATE/unlabeled"
+if (( check )); then
+  for p in "$@"; do
+    if grep -qxF "$p" "$FAKE_STATE/unlabeled"; then
+      echo "Would relabel $p from <no context> to system_u:object_r:etc_t:s0"
+    fi
+  done
+  exit 0
+fi
+errors=0
+while IFS= read -r f; do
+  walked=0
+  for p in "$@"; do
+    [[ $f != "$p" && $f != "$p"/* ]] || walked=1
+  done
+  for x in "${ex[@]}"; do
+    [[ $f != "$x" && $f != "$x"/* ]] || walked=0
+  done
+  why=$(awk -F'\t' -v f="$f" '$1 == f { print $2; exit }' "$FAKE_STATE/fail" 2> /dev/null)
+  if (( walked )) && [[ -n $why ]]; then
+    echo "setfiles: Could not set context for $f:  $why" >&2
+    errors=$((errors + 1))
+    echo "$f"
+  elif (( walked )) && [[ -n ${FAKE_EROFS:-} ]]; then
+    echo "Read only filesystem, relabel not possible: $f" >&3
+    echo "$f"
+  elif (( walked )); then
+    echo "Relabeled $f from <no context> to system_u:object_r:etc_t:s0" >&3
+  else
+    echo "$f"
+  fi
+done < "$FAKE_STATE/unlabeled" 3>&1 > "$FAKE_STATE/unlabeled.new"
+mv "$FAKE_STATE/unlabeled.new" "$FAKE_STATE/unlabeled"
+(( errors == 0 )) || exit 255
