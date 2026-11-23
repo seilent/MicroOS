@@ -218,14 +218,15 @@ for line in "s 'wifi-scan' 'settings' 'put' 'global' 'wifi_scan_always_enabled' 
     "s 'idle-alarms' 'settings' 'put' 'global' 'alarm_manager_constants' 'allow_while_idle_short_time=10000,allow_while_idle_long_time=20000'" \
     "s 'adb-dialog' 'package' 'disable' '--user' '0' 'com.android.systemui/.usb.UsbDebuggingActivity'" \
     "s 'adb-expiry' 'settings' 'put' 'global' 'adb_allowed_connection_time' '0'" \
+    "s 'user-setup' 'settings' 'put' 'secure' 'user_setup_complete' '1'" \
     "p 'printspooler' 'com.android.printspooler'" "p 'stk' 'com.android.stk'"; do
     grep -qxF "${line}" "${script}" || fail "opts: missing ${line}: $(cat "${script}")"
 done
 grep -qE "appops|set-standby-bucket|com\.google\.android\.gms|com\.android\.vending|trim-caches|use_freezer|use_fifo_ui|sensor_privacy|job_scheduler" "${script}" \
     && fail "opts: an excluded command was sent: $(cat "${script}")"
-[[ "$(grep -c '^[spu] ' "${script}")" == 13 ]] || fail "opts: $(grep -c '^[spu] ' "${script}") commands, expected 13"
-[[ "$(wc -l < "${opts}")" == 13 ]] || fail "opts stamp: $(cat "${opts}")"
-grep -q "guest settings: 13 applied, 0 failed" "${STATE}/stderr" || fail "opts: no summary: $(cat "${STATE}/stderr")"
+[[ "$(grep -c '^[spu] ' "${script}")" == 14 ]] || fail "opts: $(grep -c '^[spu] ' "${script}") commands, expected 14"
+[[ "$(wc -l < "${opts}")" == 14 ]] || fail "opts stamp: $(cat "${opts}")"
+grep -q "guest settings: 14 applied, 0 failed" "${STATE}/stderr" || fail "opts: no summary: $(cat "${STATE}/stderr")"
 
 reset "Boot complete!;sleep 0.2;exit 0"
 run
