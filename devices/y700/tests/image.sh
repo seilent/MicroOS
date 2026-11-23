@@ -117,6 +117,8 @@ grep -qF 'factory.name = support.null-audio-sink' "$null" && grep -qF 'priority.
 kept=(
   /etc/containers/policy.json
   /etc/containers/registries.d/ghcr-microos.yaml
+  /etc/selinux/targeted/active/modules/400/microos/cil
+  /etc/selinux/targeted/active/modules/400/microos/lang_ext
   /etc/ssh/sshd_config.d/10-microos.conf
   /usr/bin/microos-session
   /usr/bin/microos-update
@@ -288,6 +290,7 @@ kept=(
   /usr/share/polkit-1/rules.d/50-microos-session.rules
   /usr/share/polkit-1/rules.d/50-microos-steam.rules
   /usr/share/polkit-1/rules.d/50-microos-timezone.rules
+  /usr/share/selinux/packages/microos.cil
 )
 for f in "${kept[@]}"; do
   [[ -f $f ]] || fail "$f missing"
@@ -798,6 +801,15 @@ for u in etc var; do
   grep -qE "/initrd\.target\.wants/microos-selinux-label-$u\.service( |$)" <<< "$list" \
     || fail "initramfs does not enable microos-selinux-label-$u.service"
 done
+
+mod=/etc/selinux/targeted/active/modules/400/microos
+[[ $(< "$mod/lang_ext") == cil ]] || fail "$mod is not a CIL module"
+python3 -c 'import bz2, sys; sys.exit(bz2.decompress(open(sys.argv[1], "rb").read()) != open(sys.argv[2], "rb").read())' \
+  "$mod/cil" /usr/share/selinux/packages/microos.cil || fail "$mod/cil is not /usr/share/selinux/packages/microos.cil"
+[[ $(matchpathcon -n /run/microos/sddm-autologin.conf) == system_u:object_r:xdm_var_run_t:s0 ]] \
+  || fail "file_contexts labels /run/microos/sddm-autologin.conf $(matchpathcon -n /run/microos/sddm-autologin.conf)"
+[[ $(matchpathcon -n /run/microos/session-current) == system_u:object_r:var_run_t:s0 ]] \
+  || fail "file_contexts labels /run/microos/session-current $(matchpathcon -n /run/microos/session-current)"
 
 [[ -x /usr/bin/microos-update ]] || fail "/usr/bin/microos-update missing"
 scripts=()

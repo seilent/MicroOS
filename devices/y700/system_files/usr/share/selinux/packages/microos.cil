@@ -1,0 +1,1 @@
+(filecon "/run/microos/sddm-autologin\.conf" file (system_u object_r xdm_var_run_t ((s0) (s0))))

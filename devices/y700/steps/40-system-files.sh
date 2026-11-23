@@ -41,3 +41,5 @@ systemctl mask \
   bootc-fetch-apply-updates.timer \
   bootc-generic-growpart.service
 systemctl --global mask mpris-proxy.service
+
+semodule -n -i /usr/share/selinux/packages/microos.cil
