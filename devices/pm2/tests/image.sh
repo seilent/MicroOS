@@ -1260,6 +1260,8 @@ mkdir -p "$tmp/xdg-microdap"
 XDG_RUNTIME_DIR=$tmp/xdg-microdap SYSTEMD_LOG_LEVEL=warning systemd-analyze verify --user --man=no \
   /usr/lib/systemd/user/microdap-*.service gamescope-session-plus@microdap.service || fail "systemd-analyze verify --user microdap units"
 
+grep -qx 'CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,ipe,bpf"' "/usr/lib/modules/$kver/config" \
+  || fail "the PM2 kernel LSM list changed: $(grep '^CONFIG_LSM=' "/usr/lib/modules/$kver/config")"
 img=/usr/lib/modules/$kver/initramfs.img
 list=$(lsinitrd "$img")
 for m in erofs overlay btrfs sdhci-msm ufs-qcom; do
