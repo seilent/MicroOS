@@ -224,6 +224,7 @@ kept=(
   /usr/lib/systemd/user/microos-steam-seed.service
   /usr/lib/microos/sessions.d/desktop.conf
   /usr/lib/microos/sessions.d/android.conf
+  /usr/lib/microos/sessions.d/waydroid.conf
   /usr/lib/systemd/user/microos-desktop.service.d/10-microos-track.conf
   /usr/lib/systemd/user/microos-desktop.service.d/20-microos-ii-seed.conf
   /usr/lib/systemd/user/microos-desktop.service.d/30-hypr-config.conf
@@ -240,10 +241,12 @@ kept=(
   /usr/libexec/microos/microos-hyprland
   /usr/libexec/microos/microos-ii-seed
   /usr/share/wayland-sessions/microos-desktop.desktop
+  /usr/share/wayland-sessions/microos-waydroid-probe.desktop
   /usr/lib/sysusers.d/microos-hexagonrpc.conf
   /usr/lib/sysusers.d/microos.conf
   /usr/lib/tmpfiles.d/microos-session.conf
   /usr/lib/tmpfiles.d/microos.conf
+  /usr/lib/tmpfiles.d/microos-waydroid.conf
   /usr/lib/udev/rules.d/70-microos-adsp-sensors.rules
   /usr/lib/udev/rules.d/90-microos-usb-console.rules
   /usr/lib/udev/rules.d/91-microos-y700-bdaddr.rules
@@ -279,6 +282,8 @@ kept=(
   /usr/libexec/microos/microos-vpad
   /usr/libexec/microos/microos-remoteproc
   /usr/libexec/microos/prepare-root
+  /usr/libexec/microos/wd-session
+  /usr/libexec/microos/wd-stop
   /usr/share/microos/avb/testkey_rsa4096.pem
   /usr/share/microos/keys/microos-backup.pub
   /usr/share/microos/keys/microos-next.pub
@@ -373,6 +378,35 @@ command -v xprop >/dev/null || fail "xprop missing, the Android client sets the 
   || fail "the PM2 pad target drop-in is in the image"
 grep -q MICROOS_VPAD_MICROSET /usr/libexec/microos/microos-vpad || fail "microos-vpad has no MICROOS_VPAD_MICROSET knob"
 grep -q MICROOS_POWERKEY_OVERLAY /usr/libexec/microos/microos-powerkey || fail "microos-powerkey has no MICROOS_POWERKEY_OVERLAY knob"
+
+rpm -q waydroid waydroid-selinux lxc >/dev/null || fail "waydroid, waydroid-selinux or lxc missing"
+for c in waydroid lxc-start gdbus; do
+  command -v "$c" >/dev/null || fail "$c missing, the Waydroid probe session needs it"
+done
+for f in Waydroid.desktop waydroid.market.desktop waydroid.app.install.desktop; do
+  [[ ! -e /usr/share/applications/$f ]] || fail "/usr/share/applications/$f is in the image"
+done
+[[ $(readlink /usr/share/waydroid-extra/images) == /var/lib/microos-android/images/current ]] ||
+  fail "/usr/share/waydroid-extra/images is not the link to /var/lib/microos-android/images/current"
+[[ $(< /usr/lib/tmpfiles.d/microos-waydroid.conf) == $'d /var/cache/lxc 0755 root root -\nd /var/lib/lxc 0755 root root -\nd /var/lib/lxcfs 0755 root root -\nd /var/lib/waydroid 0755 root root -' ]] \
+  || fail "tmpfiles microos-waydroid.conf"
+[[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
+[[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
+  fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"
+grep -qx 'SystemdService=waydroid-container.service' /usr/share/dbus-1/system-services/id.waydro.Container.service ||
+  fail "id.waydro.Container.service does not activate waydroid-container.service"
+[[ $(< /usr/lib/microos/sessions.d/waydroid.conf) == $'LABEL=Waydroid\nDESKTOP=microos-waydroid-probe.desktop\nUNIT=gamescope-session-plus@waydroid.service\nSTOP=unit' ]] \
+  || fail "waydroid.conf is not the probe entry with no default and no check"
+grep -qxF $'waydroid\tWaydroid\tno' <<< "$(microos-session list)" || fail "microos-session list lacks waydroid as a hidden session"
+[[ $(< /usr/share/wayland-sessions/microos-waydroid-probe.desktop) == $'[Desktop Entry]\nName=Waydroid\nExec=gamescope-session-plus waydroid\nType=Application\nDesktopNames=waydroid\nNoDisplay=true' ]] \
+  || fail "microos-waydroid-probe.desktop"
+[[ $(< /usr/share/gamescope-session-plus/sessions.d/waydroid) == $'export GAMESCOPE_BIN=/usr/libexec/microos/microos-gamescope-plain\nexport CLIENTCMD=/usr/libexec/microos/wd-session' ]] \
+  || fail "/usr/share/gamescope-session-plus/sessions.d/waydroid"
+[[ -x /usr/libexec/microos/microos-gamescope-plain ]] || fail "microos-gamescope-plain missing, the Waydroid probe session runs it"
+for f in wd-session wd-stop; do
+  [[ $(stat -c %a "/usr/libexec/microos/$f") == 755 ]] || fail "$f is not 755"
+done
+grep -qF -- '-p ExecStop=/usr/libexec/microos/wd-stop' /usr/libexec/microos/wd-session || fail "wd-session does not stop wd-android through wd-stop"
 
 yama=/usr/lib/sysctl.d/60-microos-yama.conf
 grep -qx 'kernel.yama.ptrace_scope = 1' "$yama" || fail "$yama does not set ptrace_scope 1"
@@ -815,6 +849,14 @@ python3 -c 'import bz2, sys; sys.exit(bz2.decompress(open(sys.argv[1], "rb").rea
   || fail "file_contexts labels /run/microos/sddm-autologin.conf $(matchpathcon -n /run/microos/sddm-autologin.conf)"
 [[ $(matchpathcon -n /run/microos/session-current) == system_u:object_r:var_run_t:s0 ]] \
   || fail "file_contexts labels /run/microos/session-current $(matchpathcon -n /run/microos/session-current)"
+wmod=(/etc/selinux/targeted/active/modules/*/waydroid)
+[[ ${#wmod[@]} == 1 && -f ${wmod[0]}/cil ]] || fail "the module store holds no single waydroid module: ${wmod[*]}"
+for p in /var/lib/waydroid:waydroid_data_t /usr/lib/waydroid/waydroid.py:waydroid_exec_t /var/lib/microos-android:var_lib_t \
+  /var/lib/microos-android/images:waydroid_data_t /var/lib/microos-android/images/current:waydroid_data_t \
+  /var/lib/microos-android/images/los20-20260927-20261022/system.img:waydroid_data_t; do
+  fc=$(matchpathcon -n "${p%%:*}")
+  [[ $fc == "system_u:object_r:${p#*:}:s0" ]] || fail "file_contexts labels ${p%%:*} $fc"
+done
 
 [[ -x /usr/bin/microos-update ]] || fail "/usr/bin/microos-update missing"
 scripts=()

@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -uo pipefail
+data=$HOME/.local/share/microos-waydroid
+rundir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/microos-waydroid
+pulse=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pulse
+wd=${GAMESCOPE_WAYLAND_DISPLAY:-}
+
+stop() {
+  trap - TERM HUP INT
+  systemctl --user stop wd-android > /dev/null 2>&1
+  exit 0
+}
+trap stop TERM HUP INT
+
+if [[ -n ${DISPLAY:-} ]]; then
+  xprop -root -f STEAM_TOUCH_CLICK_MODE 32c -set STEAM_TOUCH_CLICK_MODE 4 2> /dev/null || true
+fi
+
+mkdir -p "$rundir"
+{
+  echo "DISPLAY=${DISPLAY:-}"
+  echo "GAMESCOPE_WAYLAND_DISPLAY=$wd"
+  echo "WAYLAND_DISPLAY=$wd"
+  echo "XDG_DATA_HOME=$data"
+  echo "PULSE_RUNTIME_PATH=$pulse"
+} > "$rundir/session.env"
+
+systemd-run --user --unit=wd-android \
+  -E "XDG_DATA_HOME=$data" \
+  -E "WAYLAND_DISPLAY=$wd" \
+  -E "PULSE_RUNTIME_PATH=$pulse" \
+  -p ExecStop=/usr/libexec/microos/wd-stop \
+  -p "ExecStopPost=/usr/bin/waydroid session stop" \
+  /usr/bin/waydroid session start
+
+gdbus wait --session --timeout 120 id.waydro.Session 2> /dev/null || true
+XDG_DATA_HOME=$data /usr/bin/waydroid show-full-ui > /dev/null 2>&1 || true
+
+while :; do
+  sleep 2147483647 &
+  wait "$!"
+done

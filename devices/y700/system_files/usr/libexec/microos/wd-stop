@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -uo pipefail
+ws() { sudo -n waydroid "$@"; }
+gs() { sudo -n waydroid shell -- "$@"; }
+container_running() { ws status 2> /dev/null | tr -d '\r' | grep -qiE '^Container:[[:space:]]+RUNNING'; }
+if container_running; then
+  top=$(gs dumpsys activity activities 2> /dev/null | tr -d '\r' | grep -m1 'ResumedActivity' | grep -oE '[A-Za-z0-9._]+/[A-Za-z0-9._$]+' | head -n 1)
+  gs am start -W -a android.intent.action.MAIN -c android.intent.category.HOME > /dev/null 2>&1
+  if [[ -n $top ]]; then
+    for _ in $(seq 20); do
+      st=$(gs dumpsys activity activities 2> /dev/null | tr -d '\r' | grep -F "$top" | grep -m1 -oE 'state=[A-Z]+')
+      [[ $st == state=STOPPED ]] && break
+      sleep 1
+    done
+  else
+    sleep 2
+  fi
+fi
+ws session stop > /dev/null 2>&1 || true
+exit 0
