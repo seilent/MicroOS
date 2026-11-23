@@ -15,9 +15,15 @@ sys=$tmp/sysroot
 state=$tmp/state
 d=$sys/ostree/deploy/default/deploy
 calls=$tmp/calls
+relabeled=$tmp/restorecon.log
+cat > "$tmp/restorecon" <<EOF
+#!/bin/sh
+printf '%s\n' "\$@" >> "$relabeled"
+EOF
+chmod 755 "$tmp/restorecon"
 
 mk() {
-  rm -rf "$sys" "$state" "$calls"
+  rm -rf "$sys" "$state" "$calls" "$relabeled"
   mkdir -p "$d/$A/etc/NetworkManager/system-connections" "$d/$N/etc" "$state"
   for f in hostname .updated machine-id ld.so.cache group group- passwd NetworkManager/system-connections/home.nmconnection; do
     echo "a $f" > "$d/$A/etc/$f"
@@ -32,7 +38,7 @@ mk() {
 edit() { echo "a $1 later" > "$d/$A/etc/$1"; }
 run() {
   out=$(env MICROOS_STATEDIR="$state" MICROOS_SYSROOT="$sys" MICROOS_ETC="${1:-$d/$N/etc}" MICROOS_GROUPS="$tmp/fake" \
-    MICROOS_SYSUSERS="$tmp/fake" "$tool" 2>&1) && code=0 || code=$?
+    MICROOS_SYSUSERS="$tmp/fake" MICROOS_RESTORECON="$tmp/restorecon" "$tool" 2>&1) && code=0 || code=$?
 }
 val() { sed -n "s/^$1=//p" "$state/update-written" | head -1; }
 
@@ -55,13 +61,19 @@ for f in .updated machine-id ld.so.cache group-; do
 done
 [[ $(val carried) == 2 ]] || fail "carried=$(val carried), want 2"
 [[ ! -e $calls ]] || fail "groups or sysusers run without an account file"
+want=$(printf '%s\n' "$d/$N/etc/hostname" "$d/$N/etc/NetworkManager/system-connections/away.nmconnection" \
+  "$d/$N/etc/NetworkManager/system-connections" "$d/$N/etc/NetworkManager" | LC_ALL=C sort)
+[[ $(LC_ALL=C sort "$relabeled" 2>/dev/null) == "$want" ]] \
+  || fail "restorecon not run on the carried files and the parents made: $(cat "$relabeled" 2>/dev/null)"
 
 cp "$d/$N/etc/hostname" "$tmp/h"
 edit hostname
 echo "a hostname again" > "$d/$A/etc/hostname"
+rm -f "$relabeled"
 run
 [[ $code == 0 ]] || fail "second run exit $code"
 cmp -s "$d/$N/etc/hostname" "$tmp/h" || fail "second run carried again"
+[[ ! -e $relabeled ]] || fail "restorecon run with nothing carried: $(cat "$relabeled")"
 
 mk
 edit group
@@ -115,6 +127,7 @@ run
 [[ $code == 0 ]] || fail "one copy fails: exit $code, want 0"
 [[ $(< "$d/$N/etc/hostname") == "a hostname later" ]] || fail "one copy fails: the others not carried"
 grep -q "passwd not carried" <<< "$out" || fail "one copy fails: no message: $out"
+[[ $(cat "$relabeled" 2>/dev/null) == "$d/$N/etc/hostname" ]] || fail "one copy fails: restorecon on $(cat "$relabeled" 2>/dev/null)"
 
 if (( rc == 0 )); then
   echo "etc-carry: all cases passed"
