@@ -19,6 +19,7 @@ rate=${MICROOS_SESSION_RATE_MS:-5000}
 uptime=${MICROOS_UPTIME:-/proc/uptime}
 bootid=${MICROOS_BOOT_ID:-/proc/sys/kernel/random/boot_id}
 sysfs=${MICROOS_SYSFS:-/sys}
+restorecon=${MICROOS_RESTORECON:-restorecon}
 padlib=${MICROOS_PAD_LIB:-${BASH_SOURCE[0]%/*}/../libexec/microos/microos-pad-lib}
 [[ ! -r $padlib ]] || . "$padlib"
 sessions=$root/usr/lib/microos/sessions.d
@@ -235,6 +236,14 @@ put() {
 
 lockfile() {
   [[ -e $1 || -L $1 ]] || put "$1"
+}
+
+autologin() {
+  if put "$rundir/sddm-autologin.conf" "[Autologin]" "Session=$1"; then
+    "$restorecon" "$rundir/sddm-autologin.conf" || log "cannot label sddm-autologin.conf"
+  else
+    log "cannot write sddm-autologin.conf"
+  fi
 }
 
 ids() {
@@ -462,7 +471,7 @@ switch_once() {
   fi
   plain "$src_unit" .service || src_unit=""
   serial=$(new_serial)
-  put "$rundir/sddm-autologin.conf" "[Autologin]" "Session=$target_desktop" || log "cannot write sddm-autologin.conf"
+  autologin "$target_desktop"
   if [[ -n $cur_name ]]; then
     put "$rundir/session-previous" "$cur_name $cur_unit $cur_serial $wwhy" || log "cannot write session-previous"
   fi

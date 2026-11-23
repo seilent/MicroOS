@@ -56,8 +56,7 @@ if ! load "$target"; then
   target=steam
   load steam || log "steam is not listed"
 fi
-put "$rundir/sddm-autologin.conf" "[Autologin]" "Session=${DESKTOP:-gamescope-session-steam.desktop}" ||
-  log "cannot write sddm-autologin.conf"
+autologin "${DESKTOP:-gamescope-session-steam.desktop}"
 put "$rundir/session-current" "$target ${UNIT:-gamescope-session-plus@steam.service} $(stamp)" ||
   log "cannot write session-current"
 log "$target for this boot"

@@ -26,6 +26,9 @@ export MICROOS_SESSION_STEP=0.1 MICROOS_SESSION_SHUTDOWN_WAIT=2 MICROOS_SESSION_
 export MICROOS_SESSION_RATE_MS=0 MICROOS_SESSION_SEAT_WAIT=1 MICROOS_SESSION_START_WAIT=2 MICROOS_SESSION_RESTART_WAIT=2 MICROOS_SESSION_WATCH_WAIT=2 MICROOS_SESSION_WATCH_PENDING=8
 export PATH=$here/microos-session/bin:$PATH MICROOS_BOOT_ID=$tmp/boot_id
 export MICROOS_PAD_HOLD=$libexec/microos-pad-hold
+printf '#!/bin/sh\necho "restorecon $1" >> "$FAKE/calls"\necho "$1 $(tail -n 1 "$1")" >> "$FAKE/restorecon"\n' > "$tmp/restorecon"
+chmod 0755 "$tmp/restorecon"
+export MICROOS_RESTORECON=$tmp/restorecon
 boot=0123456789abcdef0123456789abcdef
 echo 01234567-89ab-cdef-0123-456789abcdef > "$tmp/boot_id"
 tick() { awk '{ printf "%.2f 0\n", $1 + 100000 }' /proc/uptime > "$tmp/uptime.new" && mv -f "$tmp/uptime.new" "$tmp/uptime"; }
@@ -342,6 +345,8 @@ read -r n u s m < "$run/session-current"
   (( s / 1000000 >= 100000 && m <= $(mono) && s - m >= 99000000000 )) || fail "boot session-current: $n $u $s $m"
 [[ $(login) == microdap.desktop ]] || fail "boot autologin: $(login)"
 [[ $(< "$run/sddm-autologin.conf") == $'[Autologin]\nSession=microdap.desktop' ]] || fail "autologin file: $(< "$run/sddm-autologin.conf")"
+[[ $(cat "$FAKE/restorecon" 2> /dev/null) == "$run/sddm-autologin.conf Session=microdap.desktop" ]] ||
+  fail "boot did not label the autologin file after the write: $(cat "$FAKE/restorecon" 2> /dev/null)"
 [[ $(< "$run/deployments") == "booted=$B"$'\nconfirmed=no\nrollback=yes' ]] || fail "deployments: $(< "$run/deployments")"
 [[ $(< "$state/session/attempt") == $'name=microdap\ncount=1\nfallback=0\ntarget=microdap' ]] || fail "first attempt: $(< "$state/session/attempt")"
 [[ $(stat -c %a "$run/session-current") == 644 ]] || fail "session-current mode"
@@ -391,6 +396,11 @@ sw microdap
 [[ $(< "$run/session-previous") == "$prev requested" ]] || fail "session-previous: $(cat "$run/session-previous" 2> /dev/null)"
 [[ $(stat -c %a "$run/session-previous") == 644 ]] || fail "session-previous mode"
 [[ $r == 0 ]] || fail "switch to microdap: $r $(cat "$tmp/out")"
+[[ $(cat "$FAKE/restorecon" 2> /dev/null) == "$run/sddm-autologin.conf Session=microdap.desktop" ]] ||
+  fail "switch did not label the autologin file after the write: $(cat "$FAKE/restorecon" 2> /dev/null)"
+l=$(line_of "restorecon $run/sddm-autologin.conf")
+a=$(line_of "steam -shutdown")
+[[ -n $l && -n $a ]] && (( l < a )) || fail "autologin file not labeled before the source stop: $(calls)"
 has "steam -shutdown current=microdap login=microdap.desktop switching=yes attempt=no" ||
   fail "files not written before the source stop: $(calls)"
 ! hasre '^user stop gamescope-session-plus@steam' || fail "steam unit stopped although -shutdown ended it"
@@ -1456,6 +1466,11 @@ plant "$run/sddm-autologin.conf" "$run/session-current"
 hot ""
 [[ $r == 0 ]] && has "notify --ready current=steam" || fail "hotkey ready before the rewrite: $(calls)"
 [[ $(current) == steam && $(login) == gamescope-session-steam.desktop ]] || fail "hotkey rewrite: $(cat "$run/session-current")"
+[[ $(cat "$FAKE/restorecon" 2> /dev/null) == "$run/sddm-autologin.conf Session=gamescope-session-steam.desktop" ]] ||
+  fail "hotkey did not label the autologin file after the write: $(cat "$FAKE/restorecon" 2> /dev/null)"
+l=$(line_of "restorecon $run/sddm-autologin.conf")
+a=$(line_of "notify --ready current=steam")
+[[ -n $l && -n $a ]] && (( l < a )) || fail "hotkey autologin file not labeled before ready: $(calls)"
 planted_ok "hotkey" "$run/sddm-autologin.conf" "$run/session-current"
 [[ ! -e $state/session/attempt ]] || fail "hotkey kept the attempt"
 ! hasre 'microos-session-(switch|fallback)|microset set' || fail "a held hotkey switched or wrote the default: $(calls)"
