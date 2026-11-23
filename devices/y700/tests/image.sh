@@ -534,7 +534,7 @@ done <<< "$seedfiles"
   || fail "/usr/share/microos-seed holds files outside the seed RPM"
 
 ls /usr/share/vulkan/icd.d/freedreno_icd.*.json >/dev/null 2>&1 || fail "no Turnip (freedreno) Vulkan ICD"
-[[ $(< /usr/lib/modules-load.d/microos-y700.conf) == pci-pwrctrl-pwrseq ]] || fail "modules-load.d microos-y700.conf"
+[[ $(< /usr/lib/modules-load.d/microos-y700.conf) == $'pci-pwrctrl-pwrseq\nqrtr' ]] || fail "modules-load.d microos-y700.conf"
 ! modprobe -c | grep -qE '^(blacklist|install) rtc[_-]pm8xxx( |$)' || fail "modprobe.d blacklists rtc_pm8xxx"
 find "/usr/lib/modules/$kver/kernel" -name "rtc-pm8xxx.ko*" | grep -q . || fail "rtc-pm8xxx module missing"
 grep -qx '# CONFIG_RTC_HCTOSYS is not set' "/usr/lib/modules/$kver/config" || fail "the image kernel sets RTC_HCTOSYS, rtc_pm8xxx would set the clock"
@@ -714,6 +714,11 @@ list=$(lsinitrd "$img")
 for m in erofs overlay btrfs ufs-qcom; do
   grep -qE "/$m\.ko" <<< "$list" || grep -qE "/$m\.ko$" "/usr/lib/modules/$kver/modules.builtin" || fail "initramfs lacks $m"
 done
+grep -qE "/kernel/net/qrtr/qrtr\.ko( |$)" <<< "$list" || fail "initramfs lacks qrtr"
+[[ $(lsinitrd -f usr/lib/modules-load.d/microos-y700.conf "$img") == $'pci-pwrctrl-pwrseq\nqrtr' ]] \
+  || fail "initramfs modules-load.d microos-y700.conf"
+grep -qE "/sysinit\.target\.wants/systemd-modules-load\.service( |$)" <<< "$list" \
+  || fail "initramfs does not enable systemd-modules-load.service"
 dropin=usr/lib/systemd/system/ostree-prepare-root.service.d/10-microos-remap.conf
 for f in usr/lib/ostree/ostree-prepare-root usr/libexec/microos/prepare-root usr/bin/sh usr/bin/realpath usr/bin/mkdir "$dropin"; do
   grep -qE " $f( |$)" <<< "$list" || fail "initramfs lacks $f"

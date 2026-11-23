@@ -22,6 +22,7 @@ builtin=$(cat "/usr/lib/modules/$kver/modules.builtin")
 for m in erofs overlay btrfs ufs-qcom vfat nvmem_qcom-spmi-sdam; do
   grep -qE "/$m\.ko" <<< "$list" || grep -qE "/$m\.ko$" <<< "$builtin" || { echo "50-initramfs: $m missing" >&2; exit 1; }
 done
+grep -qE "/kernel/net/qrtr/qrtr\.ko( |$)" <<< "$list" || { echo "50-initramfs: qrtr.ko missing" >&2; exit 1; }
 for f in usr/lib/ostree/ostree-prepare-root usr/libexec/microos/prepare-root usr/bin/sh usr/bin/realpath usr/bin/mkdir \
   usr/lib/systemd/system/ostree-prepare-root.service.d/10-microos-remap.conf; do
   grep -qE " $f( |$)" <<< "$list" || { echo "50-initramfs: $f missing" >&2; exit 1; }
