@@ -51,10 +51,15 @@ build_apk() {
   java --enable-native-access=ALL-UNNAMED -jar "$tools/lib/apksigner.jar" verify --min-sdk-version "$ANDROID_API" "$apk"
 }
 
-for theme in NavigationBarModeGestural NavigationBarMode3Button; do
-  build_apk "$work/${theme}Overlay/AndroidManifest.xml" "$work/${theme}Overlay/res" \
-    "$product/overlay/$theme/${theme}Overlay.apk" --no-resource-deduping --no-resource-removal
-done
+mkdir -p "$top/obj"
+"$tools/aapt2" compile --dir "$src/gestural-nohint/res" -o "$top/obj/gestural-nohint.zip"
+build_apk "$work/NavigationBarModeGesturalOverlay/AndroidManifest.xml" "$work/NavigationBarModeGesturalOverlay/res" \
+  "$product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk" --no-resource-deduping --no-resource-removal \
+  -R "$top/obj/gestural-nohint.zip"
+build_apk "$work/NavigationBarMode3ButtonOverlay/AndroidManifest.xml" "$work/NavigationBarMode3ButtonOverlay/res" \
+  "$product/overlay/NavigationBarMode3Button/NavigationBarMode3ButtonOverlay.apk" --no-resource-deduping --no-resource-removal
+build_apk "$src/nohint-systemui/AndroidManifest.xml" "$src/nohint-systemui/res" \
+  "$product/overlay/NavigationBarNoHintSystemUI/NavigationBarNoHintSystemUIOverlay.apk" --no-resource-deduping --no-resource-removal
 build_apk "$src/lineageparts/AndroidManifest.xml" "$src/lineageparts/res" "$product/app/LineagePartsStub/LineagePartsStub.apk"
 
 tar -C "$top/root" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX \
@@ -63,6 +68,8 @@ tar -C "$work" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode
   -czf "$top/SOURCES/microos-android-guest-apks-overlays.tar.gz" NavigationBarModeGesturalOverlay NavigationBarMode3ButtonOverlay
 tar -C "$src" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX \
   -czf "$top/SOURCES/microos-android-guest-apks-lineageparts.tar.gz" lineageparts
+tar -C "$src" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX \
+  -czf "$top/SOURCES/microos-android-guest-apks-nohint.tar.gz" gestural-nohint nohint-systemui
 cp "$work/NOTICE" "$src/build.sh" "$src/fetch.sh" "$src/SOURCE.env" "$top/SOURCES/"
 
 rpmbuild -ba --define "_topdir $top" "$src/microos-android-guest-apks.spec"

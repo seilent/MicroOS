@@ -347,11 +347,12 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
 product=/usr/share/guestos/android/system/product
 for f in overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk overlay/NavigationBarMode3Button/NavigationBarMode3ButtonOverlay.apk \
+  overlay/NavigationBarNoHintSystemUI/NavigationBarNoHintSystemUIOverlay.apk \
   app/LineagePartsStub/LineagePartsStub.apk; do
   [[ -f $product/$f && ! -L $product/$f ]] || fail "$product/$f missing"
   [[ $(rpm -qf --qf '%{NAME}' "$product/$f" 2>/dev/null) == microos-android-guest-apks ]] || fail "$product/$f is not microos-android-guest-apks's"
 done
-[[ $(find /usr/share/guestos/android/system -type f | wc -l) == 3 ]] || fail "/usr/share/guestos/android/system holds more than the three guest APKs"
+[[ $(find /usr/share/guestos/android/system -type f | wc -l) == 4 ]] || fail "/usr/share/guestos/android/system holds more than the four guest APKs"
 rpm -q podman passt catatonit attr android-tools inotify-tools >/dev/null || fail "Lepton host rpms missing"
 for c in podman pasta setpgid flock pgrep pkill tput setfattr inotifywait which jq ip adb; do
   command -v "$c" >/dev/null || fail "$c is not on PATH (Lepton)"
