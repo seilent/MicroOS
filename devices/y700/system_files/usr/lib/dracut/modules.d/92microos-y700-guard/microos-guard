@@ -9,6 +9,7 @@ bootb=${MICROOS_BOOT_B:-/dev/disk/by-partlabel/boot_b}
 boota=${MICROOS_BOOT_A:-/dev/disk/by-partlabel/boot_a}
 classblock=${MICROOS_CLASS_BLOCK:-/sys/class/block}
 conf=${MICROOS_SLOT_CONF:-/usr/lib/microos/slot.conf}
+rundir=${MICROOS_RUNDIR:-/run/microos}
 mnt=/run/microos-guard
 . "${MICROOS_SDAM_LIB:-/usr/libexec/microos/microos-sdam}"
 . "${MICROOS_BOOTB_LIB:-/usr/libexec/microos/microos-bootb}"
@@ -78,7 +79,9 @@ esac
 
 initrd=$(cat "$idfile" 2> /dev/null) || initrd=unknown
 log=$efi/logs/guard.txt
-if mkdir -p "$efi/logs" && echo "initrd=$initrd id=${id:-none} test=${test:-none} count=$count" >> "$log"; then
+line="initrd=$initrd id=${id:-none} test=${test:-none} count=$count"
+if mkdir -p "$efi/logs" && echo "$line" >> "$log"; then
+  mkdir -p "$rundir" && echo "$line" > "$rundir/guard-line" || say "cannot write $rundir/guard-line"
   tail -n 200 "$log" > "$log.tmp" && mv -f "$log.tmp" "$log"
 fi
 

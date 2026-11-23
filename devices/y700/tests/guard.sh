@@ -39,7 +39,7 @@ cmdline() { echo "root=PARTLABEL=microos rootwait ro init=/init $* microos.id=$i
 noid() { echo "root=PARTLABEL=microos $*" > "$tmp/cmdline"; }
 run_guard() {
   env MICROOS_CMDLINE="$tmp/cmdline" MICROOS_EFI_DIR="$efi" MICROOS_NVMEM_ROOT="$nv" MICROOS_INITRD_ID="$tmp/initrd-id" \
-    MICROOS_SLOT_CONF="${GUARD_CONF:-$tree/usr/lib/microos/slot.conf}" sh "$guard" 2> "$tmp/guard.err"
+    MICROOS_SLOT_CONF="${GUARD_CONF:-$tree/usr/lib/microos/slot.conf}" MICROOS_RUNDIR="$tmp/run" sh "$guard" 2> "$tmp/guard.err"
 }
 preset_of() { od -An -tx1 -j72 -N1 "$nv/$1/nvmem" | tr -d ' \n'; }
 nonzero() { tr -d '\0' < "$nv/$1/nvmem" | wc -c; }
@@ -64,7 +64,16 @@ for w in "" 1 noguard bootloader panic emergency wdhang gptdump; do
   fi
   [[ $(tail -n 1 "$efi/logs/guard.txt") == "initrd=7.2.12-microos 20261111T000000Z id=$id test=${w:-none} count="* ]] \
     || fail "guard $name log: $(tail -n 1 "$efi/logs/guard.txt")"
+  [[ $(cat "$tmp/run/guard-line" 2> /dev/null) == "$(tail -n 1 "$efi/logs/guard.txt")" ]] \
+    || fail "guard $name guard-line: $(cat "$tmp/run/guard-line" 2> /dev/null)"
 done
+
+reset
+cmdline
+mkdir -p "$efi/logs/guard.txt"
+run_guard || fail "guard with a failed append: exit $?: $(cat "$tmp/guard.err")"
+[[ ! -e $tmp/run/guard-line ]] || fail "guard-line written after a failed append: $(cat "$tmp/run/guard-line")"
+[[ $(attempts) == "$id 1" ]] || fail "failed append: count $(attempts)"
 
 reset
 cmdline
