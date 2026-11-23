@@ -10,7 +10,7 @@ mkdir -p /var/roothome
 dracut --no-hostonly --reproducible \
   -m "systemd systemd-initrd dracut-systemd base fs-lib rootfs-block udev-rules shutdown ostree microos-ostree-remap microos-y700-guard microos-y700-usbcon microos-selinux-label" \
   -o "kernel-modules bootc virtiofs lvm crypt fips tpm2-tss clevis clevis-pin-tpm2 nss-softokn" \
-  --drivers "btrfs nvmem-qcom-spmi-sdam" --compress "zstd -19" --force "$img" "$kver"
+  --drivers "btrfs nvmem-qcom-spmi-sdam" --compress "zstd --ultra -22" --force "$img" "$kver"
 
 want="base dracut-systemd fs-lib microos-ostree-remap microos-selinux-label microos-y700-guard microos-y700-usbcon ostree rootfs-block shutdown systemd \
 systemd-ask-password systemd-initrd systemd-journald systemd-modules-load systemd-sysctl systemd-sysusers systemd-tmpfiles \
