@@ -16,8 +16,8 @@ ROOT = "/net/seilent/MicroOs/Android"
 XML = f"""
 <node>
   <interface name="{NAME}">
-    <property name="Lepton" type="s" access="read"/>
-    <property name="LeptonBuild" type="s" access="read"/>
+    <property name="Image" type="s" access="read"/>
+    <property name="ImageSet" type="s" access="read"/>
     <property name="GooglePlay" type="s" access="read"/>
     <property name="GsfId" type="s" access="read"/>
     <property name="LastResult" type="s" access="read"/>
@@ -40,7 +40,7 @@ SETTLE_MS = int(os.environ.get("MICROOS_STATUS_SETTLE_MS") or 50)
 FOREGROUND_MS = int(os.environ.get("MICROOS_STATUS_FOREGROUND_MS") or 2000)
 LAUNCHER = "com.android.launcher3"
 RESUMED = re.compile(r"ResumedActivity: ActivityRecord\{\S+ u[0-9]+ ([A-Za-z0-9_.]+)/[A-Za-z0-9_.$]+")
-FIELDS = ("Lepton", "LeptonBuild", "GooglePlay", "GsfId", "LastResult", "LastReason", "Storage", "StorageCard")
+FIELDS = ("Image", "ImageSet", "GooglePlay", "GsfId", "LastResult", "LastReason", "Storage", "StorageCard")
 
 
 def log(message):
@@ -192,8 +192,8 @@ class Status:
         data = read_state()
         word, build = image_values()
         return {
-            "Lepton": word,
-            "LeptonBuild": build,
+            "Image": word,
+            "ImageSet": build,
             "GooglePlay": google_play(data, install_mark()),
             "GsfId": gsf_id(),
             "LastResult": text(data, "last", "result"),
