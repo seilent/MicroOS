@@ -1,0 +1,548 @@
+#!/usr/bin/python3
+import configparser
+import os
+import re
+import signal
+import sys
+
+import gbinder
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+ME = "microos-android-brightness"
+MICROSET = ("net.seilent.MicroSet", "/net/seilent/MicroSet", "net.seilent.MicroSet1")
+KEY = "display.brightness"
+NAME = "backlight"
+WAYDROID_CFG = os.environ.get("MICROOS_WAYDROID_CFG") or "/var/lib/waydroid/waydroid.cfg"
+BINDER_DIR = os.environ.get("MICROOS_BINDER_DIR") or "/dev"
+INTERFACE = "lineageos.waydroid.IPlatform"
+SERVICE = "waydroidplatform"
+PUT_INT = 11
+GET_INT = 12
+SYSTEM = 1
+DEAD_OBJECT = -32
+SETTING = "screen_brightness"
+SETTLE_MS = int(os.environ.get("MICROOS_BRIGHTNESS_SETTLE_MS") or 50)
+HOLD_MS = int(os.environ.get("MICROOS_BRIGHTNESS_HOLD_MS") or 2000)
+QUIET_MS = int(os.environ.get("MICROOS_BRIGHTNESS_QUIET_MS") or 300)
+CALL_MS = int(os.environ.get("MICROOS_BRIGHTNESS_CALL_MS") or 5000)
+RECHECK_MS = 1000
+ARM_MS = 1000
+GUEST_MAX = 255
+HOST_MAX = 10000
+LEVEL = re.compile(r"[0-9]+")
+
+
+def log(message):
+    print(f"{ME}: {message}", file=sys.stderr, flush=True)
+
+
+def home():
+    return os.environ.get("HOME") or os.path.expanduser("~")
+
+
+def backlight_dir():
+    return os.path.join(home(), ".local/share/microos-waydroid/waydroid/data/microos")
+
+
+def read(path):
+    try:
+        with open(path) as handle:
+            return handle.read().strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def host_points(level):
+    return min(HOST_MAX, max(1, (level * HOST_MAX + GUEST_MAX // 2) // GUEST_MAX))
+
+
+def guest_level(value):
+    return min(GUEST_MAX, max(1, (value * GUEST_MAX + HOST_MAX // 2) // HOST_MAX))
+
+
+def entry(value):
+    return GLib.Variant("(sv)", (KEY, GLib.Variant("u", value)))
+
+
+class PlatformError(Exception):
+    def __init__(self, text, dead=False):
+        super().__init__(text)
+        self.dead = dead
+
+
+class Platform:
+    def __init__(self, registered):
+        self.registered = registered
+        self.manager = None
+        self.device = None
+        self.client = None
+        self.stale = False
+        self.kept = []
+        self.worked = False
+        self.known = None
+        self.waiting = False
+
+    def get(self, key, done):
+        self.run(GET_INT, (key,), done)
+
+    def put(self, key, value, done):
+        self.run(PUT_INT, (key, value), done)
+
+    def fail(self, done, text, dead=False):
+        self.stale = True
+        self.worked = False
+        if self.known:
+            self.known = False
+        GLib.idle_add(done, PlatformError(text, dead), None)
+
+    def connect(self):
+        if self.manager is not None:
+            return self.manager
+        config = configparser.ConfigParser()
+        config.read(WAYDROID_CFG)
+        if not config.has_option("waydroid", "binder"):
+            raise PlatformError(f"no binder in {WAYDROID_CFG}")
+        section = config["waydroid"]
+        device = os.path.join(BINDER_DIR, section["binder"])
+        if not os.path.exists(device):
+            raise PlatformError(f"no {device}")
+        self.device = device
+        self.manager = gbinder.ServiceManager(device, section.get("service_manager_protocol"),
+                                              section.get("binder_protocol"))
+        self.manager.add_registration_handler(SERVICE, self.appeared)
+        return self.manager
+
+    def appeared(self, _name):
+        if self.known is None:
+            self.waiting = True
+            return
+        if self.known:
+            self.known = False
+            return
+        self.stale = True
+        self.registered()
+
+    def learn(self, found):
+        if self.known is not None:
+            return
+        self.known = found
+        if self.waiting:
+            self.waiting = False
+            self.appeared(None)
+
+    def run(self, code, values, done):
+        try:
+            manager = self.connect()
+        except PlatformError as error:
+            GLib.idle_add(done, error, None)
+            return
+        if self.client is not None and not self.stale:
+            self.transact(code, values, done)
+            return
+        if not manager.is_present():
+            self.learn(False)
+            self.fail(done, f"no service manager on {self.device}", self.worked)
+            return
+        over = False
+
+        def found(remote, status):
+            nonlocal over
+            if over:
+                return
+            over = True
+            GLib.source_remove(timer)
+            ok = not status and remote is not None and not remote.is_dead()
+            self.learn(ok)
+            if not ok:
+                self.fail(done, f"no {SERVICE} on {self.device}", self.worked)
+                return
+            self.client = gbinder.Client(remote, INTERFACE)
+            self.stale = False
+            self.transact(code, values, done)
+
+        def expire():
+            nonlocal over
+            over = True
+            manager.cancel(lookup)
+            self.learn(False)
+            self.fail(done, f"lookup of {SERVICE} timed out", self.worked)
+            return False
+
+        timer = GLib.timeout_add(CALL_MS, expire)
+        lookup = manager.get_service(SERVICE, found)
+        if not lookup:
+            GLib.source_remove(timer)
+            self.fail(done, f"lookup of {SERVICE} did not start", self.worked)
+
+    def transact(self, code, values, done):
+        client = self.client
+        request = client.new_request()
+        request.append_int32(SYSTEM)
+        request.append_string16(values[0])
+        for value in values[1:]:
+            request.append_int32(value)
+        over = False
+
+        def finish(error, value):
+            nonlocal over, timer
+            over = True
+            if timer:
+                GLib.source_remove(timer)
+                timer = 0
+            if error is not None:
+                self.fail(done, error.args[0], error.dead)
+            else:
+                self.worked = True
+                GLib.idle_add(done, None, value)
+
+        def replied(reply, status):
+            if over:
+                return
+            if status:
+                finish(PlatformError(f"transaction {code} returned {status}", status == DEAD_OBJECT), None)
+                return
+            reader = reply.init_reader()
+            ok, exception = reader.read_int32()
+            if not ok:
+                finish(PlatformError(f"transaction {code} returned a short reply"), None)
+            elif exception:
+                finish(PlatformError(f"transaction {code} threw exception {exception}"), None)
+            elif code == GET_INT:
+                ok, value = reader.read_int32()
+                finish(None if ok else PlatformError(f"transaction {code} returned no value"), value)
+            else:
+                finish(None, None)
+
+        def released():
+            self.kept.remove(client)
+
+        def expire():
+            nonlocal timer
+            timer = 0
+            client.cancel(ident)
+            finish(PlatformError(f"transaction {code} timed out"), None)
+            return False
+
+        self.kept.append(client)
+        timer = GLib.timeout_add(CALL_MS, expire)
+        ident = client.transact(code, 0, request, replied, released)
+        if not ident:
+            self.kept.remove(client)
+            finish(PlatformError(f"transaction {code} did not start", True), None)
+
+
+class Bridge:
+    def __init__(self, loop, bus):
+        self.loop = loop
+        self.bus = bus
+        self.platform = Platform(self.registered)
+        self.directory = backlight_dir()
+        self.path = os.path.join(self.directory, NAME)
+        self.monitor = None
+        self.unwatchable = None
+        self.reading = 0
+        self.quiet = 0
+        self.calling = None
+        self.asking = False
+        self.fresh = False
+        self.ready = False
+        self.seen = False
+        self.dropped = False
+        self.parked = False
+        self.down = False
+        self.gone = False
+        self.dirty = False
+        self.stored = None
+        self.override = None
+        self.foreign = None
+        self.held = None
+        self.hold = 0
+
+    def start(self):
+        if self.arm(True):
+            GLib.timeout_add(ARM_MS, self.arm)
+        self.bus.signal_subscribe(
+            MICROSET[0], MICROSET[2], "Changed", MICROSET[1], KEY, Gio.DBusSignalFlags.NONE, self.changed)
+        Gio.bus_watch_name_on_connection(self.bus, MICROSET[0], Gio.BusNameWatcherFlags.NONE, self.appeared,
+                                         self.vanished)
+
+    def arm(self, first=False):
+        if not os.path.isdir(self.directory):
+            return True
+        try:
+            monitor = Gio.File.new_for_path(self.directory).monitor_directory(Gio.FileMonitorFlags.WATCH_MOVES, None)
+        except GLib.Error as error:
+            if error.message != self.unwatchable:
+                log(f"cannot watch {self.directory}: {error.message}")
+            self.unwatchable = error.message
+            return True
+        self.unwatchable = None
+        self.monitor = monitor
+        monitor.connect("changed", self.event)
+        if not first:
+            self.settle()
+        return False
+
+    def event(self, monitor, one, other, kind):
+        if kind == Gio.FileMonitorEvent.DELETED and one.get_path() == self.directory:
+            monitor.cancel()
+            self.monitor = None
+            GLib.timeout_add(ARM_MS, self.arm)
+            return
+        if one.get_basename() == NAME or (other is not None and other.get_basename() == NAME):
+            self.settle()
+
+    def settle(self):
+        if not self.reading:
+            self.reading = GLib.timeout_add(SETTLE_MS, self.settled)
+
+    def settled(self):
+        self.reading = 0
+        self.guest_moved()
+        return False
+
+    def hal(self, report=False):
+        text = read(self.path)
+        if not text:
+            return None
+        level = int(text) if LEVEL.fullmatch(text) else -1
+        if level == 0:
+            return None
+        if not 1 <= level <= GUEST_MAX:
+            if report:
+                log(f"guest level {text!r} in {self.path} is not 1..{GUEST_MAX}, ignored")
+            return None
+        return level
+
+    def guest_moved(self):
+        level = self.hal(True)
+        if level is None:
+            return
+        if not self.ready:
+            if not self.dropped:
+                log(f"guest level {level} dropped: {MICROSET[0]} is not on the bus")
+            self.dropped = True
+            return
+        self.parked = False
+        self.recheck(QUIET_MS)
+        if self.held is None:
+            self.dirty = True
+        elif level == self.held:
+            self.end_hold()
+        self.step()
+
+    def recheck(self, delay):
+        if self.quiet:
+            GLib.source_remove(self.quiet)
+        self.quiet = GLib.timeout_add(delay, self.quieted)
+
+    def quieted(self):
+        self.quiet = 0
+        if self.override is not None:
+            self.dirty = True
+            self.step()
+            self.quiet = GLib.timeout_add(RECHECK_MS, self.quieted)
+        return False
+
+    def step(self):
+        if self.calling:
+            return
+        if self.fresh:
+            self.fresh = False
+            self.call("Get", GLib.Variant("(s)", (KEY,)), self.got)
+            return
+        if self.gone:
+            self.gone = False
+            if self.ready and self.override is not None:
+                self.clear("the guest is gone,")
+                return
+        if self.asking or not self.ready or self.parked or self.held is not None:
+            return
+        if self.foreign is not None:
+            self.push()
+        elif self.dirty:
+            self.dirty = False
+            self.ask(f"settingsGetInt {SETTING}", self.platform.get, (SETTING,), self.decide)
+
+    def call(self, method, args, then, failed=None):
+        self.calling = method
+
+        def done(bus, result):
+            self.calling = None
+            try:
+                reply = bus.call_finish(result)
+            except GLib.Error as error:
+                log(f"{method} {KEY} failed: {error.message}")
+                if failed is not None:
+                    failed()
+            else:
+                then(reply)
+            self.step()
+
+        self.bus.call(*MICROSET, method, args, None, Gio.DBusCallFlags.NONE, CALL_MS, None, done)
+
+    def ask(self, what, call, args, then):
+        self.asking = True
+
+        def done(error, value):
+            self.asking = False
+            if error is not None:
+                if not self.down:
+                    log(f"IPlatform {what} failed: {error}")
+                    self.gone = error.dead and self.override is not None
+                self.down = True
+                self.parked = True
+            else:
+                if self.down:
+                    log("IPlatform answers again")
+                self.down = False
+                then(value)
+            self.step()
+
+        call(*args, done)
+
+    def decide(self, user):
+        if self.calling or not self.ready:
+            self.dirty = True
+            return
+        level = self.hal()
+        if level is None:
+            return
+        if level != user:
+            value = host_points(level)
+            if value != self.override:
+                self.call("Override", entry(value), lambda _reply: self.overridden(level, value))
+            return
+        if guest_level(self.stored) == user:
+            self.clear(f"guest level {level}")
+            return
+        value = host_points(user)
+        self.call("Set", entry(value), lambda _reply: self.was_set(level, value),
+                  lambda: self.clear(f"guest level {level}"))
+
+    def was_set(self, level, value):
+        self.stored = value
+        log(f"guest level {level} set {KEY} {value}")
+        self.clear(f"guest level {level}")
+
+    def clear(self, who):
+        if self.override is not None:
+            self.call("ClearOverride", GLib.Variant("(s)", (KEY,)), lambda _reply: self.cleared(who))
+
+    def cleared(self, who):
+        self.override = None
+        log(f"{who} cleared the {KEY} override")
+
+    def overridden(self, level, value):
+        self.override = value
+        if not self.quiet:
+            self.recheck(RECHECK_MS)
+        log(f"guest level {level} overrides {KEY} with {value}")
+
+    def appeared(self, _bus, _name, _owner):
+        self.fresh = True
+        self.step()
+
+    def vanished(self, _bus, name):
+        self.ready = False
+        self.fresh = False
+        self.dropped = False
+        log(f"{name} is not on the bus")
+
+    def got(self, reply):
+        value = reply.unpack()[0]
+        self.call("Stored", GLib.Variant("(s)", (KEY,)), lambda stored: self.started(value, stored))
+
+    def started(self, value, reply):
+        self.stored = reply.unpack()[0].get(KEY, value)
+        self.ready = True
+        self.parked = False
+        self.foreign = self.stored
+        if self.seen:
+            self.dirty = True
+        self.seen = True
+        if self.override is not None:
+            held = self.override
+            self.call("Override", entry(held), lambda _reply: self.applied(held))
+
+    def applied(self, value):
+        if not self.quiet:
+            self.recheck(RECHECK_MS)
+        log(f"{KEY} override {value} applied again")
+
+    def changed(self, _bus, _sender, _path, _iface, _signal, params):
+        value = params.unpack()[1]
+        if not self.ready or value == self.override:
+            return
+        if self.calling in ("Set", "Override") or (self.calling == "ClearOverride" and value == self.stored):
+            return
+        self.stored = value
+        self.foreign = value
+        self.parked = False
+        self.step()
+
+    def registered(self):
+        self.parked = False
+        if self.ready and self.foreign is None:
+            self.foreign = self.stored
+        self.step()
+
+    def push(self):
+        value = self.foreign
+        self.ask(f"settingsGetInt {SETTING}", self.platform.get, (SETTING,), lambda user: self.pushing(value, user))
+
+    def pushing(self, value, user):
+        level = guest_level(value)
+        if self.foreign != value:
+            return
+        if level == user:
+            self.foreign = None
+            return
+        self.ask(f"settingsPutInt {SETTING} {level}", self.platform.put, (SETTING, level),
+                 lambda _none: self.pushed(value, level))
+
+    def pushed(self, value, level):
+        log(f"{KEY} {value} put {SETTING} {level}")
+        if self.foreign == value:
+            self.foreign = None
+        self.held = level
+        self.hold = GLib.timeout_add(HOLD_MS, self.hold_done)
+
+    def end_hold(self):
+        GLib.source_remove(self.hold)
+        self.hold = 0
+        self.held = None
+        self.dirty = True
+
+    def hold_done(self):
+        self.hold = 0
+        self.held = None
+        self.dirty = True
+        self.step()
+        return False
+
+    def quit(self):
+        self.loop.quit()
+        return GLib.SOURCE_REMOVE
+
+
+def main():
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    except GLib.Error as error:
+        log(f"no system bus: {error.message}")
+        return 1
+    loop = GLib.MainLoop()
+    bridge = Bridge(loop, bus)
+    for number in (signal.SIGTERM, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, number, bridge.quit)
+    bridge.start()
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

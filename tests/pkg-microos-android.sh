@@ -27,7 +27,7 @@ if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$source
 
 requires=$(rpm -qp --requires "$rpm" | awk '{ print $1 }')
 need=(microos-android-guestos podman passt catatonit android-tools which attr btrfs-progs curl unzip python3 python3-gobject gtk3 rsync procps-ng
-  inotify-tools xprop)
+  inotify-tools xprop python3-gbinder)
 for r in "${need[@]}"; do
   if ! grep -qx "$r" <<<"$requires"; then fail "does not require $r"; fi
 done
@@ -55,6 +55,7 @@ for f in \
   /usr/lib/systemd/user/microos-android-gapps-setup.service \
   /usr/lib/systemd/user/microos-android-status.service \
   /usr/lib/systemd/user/microos-android-battery.service \
+  /usr/lib/systemd/user/microos-android-brightness.service \
   /usr/libexec/microos/microos-android-check \
   /usr/libexec/microos/microos-android-install \
   /usr/libexec/microos/microos-android-client \
@@ -63,6 +64,7 @@ for f in \
   /usr/libexec/microos/microos-android-perf \
   /usr/libexec/microos/microos-android-status \
   /usr/libexec/microos/microos-android-battery \
+  /usr/libexec/microos/microos-android-brightness \
   /usr/libexec/microos/microos-lepton-prepare \
   /usr/libexec/microos/microos-gamescope-plain \
   /usr/libexec/microos/microos-lepton-lib.sh \

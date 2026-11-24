@@ -1,0 +1,9 @@
+[Unit]
+Description=Mirror the Android guest brightness with the host backlight
+PartOf=microos-android.service
+After=microos-android.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/microos/microos-android-brightness
+TimeoutStopSec=5

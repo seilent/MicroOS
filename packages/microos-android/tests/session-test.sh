@@ -76,8 +76,8 @@ got=$(MICROOS_GAMESCOPE="${T}/gamescope" MICROOS_DISPLAY_FILE="${T}/absent-displ
     && ! -e "${units}/microos-android-pad.service" ]] || fail "the package ships the PM2 pad target units"
 
 for u in microos-android.service microos-lepton-prepare.service microos-android-gapps-setup.service \
-    microos-android-status.service microos-android-battery.service microos-android-gapps.service \
-    "${pm2_units}/microos-android-pad.service"; do
+    microos-android-status.service microos-android-battery.service microos-android-brightness.service \
+    microos-android-gapps.service "${pm2_units}/microos-android-pad.service"; do
     [[ "${u}" == /* ]] || u="${units}/${u}"
     [[ -f "${u}" ]] || { fail "${u##*/} missing"; continue; }
     grep -qx '\[Unit\]' "${u}" || fail "${u##*/} has no [Unit]"
@@ -105,6 +105,13 @@ grep -qx 'BindsTo=microos-android.service' "${battery}" || fail "battery BindsTo
 grep -qx 'After=microos-android.service' "${battery}" || fail "battery After"
 grep -qx 'ExecStart=/usr/libexec/microos/microos-android-battery' "${battery}" || fail "battery ExecStart"
 grep -q '^WantedBy=' "${battery}" && fail "the battery mirror is enabled"
+brightness="${units}/microos-android-brightness.service"
+grep -qx 'PartOf=microos-android.service' "${brightness}" || fail "brightness PartOf"
+grep -qx 'After=microos-android.service' "${brightness}" || fail "brightness After"
+grep -q '^BindsTo=' "${brightness}" && fail "the brightness bridge is bound"
+grep -qx 'TimeoutStopSec=5' "${brightness}" || fail "brightness TimeoutStopSec"
+grep -qx 'ExecStart=/usr/libexec/microos/microos-android-brightness' "${brightness}" || fail "brightness ExecStart"
+grep -q '^WantedBy=' "${brightness}" && fail "the brightness bridge is enabled"
 gapps="${units}/microos-android-gapps.service"
 grep -qx 'Type=oneshot' "${gapps}" || fail "gapps Type"
 grep -qx 'ExecStart=/usr/bin/microos-android gapps install' "${gapps}" || fail "gapps ExecStart"
