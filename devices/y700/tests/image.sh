@@ -167,6 +167,8 @@ kept=(
   /usr/lib/systemd/system-preset/50-microos.preset
   /usr/lib/systemd/system-preset/60-microos-microset.preset
   /usr/lib/systemd/system-preset/60-microos-steam.preset
+  /usr/lib/systemd/system-preset/60-microos-waydroid.preset
+  /usr/lib/systemd/system/dev-binderfs.mount
   /usr/lib/systemd/system/emergency.service.d/10-microos.conf
   /usr/lib/systemd/system/microos-adsp-sensors.service
   /usr/lib/systemd/system/microos-bdaddr@.service
@@ -390,6 +392,8 @@ done
   fail "/usr/share/waydroid-extra/images is not the link to /var/lib/microos-android/images/current"
 [[ $(< /usr/lib/tmpfiles.d/microos-waydroid.conf) == $'d /var/cache/lxc 0755 root root -\nd /var/lib/lxc 0755 root root -\nd /var/lib/lxcfs 0755 root root -\nd /var/lib/waydroid 0755 root root -' ]] \
   || fail "tmpfiles microos-waydroid.conf"
+[[ $(systemctl is-enabled dev-binderfs.mount) == enabled ]] || fail "dev-binderfs.mount is not enabled"
+grep -qx 'Type=binder' /usr/lib/systemd/system/dev-binderfs.mount || fail "dev-binderfs.mount is not a binder mount"
 [[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
 [[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
   fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"

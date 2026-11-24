@@ -1,2 +1,3 @@
 (filecon "/run/microos/sddm-autologin\.conf" file (system_u object_r xdm_var_run_t ((s0) (s0))))
 (filecon "/var/lib/microos-android/images(/.*)?" any (system_u object_r waydroid_data_t ((s0) (s0))))
+(allow waydroid_t binderfs_t (dir (getattr open read search)))
