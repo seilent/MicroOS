@@ -370,14 +370,25 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "microos-powerkey 50-microos-microset.conf"
 [[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\ngamepads=joystick\nnavbar=1\nadb=remote\nubwc=0' ]] ||
   fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
-product=/usr/share/guestos/android/system/product
-for f in overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk overlay/NavigationBarMode3Button/NavigationBarMode3ButtonOverlay.apk \
-  overlay/NavigationBarNoHintSystemUI/NavigationBarNoHintSystemUIOverlay.apk \
-  app/LineagePartsStub/LineagePartsStub.apk; do
-  [[ -f $product/$f && ! -L $product/$f ]] || fail "$product/$f missing"
-  [[ $(rpm -qf --qf '%{NAME}' "$product/$f" 2>/dev/null) == microos-android-guest-apks ]] || fail "$product/$f is not microos-android-guest-apks's"
-done
-[[ $(find /usr/share/guestos/android/system -type f | wc -l) == 4 ]] || fail "/usr/share/guestos/android/system holds more than the four guest APKs"
+guestfiles=/usr/share/microos-android/overlay
+guestlist=/usr/share/microos-android/overlay.manifest
+[[ $(rpm -qf --qf '%{NAME}' "$guestlist" 2>/dev/null) == microos-android-guest-apks ]] ||
+  fail "$guestlist is not microos-android-guest-apks's"
+guestset=$(printf '%s\n' '0755 system/bin/hw/android.hardware.lights-service.microos' \
+  '0644 system/etc/init/android.hardware.lights-service.microos.rc' \
+  '0644 system/etc/vintf/manifest/android.hardware.lights-service.microos.xml')
+[[ $(cut -d' ' -f2- "$guestlist") == "$guestset" ]] || fail "$guestlist does not list the lights HAL"
+while read -r sum mode path; do
+  [[ -f $guestfiles/$path && ! -L $guestfiles/$path ]] || fail "$guestfiles/$path missing"
+  [[ $(rpm -qf --qf '%{NAME}' "$guestfiles/$path" 2>/dev/null) == microos-android-guest-apks ]] ||
+    fail "$guestfiles/$path is not microos-android-guest-apks's"
+  [[ $(sha256sum < "$guestfiles/$path") == "$sum  -" && $(stat -c %04a "$guestfiles/$path") == "$mode" ]] ||
+    fail "$guestfiles/$path does not match $guestlist"
+done < "$guestlist"
+[[ $(find "$guestfiles" -type f | wc -l) == $(wc -l < "$guestlist") ]] ||
+  fail "$guestfiles holds files $guestlist does not list"
+[[ ! -e /usr/share/guestos/android/system ]] ||
+  fail "/usr/share/guestos/android/system is in the image, Lepton's guest APKs are gone"
 for c in flock adb lxc-info pw-cli pw-dump; do
   command -v "$c" >/dev/null || fail "$c is not on PATH, the Android session needs it"
 done
