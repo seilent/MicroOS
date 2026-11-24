@@ -294,6 +294,7 @@ kept=(
   /usr/libexec/microos/microos-remoteproc
   /usr/libexec/microos/microos-android-guard
   /usr/libexec/microos/microos-android-images
+  /usr/libexec/microos/microos-android-overlay
   /usr/libexec/microos/prepare-root
   /usr/share/microos/avb/testkey_rsa4096.pem
   /usr/share/microos/keys/microos-backup.pub
@@ -370,14 +371,25 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "microos-powerkey 50-microos-microset.conf"
 [[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\ngamepads=joystick\nnavbar=1\nadb=remote\nubwc=0' ]] ||
   fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
-product=/usr/share/guestos/android/system/product
-for f in overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk overlay/NavigationBarMode3Button/NavigationBarMode3ButtonOverlay.apk \
-  overlay/NavigationBarNoHintSystemUI/NavigationBarNoHintSystemUIOverlay.apk \
-  app/LineagePartsStub/LineagePartsStub.apk; do
-  [[ -f $product/$f && ! -L $product/$f ]] || fail "$product/$f missing"
-  [[ $(rpm -qf --qf '%{NAME}' "$product/$f" 2>/dev/null) == microos-android-guest-apks ]] || fail "$product/$f is not microos-android-guest-apks's"
-done
-[[ $(find /usr/share/guestos/android/system -type f | wc -l) == 4 ]] || fail "/usr/share/guestos/android/system holds more than the four guest APKs"
+guestfiles=/usr/share/microos-android/overlay
+guestlist=/usr/share/microos-android/overlay.manifest
+[[ $(rpm -qf --qf '%{NAME}' "$guestlist" 2>/dev/null) == microos-android-guest-apks ]] ||
+  fail "$guestlist is not microos-android-guest-apks's"
+guestset=$(printf '%s\n' '0755 system/bin/hw/android.hardware.lights-service.microos' \
+  '0644 system/etc/init/android.hardware.lights-service.microos.rc' \
+  '0644 system/etc/vintf/manifest/android.hardware.lights-service.microos.xml')
+[[ $(cut -d' ' -f2- "$guestlist") == "$guestset" ]] || fail "$guestlist does not list the lights HAL"
+while read -r sum mode path; do
+  [[ -f $guestfiles/$path && ! -L $guestfiles/$path ]] || fail "$guestfiles/$path missing"
+  [[ $(rpm -qf --qf '%{NAME}' "$guestfiles/$path" 2>/dev/null) == microos-android-guest-apks ]] ||
+    fail "$guestfiles/$path is not microos-android-guest-apks's"
+  [[ $(sha256sum < "$guestfiles/$path") == "$sum  -" && $(stat -c %04a "$guestfiles/$path") == "$mode" ]] ||
+    fail "$guestfiles/$path does not match $guestlist"
+done < "$guestlist"
+[[ $(find "$guestfiles" -type f | wc -l) == $(wc -l < "$guestlist") ]] ||
+  fail "$guestfiles holds files $guestlist does not list"
+[[ ! -e /usr/share/guestos/android/system ]] ||
+  fail "/usr/share/guestos/android/system is in the image, Lepton's guest APKs are gone"
 for c in flock adb lxc-info pw-cli pw-dump; do
   command -v "$c" >/dev/null || fail "$c is not on PATH, the Android session needs it"
 done
@@ -406,9 +418,22 @@ grep -qx 'Type=binder' /usr/lib/systemd/system/dev-binderfs.mount || fail "dev-b
 wcb=/usr/lib/waydroid/data/configs/config_base
 [[ $(sha256sum < "$wcb") == 'e42a696066defbcd5fd12528404cb2342b3bcc27ff337a1e94c7565fd35cf31b  -' ]] ||
   fail "$wcb is not waydroid-1.6.3-1.fc44's file plus allow a, the block deny and the c 1:1 and c 1:4 denies"
-[[ $(< /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf) == $'[Unit]\nBefore=systemd-user-sessions.service\n\n[Service]\nExecStartPre=/usr/libexec/microos/microos-android-guard' ]] \
-  || fail "waydroid-container.service.d/10-microos.conf"
+dropin=$(printf '%s\n' '[Unit]' 'Before=systemd-user-sessions.service' '' '[Service]' \
+  'ExecStartPre=/usr/libexec/microos/microos-android-guard' 'ExecStartPre=/usr/libexec/microos/microos-android-overlay')
+[[ $(< /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf) == "$dropin" ]] ||
+  fail "waydroid-container.service.d/10-microos.conf"
 [[ $(stat -c %a /usr/libexec/microos/microos-android-guard) == 755 ]] || fail "microos-android-guard is not 755"
+[[ $(stat -c %a /usr/libexec/microos/microos-android-overlay) == 755 ]] || fail "microos-android-overlay is not 755"
+mkdir "$tmp/overlay"
+out=$(MICROOS_WAYDROID_OVERLAY=$tmp/overlay MICROOS_ANDROID_OVERLAY_STATE=$tmp/overlay.manifest \
+  /usr/libexec/microos/microos-android-overlay) || fail "microos-android-overlay exited $? on an empty overlay"
+[[ $out == "microos-android-overlay: $(wc -l < "$guestlist") files, $(wc -l < "$guestlist") copied, 0 removed" ]] ||
+  fail "microos-android-overlay printed: $out"
+cmp -s "$guestlist" "$tmp/overlay.manifest" || fail "microos-android-overlay did not record $guestlist"
+while read -r _ mode path; do
+  cmp -s "$guestfiles/$path" "$tmp/overlay/$path" && [[ $(stat -c %04a "$tmp/overlay/$path") == "$mode" ]] ||
+    fail "microos-android-overlay did not place $path"
+done < "$guestlist"
 command -v nft >/dev/null || fail "nft missing, the Waydroid bridge and its forward policy need it"
 [[ $(< /usr/share/microos/waydroid-forward.nft) == $'destroy table inet microos_waydroid\ntable inet microos_waydroid {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t\tiifname "waydroid0" oifname "wl*" accept\n\t\tiifname "wl*" oifname "waydroid0" ct state established,related accept\n\t}\n}' ]] \
   || fail "waydroid-forward.nft is not the drop policy with waydroid0 to Wi-Fi only"

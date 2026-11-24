@@ -1,61 +1,66 @@
+%{!?ndk:%{error:ndk is not defined}}
+%{!?android_api:%{error:android_api is not defined}}
 %global debug_package %{nil}
-%global guestos %{_datadir}/guestos/android
+%global __os_install_post %{nil}
+%global _build_id_links none
+%undefine _auto_set_build_flags
+%global ndkbin %{ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin
+%global overlay %{_datadir}/microos-android/overlay
+%global hal android.hardware.lights-service.microos
 
 Name:           microos-android-guest-apks
-Version:        11.0.0_r46
-Release:        2%{?dist}.microos
-Summary:        Navigation bar overlays and a LineageParts catalog for Lepton's Android guests
-License:        Apache-2.0 AND GPL-2.0-or-later
+Version:        1
+Release:        1%{?dist}.microos
+Summary:        The lights HAL of the Waydroid guest, as Waydroid overlay files
+License:        GPL-2.0-or-later
 URL:            https://github.com/seilent/MicroOS
-Source0:        microos-android-guest-apks-built.tar.gz
-Source1:        microos-android-guest-apks-overlays.tar.gz
-Source2:        microos-android-guest-apks-lineageparts.tar.gz
-Source3:        NOTICE
+Source0:        overlay.manifest
+Source1:        service.c
+Source2:        %{hal}.rc
+Source3:        %{hal}.xml
 Source4:        build.sh
-Source5:        fetch.sh
-Source6:        SOURCE.env
-Source7:        microos-android-guest-apks-nohint.tar.gz
+Source5:        SOURCE.env
 Vendor:         MicroOS
-BuildArch:      noarch
-BuildRequires:  unzip
+ExclusiveArch:  aarch64
+AutoReqProv:    no
 
 %description
-The gestural and 3 button navigation bar mode overlays of AOSP frameworks/base
-android-%{version} in %{guestos}/system/product/overlay, the gestural one with
-the 0 size navigation bar of Lineage's navigation hint switch, a SystemUI
-overlay there whose gesture layout has no handle, and an
-org.lineageos.lineageparts package with no code that holds only a parts catalog
-of the keys Lineage Settings names, in %{guestos}/system/product/app. All are
-signed with the AOSP test key. Steam's Lepton binds every file under %{guestos}
-into its Android guests.
+An AIDL ILights V1 service for the Waydroid guest that writes the backlight
+level the guest sets to /data/microos/backlight, its init service and its VINTF
+manifest fragment, built with the Android NDK for API %{android_api}. They sit
+at their Waydroid overlay paths under %{overlay}, and
+overlay.manifest next to it lists each with its sha256 and mode.
+microos-android-overlay copies them into the Waydroid overlay before the
+container starts.
 
 %prep
 %setup -q -c -T
 
+%build
+cc=%{ndkbin}/aarch64-linux-android%{android_api}-clang
+sysroot=%{ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/%{android_api}
+{
+  %{ndkbin}/llvm-nm -D --defined-only --format=just-symbols "$sysroot/libbinder_ndk.so" | sed 's/@.*//'
+  printf '%s\n' AServiceManager_addService ABinderProcess_setThreadPoolMaxThreadCount ABinderProcess_joinThreadPool
+} | sed 's/.*/void &(void) {}/' > binder_ndk.c
+"$cc" -shared -nostdlib -Wl,-soname,libbinder_ndk.so -o libbinder_ndk.so binder_ndk.c
+"$cc" -std=c17 -O2 -Wall -Wextra -Werror -o %{hal} %{SOURCE1} libbinder_ndk.so -llog
+%{ndkbin}/llvm-strip %{hal}
+
 %install
-install -d %{buildroot}%{guestos}
-tar -xzf %{SOURCE0} -C %{buildroot}%{guestos}
-install -Dpm644 %{SOURCE3} %{buildroot}%{_licensedir}/%{name}/NOTICE
+install -Dpm644 %{SOURCE0} %{buildroot}%{_datadir}/microos-android/overlay.manifest
+install -Dm755 %{hal} %{buildroot}%{overlay}/system/bin/hw/%{hal}
+install -Dpm644 %{SOURCE2} %{buildroot}%{overlay}/system/etc/init/%{hal}.rc
+install -Dpm644 %{SOURCE3} %{buildroot}%{overlay}/system/etc/vintf/manifest/%{hal}.xml
 
 %check
-product=%{buildroot}%{guestos}/system/product
-for apk in overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk \
-  overlay/NavigationBarMode3Button/NavigationBarMode3ButtonOverlay.apk \
-  overlay/NavigationBarNoHintSystemUI/NavigationBarNoHintSystemUIOverlay.apk; do
-  test "$(stat -c %a "$product/$apk")" = 644
-  test "$(unzip -Z1 "$product/$apk" | sort | paste -sd' ')" = 'AndroidManifest.xml resources.arsc'
-done
-stub=$product/app/LineagePartsStub/LineagePartsStub.apk
-test "$(stat -c %a "$stub")" = 644
-test "$(unzip -Z1 "$stub" | sort | paste -sd' ')" = 'AndroidManifest.xml res/xml/parts_catalog.xml resources.arsc'
-test "$(find %{buildroot}%{guestos} -type f | wc -l)" = 4
+while read -r sum mode path; do
+  echo "$sum  %{buildroot}%{overlay}/$path" | sha256sum -c -
+  test "$(stat -c %04a "%{buildroot}%{overlay}/$path")" = "$mode"
+done < %{SOURCE0}
+test "$(find %{buildroot}%{overlay} -type f | wc -l)" = "$(wc -l < %{SOURCE0})"
 
 %files
-%dir %{_licensedir}/%{name}
-%license %{_licensedir}/%{name}/NOTICE
-%dir %{_datadir}/guestos
-%dir %{guestos}
-%dir %{guestos}/system
-%dir %{guestos}/system/product
-%{guestos}/system/product/overlay/
-%{guestos}/system/product/app/
+%dir %{_datadir}/microos-android
+%{_datadir}/microos-android/overlay.manifest
+%{overlay}/
