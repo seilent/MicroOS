@@ -71,7 +71,8 @@ want=$(printf '%s\n' microos-boot-ok.service microos-provision.service microos-u
   microos-session-up@.service microos-session-fallback@.service microos-session-switcher.service \
   microos-session-switcher.path microos-session-boot.service microos-session-watch.service microos-session-attempt.service \
   microos-waydroid-forward.service microos-android-images.service \
-  microos-selinux-watch.service microos-android-adb.socket microos-android-adb.service "${tests[@]}")
+  microos-selinux-watch.service microos-android-adb.socket microos-android-adb.service microos-android-gapps@.service \
+  microos-android-gsf.service microos-android-layer.service microos-android-reset.service "${tests[@]}")
 units=()
 for u in /usr/lib/systemd/system/microos-*; do
   [[ -f $u ]] && units+=("$u")
