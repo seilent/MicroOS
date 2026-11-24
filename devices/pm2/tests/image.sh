@@ -721,6 +721,12 @@ wcb=/usr/lib/waydroid/data/configs/config_base
 [[ $(< /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf) == $'[Unit]\nBefore=systemd-user-sessions.service\n\n[Service]\nExecStartPre=/usr/libexec/microos/microos-android-guard' ]] \
   || fail "waydroid-container.service.d/10-microos.conf"
 [[ $(stat -c %a /usr/libexec/microos/microos-android-guard) == 755 ]] || fail "microos-android-guard is not 755"
+command -v nft >/dev/null || fail "nft missing, the Waydroid bridge and its forward policy need it"
+[[ $(< /usr/share/microos/waydroid-forward.nft) == $'destroy table inet microos_waydroid\ntable inet microos_waydroid {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t\tiifname "waydroid0" oifname "wl*" accept\n\t\tiifname "wl*" oifname "waydroid0" ct state established,related accept\n\t}\n}' ]] \
+  || fail "waydroid-forward.nft is not the drop policy with waydroid0 to Wi-Fi only"
+[[ $(systemctl is-enabled microos-waydroid-forward.service) == enabled ]] || fail "microos-waydroid-forward.service is not enabled"
+systemctl cat microos-waydroid-forward.service | grep -qx 'ExecStart=/usr/sbin/nft -f /usr/share/microos/waydroid-forward.nft' ||
+  fail "microos-waydroid-forward.service does not load waydroid-forward.nft"
 systemctl --global cat gamescope-session-plus@android.service | grep -qxF Wants=microos-android-pad.service \
   || fail "gamescope-session-plus@android.service does not want microos-android-pad.service"
 

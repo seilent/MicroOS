@@ -1,0 +1,8 @@
+destroy table inet microos_waydroid
+table inet microos_waydroid {
+	chain forward {
+		type filter hook forward priority filter; policy drop;
+		iifname "waydroid0" oifname "wl*" accept
+		iifname "wl*" oifname "waydroid0" ct state established,related accept
+	}
+}
