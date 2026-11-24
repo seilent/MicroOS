@@ -1,0 +1,6 @@
+[Unit]
+Description=Remote adb to the Waydroid guest
+PartOf=waydroid-container.service
+
+[Socket]
+ListenStream=5555

@@ -71,7 +71,7 @@ want=$(printf '%s\n' microos-boot-ok.service microos-provision.service microos-u
   microos-session-up@.service microos-session-fallback@.service microos-session-switcher.service \
   microos-session-switcher.path microos-session-boot.service microos-session-watch.service microos-session-attempt.service \
   microos-waydroid-forward.service microos-android-images.service \
-  microos-selinux-watch.service "${tests[@]}")
+  microos-selinux-watch.service microos-android-adb.socket microos-android-adb.service "${tests[@]}")
 units=()
 for u in /usr/lib/systemd/system/microos-*; do
   [[ -f $u ]] && units+=("$u")
@@ -172,7 +172,10 @@ kept=(
   /usr/lib/systemd/system/dev-binderfs.mount
   /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf
   /usr/lib/systemd/system/waydroid-container.service.d/20-microos-selinux-watch.conf
+  /usr/lib/systemd/system/waydroid-container.service.d/30-microos-android-adb.conf
   /usr/lib/systemd/system/emergency.service.d/10-microos.conf
+  /usr/lib/systemd/system/microos-android-adb.service
+  /usr/lib/systemd/system/microos-android-adb.socket
   /usr/lib/systemd/system/microos-android-images.service
   /usr/lib/systemd/system/microos-adsp-sensors.service
   /usr/lib/systemd/system/microos-bdaddr@.service
@@ -444,6 +447,16 @@ done
 [[ $(systemctl is-enabled microos-selinux-watch.service) == static ]] || fail "microos-selinux-watch.service is not static, the container starts it"
 [[ $(< /usr/lib/systemd/system/waydroid-container.service.d/20-microos-selinux-watch.conf) == $'[Unit]\nBindsTo=microos-selinux-watch.service\nAfter=microos-selinux-watch.service' ]] \
   || fail "waydroid-container.service.d/20-microos-selinux-watch.conf"
+[[ $(< /usr/lib/systemd/system/microos-android-adb.socket) == $'[Unit]\nDescription=Remote adb to the Waydroid guest\nPartOf=waydroid-container.service\n\n[Socket]\nListenStream=5555' ]] \
+  || fail "microos-android-adb.socket"
+[[ $(< /usr/lib/systemd/system/microos-android-adb.service) == $'[Unit]\nDescription=Remote adb to the Waydroid guest\nRequires=microos-android-adb.socket\nAfter=microos-android-adb.socket\n\n[Service]\nExecStart=/usr/lib/systemd/systemd-socket-proxyd 192.168.240.112:5555\nDynamicUser=yes' ]] \
+  || fail "microos-android-adb.service is not the proxy to the guest's adbd"
+[[ $(< /usr/lib/systemd/system/waydroid-container.service.d/30-microos-android-adb.conf) == $'[Unit]\nWants=microos-android-adb.socket' ]] \
+  || fail "waydroid-container.service.d/30-microos-android-adb.conf"
+[[ $(systemctl is-enabled microos-android-adb.socket) == static ]] || fail "microos-android-adb.socket is not static, the container starts it"
+[[ -x /usr/lib/systemd/systemd-socket-proxyd ]] || fail "systemd-socket-proxyd missing, remote adb needs it"
+grep -qxF '(allow systemd_socket_proxyd_t unreserved_port_t (tcp_socket (name_connect)))' /usr/share/selinux/packages/microos.cil \
+  || fail "microos.cil does not let systemd-socket-proxyd reach the guest's adb port"
 [[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
 [[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
   fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"
@@ -908,7 +921,8 @@ wmod=(/etc/selinux/targeted/active/modules/*/waydroid)
 for p in /var/lib/waydroid:waydroid_data_t /usr/lib/waydroid/waydroid.py:waydroid_exec_t /var/lib/microos-android:var_lib_t \
   /var/lib/microos-android/images:waydroid_data_t /var/lib/microos-android/images/current:waydroid_data_t \
   /var/lib/microos-android/images/los20-20260927-20261022/system.img:waydroid_data_t \
-  /var/lib/misc/dnsmasq.waydroid0.leases:container_var_lib_t; do
+  /var/lib/misc/dnsmasq.waydroid0.leases:container_var_lib_t \
+  /usr/lib/systemd/systemd-socket-proxyd:systemd_socket_proxyd_exec_t; do
   fc=$(matchpathcon -n "${p%%:*}")
   [[ $fc == "system_u:object_r:${p#*:}:s0" ]] || fail "file_contexts labels ${p%%:*} $fc"
 done
