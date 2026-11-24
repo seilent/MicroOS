@@ -1,0 +1,14 @@
+[Unit]
+Description=Forward policy for the Waydroid bridge
+DefaultDependencies=no
+Wants=network-pre.target
+Before=network-pre.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /usr/share/microos/waydroid-forward.nft
+
+[Install]
+WantedBy=multi-user.target

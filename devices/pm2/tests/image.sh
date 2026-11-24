@@ -697,7 +697,51 @@ guestcmd=/usr/share/microos-android/cmd
 [[ -f $guestcmd && ! -L $guestcmd && $(stat -c '%a %U %G' "$guestcmd") == '755 root root' ]] \
   || fail "/usr/share/microos-android/cmd missing, mode or owner"
 [[ $(head -n 1 "$guestcmd") == '#!/system/bin/sh' ]] || fail "the guest cmd has no /system/bin/sh shebang"
-[[ $(< /usr/share/microos-android/display) == $'width=960\nheight=640\ndensity=213' ]] || fail "/usr/share/microos-android/display"
+[[ $(< /usr/share/microos-android/display) == $'width=960\nheight=640\ndensity=213\nubwc=0' ]] || fail "/usr/share/microos-android/display"
+
+rpm -q waydroid lxc >/dev/null || fail "waydroid or lxc missing"
+for c in waydroid lxc-start; do
+  command -v "$c" >/dev/null || fail "$c missing, Waydroid needs it"
+done
+for f in Waydroid.desktop waydroid.market.desktop waydroid.app.install.desktop; do
+  [[ ! -e /usr/share/applications/$f ]] || fail "/usr/share/applications/$f is in the image"
+done
+[[ $(readlink /usr/share/waydroid-extra/images) == /var/lib/microos-android/images/current ]] ||
+  fail "/usr/share/waydroid-extra/images is not the link to /var/lib/microos-android/images/current"
+[[ $(< /usr/lib/tmpfiles.d/microos-waydroid.conf) == $'d /var/cache/lxc 0755 root root -\nd /var/lib/lxc 0755 root root -\nd /var/lib/lxcfs 0755 root root -\nd /var/lib/waydroid 0755 root root -\nd /run/microos-android 0755 root root -\nf /run/microos-android/images.lock 0644 root root -\nd /var/lib/microos-android/images 0755 root root -\nd /var/cache/microos-android/images 0755 root root -' ]] \
+  || fail "tmpfiles microos-waydroid.conf"
+[[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
+[[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
+  fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"
+grep -qx 'SystemdService=waydroid-container.service' /usr/share/dbus-1/system-services/id.waydro.Container.service ||
+  fail "id.waydro.Container.service does not activate waydroid-container.service"
+[[ $(systemctl is-enabled dev-binderfs.mount) == enabled ]] || fail "dev-binderfs.mount is not enabled"
+grep -qx 'Type=binder' /usr/lib/systemd/system/dev-binderfs.mount || fail "dev-binderfs.mount is not a binder mount"
+wcb=/usr/lib/waydroid/data/configs/config_base
+[[ $(sha256sum < "$wcb") == 'e42a696066defbcd5fd12528404cb2342b3bcc27ff337a1e94c7565fd35cf31b  -' ]] ||
+  fail "$wcb is not waydroid-1.6.3-1.fc44's file plus allow a, the block deny and the c 1:1 and c 1:4 denies"
+[[ $(< /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf) == $'[Unit]\nBefore=systemd-user-sessions.service\n\n[Service]\nExecStartPre=/usr/libexec/microos/microos-android-guard' ]] \
+  || fail "waydroid-container.service.d/10-microos.conf"
+[[ $(stat -c %a /usr/libexec/microos/microos-android-guard) == 755 ]] || fail "microos-android-guard is not 755"
+command -v nft >/dev/null || fail "nft missing, the Waydroid bridge and its forward policy need it"
+[[ $(< /usr/share/microos/waydroid-forward.nft) == $'destroy table inet microos_waydroid\ntable inet microos_waydroid {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t\tiifname "waydroid0" oifname "wl*" accept\n\t\tiifname "wl*" oifname "waydroid0" ct state established,related accept\n\t}\n}' ]] \
+  || fail "waydroid-forward.nft is not the drop policy with waydroid0 to Wi-Fi only"
+[[ $(systemctl is-enabled microos-waydroid-forward.service) == enabled ]] || fail "microos-waydroid-forward.service is not enabled"
+systemctl cat microos-waydroid-forward.service | grep -qx 'ExecStart=/usr/sbin/nft -f /usr/share/microos/waydroid-forward.nft' ||
+  fail "microos-waydroid-forward.service does not load waydroid-forward.nft"
+[[ $(< /usr/share/microos-android/images.env) == $'SET=los20av-20260927-20261022\nSYSTEM_URL=https://sourceforge.net/projects/waydroid/files/images/system/lineage/waydroid_arm64_only/lineage-20.0-20260927-VANILLA-waydroid_arm64_only-system.zip/download\nSYSTEM_SIZE=733009660\nSYSTEM_SHA256=a7806741ea8ca5be917d0c66b031d97a60abb7a95031ca5b35c40620b6273ccd\nVENDOR_URL=https://sourceforge.net/projects/waydroid/files/images/vendor/waydroid_arm64_only/lineage-20.0-20261022-MAINLINE-waydroid_arm64_only-vendor.zip/download\nVENDOR_SIZE=77356908\nVENDOR_SHA256=b634f6376cd20accfa835a78381e16f076057f8ca9a538a17282f25af04b44cc' ]] \
+  || fail "images.env is not the VANILLA system and MAINLINE vendor of the arm64_only set"
+[[ $(stat -c %a /usr/libexec/microos/microos-android-images) == 755 ]] || fail "microos-android-images is not 755"
+[[ $(systemctl is-enabled microos-android-images.service) == enabled ]] || fail "microos-android-images.service is not enabled"
+for l in Type=exec ExecStart=/usr/libexec/microos/microos-android-images Nice=19 IOSchedulingClass=idle; do
+  systemctl cat microos-android-images.service | grep -qxF "$l" || fail "microos-android-images.service lacks $l"
+done
+grep -qF 'props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false)' \
+  /usr/libexec/microos/microos-android-images || fail "microos-android-images does not set the adb, debuggable and suspend props"
+for c in flock unzip debugfs df; do
+  command -v "$c" >/dev/null || fail "$c missing, microos-android-images needs it"
+done
+[[ -x /usr/libexec/microos/microos-fetch ]] || fail "microos-fetch missing, microos-android-images needs it"
 systemctl --global cat gamescope-session-plus@android.service | grep -qxF Wants=microos-android-pad.service \
   || fail "gamescope-session-plus@android.service does not want microos-android-pad.service"
 

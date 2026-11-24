@@ -1,0 +1,8 @@
+[Unit]
+Description=Remote adb to the Waydroid guest
+Requires=microos-android-adb.socket
+After=microos-android-adb.socket
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 192.168.240.112:5555
+DynamicUser=yes

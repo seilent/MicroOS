@@ -6,3 +6,4 @@ touch_mode=4
 gamepads=joystick
 navbar=1
 adb=remote
+ubwc=0

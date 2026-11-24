@@ -1,0 +1,96 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+pins=${MICROOS_ANDROID_PINS:-/usr/share/microos-android/images.env}
+display=${MICROOS_DISPLAY_FILE:-/usr/share/microos-android/display}
+images=${MICROOS_ANDROID_IMAGES:-/var/lib/microos-android/images}
+cache=${MICROOS_ANDROID_CACHE:-/var/cache/microos-android/images}
+state=${MICROOS_ANDROID_STATE:-/var/lib/microos-android/images.state}
+lock=${MICROOS_ANDROID_LOCK:-/run/microos-android/images.lock}
+wcfg=${MICROOS_WAYDROID_CFG:-/var/lib/waydroid/waydroid.cfg}
+fetch=${MICROOS_FETCH:-/usr/libexec/microos/microos-fetch}
+floor=${MICROOS_SPACE_FLOOR:-21474836480}
+
+say() { printf 'microos-android-images: %s\n' "$*"; }
+fail() { printf 'microos-android-images: %s\n' "$*" >&2; exit 1; }
+mark() { printf 'state=%s\nset=%s\n' "$1" "$SET" > "$state.new"; mv "$state.new" "$state"; }
+failed() {
+  local rc=$?
+  (( rc == 0 )) || mark failed
+}
+
+. "$pins"
+density=$(sed -n 's/^density=//p' "$display" | head -n 1)
+[[ $density =~ ^[0-9]+$ ]] || fail "no density in $display"
+ubwc=$(sed -n 's/^ubwc=//p' "$display" | head -n 1)
+[[ $ubwc == [01] ]] || fail "ubwc=$ubwc in $display is not 0 or 1"
+
+exec 9< "$lock"
+flock -n -x 9 || fail "the Android session holds $lock"
+unit=$(systemctl show -P ActiveState waydroid-container.service)
+[[ $unit == inactive || $unit == failed ]] || fail "waydroid-container.service is $unit, stop Android first"
+
+new=0
+if [[ ! -f $state || $(< "$state") != "state=ready"$'\n'"set=$SET" || $(readlink "$images/current") != "$SET" || ! -f $wcfg ]]; then
+  new=1
+  trap failed EXIT
+  mark fetching
+  free=$(df --output=avail -B1 "$cache" | tail -n 1)
+  (( free >= floor )) || fail "$((free >> 30))G free under $cache, below the $((floor >> 30))G floor"
+  sys=$cache/$(basename "${SYSTEM_URL%/download}")
+  ven=$cache/$(basename "${VENDOR_URL%/download}")
+  "$fetch" "$SYSTEM_URL" "$SYSTEM_SIZE" "$SYSTEM_SHA256" "$sys"
+  "$fetch" "$VENDOR_URL" "$VENDOR_SIZE" "$VENDOR_SHA256" "$ven"
+  tmpd=$images/$SET.tmp
+  rm -rf "${tmpd:?}"
+  mkdir "$tmpd"
+  unzip -q -d "$tmpd" "$sys" system.img
+  unzip -q -d "$tmpd" "$ven" vendor.img
+  prop=$(debugfs -R 'cat /system/build.prop' "$tmpd/system.img" 2> /dev/null) || fail "debugfs cannot read $tmpd/system.img"
+  grep -qx 'ro.system.product.cpu.abilist32=' <<< "$prop" ||
+    fail "$SET's system image has no empty ro.system.product.cpu.abilist32, it needs AArch32"
+  chmod -R a-w "$tmpd"
+  rm -rf "${images:?}/${SET:?}"
+  mv -T "$tmpd" "$images/$SET"
+  ln -sfn "$SET" "$images/current.new"
+  mv -T "$images/current.new" "$images/current"
+  say "current is $SET"
+  waydroid init -f
+fi
+
+props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false)
+(( ubwc )) || props+=(debug.mesa.fd.mesa.debug=noubwc debug.mesa.tu.debug=noubwc)
+python3 - "$wcfg" "${props[@]}" <<'PY'
+import configparser
+import sys
+
+path = sys.argv[1]
+owned = ("ro.sf.lcd_density", "ro.adb.secure", "ro.debuggable", "persist.waydroid.suspend",
+         "debug.mesa.fd.mesa.debug", "debug.mesa.tu.debug")
+cfg = configparser.ConfigParser(interpolation=None)
+cfg.optionxform = str
+with open(path) as handle:
+    cfg.read_file(handle)
+if not cfg.has_section("properties"):
+    cfg.add_section("properties")
+for key in owned:
+    cfg.remove_option("properties", key)
+for item in sys.argv[2:]:
+    key, _, value = item.partition("=")
+    cfg.set("properties", key, value)
+with open(path + ".new", "w") as handle:
+    cfg.write(handle)
+PY
+mv "$wcfg.new" "$wcfg"
+waydroid upgrade -o
+say "properties ${props[*]}"
+
+if (( new )); then
+  for d in "$images"/*; do
+    [[ $d == "$images/$SET" || $d == "$images/current" ]] || rm -rf "${d:?}"
+  done
+  find "$cache" -mindepth 1 -delete
+  mark ready
+  trap - EXIT
+  say "$SET ready"
+fi

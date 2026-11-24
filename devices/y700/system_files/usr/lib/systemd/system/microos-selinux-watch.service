@@ -1,0 +1,6 @@
+[Unit]
+Description=SELinux tripwire that stops Waydroid on a mode change or policy load
+
+[Service]
+Type=notify
+ExecStart=/usr/libexec/microos/microos-selinux-watch
