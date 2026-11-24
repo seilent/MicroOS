@@ -1,0 +1,172 @@
+#!/usr/bin/bash
+set -uo pipefail
+
+me=microos-android-guest
+DATA="${MICROOS_WAYDROID_DATA:-${HOME}/.local/share/microos-waydroid}"
+GUEST_DATA="${DATA}/waydroid/data"
+LEASES="${MICROOS_WAYDROID_LEASES:-/var/lib/misc/dnsmasq.waydroid0.leases}"
+OPTS="${MICROOS_OPTS:-/usr/share/microos-android/opts}"
+CALL_S="${MICROOS_GUEST_TIMEOUT_S:-10}"
+STOP_S="${MICROOS_GUEST_STOP_S:-20}"
+OPTS_S="${MICROOS_OPTS_TIMEOUT_S:-30}"
+LAUNCHER=com.android.launcher3
+
+say() { printf '%s: %s\n' "${me}" "$*" >&2; }
+
+usage() {
+    echo "usage: microos-android-guest sh <script> | boot | stop | opts" >&2
+    exit 2
+}
+
+address() {
+    local ip
+    ip=$(grep -m1 -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' "${LEASES}" 2>/dev/null) || return 1
+    printf '%s:5555\n' "${ip}"
+}
+
+key() {
+    local private="${HOME}/.android/adbkey" dir="${GUEST_DATA}/misc/adb" line
+    [[ -d "${dir}" ]] || return 1
+    if [[ ! -s "${private}.pub" ]]; then
+        mkdir -p "${HOME}/.android" && adb keygen "${private}" > /dev/null 2>&1 || return 1
+    fi
+    line=$(head -n 1 "${private}.pub") || return 1
+    [[ -n "${line}" ]] || return 1
+    grep -qxF -- "${line}" "${dir}/adb_keys" 2>/dev/null && return 0
+    printf '%s\n' "${line}" >> "${dir}/adb_keys"
+}
+
+device_state() {
+    adb devices 2>/dev/null | awk -v a="$1" '$1 == a { print $2 }'
+}
+
+connect() {
+    local addr=$1 state
+    state=$(device_state "${addr}")
+    [[ "${state}" == device ]] && return 0
+    [[ -z "${state}" ]] || adb disconnect "${addr}" > /dev/null 2>&1
+    timeout "${CALL_S}" adb connect "${addr}" > /dev/null 2>&1
+    timeout 5 adb -s "${addr}" wait-for-device > /dev/null 2>&1
+    [[ "$(device_state "${addr}")" == device ]]
+}
+
+run() {
+    local addr
+    addr=$(address) || { say "no guest address in ${LEASES}"; return 255; }
+    key || { say "cannot add the adb key to ${GUEST_DATA}/misc/adb"; return 255; }
+    connect "${addr}" || { say "cannot connect to ${addr}"; return 255; }
+    timeout "${CALL_S}" adb -s "${addr}" shell "$1"
+}
+
+activities() {
+    run 'dumpsys activity activities' 2>/dev/null | tr -d '\r'
+}
+
+record_state() {
+    awk -v top="$1" '
+        { n = match($0, /[^ ]/) }
+        /^ *\* / { inrec = index($0, "ActivityRecord{") && index($0, top); depth = n; if (inrec) seen = 1; next }
+        inrec && n <= depth { inrec = 0 }
+        inrec && match($0, /(^| )state=[A-Z_]+/) {
+            v = substr($0, RSTART, RLENGTH)
+            sub(/^ ?state=/, "", v)
+            print v
+            found = 1
+            exit
+        }
+        END { if (!found && NR && !seen) print "GONE" }
+    '
+}
+
+stop() {
+    local top st deadline
+    top=$(activities | grep -m1 'ResumedActivity' | grep -oE '[A-Za-z0-9._]+/[A-Za-z0-9._$]+' | head -n 1)
+    run 'am start -W -a android.intent.action.MAIN -c android.intent.category.HOME' > /dev/null 2>&1 \
+        || say "the HOME intent failed"
+    if [[ -z "${top}" || "${top%%/*}" == "${LAUNCHER}" ]]; then
+        return 0
+    fi
+    deadline=$((SECONDS + STOP_S))
+    while (( SECONDS < deadline )); do
+        st=$(activities | record_state "${top}")
+        case "${st}" in
+            STOPPED|GONE) return 0 ;;
+        esac
+        sleep 1
+    done
+    say "${top} is ${st:-unread} after ${STOP_S} s"
+}
+
+quote() {
+    printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+opts() {
+    local kind id rest arg line script='' stamp="${GUEST_DATA}/.microos-opts" result applied=0 failed=0
+    local -a args
+    [[ -f "${OPTS}" ]] || { say "${OPTS} missing, no guest settings applied"; return 0; }
+    [[ -d "${GUEST_DATA}" ]] || { say "no ${GUEST_DATA}, no guest settings applied"; return 1; }
+    touch "${stamp}" || return 1
+    while read -r kind id rest; do
+        [[ -n "${kind}" ]] || continue
+        [[ "${id}" =~ ^[a-z0-9-]+$ ]] || { say "${OPTS}: bad id ${id}"; continue; }
+        case "${kind}" in
+            set|pkg) grep -qxF -- "${id}" "${stamp}" && continue ;;
+            unset) grep -qxF -- "${id}" "${stamp}" || continue ;;
+            *) say "${OPTS}: unknown kind ${kind}"; continue ;;
+        esac
+        read -ra args <<<"${rest}"
+        line="${kind:0:1} $(quote "${id}")"
+        for arg in "${args[@]}"; do
+            line+=" $(quote "${arg}")"
+        done
+        script+="${line}"$'\n'
+    done < "${OPTS}"
+    [[ -n "${script}" ]] || return 0
+    script='s() { i=$1; shift; if "$@" >/dev/null 2>&1; then echo "ok $i"; else echo "fail $i"; fi; }
+u() { i=$1; shift; if "$@" >/dev/null 2>&1; then echo "undone $i"; else echo "fail $i"; fi; }
+p() { if cmd package list packages "$2" 2>/dev/null | grep -qx "package:$2"; then s "$1" cmd package disable-user --user 0 "$2"; else echo "absent $1"; fi; }
+'"${script}"
+    while read -r result id; do
+        [[ "${id}" =~ ^[a-z0-9-]+$ ]] || continue
+        case "${result}" in
+            exit)
+                [[ "${id}" == 124 ]] && say "guest settings timed out after ${OPTS_S} s, the next start retries the rest"
+                ;;
+            ok|absent)
+                printf '%s\n' "${id}" >> "${stamp}"
+                applied=$((applied + 1))
+                ;;
+            undone)
+                grep -vxF -- "${id}" "${stamp}" > "${stamp}.new"
+                mv "${stamp}.new" "${stamp}"
+                applied=$((applied + 1))
+                ;;
+            fail)
+                say "guest setting ${id} failed, the next start retries it"
+                failed=$((failed + 1))
+                ;;
+        esac
+    done < <(CALL_S=${OPTS_S} run "${script}" 2>/dev/null | tr -d '\r'; echo "exit $?")
+    say "guest settings: ${applied} applied, ${failed} failed"
+}
+
+case "${1:-}" in
+    sh)
+        (( $# == 2 )) || usage
+        run "$2"
+        ;;
+    boot)
+        (( $# == 1 )) || usage
+        [[ "$(run 'getprop sys.boot_completed' 2>/dev/null | tr -d '\r')" == 1 ]]
+        ;;
+    stop)
+        (( $# == 1 )) || usage
+        stop
+        ;;
+    opts)
+        (( $# == 1 )) || usage
+        opts
+        ;;
+    *) usage ;;
+esac
