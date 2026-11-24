@@ -67,6 +67,10 @@ def entry(value):
     return GLib.Variant("(sv)", (KEY, GLib.Variant("u", value)))
 
 
+class ServiceManager(gbinder.ServiceManager):
+    pass
+
+
 class PlatformError(Exception):
     def __init__(self, text, dead=False):
         super().__init__(text)
@@ -110,8 +114,7 @@ class Platform:
         if not os.path.exists(device):
             raise PlatformError(f"no {device}")
         self.device = device
-        self.manager = gbinder.ServiceManager(device, section.get("service_manager_protocol"),
-                                              section.get("binder_protocol"))
+        self.manager = ServiceManager(device, section.get("service_manager_protocol"), section.get("binder_protocol"))
         self.manager.add_registration_handler(SERVICE, self.appeared)
         return self.manager
 

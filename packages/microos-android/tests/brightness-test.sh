@@ -84,6 +84,8 @@ def flag(name):
 
 
 class ServiceManager:
+    __slots__ = ("func", "list_func", "get_service_func", "watches", "lookups", "next", "up")
+
     def __init__(self, device, manager=None, protocol=None):
         record(f"manager {device} {manager} {protocol}")
         self.watches = []
@@ -109,6 +111,7 @@ class ServiceManager:
         return not flag("platform-down")
 
     def add_registration_handler(self, name, func):
+        self.registration_func = func
         record(f"watch {name}")
         self.watches.append((name, func))
         if not flag("platform-down"):
@@ -116,6 +119,7 @@ class ServiceManager:
         return 1
 
     def get_service(self, name, func):
+        self.get_service_func = func
         self.next += 1
         self.lookups[self.next] = GLib.idle_add(self.found, self.next, name, func)
         return self.next
@@ -476,6 +480,17 @@ grep -qx "client waydroidplatform lineageos.waydroid.IPlatform" "${STATE}/binder
     || fail "the client is not IPlatform on waydroidplatform: $(cat "${STATE}/binder")"
 grep -qx get "${STATE}/microset" || fail "the start did not Get: $(cat "${STATE}/microset")"
 grep -qx stored "${STATE}/microset" || fail "the start did not read Stored: $(cat "${STATE}/microset")"
+mkdir -p "${T}/probe"
+STATE="${T}/probe" python3 - <<'PROBE' || fail "the fake ServiceManager stores a registration_func outside its slots"
+import gbinder
+
+try:
+    gbinder.ServiceManager("probe").add_registration_handler("probe", print)
+except AttributeError:
+    pass
+else:
+    raise SystemExit(1)
+PROBE
 setting 110
 guest 110
 wait_for "set 4314" acts \
