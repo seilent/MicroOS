@@ -29,6 +29,7 @@ own=(
   plymouth/plymouth-graphics-libs
   plymouth/plymouth-plugin-script
   plymouth/plymouth-scripts
+  android-guest-apks/microos-android-guest-apks
   android-guestos/microos-android-guestos
   microos-android/microos-android
   rocknix-abl/rocknix-abl

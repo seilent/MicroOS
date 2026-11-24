@@ -135,4 +135,132 @@ rc2=0
 im || rc2=$?
 [[ $rc2 == 1 ]] && grep -q 'ubwc= in' "$w/err" || fail "a display file without ubwc: rc $rc2: $(< "$w/err")"
 
+overlay=$tree/usr/libexec/microos/microos-android-overlay
+o=$tmp/ovl
+hal=android.hardware.lights-service.microos
+halbin=system/bin/hw/$hal
+initrc=system/etc/init/$hal.rc
+vintf=system/etc/vintf/manifest/$hal.xml
+gapp=$o/wd/system/priv-app/Phonesky/Phonesky.apk
+mkdir -p "$o/ship/${halbin%/*}" "$o/ship/${initrc%/*}" "$o/ship/${vintf%/*}" "$o/wd/vendor" "${gapp%/*}" "$o/var"
+printf 'elf\n' > "$o/ship/$halbin"
+printf 'service\n' > "$o/ship/$initrc"
+printf 'manifest\n' > "$o/ship/$vintf"
+printf 'apk\n' > "$gapp"
+mf() {
+  while (( $# )); do
+    printf '%s %s %s\n' "$(sha256sum < "$o/ship/$2" | cut -d' ' -f1)" "$1" "$2"
+    shift 2
+  done > "$o/manifest"
+}
+ov() {
+  MICROOS_ANDROID_OVERLAY_MANIFEST=$o/manifest MICROOS_ANDROID_OVERLAY_DIR=$o/ship MICROOS_WAYDROID_OVERLAY=$o/wd \
+    MICROOS_ANDROID_OVERLAY_STATE=$o/var/overlay.manifest "$overlay" > "$o/out" 2> "$o/err"
+}
+snap() { (cd "$o/wd" && find . -exec stat -c '%n %F %i %y %04a %u %g' {} + | LC_ALL=C sort); }
+gstat=$(stat -c '%i %y' "$gapp")
+untouched() {
+  [[ $(stat -c '%i %y' "$gapp") == "$gstat" && $(< "$gapp") == apk ]] || fail "$1 touched the MindTheGapps file"
+}
+
+mf 0755 "$halbin" 0644 "$initrc" 0644 "$vintf"
+ov || fail "overlay exited $? on a first apply: $(< "$o/err")"
+[[ $(< "$o/out") == 'microos-android-overlay: 3 files, 3 copied, 0 removed' ]] ||
+  fail "first apply printed: $(< "$o/out")"
+for p in "$halbin" "$initrc" "$vintf"; do
+  cmp -s "$o/ship/$p" "$o/wd/$p" || fail "first apply did not copy $p"
+  [[ $(stat -c '%u %g' "$o/wd/$p") == "$(id -u) $(id -g)" ]] ||
+    fail "first apply left $p owned by $(stat -c '%u %g' "$o/wd/$p")"
+done
+[[ $(stat -c %04a "$o/wd/$halbin" "$o/wd/$initrc" "$o/wd/$vintf" | paste -sd' ') == '0755 0644 0644' ]] ||
+  fail "first apply modes: $(stat -c %04a "$o/wd/$halbin" "$o/wd/$initrc" "$o/wd/$vintf" | paste -sd' ')"
+dirs=$(cd "$o/wd/system" && stat -c %04a bin bin/hw etc etc/init etc/vintf etc/vintf/manifest | sort -u)
+[[ $dirs == 0755 ]] || fail "first apply parent modes: $dirs"
+cmp -s "$o/manifest" "$o/var/overlay.manifest" || fail "first apply did not record the manifest"
+[[ -z $(find "$o/wd" -name '.microos.*') ]] || fail "first apply left temp files: $(find "$o/wd" -name '.microos.*')"
+untouched "first apply"
+
+before=$(snap)
+st=$(stat -c '%i %y' "$o/var/overlay.manifest")
+ov || fail "overlay exited $? on a rerun: $(< "$o/err")"
+[[ $(< "$o/out") == 'microos-android-overlay: 3 files, 0 copied, 0 removed' ]] || fail "rerun printed: $(< "$o/out")"
+[[ $(snap) == "$before" ]] ||
+  fail "a rerun rewrote the overlay: $(diff <(echo "$before") <(snap) | grep '^[<>]' | tr '\n' ' ')"
+[[ $(stat -c '%i %y' "$o/var/overlay.manifest") == "$st" ]] || fail "a rerun rewrote the state"
+
+printf 'service v2\n' > "$o/ship/$initrc"
+mf 0755 "$halbin" 0644 "$initrc" 0644 "$vintf"
+chmod 0600 "$o/wd/$vintf"
+bstat=$(stat -c '%i %y' "$o/wd/$halbin")
+ov || fail "overlay exited $? on a changed file: $(< "$o/err")"
+[[ $(< "$o/out") == 'microos-android-overlay: 3 files, 2 copied, 0 removed' ]] ||
+  fail "changed file printed: $(< "$o/out")"
+[[ $(< "$o/wd/$initrc") == 'service v2' ]] || fail "the changed $initrc was not replaced"
+[[ $(stat -c %04a "$o/wd/$vintf") == 0644 ]] || fail "the 0600 $vintf was not set back to 0644"
+[[ $(stat -c '%i %y' "$o/wd/$halbin") == "$bstat" ]] || fail "an unchanged $halbin was rewritten"
+cmp -s "$o/manifest" "$o/var/overlay.manifest" || fail "the changed manifest was not recorded"
+untouched "a changed file"
+
+mf 0755 "$halbin" 0644 "$initrc"
+ov || fail "overlay exited $? on a dropped file: $(< "$o/err")"
+[[ $(< "$o/out") == 'microos-android-overlay: 2 files, 0 copied, 1 removed' ]] ||
+  fail "dropped file printed: $(< "$o/out")"
+[[ ! -e $o/wd/$vintf && -f $o/wd/$halbin && -f $o/wd/$initrc ]] || fail "the dropped $vintf is still in the overlay"
+cmp -s "$o/manifest" "$o/var/overlay.manifest" || fail "the manifest without $vintf was not recorded"
+untouched "a dropped file"
+
+mf 0755 "$halbin" 0644 "$initrc" 0644 "$vintf"
+printf 'tampered\n' > "$o/ship/$halbin"
+before=$(snap)
+st=$(stat -c '%i %y' "$o/var/overlay.manifest")
+rc2=0
+ov || rc2=$?
+err="microos-android-overlay: $o/ship/$halbin does not match its sha256 in $o/manifest"
+[[ $rc2 == 1 && $(< "$o/err") == "$err" ]] ||
+  fail "a corrupt shipped file: rc $rc2: $(< "$o/err")"
+[[ $(snap) == "$before" && $(stat -c '%i %y' "$o/var/overlay.manifest") == "$st" ]] ||
+  fail "a corrupt shipped file changed the overlay or the state"
+printf 'elf\n' > "$o/ship/$halbin"
+
+perm=system/etc/permissions/microos.xml
+mkdir -p "$o/ship/${perm%/*}"
+printf 'perm\n' > "$o/ship/$perm"
+printf 'blocker\n' > "$o/wd/system/etc/permissions"
+mf 0755 "$halbin" 0644 "$initrc" 0644 "$vintf" 0644 "$perm"
+rc2=0
+ov || rc2=$?
+[[ $rc2 == 1 && $(< "$o/err") == "microos-android-overlay: $o/wd/system/etc/permissions is not a directory" ]] ||
+  fail "a blocked copy: rc $rc2: $(< "$o/err")"
+[[ $(stat -c '%i %y' "$o/var/overlay.manifest") == "$st" ]] || fail "a failed apply wrote the state"
+[[ -z $(find "$o/wd" -name '.microos.*') ]] || fail "a failed apply left temp files: $(find "$o/wd" -name '.microos.*')"
+left=2
+[[ ! -f $o/wd/$vintf ]] || left=1
+rm "$o/wd/system/etc/permissions"
+ov || fail "overlay exited $? after the blocker went: $(< "$o/err")"
+[[ $(< "$o/out") == "microos-android-overlay: 4 files, $left copied, 0 removed" ]] ||
+  fail "after the blocker printed: $(< "$o/out")"
+cmp -s "$o/ship/$perm" "$o/wd/$perm" && cmp -s "$o/ship/$vintf" "$o/wd/$vintf" ||
+  fail "the apply after the blocker went did not copy every file"
+cmp -s "$o/manifest" "$o/var/overlay.manifest" || fail "the apply after the blocker went did not record the manifest"
+untouched "a blocked copy"
+
+before=$(snap)
+cp "$o/var/overlay.manifest" "$o/state.ok"
+printf '%064d 0644 system/../../escape\n' 0 > "$o/manifest"
+rc2=0
+ov || rc2=$?
+[[ $rc2 == 1 && $(< "$o/err") == "microos-android-overlay: line 1 of $o/manifest leaves the overlay" ]] ||
+  fail "a manifest path out of the overlay: rc $rc2: $(< "$o/err")"
+[[ $(snap) == "$before" ]] && cmp -s "$o/state.ok" "$o/var/overlay.manifest" ||
+  fail "a manifest path out of the overlay changed the overlay or the state"
+
+mf 0755 "$halbin"
+mv "$o/wd" "$o/wd.off"
+rc2=0
+ov || rc2=$?
+[[ $rc2 == 1 && $(< "$o/err") == "microos-android-overlay: no $o/wd, waydroid init comes first" ]] ||
+  fail "no overlay dir: rc $rc2: $(< "$o/err")"
+[[ ! -e $o/wd ]] && cmp -s "$o/state.ok" "$o/var/overlay.manifest" ||
+  fail "no overlay dir made the dir or wrote the state"
+
 exit "$rc"

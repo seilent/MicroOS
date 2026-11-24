@@ -294,6 +294,7 @@ kept=(
   /usr/libexec/microos/microos-remoteproc
   /usr/libexec/microos/microos-android-guard
   /usr/libexec/microos/microos-android-images
+  /usr/libexec/microos/microos-android-overlay
   /usr/libexec/microos/prepare-root
   /usr/share/microos/avb/testkey_rsa4096.pem
   /usr/share/microos/keys/microos-backup.pub
@@ -417,9 +418,22 @@ grep -qx 'Type=binder' /usr/lib/systemd/system/dev-binderfs.mount || fail "dev-b
 wcb=/usr/lib/waydroid/data/configs/config_base
 [[ $(sha256sum < "$wcb") == 'e42a696066defbcd5fd12528404cb2342b3bcc27ff337a1e94c7565fd35cf31b  -' ]] ||
   fail "$wcb is not waydroid-1.6.3-1.fc44's file plus allow a, the block deny and the c 1:1 and c 1:4 denies"
-[[ $(< /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf) == $'[Unit]\nBefore=systemd-user-sessions.service\n\n[Service]\nExecStartPre=/usr/libexec/microos/microos-android-guard' ]] \
-  || fail "waydroid-container.service.d/10-microos.conf"
+dropin=$(printf '%s\n' '[Unit]' 'Before=systemd-user-sessions.service' '' '[Service]' \
+  'ExecStartPre=/usr/libexec/microos/microos-android-guard' 'ExecStartPre=/usr/libexec/microos/microos-android-overlay')
+[[ $(< /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf) == "$dropin" ]] ||
+  fail "waydroid-container.service.d/10-microos.conf"
 [[ $(stat -c %a /usr/libexec/microos/microos-android-guard) == 755 ]] || fail "microos-android-guard is not 755"
+[[ $(stat -c %a /usr/libexec/microos/microos-android-overlay) == 755 ]] || fail "microos-android-overlay is not 755"
+mkdir "$tmp/overlay"
+out=$(MICROOS_WAYDROID_OVERLAY=$tmp/overlay MICROOS_ANDROID_OVERLAY_STATE=$tmp/overlay.manifest \
+  /usr/libexec/microos/microos-android-overlay) || fail "microos-android-overlay exited $? on an empty overlay"
+[[ $out == "microos-android-overlay: $(wc -l < "$guestlist") files, $(wc -l < "$guestlist") copied, 0 removed" ]] ||
+  fail "microos-android-overlay printed: $out"
+cmp -s "$guestlist" "$tmp/overlay.manifest" || fail "microos-android-overlay did not record $guestlist"
+while read -r _ mode path; do
+  cmp -s "$guestfiles/$path" "$tmp/overlay/$path" && [[ $(stat -c %04a "$tmp/overlay/$path") == "$mode" ]] ||
+    fail "microos-android-overlay did not place $path"
+done < "$guestlist"
 command -v nft >/dev/null || fail "nft missing, the Waydroid bridge and its forward policy need it"
 [[ $(< /usr/share/microos/waydroid-forward.nft) == $'destroy table inet microos_waydroid\ntable inet microos_waydroid {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t\tiifname "waydroid0" oifname "wl*" accept\n\t\tiifname "wl*" oifname "waydroid0" ct state established,related accept\n\t}\n}' ]] \
   || fail "waydroid-forward.nft is not the drop policy with waydroid0 to Wi-Fi only"
