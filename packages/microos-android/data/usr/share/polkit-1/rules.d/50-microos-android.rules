@@ -8,3 +8,11 @@ polkit.addRule(function(action, subject) {
     return polkit.Result.YES;
   }
 });
+
+polkit.addRule(function(action, subject) {
+  var network = ["org.freedesktop.NetworkManager.enable-disable-wifi", "org.freedesktop.NetworkManager.network-control",
+                 "org.freedesktop.NetworkManager.wifi.scan", "org.freedesktop.NetworkManager.settings.modify.own"];
+  if (subject.user == "micro" && network.indexOf(action.id) >= 0) {
+    return polkit.Result.YES;
+  }
+});

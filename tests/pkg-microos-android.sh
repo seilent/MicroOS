@@ -134,4 +134,13 @@ for line in export\ GAMESCOPE_BIN=/usr/libexec/microos/microos-gamescope-plain \
   if ! grep -qxF "$line" "$client"; then fail "the android client file lacks $line"; fi
 done
 
+rules=$root/usr/share/polkit-1/rules.d/50-microos-android.rules
+for id in enable-disable-wifi network-control wifi.scan settings.modify.own; do
+  if ! grep -qF "\"org.freedesktop.NetworkManager.$id\"" "$rules"; then fail "50-microos-android.rules lacks $id"; fi
+done
+if ! grep -qF 'subject.user == "micro" && network.indexOf(action.id) >= 0' "$rules"; then
+  fail "the NetworkManager rule is not for micro"
+fi
+if grep -qF settings.modify.system "$rules"; then fail "50-microos-android.rules grants settings.modify.system"; fi
+
 exit "$rc"

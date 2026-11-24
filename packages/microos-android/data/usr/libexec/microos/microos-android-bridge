@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 import configparser
+import json
 import os
 import re
 import signal
@@ -22,6 +23,8 @@ PW_DUMP = os.environ.get("MICROOS_PW_DUMP") or "/usr/bin/pw-dump"
 HOLD_MS = int(os.environ.get("MICROOS_BRIDGE_HOLD_MS") or 2000)
 POWER_S = float(os.environ.get("MICROOS_BRIDGE_POWER_S") or 90)
 WPCTL_S = float(os.environ.get("MICROOS_BRIDGE_WPCTL_S") or 2)
+PROMPT_S = float(os.environ.get("MICROOS_BRIDGE_PROMPT_S") or 30)
+CONNECT_S = float(os.environ.get("MICROOS_BRIDGE_CONNECT_S") or 60)
 SERVICE = "microosbridge"
 INTERFACE = "net.seilent.microos.IBridge"
 CALLBACK = "net.seilent.microos.IBridgeCallback"
@@ -46,6 +49,60 @@ ARM_MS = 1000
 REFUSALS = 10
 MINUTE_MS = 60000
 STOP_CALL_MS = 2000
+NM = "org.freedesktop.NetworkManager"
+NM_PATH = "/org/freedesktop/NetworkManager"
+NM_SETTINGS_PATH = "/org/freedesktop/NetworkManager/Settings"
+NM_DEVICE = "org.freedesktop.NetworkManager.Device"
+NM_WIRELESS = "org.freedesktop.NetworkManager.Device.Wireless"
+NM_POINT = "org.freedesktop.NetworkManager.AccessPoint"
+NM_ACTIVE = "org.freedesktop.NetworkManager.Connection.Active"
+NM_SETTINGS = "org.freedesktop.NetworkManager.Settings"
+NM_PROFILE = "org.freedesktop.NetworkManager.Settings.Connection"
+BLUEZ = "org.bluez"
+BLUEZ_PATH = "/org/bluez"
+HCI = "/org/bluez/hci0"
+ADAPTER = "org.bluez.Adapter1"
+DEVICE = "org.bluez.Device1"
+AGENT_MANAGER = "org.bluez.AgentManager1"
+AGENT_PATH = "/net/seilent/MicroOs/BtAgent"
+REJECTED = "org.bluez.Error.Rejected"
+AUTH_ERRORS = ("org.bluez.Error.AuthenticationFailed", "org.bluez.Error.AuthenticationRejected")
+CANCELED_ERROR = "org.bluez.Error.AuthenticationCanceled"
+PROPERTIES = "org.freedesktop.DBus.Properties"
+USER = "micro"
+RADIO_NAMES = ("wifi", "bluetooth")
+DEVICE_ACTIVATED = 100
+ACTIVATED, DEACTIVATED = 2, 4
+NO_SECRETS = 9
+TO_DISK = 1
+PRIVACY = 0x1
+KEY_PSK, KEY_8021X, KEY_SAE, KEY_OWE, KEY_OWE_TM, KEY_SUITE_B = 0x100, 0x200, 0x400, 0x800, 0x1000, 0x2000
+OPEN, PERSONAL, OTHER, OWE = range(4)
+FAILED, AUTH, TIMEOUT, CANCELED = 10, 11, 12, 13
+CONFIRM, SHOW, AUTHORIZE, CANCEL = range(4)
+LONGEST = 32
+NAME_UNITS = 64
+RADIOS_MS = 100
+LIST_MS = 300
+BT_CONNECT_MS = 30000
+PAIR_MS = 60000
+AGENT_XML = """
+<node>
+  <interface name="org.bluez.Agent1">
+    <method name="Release"/>
+    <method name="RequestPinCode"><arg type="o" direction="in"/><arg type="s" direction="out"/></method>
+    <method name="DisplayPinCode"><arg type="o" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="RequestPasskey"><arg type="o" direction="in"/><arg type="u" direction="out"/></method>
+    <method name="DisplayPasskey">
+      <arg type="o" direction="in"/><arg type="u" direction="in"/><arg type="q" direction="in"/>
+    </method>
+    <method name="RequestConfirmation"><arg type="o" direction="in"/><arg type="u" direction="in"/></method>
+    <method name="RequestAuthorization"><arg type="o" direction="in"/></method>
+    <method name="AuthorizeService"><arg type="o" direction="in"/><arg type="s" direction="in"/></method>
+    <method name="Cancel"/>
+  </interface>
+</node>
+"""
 
 
 def log(message):
@@ -77,6 +134,109 @@ def helper_uid(text):
     if len(fields) < 5 or not UID.fullmatch(fields[1]) or fields[2] != "0" or ":privapp:" not in fields[4]:
         return None
     return int(fields[1])
+
+
+def error_name(error):
+    return Gio.DBusError.get_remote_error(error) or ""
+
+
+def logged(what):
+    def done(bus, result):
+        try:
+            bus.call_finish(result)
+        except GLib.Error as error:
+            log(f"{what} failed: {error_name(error) or error.message}")
+
+    return done
+
+
+def outcome(error):
+    name = error_name(error)
+    if error.matches(Gio.io_error_quark(), Gio.IOErrorEnum.TIMED_OUT):
+        return TIMEOUT, ""
+    if name in AUTH_ERRORS:
+        return AUTH, name
+    return (CANCELED if name == CANCELED_ERROR else FAILED), name
+
+
+def prop(proxy, name, default=None):
+    value = None if proxy is None else proxy.get_cached_property(name)
+    return default if value is None else value.unpack()
+
+
+def text(data):
+    return bytes(data).decode(errors="replace")
+
+
+def cut(name, units):
+    used = 0
+    for index, char in enumerate(name):
+        used += 2 if ord(char) > 0xFFFF else 1
+        if used > units:
+            return name[:index]
+    return name
+
+
+def groups(variant):
+    found = {}
+    for i in range(variant.n_children()):
+        group = variant.get_child_value(i)
+        values = group.get_child_value(1)
+        entries = (values.get_child_value(j) for j in range(values.n_children()))
+        found[group.get_child_value(0).get_string()] = {
+            entry.get_child_value(0).get_string(): entry.get_child_value(1).get_variant() for entry in entries}
+    return found
+
+
+def wifi_profile(settings):
+    kind = settings.get("connection", {}).get("type")
+    ssid = settings.get("802-11-wireless", {}).get("ssid")
+    if kind is None or ssid is None or kind.get_string() != "802-11-wireless":
+        return None
+    permissions = settings["connection"].get("permissions")
+    return bytes(ssid.unpack()), permissions is not None and f"user:{USER}:" in permissions.unpack()
+
+
+def security(point):
+    flags, wpa, rsn = (prop(point, name, 0) for name in ("Flags", "WpaFlags", "RsnFlags"))
+    both = wpa | rsn
+    if both & (KEY_8021X | KEY_SUITE_B):
+        return OTHER
+    if both & (KEY_PSK | KEY_SAE):
+        return PERSONAL
+    if both & KEY_OWE:
+        return OWE
+    if both == KEY_OWE_TM or not (both or flags & PRIVACY):
+        return OPEN
+    return OTHER
+
+
+def profile(ssid, kind, point, password):
+    settings = {
+        "connection": {"type": GLib.Variant("s", "802-11-wireless"), "id": GLib.Variant("s", text(ssid)),
+                       "autoconnect": GLib.Variant("b", False),
+                       "permissions": GLib.Variant("as", [f"user:{USER}:"])},
+        "802-11-wireless": {"ssid": GLib.Variant("ay", ssid), "mode": GLib.Variant("s", "infrastructure")},
+    }
+    if kind == OWE:
+        settings["802-11-wireless-security"] = {"key-mgmt": GLib.Variant("s", "owe")}
+    elif kind == PERSONAL:
+        rsn = prop(point, "RsnFlags", 0)
+        settings["802-11-wireless-security"] = {
+            "key-mgmt": GLib.Variant("s", "sae" if rsn & KEY_SAE and not rsn & KEY_PSK else "wpa-psk"),
+            "psk": GLib.Variant("s", password), "psk-flags": GLib.Variant("u", 0)}
+    return settings
+
+
+def write_atomic(path, data):
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    temp = f"{path}.{os.getpid()}.new"
+    with open(temp, "w") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temp, 0o600)
+    os.replace(temp, path)
 
 
 class BadArgument(Exception):
@@ -420,6 +580,582 @@ class Volume:
         self.step()
 
 
+class Cache:
+    def __init__(self, bridge, name, path):
+        self.bridge = bridge
+        self.name = name
+        self.path = path
+        self.manager = None
+        self.owner = None
+
+    def start(self):
+        Gio.DBusObjectManagerClient.new(self.bridge.bus, Gio.DBusObjectManagerClientFlags.DO_NOT_AUTO_START, self.name,
+                                        self.path, None, None, None, self.built)
+
+    def built(self, _source, result):
+        try:
+            self.manager = Gio.DBusObjectManagerClient.new_finish(result)
+        except GLib.Error as error:
+            log(f"no {self.name} objects: {error.message}")
+            return
+        for name in ("object-added", "object-removed", "interface-added", "interface-removed",
+                     "interface-proxy-properties-changed"):
+            self.manager.connect(name, self.moved)
+        self.manager.connect("notify::name-owner", self.owner_changed)
+        self.owner_changed()
+
+    def moved(self, *_args):
+        self.bridge.changed()
+
+    def owner_changed(self, *_args):
+        owner = self.manager.get_name_owner()
+        if owner == self.owner:
+            return
+        if self.owner is not None:
+            log(f"{self.name} left the bus")
+            self.owner = None
+            self.lost()
+        self.owner = owner
+        if owner is not None:
+            log(f"{self.name} is on the bus")
+            self.appeared()
+        self.bridge.changed()
+
+    def ready(self):
+        return self.owner is not None
+
+    def proxy(self, path, iface):
+        return None if self.owner is None else self.manager.get_interface(path, iface)
+
+    def objects(self, iface):
+        if self.owner is None:
+            return []
+        found = [(obj.get_object_path(), obj.get_interface(iface)) for obj in self.manager.get_objects()]
+        return sorted(((path, proxy) for path, proxy in found if proxy is not None), key=lambda item: item[0])
+
+
+class Attempt:
+    def __init__(self, request, password):
+        self.request = request
+        self.password = password
+        self.active = None
+        self.profile = None
+        self.early = []
+        self.timer = 0
+
+
+class Network(Cache):
+    def __init__(self, bridge):
+        super().__init__(bridge, NM, "/org/freedesktop")
+        self.generation = 0
+        self.profiles = {}
+        self.pending = {}
+        self.gone = set()
+        self.listed = False
+        self.attempt = None
+
+    def start(self):
+        for iface, member, path, handler in ((NM_SETTINGS, "NewConnection", NM_SETTINGS_PATH, self.added),
+                                             (NM_SETTINGS, "ConnectionRemoved", NM_SETTINGS_PATH, self.removed),
+                                             (NM_PROFILE, "Updated", None, self.updated),
+                                             (NM_ACTIVE, "StateChanged", None, self.state_changed)):
+            self.bridge.bus.signal_subscribe(NM, iface, member, path, None, Gio.DBusSignalFlags.NONE, handler)
+        super().start()
+
+    def reset(self):
+        self.generation += 1
+        self.profiles = {}
+        self.pending = {}
+        self.gone = set()
+        self.listed = False
+
+    def appeared(self):
+        self.reset()
+        generation = self.generation
+
+        def listed(bus, result):
+            if generation != self.generation:
+                return
+            try:
+                paths = bus.call_finish(result).unpack()[0]
+            except GLib.Error as error:
+                log(f"ListConnections failed: {error_name(error) or error.message}")
+                return
+            self.listed = True
+            for path in paths:
+                self.fetch(path)
+            self.bridge.changed()
+
+        self.bridge.bus.call(NM, NM_SETTINGS_PATH, NM_SETTINGS, "ListConnections", None, GLib.VariantType("(ao)"),
+                             Gio.DBusCallFlags.NONE, -1, None, listed)
+
+    def lost(self):
+        self.reset()
+        if self.attempt is not None:
+            self.attempt.profile = None
+            self.end(FAILED, "")
+
+    def ready(self):
+        return self.root() is not None and self.listed and not self.pending
+
+    def fetch(self, path):
+        generation = self.generation
+        self.pending[path] = self.pending.get(path, 0) + 1
+
+        def got(bus, result):
+            if generation != self.generation:
+                return
+            self.pending[path] -= 1
+            if not self.pending[path]:
+                del self.pending[path]
+            try:
+                found = wifi_profile(groups(bus.call_finish(result).get_child_value(0)))
+            except GLib.Error as error:
+                log(f"GetSettings {path} failed: {error_name(error) or error.message}")
+                found = None
+            if found and found[0] and path not in self.gone:
+                self.profiles[path] = found
+            else:
+                self.profiles.pop(path, None)
+            self.bridge.changed()
+
+        self.bridge.bus.call(NM, path, NM_PROFILE, "GetSettings", None, GLib.VariantType("(a{sa{sv}})"),
+                             Gio.DBusCallFlags.NONE, -1, None, got)
+
+    def added(self, _bus, _sender, _path, _iface, _signal, params):
+        if self.owner is not None:
+            self.fetch(params.unpack()[0])
+
+    def removed(self, _bus, _sender, _path, _iface, _signal, params):
+        path = params.unpack()[0]
+        self.gone.add(path)
+        self.profiles.pop(path, None)
+        self.bridge.changed()
+
+    def updated(self, _bus, _sender, path, _iface, _signal, _params):
+        if self.owner is not None and path not in self.gone:
+            self.fetch(path)
+
+    def root(self):
+        return self.proxy(NM_PATH, NM)
+
+    def device(self):
+        found = self.objects(NM_WIRELESS)
+        return found[0][0] if found else None
+
+    def state(self):
+        root = self.root()
+        if root is None or self.device() is None:
+            return -1
+        return 1 if prop(root, "WirelessEnabled", False) and prop(root, "WirelessHardwareEnabled", False) else 0
+
+    def active_point(self):
+        device = self.device()
+        if device is None:
+            return None
+        return self.proxy(prop(self.proxy(device, NM_WIRELESS), "ActiveAccessPoint", "/"), NM_POINT)
+
+    def network(self):
+        device = self.device()
+        if device is None or prop(self.proxy(device, NM_DEVICE), "State", 0) != DEVICE_ACTIVATED:
+            return ""
+        return text(prop(self.active_point(), "Ssid", []))
+
+    def points(self):
+        device = self.device()
+        if device is None:
+            return {}
+        found = {}
+        for path in prop(self.proxy(device, NM_WIRELESS), "AccessPoints", []):
+            point = self.proxy(path, NM_POINT)
+            if point is not None and bytes(prop(point, "Ssid", [])).strip(b"\0"):
+                found[path] = point
+        return found
+
+    def entries(self):
+        active = bytes(prop(self.active_point(), "Ssid", []))
+        saved = {ssid for ssid, _own in self.profiles.values()}
+        own = {ssid for ssid, mine in self.profiles.values() if mine}
+        best = {}
+        for path, point in sorted(self.points().items()):
+            ssid = bytes(prop(point, "Ssid", []))
+            strength = min(prop(point, "Strength", 0), 100)
+            if ssid not in best or strength > best[ssid][1]:
+                best[ssid] = (path, strength, security(point))
+        rows = [(path, text(ssid), strength, kind,
+                 (1 if ssid == active else 0) | (2 if ssid in saved else 0) | (4 if ssid in own else 0))
+                for ssid, (path, strength, kind) in best.items()]
+        rows.sort(key=lambda row: (not row[4] & 1, not row[4] & 2, -row[2], row[0]))
+        return rows[:LONGEST]
+
+    def set_enabled(self, on):
+        value = GLib.Variant("(ssv)", (NM, "WirelessEnabled", GLib.Variant("b", bool(on))))
+        self.bridge.bus.call(NM, NM_PATH, PROPERTIES, "Set", value, None, Gio.DBusCallFlags.NONE, -1, None,
+                             logged("Set WirelessEnabled"))
+
+    def scan(self):
+        self.bridge.bus.call(NM, self.device(), NM_WIRELESS, "RequestScan", GLib.Variant("(a{sv})", ({},)), None,
+                             Gio.DBusCallFlags.NONE, -1, None, logged("RequestScan"))
+
+    def connect(self, ident, password):
+        point = self.points().get(ident)
+        if point is None:
+            return UNKNOWN, 0
+        if self.attempt is not None:
+            return BUSY, 0
+        kind = security(point)
+        if kind == OTHER:
+            return UNSUPPORTED, 0
+        ssid = bytes(prop(point, "Ssid", []))
+        saved = sorted((not mine, path) for path, (found, mine) in self.profiles.items() if found == ssid)
+        if kind == PERSONAL and not saved and not password:
+            raise BadArgument()
+        attempt = Attempt(self.bridge.next_request(), password if kind == PERSONAL and not saved else None)
+        self.attempt = attempt
+        attempt.timer = GLib.timeout_add(int(CONNECT_S * 1000), self.expired, attempt)
+        device = self.device()
+        if not saved:
+            args = GLib.Variant("(a{sa{sv}}oo)", (profile(ssid, kind, point, password), device, ident))
+            self.activate(attempt, "AddAndActivateConnection", args, "(oo)")
+            return OK, attempt.request
+        foreign, path = saved[0]
+        args = GLib.Variant("(ooo)", (path, device, ident))
+        if foreign or kind != PERSONAL or not password:
+            self.activate(attempt, "ActivateConnection", args, "(o)")
+            return OK, attempt.request
+
+        def updated(error):
+            if attempt is not self.attempt:
+                return
+            if error is not None:
+                log(f"request {attempt.request}: Update2 failed: {error_name(error) or error.message}")
+                self.end(FAILED, error_name(error))
+                return
+            self.activate(attempt, "ActivateConnection", args, "(o)")
+
+        log(f"request {attempt.request}: Update2")
+        self.update(path, password, updated)
+        return OK, attempt.request
+
+    def activate(self, attempt, method, args, reply):
+        log(f"request {attempt.request}: {method}")
+        self.bridge.bus.call(NM, NM_PATH, NM, method, args, GLib.VariantType(reply), Gio.DBusCallFlags.NONE,
+                             int(CONNECT_S * 1000), None, lambda bus, result: self.started(attempt, bus, result))
+
+    def started(self, attempt, bus, result):
+        try:
+            paths = bus.call_finish(result).unpack()
+        except GLib.Error as error:
+            if attempt is self.attempt:
+                log(f"request {attempt.request}: {error_name(error) or error.message}")
+                self.end(FAILED, error_name(error))
+            return
+        attempt.active = paths[-1]
+        attempt.profile = paths[0] if len(paths) == 2 else None
+        if attempt is not self.attempt:
+            if attempt.profile is not None:
+                self.delete(attempt.profile)
+            return
+        early, attempt.early = attempt.early, []
+        for path, state, reason in early:
+            if path == attempt.active and attempt is self.attempt:
+                self.moved_to(state, reason)
+
+    def state_changed(self, _bus, _sender, path, _iface, _signal, params):
+        attempt = self.attempt
+        if attempt is None:
+            return
+        state, reason = params.unpack()
+        if attempt.active is None:
+            attempt.early.append((path, state, reason))
+        elif path == attempt.active:
+            self.moved_to(state, reason)
+
+    def moved_to(self, state, reason):
+        if state == ACTIVATED:
+            self.end(OK, "")
+        elif state == DEACTIVATED:
+            self.end(AUTH if reason == NO_SECRETS else FAILED, "")
+
+    def expired(self, attempt):
+        attempt.timer = 0
+        if attempt is self.attempt:
+            self.end(TIMEOUT, "")
+        return False
+
+    def end(self, code, detail):
+        attempt, self.attempt = self.attempt, None
+        if attempt.timer:
+            GLib.source_remove(attempt.timer)
+            attempt.timer = 0
+        if attempt.profile is not None:
+            if code == OK:
+                self.keep(attempt.profile, attempt.password, attempt.request)
+            else:
+                self.delete(attempt.profile)
+        attempt.password = None
+        self.bridge.result(attempt.request, code, detail)
+
+    def keep(self, path, password, request):
+        def kept(error):
+            if error is not None:
+                log(f"request {request}: keeping the profile failed: {error_name(error) or error.message}")
+
+        self.update(path, password, kept)
+
+    def update(self, path, password, then):
+        def got(bus, result):
+            try:
+                settings = groups(bus.call_finish(result).get_child_value(0))
+            except GLib.Error as error:
+                then(error)
+                return
+            settings.setdefault("connection", {})["autoconnect"] = GLib.Variant("b", True)
+            if password is not None:
+                settings.setdefault("802-11-wireless-security", {})["psk"] = GLib.Variant("s", password)
+            bus.call(NM, path, NM_PROFILE, "Update2", GLib.Variant("(a{sa{sv}}ua{sv})", (settings, TO_DISK, {})),
+                     None, Gio.DBusCallFlags.NONE, -1, None, updated)
+
+        def updated(bus, result):
+            try:
+                bus.call_finish(result)
+            except GLib.Error as error:
+                then(error)
+                return
+            then(None)
+
+        self.bridge.bus.call(NM, path, NM_PROFILE, "GetSettings", None, GLib.VariantType("(a{sa{sv}})"),
+                             Gio.DBusCallFlags.NONE, -1, None, got)
+
+    def delete(self, path):
+        self.bridge.bus.call(NM, path, NM_PROFILE, "Delete", None, None, Gio.DBusCallFlags.NONE, -1, None,
+                             logged(f"Delete {path}"))
+
+
+class Blue(Cache):
+    def __init__(self, bridge):
+        super().__init__(bridge, BLUEZ, "/")
+        self.pairing = None
+        self.connects = set()
+        self.prompts = {}
+        self.prompt = 0
+        self.discovering = False
+
+    def start(self):
+        info = Gio.DBusNodeInfo.new_for_xml(AGENT_XML).interfaces[0]
+        self.bridge.bus.register_object(AGENT_PATH, info, self.agent, None, None)
+        super().start()
+
+    def stop(self):
+        if self.owner is None:
+            return
+        try:
+            self.bridge.bus.call_sync(BLUEZ, BLUEZ_PATH, AGENT_MANAGER, "UnregisterAgent",
+                                      GLib.Variant("(o)", (AGENT_PATH,)), None, Gio.DBusCallFlags.NONE, STOP_CALL_MS,
+                                      None)
+        except GLib.Error as error:
+            log(f"UnregisterAgent failed: {error_name(error) or error.message}")
+
+    def appeared(self):
+        def registered(bus, result):
+            try:
+                bus.call_finish(result)
+            except GLib.Error as error:
+                log(f"RegisterAgent failed: {error_name(error) or error.message}")
+                return
+            bus.call(BLUEZ, BLUEZ_PATH, AGENT_MANAGER, "RequestDefaultAgent", GLib.Variant("(o)", (AGENT_PATH,)),
+                     None, Gio.DBusCallFlags.NONE, -1, None, logged("RequestDefaultAgent"))
+
+        self.bridge.bus.call(BLUEZ, BLUEZ_PATH, AGENT_MANAGER, "RegisterAgent",
+                             GLib.Variant("(os)", (AGENT_PATH, "DisplayYesNo")), None, Gio.DBusCallFlags.NONE, -1,
+                             None, registered)
+        if self.bridge.bt_watch:
+            self.discover(True)
+
+    def lost(self):
+        self.discovering = False
+        requests = sorted(self.connects) + ([self.pairing] if self.pairing is not None else [])
+        self.pairing = None
+        self.connects = set()
+        for request in requests:
+            self.bridge.result(request, FAILED, "")
+        self.close(True)
+
+    def adapter(self):
+        return self.proxy(HCI, ADAPTER)
+
+    def state(self):
+        adapter = self.adapter()
+        if adapter is None:
+            return -1
+        return 1 if prop(adapter, "Powered", False) else 0
+
+    def devices(self):
+        return [(path, device) for path, device in self.objects(DEVICE) if prop(device, "Adapter") == HCI]
+
+    def find(self, address):
+        for path, device in self.devices():
+            if prop(device, "Address") == address:
+                return path
+        return None
+
+    def connected_name(self):
+        for _path, device in self.devices():
+            if prop(device, "Connected", False):
+                return cut(prop(device, "Alias", ""), NAME_UNITS)
+        return ""
+
+    def entries(self, watching):
+        rows = []
+        for _path, device in self.devices():
+            paired = prop(device, "Paired", False)
+            if paired or (watching and prop(device, "Name") is not None):
+                flags = ((1 if paired else 0) | (2 if prop(device, "Connected", False) else 0)
+                         | (4 if prop(device, "Trusted", False) else 0))
+                rows.append((prop(device, "Address", ""), cut(prop(device, "Alias", ""), NAME_UNITS), flags))
+        rows.sort(key=lambda row: (not row[2] & 2, not row[2] & 1, row[1], row[0]))
+        return rows[:LONGEST]
+
+    def set_powered(self, on):
+        value = GLib.Variant("(ssv)", (ADAPTER, "Powered", GLib.Variant("b", bool(on))))
+        self.bridge.bus.call(BLUEZ, HCI, PROPERTIES, "Set", value, None, Gio.DBusCallFlags.NONE, -1, None,
+                             logged("Set Powered"))
+
+    def discover(self, on):
+        if on == self.discovering or (on and self.adapter() is None):
+            return
+        self.discovering = on
+        method = "StartDiscovery" if on else "StopDiscovery"
+        self.bridge.bus.call(BLUEZ, HCI, ADAPTER, method, None, None, Gio.DBusCallFlags.NONE, -1, None,
+                             logged(method))
+
+    def connect_device(self, address, connect):
+        path = self.find(address)
+        if path is None:
+            return UNKNOWN, 0
+        request = self.bridge.next_request()
+        method = "Connect" if connect else "Disconnect"
+        self.connects.add(request)
+        log(f"request {request}: {method}")
+
+        def done(bus, result):
+            if request not in self.connects:
+                return
+            self.connects.discard(request)
+            try:
+                bus.call_finish(result)
+            except GLib.Error as error:
+                self.bridge.result(request, *outcome(error))
+                return
+            self.bridge.result(request, OK, "")
+
+        self.bridge.bus.call(BLUEZ, path, DEVICE, method, None, None, Gio.DBusCallFlags.NONE, BT_CONNECT_MS, None,
+                             done)
+        return OK, request
+
+    def pair(self, address):
+        path = self.find(address)
+        if path is None:
+            return UNKNOWN, 0
+        if self.pairing is not None:
+            return BUSY, 0
+        request = self.bridge.next_request()
+        self.pairing = request
+        trusted = GLib.Variant("(ssv)", (DEVICE, "Trusted", GLib.Variant("b", True)))
+        steps = ((DEVICE, "Pair", None, PAIR_MS), (PROPERTIES, "Set", trusted, -1),
+                 (DEVICE, "Connect", None, BT_CONNECT_MS))
+        log(f"request {request}: Pair")
+
+        def run(index):
+            if index == len(steps):
+                self.pairing = None
+                self.bridge.result(request, OK, "")
+                return
+            iface, method, args, timeout = steps[index]
+
+            def done(bus, result):
+                if self.pairing != request:
+                    return
+                try:
+                    bus.call_finish(result)
+                except GLib.Error as error:
+                    self.pairing = None
+                    log(f"request {request}: {method} failed: {error_name(error) or error.message}")
+                    self.bridge.result(request, *outcome(error))
+                    return
+                run(index + 1)
+
+            self.bridge.bus.call(BLUEZ, path, iface, method, args, None, Gio.DBusCallFlags.NONE, timeout, None, done)
+
+        run(0)
+        return OK, request
+
+    def agent(self, _bus, sender, _path, _iface, method, params, invocation):
+        if self.owner is None or sender != self.owner:
+            log(f"{method} rejected: not from {BLUEZ}")
+            invocation.return_dbus_error(REJECTED, f"not from {BLUEZ}")
+            return
+        if method in ("Release", "Cancel"):
+            if method == "Cancel":
+                self.close(True)
+            invocation.return_value(None)
+            return
+        args = params.unpack()
+        device = self.proxy(args[0], DEVICE)
+        address = prop(device, "Address", "")
+        name = cut(prop(device, "Alias", ""), NAME_UNITS)
+        if not self.bridge.bt_watch:
+            log(f"{method} rejected: no pairing page")
+            invocation.return_dbus_error(REJECTED, "no pairing page")
+        elif method in ("RequestConfirmation", "RequestAuthorization"):
+            self.prompt += 1
+            kind, passkey = (CONFIRM, args[1]) if method == "RequestConfirmation" else (AUTHORIZE, 0)
+            timer = GLib.timeout_add(int(PROMPT_S * 1000), self.expired, self.prompt)
+            self.prompts[self.prompt] = (invocation, timer, address, name)
+            log(f"prompt {self.prompt}: {method}")
+            self.bridge.send(PROMPT, (self.prompt, kind, address, name, passkey % 1000000))
+        elif method == "DisplayPasskey":
+            self.prompt += 1
+            log(f"prompt {self.prompt}: {method}")
+            self.bridge.send(PROMPT, (self.prompt, SHOW, address, name, args[1] % 1000000))
+            invocation.return_value(None)
+        elif method == "AuthorizeService" and prop(device, "Paired", False) and prop(device, "Trusted", False):
+            invocation.return_value(None)
+        else:
+            log(f"{method} rejected")
+            invocation.return_dbus_error(REJECTED, f"{method} is not supported")
+
+    def expired(self, prompt):
+        found = self.prompts.pop(prompt, None)
+        if found is not None:
+            invocation, _timer, address, name = found
+            log(f"prompt {prompt}: no answer in {PROMPT_S:g} s")
+            invocation.return_dbus_error(REJECTED, "no answer")
+            self.bridge.send(PROMPT, (prompt, CANCEL, address, name, 0))
+        return False
+
+    def answer(self, prompt, accept):
+        found = self.prompts.pop(prompt, None)
+        if found is None:
+            return UNKNOWN
+        invocation, timer, _address, _name = found
+        GLib.source_remove(timer)
+        log(f"prompt {prompt}: {'accepted' if accept else 'rejected'}")
+        if accept:
+            invocation.return_value(None)
+        else:
+            invocation.return_dbus_error(REJECTED, "rejected")
+        return OK
+
+    def close(self, notify):
+        prompts, self.prompts = self.prompts, {}
+        for prompt, (invocation, timer, address, name) in sorted(prompts.items()):
+            GLib.source_remove(timer)
+            invocation.return_dbus_error(REJECTED, "closed")
+            if notify:
+                self.bridge.send(PROMPT, (prompt, CANCEL, address, name, 0))
+
+
 class ServiceManager(gbinder.ServiceManager):
     pass
 
@@ -437,6 +1173,17 @@ class Bridge:
         self.bus = bus
         self.packages = Packages()
         self.volume = Volume(self)
+        self.network = Network(self)
+        self.blue = Blue(self)
+        self.wifi_watch = False
+        self.bt_watch = False
+        self.requests = 0
+        self.sent = {}
+        self.radios_timer = 0
+        self.lists_timer = 0
+        self.seen = {name: -1 for name in RADIO_NAMES}
+        self.airplane_path = os.path.join(home(), ".local/state/microos-android/radios.json")
+        self.airplane = None
         self.manager = None
         self.local = None
         self.present = False
@@ -463,6 +1210,9 @@ class Bridge:
 
     def start(self):
         self.packages.start()
+        self.airplane = self.load_airplane()
+        self.network.start()
+        self.blue.start()
         self.volume.start()
         config = configparser.ConfigParser()
         config.read(WAYDROID_CFG)
@@ -484,6 +1234,7 @@ class Bridge:
 
     def stop(self):
         self.volume.stop()
+        self.blue.stop()
 
     def register(self):
         def added(status):
@@ -581,7 +1332,9 @@ class Bridge:
 
     def linked(self, link):
         if link is self.callback:
-            self.send(RADIOS, (-1, -1, "", ""))
+            self.sent = {RADIOS: self.radios()}
+            self.send(RADIOS, self.sent[RADIOS])
+            self.changed()
         return False
 
     def died(self, link):
@@ -596,6 +1349,10 @@ class Bridge:
             return
         link.remote.remove_handler(link.death)
         self.volume.reset(False)
+        self.wifi_watch = False
+        self.bt_watch = False
+        self.blue.discover(False)
+        self.blue.close(False)
 
     def send(self, code, values):
         link = self.callback
@@ -610,6 +1367,81 @@ class Bridge:
         status = link.client.transact_sync_oneway(code, request)
         if status:
             log(f"callback {code} returned {status}")
+
+    def push(self, code, values):
+        if self.callback is not None and self.sent.get(code) != values:
+            self.sent[code] = values
+            self.send(code, values)
+
+    def result(self, request, code, detail):
+        log(f"request {request}: result {code}{f' {detail}' if detail else ''}")
+        self.send(RESULT, (request, code, detail))
+
+    def next_request(self):
+        self.requests += 1
+        return self.requests
+
+    def changed(self):
+        if not self.radios_timer:
+            self.radios_timer = GLib.timeout_add(RADIOS_MS, self.radios_due)
+        if not self.lists_timer:
+            self.lists_timer = GLib.timeout_add(LIST_MS, self.lists_due)
+
+    def radios(self):
+        return self.network.state(), self.blue.state(), self.network.network(), self.blue.connected_name()
+
+    def radios_due(self):
+        self.radios_timer = 0
+        values = self.radios()
+        states = dict(zip(RADIO_NAMES, values))
+        if self.airplane is not None:
+            left = [radio for radio in self.airplane if not (self.seen[radio] == 0 and states[radio] == 1)]
+            if left != self.airplane:
+                self.save_airplane(left)
+        self.seen = states
+        self.push(RADIOS, values)
+        return False
+
+    def lists_due(self):
+        self.lists_timer = 0
+        if self.wifi_watch:
+            rows = self.network.entries()
+            self.push(WIFI_LIST, (len(rows),) + tuple(field for row in rows for field in row))
+        rows = self.blue.entries(self.bt_watch)
+        self.push(BT_LIST, (len(rows),) + tuple(field for row in rows for field in row))
+        return False
+
+    def load_airplane(self):
+        try:
+            with open(self.airplane_path) as handle:
+                radios = json.load(handle)
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as error:
+            log(f"cannot read {self.airplane_path}: {error}")
+            return None
+        if not isinstance(radios, list) or not all(radio in RADIO_NAMES for radio in radios):
+            log(f"{self.airplane_path} is not a list of radios")
+            return None
+        return radios or None
+
+    def save_airplane(self, radios):
+        self.airplane = radios or None
+        try:
+            if radios:
+                write_atomic(self.airplane_path, json.dumps(radios) + "\n")
+            else:
+                os.remove(self.airplane_path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            log(f"cannot write {self.airplane_path}: {error}")
+
+    def switch(self, radio, on):
+        if radio == "wifi":
+            self.network.set_enabled(on)
+        else:
+            self.blue.set_powered(on)
 
     def hello(self, reader):
         version = read_int(reader)
@@ -632,17 +1464,52 @@ class Bridge:
         return None
 
     def set_radio(self, reader):
-        read_choice(reader, 2)
-        read_choice(reader, 2)
-        return (NOT_READY,)
+        radio = read_choice(reader, 2)
+        on = read_choice(reader, 2)
+        cache = self.network if radio == 0 else self.blue
+        if self.callback is None or not cache.ready():
+            return (NOT_READY,)
+        if (self.network.device() if radio == 0 else self.blue.adapter()) is None:
+            return (UNAVAILABLE,)
+        self.switch(RADIO_NAMES[radio], on)
+        return (OK,)
 
     def set_airplane(self, reader):
-        read_choice(reader, 2)
-        return (NOT_READY,)
+        on = read_choice(reader, 2)
+        if self.callback is None:
+            return (NOT_READY,)
+        states = dict(zip(RADIO_NAMES, self.radios()))
+        self.seen = states
+        if on:
+            if self.airplane is None:
+                self.save_airplane([radio for radio in RADIO_NAMES if states[radio] == 1])
+            for radio in RADIO_NAMES:
+                if states[radio] == 1:
+                    self.switch(radio, False)
+        elif self.airplane is not None:
+            for radio in self.airplane:
+                if states[radio] == 0:
+                    self.switch(radio, True)
+            self.save_airplane([])
+        log(f"airplane {on}")
+        return (OK,)
 
     def watch_wifi(self, reader):
-        read_choice(reader, 2)
-        return (NOT_READY,)
+        on = read_choice(reader, 2)
+        if self.callback is None:
+            return (NOT_READY,)
+        if not on:
+            self.wifi_watch = False
+            return (OK,)
+        if not self.network.ready():
+            return (NOT_READY,)
+        if self.network.device() is None:
+            return (UNAVAILABLE,)
+        self.wifi_watch = True
+        self.sent.pop(WIFI_LIST, None)
+        self.network.scan()
+        self.changed()
+        return (OK,)
 
     def connect_wifi(self, reader):
         ident = read_text(reader, 128)
@@ -651,25 +1518,53 @@ class Bridge:
             raise BadArgument()
         if len(password) == 64 and not HEX.fullmatch(password):
             raise BadArgument()
-        return (NOT_READY, 0)
+        if self.callback is None or not self.network.ready():
+            return (NOT_READY, 0)
+        if self.network.device() is None:
+            return (UNAVAILABLE, 0)
+        return self.network.connect(ident, password)
 
     def watch_bluetooth(self, reader):
-        read_choice(reader, 2)
-        return (NOT_READY,)
+        on = read_choice(reader, 2)
+        if self.callback is None:
+            return (NOT_READY,)
+        if not on:
+            self.bt_watch = False
+            self.blue.discover(False)
+            self.changed()
+            return (OK,)
+        if not self.blue.ready():
+            return (NOT_READY,)
+        if self.blue.adapter() is None:
+            return (UNAVAILABLE,)
+        self.bt_watch = True
+        self.blue.discover(True)
+        self.changed()
+        return (OK,)
 
     def connect_bluetooth(self, reader):
-        read_address(reader)
-        read_choice(reader, 2)
-        return (NOT_READY, 0)
+        address = read_address(reader)
+        connect = read_choice(reader, 2)
+        if self.callback is None or not self.blue.ready():
+            return (NOT_READY, 0)
+        if self.blue.adapter() is None:
+            return (UNAVAILABLE, 0)
+        return self.blue.connect_device(address, connect)
 
     def pair_bluetooth(self, reader):
-        read_address(reader)
-        return (NOT_READY, 0)
+        address = read_address(reader)
+        if self.callback is None or not self.blue.ready():
+            return (NOT_READY, 0)
+        if self.blue.adapter() is None:
+            return (UNAVAILABLE, 0)
+        return self.blue.pair(address)
 
     def answer_pairing(self, reader):
-        read_int(reader)
-        read_choice(reader, 2)
-        return (NOT_READY,)
+        prompt = read_int(reader)
+        accept = read_choice(reader, 2)
+        if self.callback is None or not self.blue.ready():
+            return (NOT_READY,)
+        return (self.blue.answer(prompt, accept),)
 
     def power(self, reader):
         reason = read_text(reader, 64)
@@ -706,16 +1601,10 @@ class Bridge:
             try:
                 self.bus.call_sync(*LOGIND, method, args, None, Gio.DBusCallFlags.NONE, STOP_CALL_MS, None)
             except GLib.Error as error:
-                log(f"{method} failed: {Gio.DBusError.get_remote_error(error) or error.message}")
+                log(f"{method} failed: {error_name(error) or error.message}")
             return
 
-        def done(bus, result):
-            try:
-                bus.call_finish(result)
-            except GLib.Error as error:
-                log(f"{method} failed: {Gio.DBusError.get_remote_error(error) or error.message}")
-
-        self.bus.call(*LOGIND, method, args, None, Gio.DBusCallFlags.NONE, -1, None, done)
+        self.bus.call(*LOGIND, method, args, None, Gio.DBusCallFlags.NONE, -1, None, logged(method))
 
     def quit(self):
         self.fire(True)
