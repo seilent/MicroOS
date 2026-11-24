@@ -363,7 +363,7 @@ for f in overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk 
   [[ $(rpm -qf --qf '%{NAME}' "$product/$f" 2>/dev/null) == microos-android-guest-apks ]] || fail "$product/$f is not microos-android-guest-apks's"
 done
 [[ $(find /usr/share/guestos/android/system -type f | wc -l) == 4 ]] || fail "/usr/share/guestos/android/system holds more than the four guest APKs"
-for c in flock adb lxc-info; do
+for c in flock adb lxc-info pw-cli pw-dump; do
   command -v "$c" >/dev/null || fail "$c is not on PATH, the Android session needs it"
 done
 for f in /usr/bin/steamvr /usr/lib/android-sdk /usr/share/microos-lepton /usr/libexec/microos/microos-lepton; do
