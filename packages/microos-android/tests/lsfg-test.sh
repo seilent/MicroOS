@@ -5,7 +5,6 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
 libexec="${repo}/data/usr/libexec/microos"
 writer="${libexec}/microos-android-lsfg"
-stop_script="${libexec}/microos-android-stop"
 root=$(cd "${repo}/../.." && pwd)
 microsetd="${root}/devices/pm2/tests/audio-policy/microsetd"
 [[ -f "${microsetd}" ]] || microsetd="${root}/tests/audio-policy/microsetd"
@@ -54,23 +53,17 @@ export MICROOS_RUNTIME_DIR="${T}/run/microos-android"
 mkdir -p "${STATE}/settings" "${STATE}/props" "${GUEST}" "${T}/bin" "${MICROOS_RUNTIME_DIR}"
 echo 1 > "${STATE}/debuggable"
 
-cat > "${T}/bin/podman" <<'STUB'
+cat > "${T}/bin/guest" <<'STUB'
 #!/usr/bin/bash
-printf 'podman %s %s %s\n' "$1" "$2" "${3:-}" >> "${STATE}/podman"
-if [[ "$1" == exec ]]; then
-    [[ ! -e "${STATE}/gone" ]] || { echo 'Error: no container with name or ID "lepton-android" found' >&2; exit 125; }
-    if [[ -e "${STATE}/fail-once" ]]; then
-        rm -f "${STATE}/fail-once"
-        exit 125
-    fi
-    if [[ "$3" == /system/bin/sh ]]; then
-        printf '%s\n--\n' "$5" >> "${STATE}/scripts"
-        exec sh -c "${5//\/system\/bin\//${GUEST}/}"
-    fi
-    exit 0
+printf 'guest %s\n' "$1" >> "${STATE}/execs"
+[[ "$1" == sh && $# == 2 ]] || exit 99
+[[ ! -e "${STATE}/gone" ]] || { echo 'microos-android-guest: cannot connect to 192.168.240.112:5555' >&2; exit 255; }
+if [[ -e "${STATE}/fail-once" ]]; then
+    rm -f "${STATE}/fail-once"
+    exit 255
 fi
-[[ "$*" == "stop -t 1 lepton-android" ]] && exit 0
-exit 99
+printf '%s\n--\n' "$2" >> "${STATE}/scripts"
+exec sh -c "${2//\/system\/bin\//${GUEST}/}"
 STUB
 cat > "${GUEST}/cmd" <<'STUB'
 #!/usr/bin/bash
@@ -92,7 +85,8 @@ cat > "${GUEST}/getprop" <<'STUB'
 echo "getprop $1" >> "${STATE}/guest"
 cat "${STATE}/debuggable"
 STUB
-chmod 0755 "${T}/bin/podman" "${GUEST}/"*
+chmod 0755 "${T}/bin/guest" "${GUEST}/"*
+export MICROOS_ANDROID_GUEST="${T}/bin/guest"
 export PATH="${T}/bin:${PATH}"
 
 on_app=com.example.VkCube
@@ -401,61 +395,25 @@ on() {
     printf '%s\n' "${writer_pid}" > "${MICROOS_RUNTIME_DIR}/lsfg-writer.pid"
 }
 
-case_name="stop with the container gone"
+case_name="the clear at stop"
 on
-: > "${STATE}/podman"
+kill -TERM "${writer_pid}"
+wait "${writer_pid}" 2>/dev/null
+: > "${STATE}/guest"
+rc=0
+"${writer}" clear 2> "${T}/stop.err" || rc=$?
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${T}/stop.err")"
+is_cleared || fail "not cleared: $(ls -A "${STATE}/settings")"
+grep -qxF "microos-android-lsfg: cleared at stop" "${T}/stop.err" || fail "no log: $(cat "${T}/stop.err")"
+[[ "$(cat "${STATE}/guest")" == "${cleared_log}" ]] || fail "the clear: $(cat "${STATE}/guest")"
+
+case_name="the clear at stop with the guest gone"
 : > "${STATE}/gone"
 rc=0
-timeout 15 "${stop_script}" 2> "${T}/stop.err" || rc=$?
+"${writer}" clear 2> "${T}/stop.err" || rc=$?
 rm -f "${STATE}/gone"
-[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${T}/stop.err")"
-alive "${writer_pid}" && fail "the writer still runs"
-[[ ! -e "${MICROOS_RUNTIME_DIR}/lsfg-writer.pid" ]] || fail "the pid file is left"
-grep -qxF "microos-android-stop: the frame generation clear failed" "${T}/stop.err" || fail "no log: $(cat "${T}/stop.err")"
-[[ "$(head -n 1 "${STATE}/podman")" == "podman exec lepton-android /system/bin/sh" ]] \
-    || fail "the clear is not the first guest call: $(cat "${STATE}/podman")"
-grep -n "" "${STATE}/podman" | grep -q "^[2-9]:podman exec lepton-android /system/bin/am" \
-    || fail "no HOME intent after the clear: $(cat "${STATE}/podman")"
-[[ "$(tail -n 1 "${STATE}/podman")" == "podman stop -t 1" ]] || fail "no stop: $(cat "${STATE}/podman")"
-wait "${writer_pid}" 2>/dev/null
-
-case_name="stop, the pid file names another process"
-sleep 30 &
-other=$!
-pids+=("${other}")
-printf '%s\n' "${other}" > "${MICROOS_RUNTIME_DIR}/lsfg-writer.pid"
-"${stop_script}" 2> "${T}/stop.err"
-alive "${other}" || fail "the stop killed a process that is not the writer"
-[[ ! -e "${MICROOS_RUNTIME_DIR}/lsfg-writer.pid" ]] || fail "the pid file is left"
-is_cleared || fail "not cleared: $(ls -A "${STATE}/settings")"
-kill "${other}" 2>/dev/null
-
-case_name="Changed during the stop"
-on
-: > "${STATE}/slow"
-n=$(logged)
-: > "${STATE}/guest"
-poke lsfg.multiplier "<uint32 3>"
-for _ in {1..40}; do [[ -s "${STATE}/guest" ]] && break; sleep 0.05; done
-[[ "$(head -n 1 "${STATE}/guest")" == "setprop debug.lsfgvk.fps 20" ]] || fail "the 3x reconcile did not start: $(cat "${STATE}/guest")"
-"${stop_script}" 2> "${T}/stop.err" &
-stopper=$!
-for _ in {1..40}; do grep -qxF "microos-android-stop: sent TERM to the frame generation writer ${writer_pid}" "${T}/stop.err" && break; sleep 0.05; done
-grep -qxF "microos-android-stop: sent TERM to the frame generation writer ${writer_pid}" "${T}/stop.err" \
-    || fail "the stop did not TERM the writer: $(cat "${T}/stop.err")"
-poke lsfg.multiplier "<uint32 2>"
-poke lsfg.android_state "<false>"
-rc=0
-wait "${stopper}" || rc=$?
-rm -f "${STATE}/slow"
-[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${T}/stop.err")"
-alive "${writer_pid}" && fail "the writer still runs"
-wait "${writer_pid}" 2>/dev/null
-grep -qxF "microos-android-lsfg: frame generation 3x for ${on_app}, base cap 20" "${T}/out" \
-    || fail "the reconcile running at the stop did not finish: $(cat "${T}/out")"
-(( $(logged) == n + 1 )) || fail "a reconcile after the stop: $(cat "${T}/out")"
-is_cleared || fail "the stop clear did not run last: $(ls -A "${STATE}/settings") $(cat "${STATE}/guest")"
-[[ "$(tail -n 8 "${STATE}/guest")" == "${cleared_log}" ]] || fail "the last guest calls are not the clear: $(cat "${STATE}/guest")"
+[[ "${rc}" == 1 ]] || fail "exit ${rc}"
+grep -q "microos-android-lsfg: the clear at stop failed" "${T}/stop.err" || fail "no log: $(cat "${T}/stop.err")"
 
 [[ "${failures}" == 0 ]] || exit 1
 echo "lsfg-test: ok"

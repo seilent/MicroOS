@@ -21,15 +21,16 @@ command -v python3 > /dev/null || { echo "FAIL: python3 missing" >&2; exit 1; }
 export STATE="${T}/state"
 export MICROOS_POWER_SUPPLY="${T}/power_supply"
 export MICROOS_BATTERY_POLL_MS=600000
+export MICROOS_ANDROID_GUEST="${T}/bin/guest"
 mkdir -p "${T}/bin" "${STATE}"
-cat > "${T}/bin/podman" <<'FAKE'
+cat > "${T}/bin/guest" <<'FAKE'
 #!/usr/bin/bash
-echo "$*" >> "${STATE}/podman"
-if [[ -e "${STATE}/podman-rc" ]]; then
-    cat "${STATE}/podman-out" 2>/dev/null || true
-    exit "$(cat "${STATE}/podman-rc")"
+echo "$*" >> "${STATE}/guest"
+if [[ -e "${STATE}/guest-rc" ]]; then
+    cat "${STATE}/guest-out" 2>/dev/null || true
+    exit "$(cat "${STATE}/guest-rc")"
 fi
-[[ "$1 $2 $3 $4" == "exec lepton-android /system/bin/sh -c" ]] || exit 99
+[[ "$1" == sh && $# == 2 ]] || exit 99
 while read -r _ _ _ key value _; do
     [[ -n "${key}" ]] || continue
     echo "${key} ${value}" >> "${STATE}/sets"
@@ -39,7 +40,7 @@ while read -r _ _ _ key value _; do
     else
         echo "@${key} 0"
     fi
-done <<< "$5"
+done <<< "$2"
 FAKE
 cat > "${T}/bin/udevadm" <<'FAKE'
 #!/usr/bin/bash
@@ -69,7 +70,7 @@ uevent() {
 reset() {
     rm -rf "${MICROOS_POWER_SUPPLY}" "${STATE}"
     mkdir -p "${MICROOS_POWER_SUPPLY}" "${STATE}"
-    : > "${STATE}/podman"
+    : > "${STATE}/guest"
     : > "${STATE}/sets"
     : > "${STATE}/uevents"
     supply qcom-battmgr-bat type=Battery status=Discharging capacity=92 temp=293 charge_counter=6188840 present=1
@@ -91,9 +92,9 @@ stop() {
 
 sets() { cat "${STATE}/sets"; }
 
-clear_sets() { : > "${STATE}/sets"; : > "${STATE}/podman"; }
+clear_sets() { : > "${STATE}/sets"; : > "${STATE}/guest"; }
 
-execs() { grep -c '^exec lepton-android /system/bin/sh -c' "${STATE}/podman" || true; }
+execs() { grep -c '^sh ' "${STATE}/guest" || true; }
 
 wait_sets() {
     for _ in {1..100}; do
@@ -115,11 +116,11 @@ reset
 supply hid-0005:045E:0B13.0001-battery type=Battery scope=Device status=Discharging capacity=40 present=1
 supply hid-0005:045E:0B13.0001-charger type=USB scope=Device online=1
 start
-wait_sets 7 || fail "the start set $(sets | wc -l) values: $(cat "${STATE}/podman")"
+wait_sets 7 || fail "the start set $(sets | wc -l) values: $(cat "${STATE}/guest")"
 [[ "$(sets)" == $'ac 0\nusb 0\nwireless 0\nstatus 3\nlevel 92\ntemp 293\ncounter 6188840' ]] || fail "the start: $(sets)"
-[[ "$(execs)" == 1 ]] || fail "the start ran $(execs) execs: $(cat "${STATE}/podman")"
-grep -qF '/system/bin/cmd battery set level 92 2>&1; echo "@level $?"' "${STATE}/podman" \
-    || fail "the start script: $(cat "${STATE}/podman")"
+[[ "$(execs)" == 1 ]] || fail "the start ran $(execs) execs: $(cat "${STATE}/guest")"
+grep -qF '/system/bin/cmd battery set level 92 2>&1; echo "@level $?"' "${STATE}/guest" \
+    || fail "the start script: $(cat "${STATE}/guest")"
 [[ "$(cat "${STATE}/udevadm")" == "monitor --udev --subsystem-match=power_supply" ]] \
     || fail "udevadm ran with: $(cat "${STATE}/udevadm")"
 wait_log "set ac 0, usb 0, wireless 0, status 3, level 92, temp 293, counter 6188840" \
@@ -178,13 +179,13 @@ sleep 0.3
 [[ -z "$(sets)" ]] || fail "a set value was sent again: $(sets)"
 
 clear_sets
-echo 125 > "${STATE}/podman-rc"
-echo "Error: no container with name or ID lepton-android found" > "${STATE}/podman-out"
+echo 125 > "${STATE}/guest-rc"
+echo "microos-android-guest: cannot connect to 192.168.240.112:5555" > "${STATE}/guest-out"
 supply qcom-battmgr-bat capacity=88
 uevent qcom-battmgr-bat
-wait_log "battery set level 88: podman exec exited 125: Error: no container with name or ID lepton-android found" \
+wait_log "battery set level 88: the guest exec exited 125: microos-android-guest: cannot connect to 192.168.240.112:5555" \
     || fail "a failed exec was not logged: $(cat "${T}/out")"
-rm -f "${STATE}/podman-rc" "${STATE}/podman-out"
+rm -f "${STATE}/guest-rc" "${STATE}/guest-out"
 uevent qcom-battmgr-bat
 wait_sets 1 || fail "a failed exec was not retried at the next uevent"
 [[ "$(sets)" == "level 88" ]] || fail "the retry after a failed exec: $(sets)"
@@ -194,11 +195,11 @@ pgrep -f "tail -n \+1 -f ${STATE}/uevents" > /dev/null && fail "udevadm outlived
 
 reset
 export MICROOS_BATTERY_POLL_MS=200
-echo 125 > "${STATE}/podman-rc"
+echo 125 > "${STATE}/guest-rc"
 start
-for _ in {1..100}; do grep -q "podman exec exited 125" "${T}/out" && break; sleep 0.05; done
-grep -q "podman exec exited 125" "${T}/out" || fail "a failed first exec was not logged: $(cat "${T}/out")"
-rm -f "${STATE}/podman-rc"
+for _ in {1..100}; do grep -q "the guest exec exited 125" "${T}/out" && break; sleep 0.05; done
+grep -q "the guest exec exited 125" "${T}/out" || fail "a failed first exec was not logged: $(cat "${T}/out")"
+rm -f "${STATE}/guest-rc"
 wait_log "set ac 0, usb 0, wireless 0, status 3, level 92, temp 293, counter 6188840" \
     || fail "a failed first exec was not sent again at the next poll: $(cat "${T}/out")"
 clear_sets
@@ -207,6 +208,7 @@ wait_sets 1 || fail "the poll did not read a capacity change"
 [[ "$(sets)" == "level 89" ]] || fail "the poll: $(sets)"
 stop
 export MICROOS_BATTERY_POLL_MS=600000
+export MICROOS_ANDROID_GUEST="${T}/bin/guest"
 
 for pair in "Full 5" "Not charging 4" "Unknown 1" "Bogus 1"; do
     reset

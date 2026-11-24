@@ -3,9 +3,7 @@ set -u
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-libexec="${repo}/data/usr/libexec/microos"
-client="${libexec}/microos-android-client"
-run_script="${libexec}/microos-android-run"
+client="${repo}/data/usr/libexec/microos/microos-android-client"
 
 T=$(mktemp -d)
 pids=()
@@ -14,21 +12,21 @@ cleanup() {
         kill "${p}" 2>/dev/null || true
         wait "${p}" 2>/dev/null || true
     done
-    rm -rf "${T}"
+    rm -rf "${T:?}"
 }
 trap cleanup EXIT
 
 failures=0
 fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
 
-for t in dbus-daemon python3; do
+for t in dbus-daemon python3 gdbus; do
     command -v "$t" > /dev/null || { echo "FAIL: $t missing" >&2; exit 1; }
 done
 
-cat > "${T}/session.conf" <<EOF
+cat > "${T}/bus.conf" <<EOF
 <busconfig>
   <type>session</type>
-  <listen>unix:path=${T}/session</listen>
+  <listen>unix:path=${T}/bus</listen>
   <auth>EXTERNAL</auth>
   <policy context="default">
     <allow user="*"/>
@@ -38,10 +36,11 @@ cat > "${T}/session.conf" <<EOF
   </policy>
 </busconfig>
 EOF
-dbus-daemon --config-file="${T}/session.conf" --nofork &
+dbus-daemon --config-file="${T}/bus.conf" --nofork &
 pids+=($!)
-for _ in {1..50}; do [[ -S "${T}/session" ]] && break; sleep 0.1; done
-export DBUS_SESSION_BUS_ADDRESS="unix:path=${T}/session"
+for _ in {1..50}; do [[ -S "${T}/bus" ]] && break; sleep 0.1; done
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${T}/bus"
+export DBUS_SYSTEM_BUS_ADDRESS="unix:path=${T}/bus"
 
 cat > "${T}/manager.py" <<'PY'
 import os
@@ -61,11 +60,6 @@ XML = """
       <arg type="s" direction="in"/>
       <arg type="o" direction="out"/>
     </method>
-    <method name="StopUnit">
-      <arg type="s" direction="in"/>
-      <arg type="s" direction="in"/>
-      <arg type="o" direction="out"/>
-    </method>
     <signal name="JobRemoved">
       <arg type="u"/>
       <arg type="o"/>
@@ -75,73 +69,6 @@ XML = """
   </interface>
 </node>
 """
-bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-jobs = {"n": 0}
-states = {}
-
-
-def set_unit_state(unit, value):
-    states[unit] = value
-    with open(os.path.join(STATE, "unit-state"), "a") as handle:
-        handle.write("%s %s\n" % (unit, value))
-
-
-def call(conn, sender, path, interface, name, params, invocation):
-    unit, mode = params.unpack()
-    jobs["n"] += 1
-    job = jobs["n"]
-    with open(os.path.join(STATE, "calls"), "a") as handle:
-        handle.write("%s %s %s\n" % ("start" if name == "StartUnit" else "stop", unit, mode))
-    if name == "StopUnit" and os.path.exists(os.path.join(STATE, "stop-error")):
-        invocation.return_dbus_error("org.freedesktop.systemd1.NoSuchUnit", unit)
-        return
-    invocation.return_value(GLib.Variant("(o)", ("/org/freedesktop/systemd1/job/%d" % job,)))
-    if name == "StopUnit":
-        set_unit_state(unit, "inactive")
-        try:
-            with open(os.path.join(STATE, "stop-result")) as handle:
-                result = handle.read().strip()
-        except OSError:
-            result = "done"
-        delay = 0
-        try:
-            with open(os.path.join(STATE, "stop-delay")) as handle:
-                delay = int(handle.read().strip())
-        except (OSError, ValueError):
-            delay = 0
-
-        def removed_stop():
-            bus.emit_signal(None, "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "JobRemoved",
-                            GLib.Variant("(uoss)", (job, "/org/freedesktop/systemd1/job/%d" % job, unit, result)))
-            return False
-
-        GLib.timeout_add(delay, removed_stop)
-        return
-
-    try:
-        with open(os.path.join(STATE, "job-result")) as handle:
-            result = handle.read().strip()
-    except OSError:
-        result = "none"
-    if result == "none":
-        return
-    if result == "done":
-        set_unit_state(unit, "active")
-
-    def removed():
-        bus.emit_signal(None, "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "JobRemoved",
-                        GLib.Variant("(uoss)", (job, "/org/freedesktop/systemd1/job/%d" % job, unit,
-                                                "done" if result == "ready" else result)))
-        return False
-
-    try:
-        with open(os.path.join(STATE, "job-delay")) as handle:
-            delay = int(handle.read().strip())
-    except (OSError, ValueError):
-        delay = 150
-    GLib.timeout_add(delay, removed)
-
-
 UNIT_XML = """
 <node>
   <interface name="org.freedesktop.DBus.Properties">
@@ -151,33 +78,47 @@ UNIT_XML = """
       <arg type="v" direction="out"/>
     </method>
   </interface>
-  <interface name="org.freedesktop.systemd1.Unit">
-    <property name="ActiveState" type="s" access="read"/>
-  </interface>
 </node>
 """
+bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+jobs = {"n": 0}
 
 
-def get_state(unit):
-    if unit in states:
-        return states[unit]
+def read(name, fallback):
     try:
-        with open(os.path.join(STATE, "unit-state")) as handle:
-            for line in handle:
-                name, value = line.split()
-                states[name] = value
-    except (OSError, ValueError):
-        pass
-    return states.get(unit, "inactive")
+        with open(os.path.join(STATE, name)) as handle:
+            return handle.read().strip()
+    except OSError:
+        return fallback
+
+
+def call(conn, sender, path, interface, name, params, invocation):
+    unit, mode = params.unpack()
+    jobs["n"] += 1
+    job = "/org/freedesktop/systemd1/job/%d" % jobs["n"]
+    with open(os.path.join(STATE, "calls"), "a") as handle:
+        handle.write("start %s %s\n" % (unit, mode))
+    invocation.return_value(GLib.Variant("(o)", (job,)))
+    if unit != "microos-android.service":
+        return
+    result = read("job-result", "done")
+    if result == "done":
+        with open(os.path.join(STATE, "unit-state"), "w") as handle:
+            handle.write("active\n")
+        Gio.bus_own_name_on_connection(bus, "id.waydro.Session", Gio.BusNameOwnerFlags.NONE, None, None)
+
+    def removed():
+        bus.emit_signal(None, "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "JobRemoved",
+                        GLib.Variant("(uoss)", (jobs["n"], job, unit, result)))
+        return False
+
+    GLib.timeout_add(100, removed)
 
 
 def properties(conn, sender, path, interface, name, params, invocation):
-    target, prop = params.unpack()
-    if target != "org.freedesktop.systemd1.Unit" or prop != "ActiveState":
-        invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownProperty", prop)
-        return
     unit = path.rsplit("/", 1)[-1].replace("_2d", "-").replace("_40", "@").replace("_2e", ".")
-    invocation.return_value(GLib.Variant("(v)", (GLib.Variant("s", get_state(unit)),)))
+    value = read("unit-state", "inactive") if unit == "microos-android.service" else read("session-state", "active")
+    invocation.return_value(GLib.Variant("(v)", (GLib.Variant("s", value),)))
 
 
 node = Gio.DBusNodeInfo.new_for_xml(XML)
@@ -185,678 +126,182 @@ bus.register_object("/org/freedesktop/systemd1", node.interfaces[0], call, None,
 unit_node = Gio.DBusNodeInfo.new_for_xml(UNIT_XML)
 for unit in ("microos-android.service", "gamescope-session-plus@android.service"):
     path = "/org/freedesktop/systemd1/unit/" + unit.replace("-", "_2d").replace("@", "_40").replace(".", "_2e")
-    bus.register_object(path, unit_node.interfaces[0], None, None, None)
-    bus.register_object(path, unit_node.interfaces[1], None, properties, None)
+    bus.register_object(path, unit_node.interfaces[0], properties, None, None)
 Gio.bus_own_name_on_connection(bus, "org.freedesktop.systemd1", Gio.BusNameOwnerFlags.NONE, None, None)
 GLib.MainLoop().run()
 PY
-export STATE="${T}/state"
-mkdir -p "${STATE}"
-: > "${STATE}/unit-state"
-python3 "${T}/manager.py" "${STATE}" > "${T}/manager.log" 2>&1 &
-pids+=($!)
-for _ in {1..100}; do
-    gdbus call --session --dest org.freedesktop.DBus --object-path / --method org.freedesktop.DBus.ListNames 2>/dev/null \
-        | grep -q org.freedesktop.systemd1 && break
-    sleep 0.05
-done
 
+export STATE="${T}/state"
 export HOME="${T}/home"
-export MICROOS_HOME="${T}/home"
 export XDG_RUNTIME_DIR="${T}/xdg"
 export MICROOS_RUNDIR="${T}/run"
 export MICROOS_RUNTIME_DIR="${T}/xdg/microos-android"
-export XDG_STATE_HOME="${T}/home/.local/state"
 export MICROOS_ANDROID_STATE="${T}/home/.local/state/microos-android"
-export MICROOS_ANDROID_DATA="${T}/home/.local/share/microos-android"
-export MICROOS_GAPPS="${MICROOS_ANDROID_DATA}/gapps"
-export MICROOS_ANDROID_RUN="${T}/bin/run-check"
-export MICROOS_KEYBOARD_INSTALL="${T}/bin/keyboard"
+export MICROOS_WAYDROID_DATA="${T}/home/.local/share/microos-waydroid"
+export MICROOS_ANDROID_CHECK="${T}/bin/check"
+export MICROOS_ANDROID_GUEST="${T}/bin/guest"
+export MICROOS_WAYDROID="${T}/bin/waydroid"
+export MICROOS_TRACK="${T}/bin/track"
+export MICROOS_ANDROID_GSF_ID="${T}/gsf-id"
 export MICROOS_ANDROID_NO_UI=1
 export MICROOS_REFUSE_WAIT=1
-export MICROOS_SYSTEM_CARD="${T}/system-card"
-: > "${MICROOS_SYSTEM_CARD}"
 export DISPLAY=:0
 export GAMESCOPE_WAYLAND_DISPLAY=gamescope-0
 export MICROOS_DISPLAY_FILE="${T}/display"
 printf 'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\n' > "${MICROOS_DISPLAY_FILE}"
 unset MANGOHUD_CONFIGFILE
-mkdir -p "${T}/bin" "${MICROOS_RUNDIR}" "${MICROOS_RUNTIME_DIR}" "${MICROOS_ANDROID_STATE}" "${T}/xdg"
+mkdir -p "${T}/bin" "${STATE}" "${MICROOS_RUNDIR}" "${MICROOS_RUNTIME_DIR}" "${HOME}"
+echo "android 1 7" > "${MICROOS_RUNDIR}/session-current"
 
-cat > "${T}/bin/run-check" <<STUB
+cat > "${T}/bin/check" <<'STUB'
 #!/usr/bin/bash
-echo "check \$*" >> "${STATE}/calls"
-cat "${STATE}/check-out" 2>/dev/null || true
-cat "${STATE}/check-err" >&2 2>/dev/null || true
-exit "\$(cat "${STATE}/check-rc" 2>/dev/null || echo 0)"
+cat "${STATE}/check-out" 2>/dev/null
+exit "$(cat "${STATE}/check-rc" 2>/dev/null || echo 0)"
 STUB
-cat > "${T}/bin/keyboard" <<STUB
+cat > "${T}/bin/guest" <<'STUB'
 #!/usr/bin/bash
-echo "keyboard \$*" >> "${STATE}/calls"
-exit 0
+echo "$*" >> "${STATE}/guest"
+case "$1" in
+    boot) [[ -e "${STATE}/booted" ]] ;;
+    opts) exit 0 ;;
+    sh) [[ "$2" == "pm list packages" ]] && cat "${STATE}/packages" ;;
+esac
 STUB
-cat > "${T}/bin/keyboard-gapps" <<STUB
+cat > "${T}/bin/waydroid" <<'STUB'
 #!/usr/bin/bash
-echo "keyboard \$*" >> "${STATE}/calls"
-printf 'gapps\n' > "${MICROOS_RUNTIME_DIR}/first-boot"
-exit 0
+echo "$* XDG_DATA_HOME=${XDG_DATA_HOME} WAYLAND_DISPLAY=${WAYLAND_DISPLAY}" >> "${STATE}/waydroid"
 STUB
-cat > "${T}/bin/xprop" <<STUB
+cat > "${T}/bin/systemctl" <<'STUB'
 #!/usr/bin/bash
-echo "DISPLAY=\${DISPLAY:-} xprop \$*" >> "${STATE}/xprop"
-cat "${STATE}/xprop-err" >&2 2>/dev/null || true
-exit "\$(cat "${STATE}/xprop-rc" 2>/dev/null || echo 0)"
+echo "$*" >> "${STATE}/systemctl"
+exit "$(cat "${STATE}/layer-rc" 2>/dev/null || echo 0)"
 STUB
-cat > "${T}/bin/microos-session-track" <<STUB
+cat > "${T}/bin/track" <<'STUB'
 #!/usr/bin/bash
-echo "track \$*" >> "${STATE}/calls"
-cat "${STATE}/track-err" >&2 2>/dev/null || true
-exit "\$(cat "${STATE}/track-rc" 2>/dev/null || echo 0)"
+echo "$*" >> "${STATE}/track"
+STUB
+cat > "${T}/bin/xprop" <<'STUB'
+#!/usr/bin/bash
+echo "$*" >> "${STATE}/xprop"
 STUB
 chmod 0755 "${T}/bin/"*
 export PATH="${T}/bin:${PATH}"
-export MICROOS_TRACK="${T}/bin/microos-session-track"
+
+manager=
+start_manager() {
+    [[ -z "${manager}" ]] || { kill "${manager}" 2>/dev/null; wait "${manager}" 2>/dev/null; }
+    python3 "${T}/manager.py" "${STATE}" > "${T}/manager.log" 2>&1 &
+    manager=$!
+    pids+=("${manager}")
+    for _ in {1..100}; do
+        gdbus call --session --dest org.freedesktop.DBus --object-path / --method org.freedesktop.DBus.ListNames \
+            2>/dev/null | grep -q org.freedesktop.systemd1 && break
+        sleep 0.05
+    done
+}
 
 reset() {
-    rm -rf "${MICROOS_RUNTIME_DIR}" "${XDG_STATE_HOME}" "${MICROOS_GAPPS}" "${MICROOS_RUNDIR}"
-    mkdir -p "${MICROOS_RUNTIME_DIR}" "${XDG_STATE_HOME}" "${MICROOS_RUNDIR}"
-    chmod 700 "${XDG_STATE_HOME}"
-    : > "${STATE}/calls"
-    : > "${STATE}/check-out"
-    : > "${STATE}/check-err"
-    : > "${STATE}/track-err"
-    echo 0 > "${STATE}/check-rc"
-    echo none > "${STATE}/job-result"
-    echo 1 > "${STATE}/track-rc"
-    rm -f "${STATE}/stop-delay" "${STATE}/stop-result" "${STATE}/stop-error" "${STATE}/job-delay"
-    rm -f "${STATE}/xprop" "${STATE}/xprop-err" "${STATE}/xprop-rc"
+    rm -rf "${STATE}" "${MICROOS_ANDROID_STATE}" "${MICROOS_RUNTIME_DIR}" "${MICROOS_ANDROID_GSF_ID}"
+    mkdir -p "${STATE}" "${MICROOS_RUNTIME_DIR}"
+    start_manager
 }
 
-state_ok() {
-    python3 -c 'import json,sys
-try:
-    d = json.load(open(sys.argv[1]))
-except (OSError, ValueError):
-    sys.exit(1)
-sys.exit(0 if eval(sys.argv[2]) else 1)' "${MICROOS_ANDROID_STATE}/state.json" "$1"
-}
-
-background() {
-    "${client}" > "${T}/out" 2>&1 &
-    client_pid=$!
-    pids+=("${client_pid}")
-}
-
-stop_client() {
-    kill "${client_pid}" 2>/dev/null || true
-    wait "${client_pid}" 2>/dev/null || true
-}
-
-session_serial() {
-    printf 'android gamescope-session-plus@android.service 4242 0\n' > "${MICROOS_RUNDIR}/session-current"
+state_of() {
+    python3 -c 'import json, sys
+d = json.load(open(sys.argv[1]))
+for p in sys.argv[2].split("."):
+    d = d.get(p, {}) if isinstance(d, dict) else {}
+print(d if isinstance(d, str) else "")' "${MICROOS_ANDROID_STATE}/state.json" "$1" 2>/dev/null
 }
 
 wait_for() {
-    local pattern=$1 file=${2:-${STATE}/calls}
-    for _ in {1..100}; do
-        grep -q "${pattern}" "${file}" 2>/dev/null && return 0
-        sleep 0.05
+    local i
+    for (( i = 0; i < 100; i++ )); do
+        eval "$1" && return 0
+        sleep 0.1
     done
     return 1
 }
 
-reset
-background
-for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/session.env" ]] && break; sleep 0.05; done
-grep -qx "DISPLAY=:0" "${MICROOS_RUNTIME_DIR}/session.env" || fail "session.env DISPLAY: $(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)"
-grep -qx "GAMESCOPE_WAYLAND_DISPLAY=gamescope-0" "${MICROOS_RUNTIME_DIR}/session.env" \
-    || fail "session.env GAMESCOPE_WAYLAND_DISPLAY: $(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)"
-grep -q "^MANGOHUD_CONFIGFILE=" "${MICROOS_RUNTIME_DIR}/session.env" \
-    && fail "session.env MANGOHUD_CONFIGFILE with none set: $(cat "${MICROOS_RUNTIME_DIR}/session.env")"
-wait_for "^start microos-android.service replace$" || fail "StartUnit was not called: $(cat "${STATE}/calls")"
-stop_client
-[[ "$(cat "${STATE}/xprop" 2>/dev/null)" == "DISPLAY=:0 xprop -root -f STEAM_TOUCH_CLICK_MODE 32c -set STEAM_TOUCH_CLICK_MODE 4" ]] \
-    || fail "touch mode: $(cat "${STATE}/xprop" 2>/dev/null)"
-grep -qx "microos-android-client: touch mode 4 set on :0" "${T}/out" || fail "touch mode not logged: $(cat "${T}/out")"
-state_ok 'd["touch"] == {"result": "set", "reason": ""}' || fail "touch mode: state $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
+refused() {
+    local want=$1 rc=0
+    timeout 20 python3 "${client}" 2> "${T}/err" || rc=$?
+    [[ "${rc}" == 1 ]] || fail "$2: exit ${rc}, $(tail -n 3 "${T}/err")"
+    [[ "$(state_of last.result)" == refused && "$(state_of last.reason)" == "${want}" ]] \
+        || fail "$2: state $(state_of last.result) $(state_of last.reason)"
+    grep -qx "refuse android 7 ${want}" "${STATE}/track" || fail "$2: no refusal recorded: $(cat "${STATE}/track" 2>/dev/null)"
+}
 
 reset
-echo 1 > "${STATE}/xprop-rc"
-echo "xprop: unable to open display ':0'" > "${STATE}/xprop-err"
-background
-wait_for "^start microos-android.service replace$" || fail "a failed touch mode stopped the start: $(cat "${T}/out")"
-stop_client
-grep -qxF "microos-android-client: touch mode not set on :0: xprop exited 1: xprop: unable to open display ':0'" "${T}/out" \
-    || fail "a failed touch mode not logged: $(cat "${T}/out")"
-state_ok 'd["touch"] == {"result": "failed", "reason": "xprop exited 1: xprop: unable to open display \x27:0\x27"}' \
-    || fail "a failed touch mode: state $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
-
-reset
-printf 'width=960\nheight=640\ndensity=213\n' > "${T}/display-pm2"
-MICROOS_DISPLAY_FILE="${T}/display-pm2" background
-wait_for "^start microos-android.service replace$" || fail "no touch mode: no start: $(cat "${T}/out")"
-stop_client
-[[ ! -e "${STATE}/xprop" ]] || fail "no touch mode: xprop ran: $(cat "${STATE}/xprop")"
-grep -q "touch mode" "${T}/out" && fail "no touch mode: logged: $(cat "${T}/out")"
-[[ ! -e "${MICROOS_ANDROID_STATE}/state.json" ]] || state_ok '"touch" not in d' \
-    || fail "no touch mode: state $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
-
-reset
-printf 'density=400\ntouch_mode=passthrough\n' > "${T}/display-bad"
-MICROOS_DISPLAY_FILE="${T}/display-bad" background
-wait_for "^start microos-android.service replace$" || fail "a bad touch mode: no start: $(cat "${T}/out")"
-stop_client
-[[ ! -e "${STATE}/xprop" ]] || fail "a bad touch mode: xprop ran: $(cat "${STATE}/xprop")"
-grep -qxF "microos-android-client: touch mode not set on :0: touch_mode=passthrough in ${T}/display-bad is not a gamescope touch mode" "${T}/out" \
-    || fail "a bad touch mode not logged: $(cat "${T}/out")"
-state_ok 'd["touch"]["result"] == "failed"' || fail "a bad touch mode: state $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
-
-reset
-MANGOHUD_CONFIGFILE=/tmp/mangohud.Ab3dE5fG background
-for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/session.env" ]] && break; sleep 0.05; done
-[[ "$(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)" == $'DISPLAY=:0\nGAMESCOPE_WAYLAND_DISPLAY=gamescope-0\nMANGOHUD_CONFIGFILE=/tmp/mangohud.Ab3dE5fG' ]] \
-    || fail "session.env MANGOHUD_CONFIGFILE: $(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)"
-stop_client
-
-reset
-MANGOHUD_CONFIGFILE=$'/tmp/mangohud.Ab3dE5fG\nMICROOS_LEPTON=/tmp/x' background
-for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/session.env" ]] && break; sleep 0.05; done
-[[ "$(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)" == $'DISPLAY=:0\nGAMESCOPE_WAYLAND_DISPLAY=gamescope-0' ]] \
-    || fail "session.env took a bad MANGOHUD_CONFIGFILE: $(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)"
-stop_client
-
-reset
-GAMESCOPE_WAYLAND_DISPLAY=dir/gamescope-0 background
-for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/session.env" ]] && break; sleep 0.05; done
-grep -qx "GAMESCOPE_WAYLAND_DISPLAY=dir/gamescope-0" "${MICROOS_RUNTIME_DIR}/session.env" \
-    || fail "session.env GAMESCOPE_WAYLAND_DISPLAY of a nested name: $(cat "${MICROOS_RUNTIME_DIR}/session.env" 2>/dev/null)"
-stop_client
-
-for form in gamescope-0 dir/gamescope-0; do
-    reset
-    GAMESCOPE_WAYLAND_DISPLAY="${form}" background
-    for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/session.env" ]] && break; sleep 0.05; done
-    stop_client
-    mkdir -p "$(dirname "${XDG_RUNTIME_DIR}/${form}")"
-    python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "${XDG_RUNTIME_DIR}/${form}"
-    cat > "${T}/bin/lepton" <<STUB
-#!/usr/bin/bash
-exit 1
-STUB
-    chmod 0755 "${T}/bin/lepton"
-    rc=0
-    env -i PATH="${PATH}" HOME="${HOME}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" \
-        MICROOS_RUNTIME_DIR="${MICROOS_RUNTIME_DIR}" MICROOS_ANDROID_DATA="${MICROOS_ANDROID_DATA}" \
-        MICROOS_ANDROID_CONTEXT="${T}/contexts/android" MICROOS_LEPTON="${T}/bin/lepton" \
-        MICROOS_PAD_NODES="${T}/bin/pad-nodes" MICROOS_POLL_S=0.05 MICROOS_OPTS="${T}/absent-opts" \
-        MICROOS_GAPPS="${T}/gapps" MICROOS_STUB_DIR="${T}/stub" MICROOS_DISPLAY_FILE="${T}/absent-display" \
-        MICROOS_STEAM_PIPE="${T}/no-steam.pipe" MICROOS_SESSION_WATCH="${T}/bin/no-watch" \
-        "GAMESCOPE_WAYLAND_DISPLAY=$(sed -n 's/^GAMESCOPE_WAYLAND_DISPLAY=//p' "${MICROOS_RUNTIME_DIR}/session.env")" \
-        bash "${run_script}" > /dev/null 2> "${T}/run-err" || rc=$?
-    [[ "${rc}" == 1 ]] || fail "the run with the client's ${form} session.env exited ${rc}"
-    grep -q "no gamescope display" "${T}/run-err" && fail "the run refused the client's ${form} name: $(cat "${T}/run-err")"
-    grep -q "no density" "${T}/run-err" || fail "the run with ${form} did not reach the display check: $(cat "${T}/run-err")"
-    rm -f "${XDG_RUNTIME_DIR}/${form}"
-done
-rmdir "${XDG_RUNTIME_DIR}/dir" 2>/dev/null || true
-
-reset
-echo ready > "${STATE}/job-result"
-background
-for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/ready" ]] && break; sleep 0.05; done
-[[ -f "${MICROOS_RUNTIME_DIR}/ready" ]] || fail "ready: the client did not write it: $(cat "${T}/out")"
-for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/start-done" ]] && break; sleep 0.05; done
-[[ -f "${MICROOS_RUNTIME_DIR}/start-done" ]] || fail "ready: start-done not written: $(cat "${T}/out")"
-grep -qx "keyboard lepton-android" "${STATE}/calls" || fail "ready: the keyboard did not run: $(cat "${STATE}/calls")"
-grep -qx "start microos-android-battery.service fail" "${STATE}/calls" \
-    || fail "ready: the battery mirror did not start: $(cat "${STATE}/calls")"
-grep -q "start microos-android-gapps-setup.service" "${STATE}/calls" && fail "ready: the setup unit ran with no first boot"
-state_ok 'd["last"]["result"] == "ready"' || fail "ready: state not ready: $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
-[[ "$(stat -c %a "${MICROOS_ANDROID_STATE}")" == 700 ]] \
-    || fail "ready: the state dir is $(stat -c %a "${MICROOS_ANDROID_STATE}")"
-stop_client
-
-reset
-echo ready > "${STATE}/job-result"
-MICROOS_KEYBOARD_INSTALL="${T}/bin/keyboard-gapps" background
-for _ in {1..100}; do grep -q "start microos-android-gapps-setup.service" "${STATE}/calls" && break; sleep 0.05; done
-grep -q "start microos-android-gapps-setup.service" "${STATE}/calls" \
-    || fail "a first GApps boot: the setup unit did not run: $(cat "${STATE}/calls")"
-stop_client
-
-reset
-echo ready > "${STATE}/job-result"
-printf 'gapps\n' > "${MICROOS_RUNTIME_DIR}/first-boot"
-background
-wait_for "^start " || true
-stop_client
-[[ ! -e "${MICROOS_RUNTIME_DIR}/first-boot" ]] || fail "the first-boot marker survived a start: $(cat "${MICROOS_RUNTIME_DIR}/first-boot")"
-
-reset
+echo downloading > "${STATE}/check-out"
 echo 2 > "${STATE}/check-rc"
-echo "no-card" > "${STATE}/check-out"
-rc=0
-"${client}" > "${T}/out" 2>&1 || rc=$?
-[[ "${rc}" == 1 ]] || fail "a refused check: exit ${rc}"
-grep -q "^start " "${STATE}/calls" && fail "a refused check: the unit was started: $(cat "${STATE}/calls")"
-grep -q "refusing: no-card" "${T}/out" || fail "a refused check: no log: $(cat "${T}/out")"
-state_ok 'd["last"]["result"] == "refused" and d["last"]["reason"] == "no-card"' \
-    || fail "a refused check: state not refused: $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
-[[ "$(grep -c '^track refuse android 4242 no-card$' "${STATE}/calls")" == 0 ]] \
-    || fail "a refused check: the refusal was recorded with no session serial: $(cat "${STATE}/calls")"
-[[ "$(grep -c 'refusing: no-card' "${T}/out")" == 1 ]] || fail "a refused check refused twice: $(cat "${T}/out")"
+refused downloading "a refused check"
+grep -q 'microos-android.service' "${STATE}/calls" 2>/dev/null && fail "a refused check started the session"
 
 reset
-echo 2 > "${STATE}/check-rc"
-echo "Not A Word" > "${STATE}/check-out"
-rc=0
-"${client}" > "${T}/out" 2>&1 || rc=$?
-[[ "${rc}" == 1 ]] || fail "a refusal with no word: exit ${rc}"
-grep -q "refusing: check-refused" "${T}/out" || fail "a refusal with no word: $(cat "${T}/out")"
+echo 1 > "${STATE}/check-rc"
+refused not-installed "no images"
 
 reset
-echo 3 > "${STATE}/check-rc"
-background
-wait_for "^start " || true
-grep -q "the start check exited 3, taking it as can run" "${T}/out" || fail "a failing check is not open: $(cat "${T}/out")"
-grep -qx "start microos-android.service replace" "${STATE}/calls" || fail "a failing check did not start: $(cat "${STATE}/calls")"
-stop_client
-
-reset
-rm -rf "${MICROOS_RUNTIME_DIR}" "${MICROOS_RUNDIR}"
-mkdir -p "${MICROOS_RUNTIME_DIR}"
-: > "${STATE}/calls"
 echo failed > "${STATE}/job-result"
+refused failed "a failed start job"
+
+reset
+(sleep 1; echo failed > "${STATE}/unit-state") &
+refused start-failed "the session exits before boot"
+
+reset
+MICROOS_BOOT_TIMEOUT=2 refused boot-timeout "no boot"
+grep -q '^boot$' "${STATE}/guest" || fail "the boot was never polled"
+
+reset
+touch "${STATE}/booted"
+printf 'package:com.android.vending\npackage:com.google.android.gms\npackage:com.google.android.gsf\n' > "${STATE}/packages"
+MANGOHUD_CONFIGFILE=/tmp/mangohud.AbCd1234 python3 "${client}" 2> "${T}/err" &
+cpid=$!
+pids+=("${cpid}")
+wait_for '[[ -e "${MICROOS_RUNTIME_DIR}/start-done" ]]' || fail "no start-done: $(tail -n 5 "${T}/err")"
+[[ -e "${MICROOS_RUNTIME_DIR}/ready" && "$(state_of last.result)" == ready ]] || fail "not ready"
+env_file="${MICROOS_RUNTIME_DIR}/session.env"
+for line in DISPLAY=:0 GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 WAYLAND_DISPLAY=gamescope-0 \
+    "XDG_DATA_HOME=${MICROOS_WAYDROID_DATA}" "PULSE_RUNTIME_PATH=${XDG_RUNTIME_DIR}/pulse" MICROOS_ANDROID_LSFG_LAYER=1 \
+    MANGOHUD_CONFIGFILE=/tmp/mangohud.AbCd1234; do
+    grep -qxF -- "${line}" "${env_file}" || fail "session.env lacks ${line}: $(cat "${env_file}")"
+done
+grep -qx 'start microos-android-layer.service' "${STATE}/systemctl" || fail "no layer start: $(cat "${STATE}/systemctl")"
+for unit in microos-android-battery.service microos-android-lsfg.service microos-android-perf.service; do
+    grep -qx "start ${unit} fail" "${STATE}/calls" || fail "${unit} not started: $(cat "${STATE}/calls")"
+done
+grep -qx 'start microos-android.service replace' "${STATE}/calls" || fail "the session owner was not started"
+wait_for 'grep -qx "start microos-android-gsf.service replace" "${STATE}/calls"' || fail "the GSF read was not started"
+grep -qxF "show-full-ui XDG_DATA_HOME=${MICROOS_WAYDROID_DATA} WAYLAND_DISPLAY=gamescope-0" "${STATE}/waydroid" \
+    || fail "show-full-ui: $(cat "${STATE}/waydroid" 2>/dev/null)"
+grep -qx opts "${STATE}/guest" || fail "the guest settings did not run"
+[[ "$(state_of gapps.play)" == on && "$(state_of gapps.gms)" == on ]] || fail "gapps state"
+grep -qx 'STEAM_TOUCH_CLICK_MODE' <(tr ' ' '\n' < "${STATE}/xprop") || fail "no touch mode"
+sleep 1
+kill -0 "${cpid}" 2>/dev/null || fail "the client exited after ready"
+kill -TERM "${cpid}"
 rc=0
-timeout 20 "${client}" > "${T}/out" 2>&1 || rc=$?
-[[ "${rc}" == 1 ]] || fail "a failed job: exit ${rc}"
-grep -q "refusing: failed" "${T}/out" || fail "a failed job: $(cat "${T}/out")"
+wait "${cpid}" || rc=$?
+[[ "${rc}" == 0 ]] || fail "the client exited ${rc} on TERM"
+grep -q 'microos-android.service' <(grep -v '^start' "${STATE}/calls") && fail "the client stopped the session"
 
 reset
-echo dependency > "${STATE}/job-result"
-rc=0
-timeout 20 "${client}" > "${T}/out" 2>&1 || rc=$?
-[[ "${rc}" == 1 ]] || fail "a dependency failure: exit ${rc}"
-grep -q "refusing: dependency" "${T}/out" || fail "a dependency failure: $(cat "${T}/out")"
+touch "${STATE}/booted"
+echo 1 > "${STATE}/layer-rc"
+echo 'package:com.android.settings' > "${STATE}/packages"
+echo 1234 > "${MICROOS_ANDROID_GSF_ID}"
+python3 "${client}" 2> "${T}/err" &
+cpid=$!
+pids+=("${cpid}")
+wait_for '[[ -e "${MICROOS_RUNTIME_DIR}/start-done" ]]' || fail "no start-done with no layer"
+grep -qx MICROOS_ANDROID_LSFG_LAYER=0 "${MICROOS_RUNTIME_DIR}/session.env" || fail "a failed layer was taken as placed"
+grep -q 'microos-android-layer.service failed' "${T}/err" || fail "no layer failure log"
+[[ "$(state_of gapps.play)" == off ]] || fail "gapps.play with no Play"
+grep -q 'microos-android-gsf.service' "${STATE}/calls" && fail "the GSF read started with no GSF"
+kill -TERM "${cpid}"
+wait "${cpid}" 2>/dev/null
 
-reset
-echo canceled > "${STATE}/job-result"
-rc=0
-timeout 20 "${client}" > "${T}/out" 2>&1 || rc=$?
-[[ "${rc}" == 0 ]] || fail "a canceled start: exit ${rc}"
-grep -q "no refusal" "${T}/out" || fail "a canceled start: not logged: $(cat "${T}/out")"
-[[ ! -e "${MICROOS_ANDROID_STATE}/state.json" || "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("last", {}).get("result", ""))' "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)" != refused ]] \
-    || fail "a canceled start: a refusal was recorded"
-
-reset
-echo canceled > "${STATE}/job-result"
-session_serial
-background
-wait_for "^start " || true
-printf 'card-lost\n' > "${MICROOS_RUNTIME_DIR}/end-reason.new"
-mv -T "${MICROOS_RUNTIME_DIR}/end-reason.new" "${MICROOS_RUNTIME_DIR}/end-reason"
-rc=0
-wait "${client_pid}" 2>/dev/null || rc=$?
-[[ "${rc}" == 1 ]] || fail "a canceled start with an end reason: exit ${rc}: $(cat "${T}/out")"
-grep -q "refusing: card-lost" "${T}/out" || fail "a canceled start with an end reason: $(cat "${T}/out")"
-grep -q "no refusal" "${T}/out" && fail "a canceled start with an end reason: no refusal was logged as none"
-[[ "$(grep -c '^track refuse android 4242 card-lost$' "${STATE}/calls")" == 1 ]] \
-    || fail "a canceled start with an end reason: not recorded: $(cat "${STATE}/calls")"
-
-reset
-echo done > "${STATE}/job-result"
-printf '500\n' > "${STATE}/stop-delay"
-printf '900\n' > "${STATE}/job-delay"
-printf 'phone-in-use\n' > "${MICROOS_RUNTIME_DIR}/end-reason"
-session_serial
-background
-for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/ready" ]] && break; sleep 0.05; done
-[[ -f "${MICROOS_RUNTIME_DIR}/ready" ]] || fail "a stop job after a restart: not ready: $(cat "${T}/out")"
-mkdir -p "${MICROOS_GAPPS}/mtg13" "${XDG_STATE_HOME}/microos-android"
-echo mtg13 > "${XDG_STATE_HOME}/microos-android/activate"
-for _ in {1..100}; do [[ "$(grep -c '^stop microos-android.service' "${STATE}/calls")" -ge 1 ]] && break; sleep 0.05; done
-sleep 0.7
-[[ "$(grep -c 'android ready' "${T}/out")" == 1 ]] \
-    || fail "the stop job's JobRemoved was read as the start's: $(cat "${T}/out")"
-for _ in {1..200}; do [[ "$(grep -c '^start microos-android.service' "${STATE}/calls")" -ge 2 ]] && break; sleep 0.05; done
-[[ "$(grep -c '^start microos-android.service' "${STATE}/calls")" -ge 2 ]] \
-    || fail "a stop job after a restart: the unit was not started again: $(cat "${STATE}/calls")"
-for _ in {1..200}; do [[ "$(grep -c 'android ready' "${T}/out")" -ge 2 ]] && break; sleep 0.05; done
-[[ "$(grep -c 'android ready' "${T}/out")" -ge 2 ]] || fail "a stop job after a restart: not ready again: $(cat "${T}/out")"
-grep -q "phone-in-use" "${T}/out" && fail "a late stop job's end reason was read as a refusal: $(cat "${T}/out")"
-grep -q "refusing:" "${T}/out" && fail "a stop job after a restart: a refusal: $(cat "${T}/out")"
-stop_client
-
-reset
-echo none > "${STATE}/job-result"
-echo 0 > "${STATE}/job-delay"
-session_serial
-stdbuf -oL "${client}" > "${T}/out" 2>&1 &
-client_pid=$!
-pids+=("${client_pid}")
-wait_for "^start " || true
-printf 'card-lost\n' > "${MICROOS_RUNTIME_DIR}/end-reason.new"
-mv -T "${MICROOS_RUNTIME_DIR}/end-reason.new" "${MICROOS_RUNTIME_DIR}/end-reason"
-echo canceled > "${STATE}/job-result"
-for _ in {1..100}; do grep -q "refusing:" "${T}/out" 2>/dev/null && break; sleep 0.05; done
-sleep 0.1
-[[ "$(grep -c 'refusing: card-lost' "${T}/out")" == 1 ]] \
-    || fail "a refusal and a job result together: $(cat "${T}/out")"
-[[ "$(grep -c '^track refuse android 4242 card-lost$' "${STATE}/calls")" == 1 ]] \
-    || fail "a refusal and a job result together: recorded $(grep -c '^track refuse' "${STATE}/calls") times: $(cat "${STATE}/calls")"
-for _ in {1..100}; do kill -0 "${client_pid}" 2>/dev/null || break; sleep 0.05; done
-rc=0
-wait "${client_pid}" 2>/dev/null || rc=$?
-[[ "${rc}" == 1 ]] || fail "a refusal and a job result together: exit ${rc}"
-[[ "$(grep -c 'refusing:' "${T}/out")" == 1 ]] || fail "a refusal and a job result together: refused again: $(cat "${T}/out")"
-
-reset
-echo none > "${STATE}/job-result"
-background
-wait_for "^start " || true
-printf 'card-lost\n' > "${MICROOS_RUNTIME_DIR}/end-reason.new"
-mv "${MICROOS_RUNTIME_DIR}/end-reason.new" "${MICROOS_RUNTIME_DIR}/end-reason"
-for _ in {1..100}; do grep -q "refusing:" "${T}/out" 2>/dev/null && break; sleep 0.05; done
-grep -q "refusing: card-lost" "${T}/out" || fail "the end reason marker: $(cat "${T}/out")"
-stop_client
-
-reset
-echo none > "${STATE}/job-result"
-session_serial
-background
-wait_for "^start " || true
-printf 'low-space\n' > "${MICROOS_RUNTIME_DIR}/end-reason.new"
-mv -T "${MICROOS_RUNTIME_DIR}/end-reason.new" "${MICROOS_RUNTIME_DIR}/end-reason"
-echo "microos-android-run: 19G free under /x, below the 20G floor, refusing" > "${MICROOS_RUNTIME_DIR}/start-failed"
-for _ in {1..100}; do grep -q "refusing:" "${T}/out" 2>/dev/null && break; sleep 0.05; done
-grep -q "refusing: low-space" "${T}/out" || fail "the space floor: $(cat "${T}/out")"
-state_ok 'd["last"]["result"] == "refused" and d["last"]["reason"] == "low-space"' \
-    || fail "the space floor: state $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
-grep -qx "track refuse android 4242 low-space" "${STATE}/calls" || fail "the space floor: not recorded: $(cat "${STATE}/calls")"
-stop_client
-
-reset
-echo none > "${STATE}/job-result"
-background
-wait_for "^start " || true
-echo "android exited during boot, see the boot log" > "${MICROOS_RUNTIME_DIR}/start-failed"
-for _ in {1..100}; do grep -q "refusing:" "${T}/out" 2>/dev/null && break; sleep 0.05; done
-grep -q "refusing: start-failed" "${T}/out" || fail "a sentence in start-failed is not a reason word: $(cat "${T}/out")"
-grep -q "android exited during boot, see the boot log" "${T}/out" || fail "the run's sentence did not reach the log: $(cat "${T}/out")"
-grep -q "refusing: android exited during boot" "${T}/out" \
-    && fail "the run's sentence was passed as a reason: $(cat "${T}/out")"
-stop_client
-
-reset
-echo none > "${STATE}/job-result"
-background
-wait_for "^start " || true
-printf 'rc-keycodes\n' > "${MICROOS_RUNTIME_DIR}/start-failed"
-for _ in {1..100}; do grep -q "refusing:" "${T}/out" 2>/dev/null && break; sleep 0.05; done
-grep -q "refusing: rc-keycodes" "${T}/out" || fail "a reason word in start-failed: $(cat "${T}/out")"
-stop_client
-
-reset
-mkdir -p "${MICROOS_GAPPS}/mtg11" "${XDG_STATE_HOME}/microos-android"
-echo mtg11 > "${XDG_STATE_HOME}/microos-android/activate"
-background
-for _ in {1..100}; do [[ -e "${MICROOS_GAPPS}/current" ]] && break; sleep 0.05; done
-[[ "$(readlink "${MICROOS_GAPPS}/current" 2>/dev/null)" == mtg11 ]] || fail "the activation request: not applied"
-[[ ! -e "${XDG_STATE_HOME}/microos-android/activate" ]] || fail "the activation request: kept"
-wait_for "^start microos-android.service replace$" || fail "the activation request: no start: $(cat "${STATE}/calls")"
-state_ok '"set" not in d.get("gapps", {})' || fail "the activation wrote gapps.set: $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
-stop_client
-
-reset
-mkdir -p "${MICROOS_GAPPS}/mtg10" "${MICROOS_GAPPS}/mtg11" "${XDG_STATE_HOME}/microos-android"
-ln -s mtg10 "${MICROOS_GAPPS}/current"
-echo mtg11 > "${XDG_STATE_HOME}/microos-android/activate"
-chmod 0500 "${MICROOS_GAPPS}"
-background
-wait_for "^start microos-android.service replace$" || fail "a failed flip at the start: no start: $(cat "${STATE}/calls")"
-chmod 0755 "${MICROOS_GAPPS}"
-grep -q "cannot activate mtg11" "${T}/out" || fail "a failed flip at the start: not logged: $(cat "${T}/out")"
-[[ "$(readlink "${MICROOS_GAPPS}/current")" == mtg10 ]] || fail "a failed flip at the start: current is $(readlink "${MICROOS_GAPPS}/current")"
-[[ -e "${XDG_STATE_HOME}/microos-android/activate" ]] || fail "a failed flip at the start: the request was dropped"
-stop_client
-
-reset
-mkdir -p "${XDG_STATE_HOME}/microos-android"
-echo mtg99 > "${XDG_STATE_HOME}/microos-android/activate"
-background
-wait_for "^start " || true
-grep -q "which is not staged" "${T}/out" || fail "an unknown activation set: $(cat "${T}/out")"
-[[ -e "${XDG_STATE_HOME}/microos-android/activate" ]] || fail "an unknown activation set: the request was dropped"
-stop_client
-
-reset
-mkdir -p "${MICROOS_GAPPS}/mtg11" "${XDG_STATE_HOME}/microos-android"
-echo "../../etc" > "${XDG_STATE_HOME}/microos-android/activate"
-background
-wait_for "^start " || true
-grep -q "not a set name" "${T}/out" || fail "a path as an activation set: $(cat "${T}/out")"
-[[ ! -e "${MICROOS_GAPPS}/current" ]] || fail "a path as an activation set was applied: $(readlink "${MICROOS_GAPPS}/current")"
-stop_client
-
-reset
-echo ready > "${STATE}/job-result"
-background
-for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/ready" ]] && break; sleep 0.05; done
-mkdir -p "${MICROOS_GAPPS}/mtg12" "${XDG_STATE_HOME}/microos-android"
-echo mtg12 > "${XDG_STATE_HOME}/microos-android/activate"
-for _ in {1..100}; do grep -q "^stop microos-android.service replace$" "${STATE}/calls" && break; sleep 0.05; done
-grep -q "^stop microos-android.service" "${STATE}/calls" || fail "a GApps activation while ready: no stop: $(cat "${STATE}/calls")"
-for _ in {1..100}; do [[ "$(readlink "${MICROOS_GAPPS}/current" 2>/dev/null)" == mtg12 ]] && break; sleep 0.05; done
-[[ "$(readlink "${MICROOS_GAPPS}/current" 2>/dev/null)" == mtg12 ]] || fail "a GApps activation while ready: not applied"
-for _ in {1..200}; do [[ "$(grep -c '^start microos-android.service' "${STATE}/calls")" -ge 2 ]] && break; sleep 0.05; done
-[[ "$(grep -c '^start microos-android.service' "${STATE}/calls")" -ge 2 ]] \
-    || fail "a GApps activation while ready: the unit was not started again: $(cat "${STATE}/calls")"
-for _ in {1..200}; do [[ "$(grep -c '^start microos-android-battery.service' "${STATE}/calls")" -ge 2 ]] && break; sleep 0.05; done
-[[ "$(grep -c '^start microos-android-battery.service' "${STATE}/calls")" -ge 2 ]] \
-    || fail "a GApps activation while ready: the battery mirror was not started again: $(cat "${STATE}/calls")"
-[[ -f "${MICROOS_RUNTIME_DIR}/session.env" ]] || fail "a GApps activation while ready: session.env lost"
-stop_client
-
-reset
-echo none > "${STATE}/job-result"
-background
-wait_for "^start " || true
-printf 'android gamescope-session-plus@android.service 4242 0\n' > "${MICROOS_RUNDIR}/session-current"
-printf 'rc-keycodes\n' > "${MICROOS_RUNTIME_DIR}/end-reason.new"
-mv "${MICROOS_RUNTIME_DIR}/end-reason.new" "${MICROOS_RUNTIME_DIR}/end-reason"
-for _ in {1..100}; do grep -q "refusing:" "${T}/out" 2>/dev/null && break; sleep 0.05; done
-[[ "$(grep -c '^track refuse android 4242 rc-keycodes$' "${STATE}/calls")" == 1 ]] \
-    || fail "a run's end reason: not routed to the tracker once: $(cat "${STATE}/calls")"
-[[ "$(grep -c 'refusing: rc-keycodes' "${T}/out")" == 1 ]] || fail "a run's end reason refused twice: $(cat "${T}/out")"
-stop_client
-
-reset
-echo done > "${STATE}/job-result"
-background
-for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/ready" ]] && break; sleep 0.05; done
-mkdir -p "${MICROOS_GAPPS}/mtg14" "${XDG_STATE_HOME}/microos-android"
-echo mtg14 > "${XDG_STATE_HOME}/microos-android/activate"
-: > "${STATE}/stop-error"
-for _ in {1..100}; do grep -q "^stop microos-android.service" "${STATE}/calls" && break; sleep 0.05; done
-grep -q "^stop microos-android.service" "${STATE}/calls" || fail "a failed stop: no stop: $(cat "${STATE}/calls")"
-grep -q "StopUnit failed" "${T}/out" || fail "a failed stop: not logged: $(cat "${T}/out")"
-sleep 0.6
-[[ "$(grep -c '^stop microos-android.service' "${STATE}/calls")" == 1 ]] \
-    || fail "a failed stop: the stop was retried: $(cat "${STATE}/calls")"
-[[ "$(grep -c '^start microos-android.service' "${STATE}/calls")" == 1 ]] \
-    || fail "a failed stop: Android was started again: $(cat "${STATE}/calls")"
-grep -q "cannot stop microos-android.service for mtg14, Android keeps running" "${T}/out" \
-    || fail "a failed stop: not reported: $(cat "${T}/out")"
-printf 'card-lost\n' > "${MICROOS_RUNTIME_DIR}/end-reason.new"
-mv -T "${MICROOS_RUNTIME_DIR}/end-reason.new" "${MICROOS_RUNTIME_DIR}/end-reason"
-for _ in {1..100}; do grep -q "refusing:" "${T}/out" 2>/dev/null && break; sleep 0.05; done
-grep -q "refusing:" "${T}/out" && fail "a failed stop: Android was not left ready: $(cat "${T}/out")"
-state_ok 'd["last"]["result"] == "ready"' \
-    || fail "a failed stop: state not ready: $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
-stop_client
-rm -f "${STATE}/stop-error"
-[[ -e "${XDG_STATE_HOME}/microos-android/activate" ]] || fail "a failed stop: the request was dropped"
-rm -f "${XDG_STATE_HOME}/microos-android/activate"
-
-reset
-echo done > "${STATE}/job-result"
-background
-for _ in {1..100}; do [[ -f "${MICROOS_RUNTIME_DIR}/ready" ]] && break; sleep 0.05; done
-mkdir -p "${MICROOS_GAPPS}/mtg15" "${XDG_STATE_HOME}/microos-android"
-echo mtg15 > "${XDG_STATE_HOME}/microos-android/activate"
-chmod 0500 "${MICROOS_GAPPS}"
-for _ in {1..100}; do [[ "$(grep -c '^stop microos-android.service' "${STATE}/calls")" -ge 1 ]] && break; sleep 0.05; done
-for _ in {1..200}; do [[ "$(grep -c '^start microos-android.service' "${STATE}/calls")" -ge 2 ]] && break; sleep 0.05; done
-sleep 0.6
-chmod 0755 "${MICROOS_GAPPS}"
-grep -q "cannot activate mtg15" "${T}/out" || fail "a failed activation: not logged: $(cat "${T}/out")"
-[[ "$(grep -c '^stop microos-android.service' "${STATE}/calls")" == 1 ]] \
-    || fail "a failed activation: the restart looped: $(cat "${STATE}/calls")"
-[[ "$(grep -c '^start microos-android.service' "${STATE}/calls")" == 2 ]] \
-    || fail "a failed activation: Android was not restarted once: $(cat "${STATE}/calls")"
-[[ -e "${XDG_STATE_HOME}/microos-android/activate" ]] || fail "a failed activation: the request was dropped"
-stop_client
-
-reset
-mkdir -p "${MICROOS_ANDROID_STATE}"
-: > "${STATE}/calls"
-session_serial
-cat > "${T}/refuse.py" <<'PY'
-import importlib.machinery
-import importlib.util
-import sys
-
-loader = importlib.machinery.SourceFileLoader("client", sys.argv[1])
-spec = importlib.util.spec_from_loader("client", loader)
-client = importlib.util.module_from_spec(spec)
-loader.exec_module(client)
-
-
-class Bus:
-    def call_sync(self, *args, **kwargs):
-        raise client.GLib.Error("org.freedesktop.DBus.Error.UnknownMethod", "no unit object")
-
-
-class Loop:
-    def __init__(self):
-        self.quits = 0
-
-    def quit(self):
-        self.quits += 1
-
-
-loop = Loop()
-handle = client.Client(bus=Bus(), loop=loop)
-handle.refuse("no-card")
-handle.refuse("no-card")
-print(handle.exit_code, loop.quits)
-PY
-rc=0
-out=$(MICROOS_STATE_LOCK_WAIT=1 python3 -I "${T}/refuse.py" "${libexec}/microos-android-client" 2> "${T}/refuse-err") || rc=$?
-[[ "${rc}" == 0 ]] || fail "a refused twice: exit ${rc}: $(cat "${T}/refuse-err")"
-[[ "${out}" == "1 1" ]] || fail "a refused twice: exit ${out}: $(cat "${T}/refuse-err")"
-[[ "$(grep -c 'refusing: no-card' "${T}/refuse-err")" == 1 ]] \
-    || fail "a refused twice: refused twice: $(cat "${T}/refuse-err")"
-[[ "$(grep -c '^track refuse android 4242 no-card$' "${STATE}/calls")" == 1 ]] \
-    || fail "a refused twice: recorded $(grep -c '^track refuse' "${STATE}/calls") times: $(cat "${STATE}/calls")"
-state_ok 'd["last"]["result"] == "refused" and d["last"]["reason"] == "no-card"' \
-    || fail "a refused twice: state not refused: $(cat "${MICROOS_ANDROID_STATE}/state.json" 2>/dev/null)"
-
-cat > "${T}/lock.py" <<'PY'
-import importlib.machinery
-import importlib.util
-import sys
-import time
-
-loader = importlib.machinery.SourceFileLoader("client", sys.argv[1])
-spec = importlib.util.spec_from_loader("client", loader)
-client = importlib.util.module_from_spec(spec)
-loader.exec_module(client)
-
-start = time.monotonic()
-client.update_state({"gapps.set": "mtg11"})
-print(int((time.monotonic() - start) * 1000))
-PY
-(
-    exec 9>>"${MICROOS_ANDROID_STATE}/state.json.lock"
-    flock -x 9
-    : > "${T}/held"
-    exec sleep 20
-) &
-holder=$!
-for _ in {1..100}; do [[ -e "${T}/held" ]] && break; sleep 0.05; done
-[[ -e "${T}/held" ]] || fail "a held state lock: the holder never locked"
-rc=0
-out=$(MICROOS_STATE_LOCK_WAIT=1 python3 -I "${T}/lock.py" "${libexec}/microos-android-client" 2> "${T}/lock-err") || rc=$?
-[[ "${rc}" == 0 ]] || fail "a held state lock: exit ${rc}: $(cat "${T}/lock-err")"
-(( out >= 1000 )) || fail "a held state lock: waited ${out} ms"
-grep -q "state.json.lock is held, writing anyway" "${T}/lock-err" \
-    || fail "a held state lock: not logged: $(cat "${T}/lock-err")"
-python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["gapps"]["set"]=="mtg11" else 1)' \
-    "${MICROOS_ANDROID_STATE}/state.json" || fail "a held state lock: the write was lost: $(cat "${MICROOS_ANDROID_STATE}/state.json")"
-kill "${holder}"
-wait "${holder}" 2>/dev/null || true
-unset holder
-
-cat > "${T}/track-default.py" <<'PY'
-import importlib.machinery
-import importlib.util
-import sys
-
-loader = importlib.machinery.SourceFileLoader("client", sys.argv[1])
-spec = importlib.util.spec_from_loader("client", loader)
-client = importlib.util.module_from_spec(spec)
-loader.exec_module(client)
-
-seen = []
-
-
-class Result:
-    returncode = 0
-    stderr = b""
-
-
-def run(argv, **kwargs):
-    seen.append(argv)
-    return Result()
-
-
-client.subprocess.run = run
-
-
-class Bus:
-    def call_sync(self, *args, **kwargs):
-        raise client.GLib.Error("org.freedesktop.DBus.Error.UnknownMethod", "no unit object")
-
-
-class Loop:
-    def quit(self):
-        pass
-
-
-handle = client.Client(bus=Bus(), loop=Loop())
-handle.refuse("no-card")
-print(client.TRACK)
-print(repr(seen[0] if seen else []))
-PY
-rc=0
-printf 'android gamescope-session-plus@android.service 4242 0\n' > "${MICROOS_RUNDIR}/session-current"
-out=$(env -u MICROOS_TRACK python3 -I "${T}/track-default.py" "${libexec}/microos-android-client" 2> "${T}/track-default-err") || rc=$?
-[[ "${rc}" == 0 ]] || fail "the default tracker path: exit ${rc}: $(cat "${T}/track-default-err")"
-mapfile -t lines <<< "${out}"
-[[ "${lines[0]}" == "/usr/libexec/microos/microos-session-track" ]] \
-    || fail "the default tracker path is not the image's absolute path: ${lines[0]}"
-[[ "${lines[1]}" == "['/usr/libexec/microos/microos-session-track', 'refuse', 'android', '4242', 'no-card']" ]] \
-    || fail "a refusal with no override did not reach the tracker path: ${lines[1]}"
-[[ -x "${repo}/data/usr/libexec/microos/microos-android-client" ]] || fail "the client is not executable"
-grep -qx 'ExecStopPost=/usr/libexec/microos/microos-session-track stop %i' \
-    "${repo}/../../system_files/usr/lib/systemd/user/gamescope-session-plus@.service.d/10-microos-track.conf" \
-    || fail "the tracker is not the path under /usr/libexec/microos"
-tracker="${repo}/../../system_files/usr/libexec/microos/microos-session-track"
-[[ -f "${tracker}" && -x "${tracker}" ]] || fail "the default tracker path has no program in the image"
-
-if [[ "${failures}" != 0 ]]; then
-    echo "$(cat "${T}/out" 2>/dev/null | tail -20)" >&2
-    exit 1
-fi
-echo "client-test: ok"
+(( failures == 0 )) || { echo "${failures} failure(s)" >&2; exit 1; }
+echo "client-test: pass"

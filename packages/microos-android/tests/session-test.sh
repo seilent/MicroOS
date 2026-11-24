@@ -14,6 +14,7 @@ conf="${pm2}/usr/lib/microos/sessions.d/android.conf"
 pad="${pm2_units}/gamescope-session-plus@android.service.d/20-microos-android-pad.conf"
 plain="${data}/usr/libexec/microos/microos-gamescope-plain"
 units="${data}/usr/lib/systemd/user"
+system="${data}/usr/lib/systemd/system"
 libexec="${data}/usr/libexec/microos"
 
 T=$(mktemp -d)
@@ -75,29 +76,21 @@ got=$(MICROOS_GAMESCOPE="${T}/gamescope" MICROOS_DISPLAY_FILE="${T}/absent-displ
 [[ ! -e "${units}/gamescope-session-plus@android.service.d/20-microos-android-pad.conf" \
     && ! -e "${units}/microos-android-pad.service" ]] || fail "the package ships the PM2 pad target units"
 
-for u in microos-android.service microos-lepton-prepare.service microos-android-gapps-setup.service \
-    microos-android-status.service microos-android-battery.service microos-android-brightness.service \
-    microos-android-gapps.service "${pm2_units}/microos-android-pad.service"; do
+for u in microos-android.service microos-android-status.service microos-android-battery.service \
+    microos-android-brightness.service microos-android-gapps.service microos-android-lsfg.service \
+    microos-android-perf.service "${pm2_units}/microos-android-pad.service" "${system}/microos-android-gsf.service" \
+    "${system}/microos-android-reset.service" "${system}/microos-android-layer.service" \
+    "${system}/microos-android-gapps@.service"; do
     [[ "${u}" == /* ]] || u="${units}/${u}"
     [[ -f "${u}" ]] || { fail "${u##*/} missing"; continue; }
     grep -qx '\[Unit\]' "${u}" || fail "${u##*/} has no [Unit]"
     grep -qx '\[Service\]' "${u}" || fail "${u##*/} has no [Service]"
     if grep -q '^#' "${u}"; then fail "${u##*/} carries a comment"; fi
 done
-
-[[ -f "${units}/microos-android.service" ]] && {
-    grep -qx 'Requisite=gamescope-session-plus@android.service' "${units}/microos-android.service" \
-        || fail "Requisite= on the container unit"
-    grep -qx 'Requires=microos-lepton-prepare.service' "${units}/microos-android.service" \
-        || fail "Requires= on the container unit"
-    grep -qx 'EnvironmentFile=-%t/microos-android/session.env' "${units}/microos-android.service" \
-        || fail "EnvironmentFile= on the container unit"
-}
-grep -qx 'Requisite=gamescope-session-plus@android.service' "${units}/microos-lepton-prepare.service" \
-    || fail "Requisite= on the prepare unit"
-grep -qx 'TimeoutStartSec=30min' "${units}/microos-lepton-prepare.service" || fail "prepare TimeoutStartSec"
-grep -qx 'StopPropagatedFrom=gamescope-session-plus@android.service' "${units}/microos-lepton-prepare.service" \
-    || fail "prepare StopPropagatedFrom"
+for u in microos-lepton-prepare.service microos-android-gapps-setup.service; do
+    [[ ! -e "${units}/${u}" ]] || fail "${u} is still shipped"
+done
+grep -q 'microos-waydroid' "${libexec}/microos-android-client" || fail "the client does not keep Waydroid's data apart"
 grep -qx 'BindsTo=gamescope-session-plus@android.service' "${pm2_units}/microos-android-pad.service" \
     || fail "pad BindsTo"
 battery="${units}/microos-android-battery.service"
@@ -115,8 +108,9 @@ grep -q '^WantedBy=' "${brightness}" && fail "the brightness bridge is enabled"
 gapps="${units}/microos-android-gapps.service"
 grep -qx 'Type=oneshot' "${gapps}" || fail "gapps Type"
 grep -qx 'ExecStart=/usr/bin/microos-android gapps install' "${gapps}" || fail "gapps ExecStart"
-for line in TimeoutStartSec=30min Nice=19 IOSchedulingClass=idle CPUWeight=idle; do
-    grep -qx "${line}" "${gapps}" || fail "gapps ${line%%=*}"
+grep -qx TimeoutStartSec=30min "${gapps}" || fail "gapps TimeoutStartSec"
+for line in TimeoutStartSec=30min Nice=19 IOSchedulingClass=idle 'ExecStart=/usr/libexec/microos/microos-android-root gapps-%i'; do
+    grep -qxF "${line}" "${system}/microos-android-gapps@.service" || fail "the root gapps unit lacks ${line}"
 done
 marker="${T}/xdg/microos-android/gapps-install"
 unit_run() {
@@ -153,14 +147,7 @@ preset="${pm2}/usr/lib/systemd/user-preset/50-microos.preset"
 grep -qx 'enable microos-android-status.service' "${preset}" || fail "the user preset does not enable the status service"
 grep -qx 'enable game.slice' "${preset}" || fail "the user preset lost game.slice"
 
-watch="${libexec}/microos-android-session-watch"
-[[ -f "${watch}" && -x "${watch}" ]] || fail "the session watch is not an executable"
-python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "${watch}" || fail "the session watch does not parse"
-grep -q 'microos-android-session-watch' "${libexec}/microos-android-run" || fail "the run does not start the session watch"
-grep -q 'subscribe' "${watch}" || fail "the session watch does not subscribe"
-grep -q 'is-system-running' "${watch}" || fail "the session watch does not skip a stopping system"
-grep -q 'ActiveState' "${watch}" || fail "the session watch does not read ActiveState"
-
+[[ ! -e "${libexec}/microos-android-session-watch" ]] || fail "the Lepton session watch is still shipped"
 
 [[ "${failures}" == 0 ]] || exit 1
 echo "session-test: ok"

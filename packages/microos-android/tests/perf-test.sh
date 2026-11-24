@@ -5,7 +5,6 @@ here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
 libexec="${repo}/data/usr/libexec/microos"
 writer="${libexec}/microos-android-perf"
-stop_script="${libexec}/microos-android-stop"
 root=$(cd "${repo}/../.." && pwd)
 microsetd="${root}/devices/pm2/tests/audio-policy/microsetd"
 [[ -f "${microsetd}" ]] || microsetd="${root}/tests/audio-policy/microsetd"
@@ -52,12 +51,6 @@ export DBUS_SYSTEM_BUS_ADDRESS="unix:path=${T}/system"
 export STATE="${T}/state"
 export MICROOS_RUNTIME_DIR="${T}/run/microos-android"
 mkdir -p "${STATE}" "${T}/bin" "${MICROOS_RUNTIME_DIR}"
-cat > "${T}/bin/podman" <<'STUB'
-#!/usr/bin/bash
-printf 'podman %s\n' "$*" >> "${STATE}/podman"
-exit 0
-STUB
-chmod 0755 "${T}/bin/podman"
 export PATH="${T}/bin:${PATH}"
 printf 'no_display\n' > "${cfg}"
 
@@ -229,118 +222,37 @@ if [[ -n "${real_unshare}" ]] && "${real_unshare}" -rm true 2>/dev/null; then
     grep -qxF "microos-android-perf: ${cfg} is not a regular file owned by 0, no overlay control" "${T}/out" \
         || fail "not logged: $(cat "${T}/out")"
     [[ "$(cat "${cfg}")" == no_display ]] || fail "the config changed: $(cat "${cfg}")"
-    case_name="stop, wrong owner"
+    case_name="off at stop, wrong owner"
     rc=0
-    timeout 15 "${real_unshare}" -rm sh -c 'mount --bind /etc/passwd "$1" && MANGOHUD_CONFIGFILE="$1" exec "$2"' \
-        _ "${cfg}" "${stop_script}" 2> "${T}/stop.err" || rc=$?
+    timeout 15 "${real_unshare}" -rm sh -c 'mount --bind /etc/passwd "$1" && MANGOHUD_CONFIGFILE="$1" exec "$2" off' \
+        _ "${cfg}" "${writer}" 2> "${T}/stop.err" || rc=$?
     [[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${T}/stop.err")"
-    grep -qxF "microos-android-stop: cannot write no_display to ${cfg}" "${T}/stop.err" \
-        || fail "no log: $(cat "${T}/stop.err")"
     [[ "$(cat "${cfg}")" == no_display ]] || fail "the config changed: $(cat "${cfg}")"
 else
     skipped=$((skipped + 1))
     echo "SKIP wrong owner: unshare -rm cannot run" >&2
 fi
 
-on() {
-    poke perf.android_overlay "<true>"
-    start_writer
-    waitout "overlay on" || fail "no apply at start: $(cat "${T}/out")"
-    printf '%s\n' "${writer_pid}" > "${MICROOS_RUNTIME_DIR}/perf-writer.pid"
-}
-
-stop_run() {
-    rc=0
-    : > "${STATE}/podman"
-    timeout 15 "$@" "${stop_script}" ${verb:+"${verb}"} 2> "${T}/stop.err" || rc=$?
-    [[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${T}/stop.err")"
-    [[ ! -e "${MICROOS_RUNTIME_DIR}/perf-writer.pid" ]] || fail "the pid file is left"
-}
-
-verb=
-case_name="stop after a KILL"
-on
+case_name="off at stop"
+poke perf.android_overlay "<true>"
+start_writer
+waitout "overlay on" || fail "no apply at start: $(cat "${T}/out")"
 kill -KILL "${writer_pid}"
 wait "${writer_pid}" 2>/dev/null
 [[ "$(cat "${cfg}")" == preset=2 ]] || fail "not on before the stop: $(cat "${cfg}")"
 inode=$(stat -c %i "${cfg}")
-stop_run env MANGOHUD_CONFIGFILE="${cfg}"
-[[ "$(cat "${cfg}")" == no_display ]] || fail "the stop did not write no_display: $(cat "${cfg}")"
+rc=0
+MANGOHUD_CONFIGFILE="${cfg}" timeout 15 "${writer}" off 2> "${T}/stop.err" || rc=$?
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${T}/stop.err")"
+[[ "$(cat "${cfg}")" == no_display ]] || fail "off did not write no_display: $(cat "${cfg}")"
 [[ "$(stat -c %i "${cfg}")" == "${inode}" ]] || fail "the config was replaced, not rewritten"
-grep -q "performance overlay" "${T}/stop.err" && fail "a dead writer was signalled: $(cat "${T}/stop.err")"
-grep -q "^podman stop" "${STATE}/podman" || fail "no container stop: $(cat "${STATE}/podman")"
-
-case_name="stop with the writer running"
-on
-stop_run env MANGOHUD_CONFIGFILE="${cfg}"
-alive "${writer_pid}" && fail "the writer still runs"
-grep -qxF "microos-android-stop: sent TERM to the performance overlay writer ${writer_pid}" "${T}/stop.err" \
-    || fail "no log: $(cat "${T}/stop.err")"
-[[ "$(cat "${cfg}")" == no_display ]] || fail "the stop did not write no_display: $(cat "${cfg}")"
-wait "${writer_pid}" 2>/dev/null
-
-case_name="stop, the pid file names another process"
-sleep 30 &
-other=$!
-pids+=("${other}")
-printf '%s\n' "${other}" > "${MICROOS_RUNTIME_DIR}/perf-writer.pid"
-printf 'preset=2\n' > "${cfg}"
-stop_run env MANGOHUD_CONFIGFILE="${cfg}"
-alive "${other}" || fail "the stop killed a process that is not the writer"
-[[ "$(cat "${cfg}")" == no_display ]] || fail "the stop did not write no_display: $(cat "${cfg}")"
-kill "${other}" 2>/dev/null
-
-case_name="stop with no variable"
-printf 'preset=2\n' > "${cfg}"
-stop_run env -u MANGOHUD_CONFIGFILE
-[[ ! -s "${T}/stop.err" ]] || fail "logged: $(cat "${T}/stop.err")"
-[[ "$(cat "${cfg}")" == preset=2 ]] || fail "the config changed: $(cat "${cfg}")"
-
-case_name="stop refuses a link and a bad path"
-rm -f "${cfg:?}"
-ln -s "${T}/target" "${cfg}"
-for path in "${cfg}" "${T}/target"; do
-    stop_run env MANGOHUD_CONFIGFILE="${path}"
-    grep -qxF "microos-android-stop: cannot write no_display to ${path}" "${T}/stop.err" \
-        || fail "${path}: no log: $(cat "${T}/stop.err")"
-    [[ "$(cat "${T}/target")" == kept ]] || fail "${path}: the target was written: $(cat "${T}/target")"
-done
-rm -f "${cfg:?}"
-stop_run env MANGOHUD_CONFIGFILE="${cfg}"
-grep -qxF "microos-android-stop: cannot write no_display to ${cfg}" "${T}/stop.err" || fail "missing: no log: $(cat "${T}/stop.err")"
-[[ ! -e "${cfg}" ]] || fail "the stop created the config"
-
-case_name="post after a failed start"
-printf 'preset=2\n' > "${cfg}"
-inode=$(stat -c %i "${cfg}")
-verb=--post stop_run env MANGOHUD_CONFIGFILE="${cfg}"
-[[ "$(cat "${cfg}")" == no_display ]] || fail "the post did not write no_display: $(cat "${cfg}")"
-[[ "$(stat -c %i "${cfg}")" == "${inode}" ]] || fail "the config was replaced, not rewritten"
-
-case_name="stop kills a writer that ignores TERM"
-mkdir -p "${T}/stub"
-cat > "${T}/stub/microos-android-perf" <<'STUB'
-#!/usr/bin/bash
-trap '' TERM
-while :; do sleep 0.05; done
-STUB
-chmod 0755 "${T}/stub/microos-android-perf"
-"${T}/stub/microos-android-perf" &
-stubborn=$!
-pids+=("${stubborn}")
-printf '%s\n' "${stubborn}" > "${MICROOS_RUNTIME_DIR}/perf-writer.pid"
-printf 'preset=2\n' > "${cfg}"
-stop_run env MICROOS_LSFG_TIMEOUT_S=0 MANGOHUD_CONFIGFILE="${cfg}"
-grep -qxF "microos-android-stop: the performance overlay writer ${stubborn} did not stop, killing it" "${T}/stop.err" \
-    || fail "no kill log: $(cat "${T}/stop.err")"
-wait "${stubborn}" 2>/dev/null
-alive "${stubborn}" && fail "the writer still runs"
-[[ "$(cat "${cfg}")" == no_display ]] || fail "the stop did not write no_display: $(cat "${cfg}")"
+rc=0
+MANGOHUD_CONFIGFILE= timeout 15 "${writer}" off 2> "${T}/stop.err" || rc=$?
+[[ "${rc}" == 0 ]] && grep -q "no MANGOHUD_CONFIGFILE, no overlay control" "${T}/stop.err" || fail "off with no config: ${rc}"
 
 case_name="one config path pattern"
 pattern=$(sed -n 's/^CONFIG = re.compile(r"\(.*\)")$/\1/p' "${writer}")
 [[ -n "${pattern}" ]] || fail "no pattern in the writer"
-grep -qF "=~ ^${pattern}\$ " "${stop_script}" || fail "the stop's pattern is not ${pattern}"
 grep -qF "MANGOHUD_CONFIG = re.compile(r\"${pattern}\")" "${libexec}/microos-android-client" \
     || fail "the client's pattern is not ${pattern}"
 
