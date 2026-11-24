@@ -169,6 +169,7 @@ kept=(
   /usr/lib/systemd/system-preset/60-microos-steam.preset
   /usr/lib/systemd/system-preset/60-microos-waydroid.preset
   /usr/lib/systemd/system/dev-binderfs.mount
+  /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf
   /usr/lib/systemd/system/emergency.service.d/10-microos.conf
   /usr/lib/systemd/system/microos-adsp-sensors.service
   /usr/lib/systemd/system/microos-bdaddr@.service
@@ -283,6 +284,7 @@ kept=(
   /usr/libexec/microos/microos-usb-console
   /usr/libexec/microos/microos-vpad
   /usr/libexec/microos/microos-remoteproc
+  /usr/libexec/microos/microos-android-guard
   /usr/libexec/microos/prepare-root
   /usr/libexec/microos/wd-session
   /usr/libexec/microos/wd-stop
@@ -394,6 +396,12 @@ done
   || fail "tmpfiles microos-waydroid.conf"
 [[ $(systemctl is-enabled dev-binderfs.mount) == enabled ]] || fail "dev-binderfs.mount is not enabled"
 grep -qx 'Type=binder' /usr/lib/systemd/system/dev-binderfs.mount || fail "dev-binderfs.mount is not a binder mount"
+wcb=/usr/lib/waydroid/data/configs/config_base
+[[ $(sha256sum < "$wcb") == 'e42a696066defbcd5fd12528404cb2342b3bcc27ff337a1e94c7565fd35cf31b  -' ]] ||
+  fail "$wcb is not waydroid-1.6.3-1.fc44's file plus allow a, the block deny and the c 1:1 and c 1:4 denies"
+[[ $(< /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf) == $'[Unit]\nBefore=systemd-user-sessions.service\n\n[Service]\nExecStartPre=/usr/libexec/microos/microos-android-guard' ]] \
+  || fail "waydroid-container.service.d/10-microos.conf"
+[[ $(stat -c %a /usr/libexec/microos/microos-android-guard) == 755 ]] || fail "microos-android-guard is not 755"
 [[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
 [[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
   fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"

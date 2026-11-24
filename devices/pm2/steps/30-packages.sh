@@ -199,6 +199,8 @@ rm /usr/share/applications/Waydroid.desktop /usr/share/applications/waydroid.mar
   /usr/share/applications/waydroid.app.install.desktop
 install -d /usr/share/waydroid-extra
 ln -s /var/lib/microos-android/images/current /usr/share/waydroid-extra/images
+printf '%s\n' 'lxc.cgroup2.devices.allow = a' 'lxc.cgroup2.devices.deny = b *:* rwm' \
+  'lxc.cgroup2.devices.deny = c 1:1 rwm' 'lxc.cgroup2.devices.deny = c 1:4 rwm' >> /usr/lib/waydroid/data/configs/config_base
 
 printf '[main]\nexcludepkgs=hyprland,hyprutils,hyprlang,hyprgraphics,hyprwire,hyprcursor,aquamarine,hyprgrass,udis86\n' \
   > /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf

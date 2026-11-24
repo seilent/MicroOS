@@ -1,0 +1,16 @@
+#!/usr/bin/bash
+set -euo pipefail
+
+cfg=${MICROOS_LXC_CONFIG:-/var/lib/waydroid/lxc/waydroid/config}
+devices=${MICROOS_PROC_DEVICES:-/proc/devices}
+rule='lxc.cgroup2.devices.deny = c [0-9]+:\* rwm'
+
+[[ -f $cfg ]] || { echo "microos-android-guard: no $cfg, waydroid init comes first" >&2; exit 1; }
+grep -qxF 'lxc.cgroup2.devices.deny = b *:* rwm' "$cfg" || { echo "microos-android-guard: $cfg has no block guard" >&2; exit 1; }
+bsg=$(awk '/^Character devices:/ { c = 1; next } /^$/ { c = 0 } c && $2 == "bsg" { print $1 }' "$devices")
+{
+  grep -vxE "$rule" "$cfg"
+  [[ -z $bsg ]] || echo "lxc.cgroup2.devices.deny = c $bsg:* rwm"
+} > "$cfg.new"
+mv "$cfg.new" "$cfg"
+echo "microos-android-guard: bsg ${bsg:-absent}"

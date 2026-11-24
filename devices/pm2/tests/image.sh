@@ -715,6 +715,12 @@ grep -qx 'SystemdService=waydroid-container.service' /usr/share/dbus-1/system-se
   fail "id.waydro.Container.service does not activate waydroid-container.service"
 [[ $(systemctl is-enabled dev-binderfs.mount) == enabled ]] || fail "dev-binderfs.mount is not enabled"
 grep -qx 'Type=binder' /usr/lib/systemd/system/dev-binderfs.mount || fail "dev-binderfs.mount is not a binder mount"
+wcb=/usr/lib/waydroid/data/configs/config_base
+[[ $(sha256sum < "$wcb") == 'e42a696066defbcd5fd12528404cb2342b3bcc27ff337a1e94c7565fd35cf31b  -' ]] ||
+  fail "$wcb is not waydroid-1.6.3-1.fc44's file plus allow a, the block deny and the c 1:1 and c 1:4 denies"
+[[ $(< /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf) == $'[Unit]\nBefore=systemd-user-sessions.service\n\n[Service]\nExecStartPre=/usr/libexec/microos/microos-android-guard' ]] \
+  || fail "waydroid-container.service.d/10-microos.conf"
+[[ $(stat -c %a /usr/libexec/microos/microos-android-guard) == 755 ]] || fail "microos-android-guard is not 755"
 systemctl --global cat gamescope-session-plus@android.service | grep -qxF Wants=microos-android-pad.service \
   || fail "gamescope-session-plus@android.service does not want microos-android-pad.service"
 
