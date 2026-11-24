@@ -22,7 +22,6 @@ Requisite=gamescope-session-plus@android.service
 After=gamescope-session-plus@android.service
 PartOf=gamescope-session-plus@android.service
 StopPropagatedFrom=gamescope-session-plus@android.service
-Wants=microos-android-brightness.service
 
 [Service]
 Type=simple

@@ -269,7 +269,8 @@ for line in DISPLAY=:0 GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 WAYLAND_DISPLAY=gam
     grep -qxF -- "${line}" "${env_file}" || fail "session.env lacks ${line}: $(cat "${env_file}")"
 done
 grep -qx 'start microos-android-layer.service' "${STATE}/systemctl" || fail "no layer start: $(cat "${STATE}/systemctl")"
-for unit in microos-android-battery.service microos-android-lsfg.service microos-android-perf.service; do
+for unit in microos-android-battery.service microos-android-brightness.service microos-android-lsfg.service \
+    microos-android-perf.service; do
     grep -qx "start ${unit} fail" "${STATE}/calls" || fail "${unit} not started: $(cat "${STATE}/calls")"
 done
 grep -qx 'start microos-android.service replace' "${STATE}/calls" || fail "the session owner was not started"

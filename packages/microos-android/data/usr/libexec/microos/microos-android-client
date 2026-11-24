@@ -16,7 +16,8 @@ from gi.repository import Gio, GLib
 ME = "microos-android-client"
 UNIT = "microos-android.service"
 SESSION = "gamescope-session-plus@android.service"
-WRITERS = ("microos-android-battery.service", "microos-android-lsfg.service", "microos-android-perf.service")
+WRITERS = ("microos-android-battery.service", "microos-android-brightness.service", "microos-android-lsfg.service",
+           "microos-android-perf.service")
 LAYER_UNIT = "microos-android-layer.service"
 GSF_UNIT = "microos-android-gsf.service"
 WAYDROID_NAME = "id.waydro.Session"

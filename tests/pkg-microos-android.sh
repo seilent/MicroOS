@@ -114,13 +114,14 @@ if [[ -n $hits ]]; then fail "Armada names, wall clock waits or MicroEMU names i
 unit=$root/usr/lib/systemd/user/microos-android.service
 for line in Type=simple PartOf=gamescope-session-plus@android.service StopPropagatedFrom=gamescope-session-plus@android.service \
   Requisite=gamescope-session-plus@android.service After=gamescope-session-plus@android.service \
-  Wants=microos-android-brightness.service EnvironmentFile=%t/microos-android/session.env \
+  EnvironmentFile=%t/microos-android/session.env \
   'ExecStart=/usr/bin/flock -s /run/microos-android/images.lock /usr/bin/waydroid session start' \
   'ExecStop=-/usr/libexec/microos/microos-android-guest stop' 'ExecStop=/usr/bin/waydroid session stop' \
   'ExecStopPost=/usr/bin/waydroid session stop' TimeoutStopSec=45; do
   if ! grep -qxF "$line" "$unit"; then fail "microos-android.service lacks $line"; fi
 done
 if grep -qE '^(BindsTo|Requires)=' "$unit"; then fail "microos-android.service binds or requires a unit"; fi
+if grep -qE '^Wants=' "$unit"; then fail "microos-android.service pulls in a unit, the client starts the writers"; fi
 desktop=$root/usr/share/wayland-sessions/microos-android.desktop
 for line in Exec=gamescope-session-plus\ android Type=Application DesktopNames=android NoDisplay=true; do
   if ! grep -qxF "$line" "$desktop"; then fail "microos-android.desktop lacks $line"; fi
