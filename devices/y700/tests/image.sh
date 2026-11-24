@@ -479,6 +479,8 @@ grep -qxF '(allow systemd_socket_proxyd_t unreserved_port_t (tcp_socket (name_bi
   || fail "microos.cil does not let systemd-socket-proxyd listen on and reach the adb port"
 grep -qxF '(allow systemd_socket_proxyd_t node_t (tcp_socket (node_bind)))' /usr/share/selinux/packages/microos.cil \
   || fail "microos.cil does not let systemd-socket-proxyd bind the adb listener"
+grep -qxF '(allow init_t systemd_socket_proxyd_t (process2 (nnp_transition)))' /usr/share/selinux/packages/microos.cil \
+  || fail "microos.cil does not let systemd-socket-proxyd enter its domain under DynamicUser's NoNewPrivileges"
 [[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
 [[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
   fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"
