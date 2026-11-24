@@ -1,0 +1,9 @@
+[Unit]
+Description=Serve the Android helper app with the host volume, radios and power
+PartOf=microos-android.service
+After=microos-android.service
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/microos/microos-android-bridge
+TimeoutStopSec=5

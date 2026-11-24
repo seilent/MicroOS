@@ -26,7 +26,7 @@ if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$source
 
 requires=$(rpm -qp --requires "$rpm" | awk '{ print $1 }')
 need=(microos-android-guestos waydroid lxc android-tools util-linux-core curl python3 python3-gobject python3-gbinder gtk3 xprop
-  polkit)
+  polkit wireplumber pipewire-utils)
 for r in "${need[@]}"; do
   if ! grep -qx "$r" <<<"$requires"; then fail "does not require $r"; fi
 done
@@ -38,6 +38,7 @@ files=$(rpm -qlp "$rpm")
 for f in \
   /usr/bin/microos-android \
   /usr/libexec/microos/microos-android-battery \
+  /usr/libexec/microos/microos-android-bridge \
   /usr/libexec/microos/microos-android-brightness \
   /usr/libexec/microos/microos-android-check \
   /usr/libexec/microos/microos-android-client \
@@ -51,6 +52,7 @@ for f in \
   /usr/libexec/microos/microos-gamescope-plain \
   /usr/lib/systemd/user/microos-android.service \
   /usr/lib/systemd/user/microos-android-battery.service \
+  /usr/lib/systemd/user/microos-android-bridge.service \
   /usr/lib/systemd/user/microos-android-brightness.service \
   /usr/lib/systemd/user/microos-android-gapps.service \
   /usr/lib/systemd/user/microos-android-lsfg.service \
@@ -131,5 +133,14 @@ for line in export\ GAMESCOPE_BIN=/usr/libexec/microos/microos-gamescope-plain \
   export\ CLIENTCMD=/usr/libexec/microos/microos-android-client; do
   if ! grep -qxF "$line" "$client"; then fail "the android client file lacks $line"; fi
 done
+
+rules=$root/usr/share/polkit-1/rules.d/50-microos-android.rules
+for id in enable-disable-wifi network-control wifi.scan settings.modify.own; do
+  if ! grep -qF "\"org.freedesktop.NetworkManager.$id\"" "$rules"; then fail "50-microos-android.rules lacks $id"; fi
+done
+if ! grep -qF 'subject.user == "micro" && network.indexOf(action.id) >= 0' "$rules"; then
+  fail "the NetworkManager rule is not for micro"
+fi
+if grep -qF settings.modify.system "$rules"; then fail "50-microos-android.rules grants settings.modify.system"; fi
 
 exit "$rc"

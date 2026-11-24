@@ -21,12 +21,14 @@ Requires:       python3-gbinder
 Requires:       gtk3
 Requires:       xprop
 Requires:       polkit
+Requires:       wireplumber
+Requires:       pipewire-utils
 
 %description
 The Android session of MicroOS: Waydroid in a gamescope session, its
 client and stop, the guest exec path over adb, the status service, the
-battery, brightness, frame generation and overlay writers, and the
-Google Play install into the Waydroid overlay.
+battery, brightness, frame generation and overlay writers, the helper
+app bridge, and the Google Play install into the Waydroid overlay.
 
 %prep
 %setup -q -c -T
@@ -48,6 +50,7 @@ test -z "$(find %{buildroot} -type f -perm /022)"
 %{_bindir}/microos-android
 %{_userunitdir}/microos-android.service
 %{_userunitdir}/microos-android-battery.service
+%{_userunitdir}/microos-android-bridge.service
 %{_userunitdir}/microos-android-brightness.service
 %{_userunitdir}/microos-android-gapps.service
 %{_userunitdir}/microos-android-lsfg.service
