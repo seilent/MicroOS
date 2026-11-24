@@ -857,7 +857,8 @@ wmod=(/etc/selinux/targeted/active/modules/*/waydroid)
 [[ ${#wmod[@]} == 1 && -f ${wmod[0]}/cil ]] || fail "the module store holds no single waydroid module: ${wmod[*]}"
 for p in /var/lib/waydroid:waydroid_data_t /usr/lib/waydroid/waydroid.py:waydroid_exec_t /var/lib/microos-android:var_lib_t \
   /var/lib/microos-android/images:waydroid_data_t /var/lib/microos-android/images/current:waydroid_data_t \
-  /var/lib/microos-android/images/los20-20260927-20261022/system.img:waydroid_data_t; do
+  /var/lib/microos-android/images/los20-20260927-20261022/system.img:waydroid_data_t \
+  /var/lib/misc/dnsmasq.waydroid0.leases:container_var_lib_t; do
   fc=$(matchpathcon -n "${p%%:*}")
   [[ $fc == "system_u:object_r:${p#*:}:s0" ]] || fail "file_contexts labels ${p%%:*} $fc"
 done
