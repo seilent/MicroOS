@@ -11,11 +11,11 @@ gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib
 
 ME = "microos-android-battery"
-CONTAINER = "lepton-android"
+GUEST = os.environ.get("MICROOS_ANDROID_GUEST") or "/usr/libexec/microos/microos-android-guest"
 SUPPLY = os.environ.get("MICROOS_POWER_SUPPLY") or "/sys/class/power_supply"
 POLL_MS = int(os.environ.get("MICROOS_BATTERY_POLL_MS") or 300000)
 SETTLE_MS = int(os.environ.get("MICROOS_BATTERY_SETTLE_MS") or 50)
-EXEC_TIMEOUT = 10
+EXEC_TIMEOUT = 30
 MONITOR = ["udevadm", "monitor", "--udev", "--subsystem-match=power_supply"]
 KEYS = ("ac", "usb", "wireless", "status", "level", "temp", "counter")
 STATUS = {"Charging": "2", "Discharging": "3", "Not charging": "4", "Full": "5"}
@@ -77,7 +77,7 @@ def values():
 
 def send(changes):
     script = "".join(f'/system/bin/cmd battery set {key} {value} 2>&1; echo "@{key} $?"\n' for key, value in changes)
-    command = ["podman", "exec", CONTAINER, "/system/bin/sh", "-c", script]
+    command = [GUEST, "sh", script]
     try:
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=EXEC_TIMEOUT)
     except (OSError, subprocess.SubprocessError) as error:
@@ -102,7 +102,7 @@ def send(changes):
         output = []
     left = [f"{key} {value}" for key, value in changes if key not in marked]
     if left:
-        log(f"battery set {', '.join(left)}: podman exec exited {result.returncode}: {' '.join(output)}")
+        log(f"battery set {', '.join(left)}: the guest exec exited {result.returncode}: {' '.join(output)}")
     return done
 
 

@@ -3,21 +3,20 @@ set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "${here}")
-libexec="${repo}/data/usr/libexec/microos"
-status="${libexec}/microos-android-status"
+status="${repo}/data/usr/libexec/microos/microos-android-status"
 
 T=$(mktemp -d)
 pids=()
 cleanup() {
     for p in "${pids[@]}"; do kill "${p}" 2>/dev/null || true; done
-    rm -rf "${T}"
+    rm -rf "${T:?}"
 }
 trap cleanup EXIT
 
 failures=0
 fail() { echo "FAIL $*" >&2; failures=$((failures + 1)); }
 
-for t in dbus-daemon python3; do
+for t in dbus-daemon python3 gdbus; do
     command -v "$t" > /dev/null || { echo "FAIL: $t missing" >&2; exit 1; }
 done
 
@@ -40,65 +39,35 @@ for _ in {1..50}; do [[ -S "${T}/session" ]] && break; sleep 0.1; done
 export DBUS_SESSION_BUS_ADDRESS="unix:path=${T}/session"
 
 export HOME="${T}/home"
-export MICROOS_HOME="${T}/home"
-export MICROOS_HOME="${T}/home"
-export XDG_STATE_HOME="${T}/home/.local/state"
-export MICROOS_ANDROID_STATE="${T}/home/.local/state/microos-android"
-export MICROOS_ANDROID_DATA="${T}/home/.local/share/microos-android"
-export MICROOS_CONTENT="${T}/content"
-export MICROOS_SYSTEM_CARD="${T}/system-card"
-export MICROOS_ANDROID_CONTEXT="${T}/contexts/android"
-export MICROOS_RUNTIME_DIR="${T}/run/microos-android"
-mkdir -p "${MICROOS_ANDROID_CONTEXT}"
-export MICROOS_LEPTON_REVIEWED="${T}/reviewed"
-export MICROOS_LEPTON_SNAPSHOTS="${T}/snaps"
-mkdir -p "${MICROOS_ANDROID_STATE}" "${MICROOS_ANDROID_DATA}" "${MICROOS_LEPTON_REVIEWED}" "${MICROOS_LEPTON_SNAPSHOTS}"
-mkdir -p "${T}/bin"
-cat > "${T}/bin/podman" <<'FAKE'
+export XDG_RUNTIME_DIR="${T}/xdg"
+export MICROOS_RUNTIME_DIR="${T}/xdg/microos-android"
+export MICROOS_ANDROID_STATE="${T}/state"
+export MICROOS_ANDROID_IMAGES="${T}/images"
+export MICROOS_ANDROID_IMAGES_STATE="${T}/var/images.state"
+export MICROOS_ANDROID_VAR="${T}/var"
+export MICROOS_SYSTEM_CARD="${T}/run/system-card"
+export MICROOS_ANDROID_GUEST="${T}/bin/guest"
+export MICROOS_STATUS_POLL_MS=100
+export STUB="${T}/stub"
+mkdir -p "${HOME}" "${MICROOS_RUNTIME_DIR}" "${MICROOS_ANDROID_STATE}" "${MICROOS_ANDROID_IMAGES}" "${T}/run" \
+    "${MICROOS_ANDROID_VAR}" "${T}/bin" "${STUB}"
+cat > "${T}/bin/guest" <<'FAKE'
 #!/usr/bin/bash
-case "$(cat "${FAKE_PODMAN_MODE}" 2>/dev/null)" in
-    app) echo "  mResumedActivity: ActivityRecord{1a2b3c u0 com.example.VkCube/android.app.NativeActivity t7}" ;;
-    launcher) echo "  mResumedActivity: ActivityRecord{1a2b3c u0 com.android.launcher3/.Launcher t1}" ;;
-    garbage) echo "mResumedActivity: none"; echo "ActivityRecord{ //" ;;
-    slow) exec sleep 5 ;;
-    *) exit 125 ;;
-esac
+echo "$*" >> "${STUB}/guest"
+[[ "$1 $2" == "sh dumpsys activity activities" ]] || exit 99
+[[ ! -e "${STUB}/slow" ]] || sleep 5
+cat "${STUB}/dump" 2>/dev/null
+exit "$(cat "${STUB}/rc" 2>/dev/null || echo 0)"
 FAKE
-chmod +x "${T}/bin/podman"
-export FAKE_PODMAN_MODE="${T}/podman-mode"
-export PATH="${T}/bin:${PATH}"
+chmod 0755 "${T}/bin/guest"
 
-set_state() {
-    python3 - "${MICROOS_ANDROID_STATE}/state.json" "$@" <<'PY'
-import json
-import os
-import sys
-
-path = sys.argv[1]
-data = {}
-for item in sys.argv[2:]:
-    key, value = item.split("=", 1)
-    parts = key.split(".")
-    node = data
-    for part in parts[:-1]:
-        node = node.setdefault(part, {})
-    node[parts[-1]] = value
-temp = path + ".new"
-with open(temp, "w") as handle:
-    json.dump(data, handle)
-os.replace(temp, path)
-PY
-}
-
-start() {
-    "${status}" > "${T}/out" 2>&1 &
-    pids+=($!)
-    for _ in {1..100}; do
-        gdbus introspect --session --dest net.seilent.MicroOs.Android1 --object-path /net/seilent/MicroOs/Android > /dev/null 2>&1 && return 0
-        sleep 0.05
-    done
-    return 1
-}
+python3 "${status}" 2> "${T}/status.err" &
+pids+=($!)
+for _ in {1..100}; do
+    gdbus call --session --dest org.freedesktop.DBus --object-path / --method org.freedesktop.DBus.ListNames 2>/dev/null \
+        | grep -q net.seilent.MicroOs.Android1 && break
+    sleep 0.05
+done
 
 prop() {
     local raw
@@ -109,213 +78,88 @@ prop() {
     printf '%s' "${raw}"
 }
 
-set_state "lepton.build=25772114" "lepton.source=steam"
-printf 'x\n' > "${MICROOS_LEPTON_REVIEWED}/25772114"
-start || { echo "FAIL: the service did not own its name: $(cat "${T}/out")" >&2; exit 1; }
-[[ "$(prop Lepton)" == ready ]] || fail "Lepton: $(prop Lepton)"
-[[ "$(prop LeptonBuild)" == 25772114 ]] || fail "LeptonBuild: $(prop LeptonBuild)"
-[[ "$(prop GooglePlay)" == off ]] || fail "GooglePlay: $(prop GooglePlay)"
-[[ "$(prop GsfId)" == "" ]] || fail "GsfId: $(prop GsfId)"
+expect() {
+    local i got
+    for (( i = 0; i < 40; i++ )); do
+        got=$(prop "$1") || got="(error)"
+        [[ "${got}" == "$2" ]] && return 0
+        sleep 0.1
+    done
+    fail "$3: $1 is '${got}', not '$2'"
+}
 
-set_state "lepton.build=25772115" "lepton.source=steam"
-sleep 0.3
-[[ "$(prop Lepton)" == not-reviewed ]] || fail "not-reviewed: $(prop Lepton)"
+set_state() {
+    printf '%s\n' "$1" > "${MICROOS_ANDROID_STATE}/state.json.new"
+    mv "${MICROOS_ANDROID_STATE}/state.json.new" "${MICROOS_ANDROID_STATE}/state.json"
+}
 
-set_state "lepton.build=1" "lepton.source=snapshot"
-sleep 0.3
-[[ "$(prop Lepton)" == not-installed ]] || fail "not-installed: $(prop Lepton)"
+expect Lepton not-installed "no images"
+expect LeptonBuild "" "no images"
+printf 'state=fetching\nset=los20av-20260927-20261022\n' > "${MICROOS_ANDROID_IMAGES_STATE}"
+expect Lepton downloading "an images fetch"
+printf 'state=failed\nset=los20av-20260927-20261022\n' > "${MICROOS_ANDROID_IMAGES_STATE}"
+expect Lepton failed "a failed images fetch"
+mkdir -p "${MICROOS_ANDROID_IMAGES}/los20av-20260927-20261022"
+ln -s los20av-20260927-20261022 "${MICROOS_ANDROID_IMAGES}/current"
+expect Lepton ready "a set with a failed newer fetch"
+expect LeptonBuild los20av-20260927-20261022 "the set id"
+printf 'state=fetching\nset=los20av-20260927-20261022\n' > "${MICROOS_ANDROID_IMAGES_STATE}"
+expect Lepton downloading "a new set fetching"
+expect LeptonBuild los20av-20260927-20261022 "the set id while fetching"
+printf 'state=ready\nset=los20av-20260927-20261022\n' > "${MICROOS_ANDROID_IMAGES_STATE}"
+expect Lepton ready "a set"
 
-set_state "gapps.set=mtg11" "gapps.setup=done"
-mkdir -p "${MICROOS_ANDROID_DATA}/gapps/mtg11"
-ln -sfn mtg11 "${MICROOS_ANDROID_DATA}/gapps/current"
-sleep 0.3
-[[ "$(prop GooglePlay)" == on ]] || fail "GooglePlay on: $(prop GooglePlay)"
+expect GooglePlay off "no Play"
+echo running > "${MICROOS_RUNTIME_DIR}/gapps-install"
+expect GooglePlay updating "an install running"
+echo failed > "${MICROOS_RUNTIME_DIR}/gapps-install"
+expect GooglePlay failed "a failed install"
+rm -f "${MICROOS_RUNTIME_DIR}/gapps-install"
+echo "aa system/product/priv-app/Phonesky/Phonesky.apk" > "${MICROOS_ANDROID_VAR}/gapps.manifest"
+expect GooglePlay updating "installed, not booted"
+set_state '{"gapps": {"play": "on", "gms": "on"}, "last": {"result": "ready", "reason": ""}}'
+expect GooglePlay on "installed and booted"
+expect LastResult ready "the last result"
+rm -f "${MICROOS_ANDROID_VAR}/gapps.manifest"
+expect GooglePlay updating "removed, not booted"
+set_state '{"gapps": {"play": "off"}, "last": {"result": "refused", "reason": "no-space"}}'
+expect GooglePlay off "removed and booted"
+expect LastReason no-space "the last reason"
 
-set_state "gapps.set=mtg11" "gapps.setup=running"
-sleep 0.3
-[[ "$(prop GooglePlay)" == updating ]] || fail "GooglePlay updating: $(prop GooglePlay)"
+expect GsfId "" "no GSF ID"
+echo 1234567890123456789 > "${MICROOS_ANDROID_VAR}/gsf-id"
+expect GsfId 1234567890123456789 "the GSF ID"
+echo 0x12 > "${MICROOS_ANDROID_VAR}/gsf-id"
+expect GsfId "" "a GSF ID that is not digits"
 
-set_state "last.result=refused" "last.reason=no-card"
-sleep 0.3
-[[ "$(prop LastResult)" == refused ]] || fail "LastResult: $(prop LastResult)"
-[[ "$(prop LastReason)" == no-card ]] || fail "LastReason: $(prop LastReason)"
-[[ "$(prop Storage)" == on-internal ]] || fail "Storage with no card: $(prop Storage)"
-[[ "$(prop StorageCard)" == "" ]] || fail "StorageCard: $(prop StorageCard)"
+expect Storage "" "no system card flag"
+echo none > "${MICROOS_SYSTEM_CARD}"
+expect Storage on-internal "the system on the internal disk"
 echo mmcblk0 > "${MICROOS_SYSTEM_CARD}"
-sleep 0.5
-[[ "$(prop Storage)" == on-os-card ]] || fail "Storage on an SD install: $(prop Storage)"
-
-if ! gdbus introspect --session --dest net.seilent.MicroOs.Android1 --object-path /net/seilent/MicroOs/Android \
-    | grep -q "interface net.seilent.MicroOs.Android1"; then
-    fail "the interface is not net.seilent.MicroOs.Android1"
-fi
-
-if ! gdbus call --session --dest net.seilent.MicroOs.Android1 --object-path /net/seilent/MicroOs/Android \
-    --method org.freedesktop.DBus.Properties.Get net.seilent.MicroOs.Android1 Lepton > /dev/null 2>&1; then
-    fail "the properties are not readable"
-fi
-
-rm -f "${MICROOS_ANDROID_STATE}/state.json"
-sleep 0.3
-[[ "$(prop Lepton)" == not-installed ]] || fail "a missing state file: $(prop Lepton)"
+expect Storage on-os-card "the system on the card"
+expect StorageCard "" "no card storage"
 
 foreground() {
-    local raw
-    raw=$(gdbus call --session --dest net.seilent.MicroOs.Android1 --object-path /net/seilent/MicroOs/Android \
-        --method net.seilent.MicroOs.Android1.Foreground) || return 1
-    raw=${raw#(\'}
-    raw=${raw%\',)}
-    printf '%s' "${raw}"
+    gdbus call --session --dest net.seilent.MicroOs.Android1 --object-path /net/seilent/MicroOs/Android \
+        --method net.seilent.MicroOs.Android1.Foreground
 }
+cat > "${STUB}/dump" <<'EOF'
+    topResumedActivity=ActivityRecord{ba5b9ea u0 com.example.game/.Main t32}
+  ResumedActivity: ActivityRecord{ba5b9ea u0 com.example.game/.Main t32}
+EOF
+[[ "$(foreground)" == "('com.example.game',)" ]] || fail "Foreground: $(foreground)"
+grep -qx 'sh dumpsys activity activities' "${STUB}/guest" || fail "Foreground did not read through the exec path"
+sed -i 's|com.example.game/.Main|com.android.launcher3/.uioverlay.UiOverlayActivity|' "${STUB}/dump"
+[[ "$(foreground)" == "('',)" ]] || fail "Foreground at home: $(foreground)"
+echo 1 > "${STUB}/rc"
+[[ "$(foreground)" == "('',)" ]] || fail "Foreground with a failed exec: $(foreground)"
+rm -f "${STUB}/rc"
+touch "${STUB}/slow"
+start=${SECONDS}
+[[ "$(foreground)" == "('',)" ]] || fail "Foreground past its timeout"
+(( SECONDS - start < 5 )) || fail "Foreground waited for a slow exec"
 
-echo app > "${FAKE_PODMAN_MODE}"
-[[ "$(foreground)" == com.example.VkCube ]] || fail "Foreground with a resumed app: $(foreground)"
-echo launcher > "${FAKE_PODMAN_MODE}"
-[[ "$(foreground)" == "" ]] || fail "Foreground on the launcher: $(foreground)"
-echo down > "${FAKE_PODMAN_MODE}"
-[[ "$(foreground)" == "" ]] || fail "Foreground with the container not running: $(foreground)"
-echo garbage > "${FAKE_PODMAN_MODE}"
-[[ "$(foreground)" == "" ]] || fail "Foreground with garbage output: $(foreground)"
-echo slow > "${FAKE_PODMAN_MODE}"
-slow_start=$SECONDS
-foreground > "${T}/slow-out" &
-slow_pid=$!
-pids+=("${slow_pid}")
-sleep 0.5
-[[ "$(prop Lepton)" == not-installed ]] || fail "a property read blocked on a slow Foreground: $(prop Lepton)"
-wait "${slow_pid}"
-[[ "$(cat "${T}/slow-out")" == "" ]] || fail "Foreground past the timeout: $(cat "${T}/slow-out")"
-(( SECONDS - slow_start < 4 )) || fail "Foreground took $(( SECONDS - slow_start )) s"
+[[ "$(grep -c -e podman -e lepton -e REVIEWED "${status}")" == 0 ]] || fail "the status service reads Lepton"
 
-monitor() {
-    gdbus monitor --session --dest net.seilent.MicroOs.Android1 --object-path /net/seilent/MicroOs/Android \
-        > "${T}/monitor" 2>&1 &
-    monitor_pid=$!
-    pids+=("${monitor_pid}")
-    for _ in {1..100}; do grep -q "Monitoring signals" "${T}/monitor" 2>/dev/null && return 0; sleep 0.05; done
-    return 1
-}
-
-reset_monitor() { : > "${T}/monitor"; }
-
-monitor || fail "the monitor did not start"
-set_state "last.result=ready" "last.reason="
-sleep 0.5
-grep -q "PropertiesChanged" "${T}/monitor" || fail "a state change emitted no PropertiesChanged: $(cat "${T}/monitor")"
-grep -q "LastResult" "${T}/monitor" || fail "a state change did not name LastResult: $(cat "${T}/monitor")"
-[[ "$(grep -c "PropertiesChanged" "${T}/monitor")" == 1 ]] || fail "a state change emitted more than one signal: $(cat "${T}/monitor")"
-
-reset_monitor
-touch "${MICROOS_ANDROID_STATE}/.state.tmp"
-sleep 0.5
-grep -q "PropertiesChanged" "${T}/monitor" && fail "a .state temp file emitted a signal: $(cat "${T}/monitor")"
-
-reset_monitor
-printf 'x\n' > "${MICROOS_LEPTON_REVIEWED}/25772114"
-printf 'x\n' > "${MICROOS_LEPTON_REVIEWED}/25772116"
-set_state "lepton.build=25772116" "lepton.source=steam"
-sleep 0.5
-grep -q "PropertiesChanged" "${T}/monitor" || fail "a reviewed build emitted no signal: $(cat "${T}/monitor")"
-grep -q "LeptonBuild" "${T}/monitor" || fail "a reviewed build did not name LeptonBuild: $(cat "${T}/monitor")"
-
-reset_monitor
-rm -f "${MICROOS_ANDROID_DATA}/gapps/current"
-set_state "gapps.set=" "gapps.setup=done"
-sleep 0.5
-[[ "$(prop GooglePlay)" == off ]] || fail "no GApps set after a removal: $(prop GooglePlay)"
-reset_monitor
-ln -sfn mtg11 "${MICROOS_ANDROID_DATA}/gapps/current"
-sleep 0.5
-grep -q "GooglePlay" "${T}/monitor" || fail "a linked GApps set did not name GooglePlay: $(cat "${T}/monitor")"
-[[ "$(prop GooglePlay)" == updating ]] || fail "a linked set the state does not name: $(prop GooglePlay)"
-set_state "gapps.set=mtg11"
-sleep 0.5
-[[ "$(prop GooglePlay)" == on ]] || fail "a linked set the state names: $(prop GooglePlay)"
-
-rm -rf "${MICROOS_LEPTON_SNAPSHOTS}"
-set_state "lepton.build=1" "lepton.source=snapshot"
-sleep 0.5
-[[ "$(prop Lepton)" == not-installed ]] || fail "a snapshot build with no snapshot: $(prop Lepton)"
-mkdir -p "${MICROOS_LEPTON_SNAPSHOTS}/1"
-sleep 0.5
-[[ "$(prop Lepton)" == not-reviewed ]] || fail "a snapshot build with a snapshot: $(prop Lepton)"
-
-play() {
-    for _ in {1..60}; do [[ "$(prop GooglePlay)" == "$1" ]] && return 0; sleep 0.05; done
-    return 1
-}
-mark() {
-    mkdir -p "${MICROOS_RUNTIME_DIR}"
-    if [[ -n "$1" ]]; then
-        echo "$1" > "${MICROOS_RUNTIME_DIR}/gapps-install"
-    else
-        rm -f "${MICROOS_RUNTIME_DIR}/gapps-install"
-    fi
-}
-rm -f "${MICROOS_ANDROID_DATA}/gapps/current"
-set_state "gapps.set=" "gapps.setup=done"
-play off || fail "no set and no install: $(prop GooglePlay)"
-reset_monitor
-mark running
-play updating || fail "the install running: $(prop GooglePlay)"
-for _ in {1..40}; do grep -q "GooglePlay" "${T}/monitor" && break; sleep 0.05; done
-grep -q "GooglePlay" "${T}/monitor" || fail "the install running emitted no signal: $(cat "${T}/monitor")"
-mkdir -p "${MICROOS_ANDROID_DATA}/gapps/mtg11.tmp"
-mark failed
-play failed || fail "a failed install with a stale .tmp: $(prop GooglePlay)"
-sleep 1.5
-[[ "$(prop GooglePlay)" == failed ]] || fail "a failed install with a stale .tmp later: $(prop GooglePlay)"
-echo mtg11 > "${MICROOS_ANDROID_STATE}/activate"
-play updating || fail "a failed install with a pending activation: $(prop GooglePlay)"
-rm -f "${MICROOS_ANDROID_STATE}/activate"
-play failed || fail "a failed install after the activation: $(prop GooglePlay)"
-ln -sfn mtg11 "${MICROOS_ANDROID_DATA}/gapps/current"
-set_state "gapps.set=mtg11" "gapps.setup=done"
-play on || fail "a failed install with a current set: $(prop GooglePlay)"
-rm -f "${MICROOS_ANDROID_DATA}/gapps/current"
-set_state "gapps.set=" "gapps.setup=done"
-play failed || fail "a failed install with no current set: $(prop GooglePlay)"
-mark ""
-play off || fail "the mark removed by a later successful run: $(prop GooglePlay)"
-mark failed
-play failed || fail "a failed install before a reboot: $(prop GooglePlay)"
-rm -rf "${MICROOS_RUNTIME_DIR:?}"
-play off || fail "a failed install after a reboot emptied the runtime dir: $(prop GooglePlay)"
-echo mtg11 > "${MICROOS_ANDROID_STATE}/activate"
-play updating || fail "a pending activation: $(prop GooglePlay)"
-echo mtg99 > "${MICROOS_ANDROID_STATE}/activate"
-play off || fail "an activation of a set that is not staged: $(prop GooglePlay)"
-rm -f "${MICROOS_ANDROID_STATE}/activate"
-rmdir "${MICROOS_ANDROID_DATA}/gapps/mtg11.tmp"
-ln -sfn mtg11 "${MICROOS_ANDROID_DATA}/gapps/current"
-
-big="${T}/late"
-export MICROOS_ANDROID_DATA="${big}"
-ok=0
-"${status}" > "${T}/late-out" 2>&1 &
-pids+=($!)
-for _ in {1..100}; do
-    gdbus introspect --session --dest net.seilent.MicroOs.Android1 \
-        --object-path /net/seilent/MicroOs/Android > /dev/null 2>&1 && { ok=1; break; }
-    sleep 0.05
-done
-[[ "${ok}" == 1 ]] || fail "the service did not own its name with a missing data dir: $(cat "${T}/late-out")"
-mkdir -p "${big}/gapps"
-set_state "lepton.build=25772114" "lepton.source=steam"
-printf 'x\n' > "${MICROOS_LEPTON_REVIEWED}/25772114"
-ln -sfn mtg11 "${big}/gapps/current"
-sleep 1.2
-raw=$(gdbus call --session --dest net.seilent.MicroOs.Android1 --object-path /net/seilent/MicroOs/Android \
-    --method org.freedesktop.DBus.Properties.Get net.seilent.MicroOs.Android1 GooglePlay) || true
-[[ "${raw}" == *updating* ]] || fail "a gapps dir made after the start is not read: ${raw}"
-
-rc=0
-"${status}" > "${T}/second" 2>&1 || rc=$?
-[[ "${rc}" == 0 ]] || fail "a second instance: exit ${rc}: $(cat "${T}/second")"
-grep -q "is taken by another process, exiting" "${T}/second" \
-    || fail "a second instance: not logged: $(cat "${T}/second")"
-grep -q "Traceback" "${T}/second" && fail "a second instance left a traceback: $(cat "${T}/second")"
-export MICROOS_ANDROID_DATA="${T}/home/.local/share/microos-android"
-
-[[ "${failures}" == 0 ]] || exit 1
-echo "status-test: ok"
+(( failures == 0 )) || { echo "${failures} failure(s)" >&2; exit 1; }
+echo "status-test: pass"

@@ -1,0 +1,10 @@
+polkit.addRule(function(action, subject) {
+  if (action.id != "org.freedesktop.systemd1.manage-units" || subject.user != "micro") {
+    return;
+  }
+  var unit = action.lookup("unit");
+  var units = /^microos-android-(images|gsf|reset|layer|gapps@(install|remove))\.service$/;
+  if (action.lookup("verb") == "start" && unit && units.test(unit)) {
+    return polkit.Result.YES;
+  }
+});

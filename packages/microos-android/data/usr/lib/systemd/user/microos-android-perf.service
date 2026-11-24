@@ -1,0 +1,10 @@
+[Unit]
+Description=Write the performance overlay setting for the Android session
+BindsTo=microos-android.service
+After=microos-android.service
+
+[Service]
+Type=simple
+EnvironmentFile=%t/microos-android/session.env
+ExecStart=/usr/libexec/microos/microos-android-perf
+ExecStopPost=/usr/libexec/microos/microos-android-perf off

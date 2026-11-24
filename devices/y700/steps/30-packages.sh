@@ -82,6 +82,7 @@ dnf -y install \
   pipewire \
   pipewire-pulseaudio \
   pipewire-alsa \
+  pipewire-utils \
   wireplumber \
   alsa-ucm \
   libcamera \

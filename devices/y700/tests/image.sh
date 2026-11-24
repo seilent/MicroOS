@@ -111,7 +111,7 @@ for u in pipewire.socket pipewire-pulse.socket wireplumber.service microos-andro
 done
 null=/usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
 grep -qF 'factory.name = support.null-audio-sink' "$null" && grep -qF 'priority.session = 1' "$null" || fail "$null"
-[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-android-battery.service\n/usr/lib/systemd/user/microos-android-brightness.service\n/usr/lib/systemd/user/microos-android-gapps-setup.service\n/usr/lib/systemd/user/microos-android-gapps.service\n/usr/lib/systemd/user/microos-android-status.service\n/usr/lib/systemd/user/microos-android.service\n/usr/lib/systemd/user/microos-desktop.service\n/usr/lib/systemd/user/microos-desktop.service.d\n/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-ii-seed.service\n/usr/lib/systemd/user/microos-lepton-prepare.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive-desktop.timer\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service\n/usr/lib/systemd/user/microos-ydotoold.service' ]] \
+[[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-android-battery.service\n/usr/lib/systemd/user/microos-android-brightness.service\n/usr/lib/systemd/user/microos-android-gapps.service\n/usr/lib/systemd/user/microos-android-lsfg.service\n/usr/lib/systemd/user/microos-android-perf.service\n/usr/lib/systemd/user/microos-android-status.service\n/usr/lib/systemd/user/microos-android.service\n/usr/lib/systemd/user/microos-desktop.service\n/usr/lib/systemd/user/microos-desktop.service.d\n/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-ii-seed.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive-desktop.timer\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service\n/usr/lib/systemd/user/microos-ydotoold.service' ]] \
   || fail "MicroOS user units: $(compgen -G '/usr/lib/systemd/user/microos-*' | tr '\n' ' ')"
 [[ $(< /usr/lib/systemd/system-preset/50-microos.preset) == 'enable microos-*' ]] || fail "50-microos.preset"
 
@@ -235,7 +235,6 @@ kept=(
   /usr/lib/systemd/user/microos-steam-seed.service
   /usr/lib/microos/sessions.d/desktop.conf
   /usr/lib/microos/sessions.d/android.conf
-  /usr/lib/microos/sessions.d/waydroid.conf
   /usr/lib/systemd/user/microos-desktop.service.d/10-microos-track.conf
   /usr/lib/systemd/user/microos-desktop.service.d/20-microos-ii-seed.conf
   /usr/lib/systemd/user/microos-desktop.service.d/30-hypr-config.conf
@@ -252,7 +251,6 @@ kept=(
   /usr/libexec/microos/microos-hyprland
   /usr/libexec/microos/microos-ii-seed
   /usr/share/wayland-sessions/microos-desktop.desktop
-  /usr/share/wayland-sessions/microos-waydroid-probe.desktop
   /usr/lib/sysusers.d/microos-hexagonrpc.conf
   /usr/lib/sysusers.d/microos.conf
   /usr/lib/tmpfiles.d/microos-session.conf
@@ -296,8 +294,6 @@ kept=(
   /usr/libexec/microos/microos-android-guard
   /usr/libexec/microos/microos-android-images
   /usr/libexec/microos/prepare-root
-  /usr/libexec/microos/wd-session
-  /usr/libexec/microos/wd-stop
   /usr/share/microos/avb/testkey_rsa4096.pem
   /usr/share/microos/keys/microos-backup.pub
   /usr/share/microos/keys/microos-next.pub
@@ -359,8 +355,8 @@ for c in jq setpriv flock python3 loginctl busctl; do
 done
 grep -qxF $'steam\tSteam OS\tyes' <<< "$(microos-session list)" || fail "microos-session list lacks steam as Steam OS"
 grep -qxF $'android\tAndroid\tyes' <<< "$(microos-session list)" || fail "microos-session list lacks android"
-[[ $(< /usr/lib/microos/sessions.d/android.conf) == $'LABEL=Android\nDESKTOP=microos-android.desktop\nUNIT=gamescope-session-plus@android.service\nSTOP=unit\nDEFAULT=yes\nCHECK=/usr/libexec/microos/microos-android-check' ]] \
-  || fail "android.conf is not the Y700 entry with no install action"
+[[ $(< /usr/lib/microos/sessions.d/android.conf) == $'LABEL=Android\nDESKTOP=microos-android.desktop\nUNIT=gamescope-session-plus@android.service\nSTOP=unit\nDEFAULT=yes\nCHECK=/usr/libexec/microos/microos-android-check\nINSTALL=/usr/libexec/microos/microos-android-install' ]] \
+  || fail "android.conf is not the Y700 entry with the images install action"
 [[ $(readlink /etc/sddm.conf.d/zzz-microos-autologin.conf) == /run/microos/sddm-autologin.conf ]] ||
   fail "zzz-microos-autologin.conf is not the link to /run/microos/sddm-autologin.conf"
 getent passwd microset > /dev/null || fail "user microset missing"
@@ -381,14 +377,12 @@ for f in overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk 
   [[ $(rpm -qf --qf '%{NAME}' "$product/$f" 2>/dev/null) == microos-android-guest-apks ]] || fail "$product/$f is not microos-android-guest-apks's"
 done
 [[ $(find /usr/share/guestos/android/system -type f | wc -l) == 4 ]] || fail "/usr/share/guestos/android/system holds more than the four guest APKs"
-rpm -q podman passt catatonit attr android-tools inotify-tools >/dev/null || fail "Lepton host rpms missing"
-for c in podman pasta setpgid flock pgrep pkill tput setfattr inotifywait which jq ip adb; do
-  command -v "$c" >/dev/null || fail "$c is not on PATH (Lepton)"
+for c in flock adb lxc-info pw-cli pw-dump; do
+  command -v "$c" >/dev/null || fail "$c is not on PATH, the Android session needs it"
 done
-adb=/usr/lib/android-sdk/platform-tools/adb
-[[ -L $adb && $adb -ef /usr/bin/adb ]] || fail "$adb does not resolve to /usr/bin/adb"
-[[ $(stat -c '%a %U %G' /usr/bin/steamvr) == '755 root root' ]] || fail "/usr/bin/steamvr mode or owner"
-[[ -f /usr/share/microos-lepton/reviewed/25772114 ]] || fail "no reviewed list for Lepton build 25772114"
+for f in /usr/bin/steamvr /usr/lib/android-sdk /usr/share/microos-lepton /usr/libexec/microos/microos-lepton; do
+  [[ ! -e $f ]] || fail "$f is in the image, Lepton is gone"
+done
 command -v xprop >/dev/null || fail "xprop missing, the Android client sets the touch mode with it"
 [[ ! -e /usr/lib/systemd/user/gamescope-session-plus@android.service.d/20-microos-android-pad.conf ]] \
   || fail "the PM2 pad target drop-in is in the image"
@@ -397,7 +391,7 @@ grep -q MICROOS_POWERKEY_OVERLAY /usr/libexec/microos/microos-powerkey || fail "
 
 rpm -q waydroid waydroid-selinux lxc >/dev/null || fail "waydroid, waydroid-selinux or lxc missing"
 for c in waydroid lxc-start gdbus; do
-  command -v "$c" >/dev/null || fail "$c missing, the Waydroid probe session needs it"
+  command -v "$c" >/dev/null || fail "$c missing, the Android session needs it"
 done
 for f in Waydroid.desktop waydroid.market.desktop waydroid.app.install.desktop; do
   [[ ! -e /usr/share/applications/$f ]] || fail "/usr/share/applications/$f is in the image"
@@ -462,18 +456,7 @@ grep -qxF '(allow systemd_socket_proxyd_t unreserved_port_t (tcp_socket (name_co
   fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"
 grep -qx 'SystemdService=waydroid-container.service' /usr/share/dbus-1/system-services/id.waydro.Container.service ||
   fail "id.waydro.Container.service does not activate waydroid-container.service"
-[[ $(< /usr/lib/microos/sessions.d/waydroid.conf) == $'LABEL=Waydroid\nDESKTOP=microos-waydroid-probe.desktop\nUNIT=gamescope-session-plus@waydroid.service\nSTOP=unit' ]] \
-  || fail "waydroid.conf is not the probe entry with no default and no check"
-grep -qxF $'waydroid\tWaydroid\tno' <<< "$(microos-session list)" || fail "microos-session list lacks waydroid as a hidden session"
-[[ $(< /usr/share/wayland-sessions/microos-waydroid-probe.desktop) == $'[Desktop Entry]\nName=Waydroid\nExec=gamescope-session-plus waydroid\nType=Application\nDesktopNames=waydroid\nNoDisplay=true' ]] \
-  || fail "microos-waydroid-probe.desktop"
-[[ $(< /usr/share/gamescope-session-plus/sessions.d/waydroid) == $'export GAMESCOPE_BIN=/usr/libexec/microos/microos-gamescope-plain\nexport CLIENTCMD=/usr/libexec/microos/wd-session' ]] \
-  || fail "/usr/share/gamescope-session-plus/sessions.d/waydroid"
-[[ -x /usr/libexec/microos/microos-gamescope-plain ]] || fail "microos-gamescope-plain missing, the Waydroid probe session runs it"
-for f in wd-session wd-stop; do
-  [[ $(stat -c %a "/usr/libexec/microos/$f") == 755 ]] || fail "$f is not 755"
-done
-grep -qF -- '-p ExecStop=/usr/libexec/microos/wd-stop' /usr/libexec/microos/wd-session || fail "wd-session does not stop wd-android through wd-stop"
+[[ ! -e /usr/lib/microos/sessions.d/waydroid.conf ]] || fail "the Waydroid probe session is in the image"
 
 yama=/usr/lib/sysctl.d/60-microos-yama.conf
 grep -qx 'kernel.yama.ptrace_scope = 1' "$yama" || fail "$yama does not set ptrace_scope 1"

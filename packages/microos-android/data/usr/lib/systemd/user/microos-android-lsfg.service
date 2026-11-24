@@ -1,0 +1,10 @@
+[Unit]
+Description=Write the frame generation settings into the Android guest
+BindsTo=microos-android.service
+After=microos-android.service
+
+[Service]
+Type=simple
+EnvironmentFile=%t/microos-android/session.env
+ExecStart=/usr/libexec/microos/microos-android-lsfg
+ExecStopPost=/usr/libexec/microos/microos-android-lsfg clear

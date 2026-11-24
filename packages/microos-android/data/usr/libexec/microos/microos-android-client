@@ -16,20 +16,27 @@ from gi.repository import Gio, GLib
 ME = "microos-android-client"
 UNIT = "microos-android.service"
 SESSION = "gamescope-session-plus@android.service"
-SETUP = "microos-android-gapps-setup.service"
-BATTERY = "microos-android-battery.service"
+WRITERS = ("microos-android-battery.service", "microos-android-lsfg.service", "microos-android-perf.service")
+LAYER_UNIT = "microos-android-layer.service"
+GSF_UNIT = "microos-android-gsf.service"
+WAYDROID_NAME = "id.waydro.Session"
 TRACK = os.environ.get("MICROOS_TRACK") or "/usr/libexec/microos/microos-session-track"
-CONTAINER = "lepton-android"
+CHECK = os.environ.get("MICROOS_ANDROID_CHECK") or "/usr/libexec/microos/microos-android-check"
+GUEST = os.environ.get("MICROOS_ANDROID_GUEST") or "/usr/libexec/microos/microos-android-guest"
+WAYDROID = os.environ.get("MICROOS_WAYDROID") or "/usr/bin/waydroid"
+GSF_ID = os.environ.get("MICROOS_ANDROID_GSF_ID") or "/var/lib/microos-android/gsf-id"
 MANGOHUD_CONFIG = re.compile(r"/tmp/mangohud\.[A-Za-z0-9]{8}")
 MANAGER = ("org.freedesktop.systemd1", "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager")
 PROPS = "org.freedesktop.DBus.Properties"
 REFUSE_WAIT = float(os.environ.get("MICROOS_REFUSE_WAIT") or 30)
-CHECK_TIMEOUT = float(os.environ.get("MICROOS_CHECK_TIMEOUT") or 60)
+CHECK_TIMEOUT = float(os.environ.get("MICROOS_CHECK_TIMEOUT") or 5)
+LAYER_TIMEOUT = float(os.environ.get("MICROOS_LAYER_TIMEOUT") or 30)
+BOOT_TIMEOUT = float(os.environ.get("MICROOS_BOOT_TIMEOUT") or 120)
+GSF_EVERY_MS = int(os.environ.get("MICROOS_GSF_EVERY_MS") or 60000)
 LOCK_WAIT = float(os.environ.get("MICROOS_STATE_LOCK_WAIT") or 10)
-CARD_POLLS = 20
-CARD_STEP = 0.5
 TICK_MS = 250
-MARKERS = ("ready", "start-done", "end-reason", "start-failed", "first-boot")
+BOOT_POLL_S = 1.0
+MARKERS = ("ready", "start-done", "end-reason")
 WORD = re.compile(r"[a-z][a-z0-9-]{0,31}")
 DISPLAY_FILE = os.environ.get("MICROOS_DISPLAY_FILE") or "/usr/share/microos-android/display"
 TOUCH_MODES = ("0", "1", "2", "3", "4")
@@ -55,16 +62,12 @@ def run_dir():
     return env("MICROOS_RUNTIME_DIR", os.path.join(runtime_dir(), "microos-android"))
 
 
-def data_dir():
-    return env("MICROOS_ANDROID_DATA", os.path.join(home(), ".local/share/microos-android"))
+def waydroid_data():
+    return env("MICROOS_WAYDROID_DATA", os.path.join(home(), ".local/share/microos-waydroid"))
 
 
 def state_dir():
     return env("MICROOS_ANDROID_STATE", os.path.join(home(), ".local/state/microos-android"))
-
-
-def gapps_dir():
-    return env("MICROOS_GAPPS", os.path.join(data_dir(), "gapps"))
 
 
 def write_atomic(path, text, mode=0o644):
@@ -178,49 +181,34 @@ def session_serial():
     return fields[2] if len(fields) >= 3 and fields[2].isdigit() else ""
 
 
-def pending_mounts():
-    try:
-        result = subprocess.run(["systemctl", "list-jobs", "--no-legend", "microos-automount@*"],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0 and bool(result.stdout.strip())
-
-
-def card_wait():
-    decided = env("MICROOS_SYSTEM_CARD", "/run/microos/system-card")
-    for _ in range(CARD_POLLS):
-        if not pending_mounts() and os.path.exists(decided):
-            return
-        time.sleep(CARD_STEP)
-
-
 def start_check():
-    path = env("MICROOS_ANDROID_RUN", "/usr/libexec/microos/microos-android-run")
     try:
-        proc = subprocess.Popen([path, "--check"], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                start_new_session=True)
-    except OSError as error:
-        log(f"{path} --check did not run: {error}")
-        return 0, ""
-    try:
-        out, err = proc.communicate(timeout=CHECK_TIMEOUT)
+        result = subprocess.run([CHECK], stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                                timeout=CHECK_TIMEOUT)
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            proc.kill()
-        try:
-            out, err = proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            out, err = b"", b""
-        log(f"{path} --check is past {CHECK_TIMEOUT:g} s, killed it, taking it as can run")
+        log(f"{CHECK} is past {CHECK_TIMEOUT:g} s, taking it as can run")
         return 0, ""
-    for line in err.decode(errors="replace").splitlines():
+    except OSError as error:
+        log(f"{CHECK} did not run: {error}")
+        return 0, ""
+    for line in result.stderr.decode(errors="replace").splitlines():
         if line:
             log(line)
-    lines = [line for line in out.decode(errors="replace").splitlines() if line]
-    return proc.returncode, (lines[-1] if lines and word_ok(lines[-1]) else "")
+    lines = [line for line in result.stdout.decode(errors="replace").splitlines() if line]
+    return result.returncode, (lines[-1] if lines and word_ok(lines[-1]) else "")
+
+
+def place_layer():
+    try:
+        result = subprocess.run(["systemctl", "start", LAYER_UNIT], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                stdin=subprocess.DEVNULL, timeout=LAYER_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as error:
+        log(f"{LAYER_UNIT} did not run: {error}, no frame generation layer")
+        return False
+    if result.returncode:
+        log(f"{LAYER_UNIT} failed: {result.stderr.decode(errors='replace').strip()}, no frame generation layer")
+        return False
+    return True
 
 
 def touch_mode():
@@ -257,6 +245,12 @@ def set_touch_mode():
     update_state({"touch.result": "set", "touch.reason": ""})
 
 
+def gapps_fields(listing):
+    names = {line[len("package:"):].strip() for line in listing.splitlines() if line.startswith("package:")}
+    return {"gapps.play": "on" if "com.android.vending" in names else "off",
+            "gapps.gms": "on" if "com.google.android.gms" in names else "off"}, "com.google.android.gsf" in names
+
+
 class Window:
     def __init__(self):
         import gi as _gi
@@ -290,23 +284,35 @@ class Client:
         self.loop = loop or GLib.MainLoop()
         self.job = None
         self.started = False
+        self.named = False
+        self.booting = False
         self.ready = False
-        self.stopping = False
-        self.restarting = False
         self.refused = False
-        self.failed_activation = ""
+        self.deadline = 0.0
+        self.next_poll = 0.0
         self.exit_code = 0
         self.subscriptions = []
+        self.watch = 0
         self.window = None
 
     def subscribe(self):
         self.subscriptions.append(self.bus.signal_subscribe(
             MANAGER[0], MANAGER[2], "JobRemoved", MANAGER[1], None, Gio.DBusSignalFlags.NONE, self.job_removed))
+        self.watch = Gio.bus_watch_name_on_connection(self.bus, WAYDROID_NAME, Gio.BusNameWatcherFlags.NONE,
+                                                      self.name_appeared, None)
 
     def unsubscribe(self):
         for subscription in self.subscriptions:
             self.bus.signal_unsubscribe(subscription)
         self.subscriptions = []
+        if self.watch:
+            Gio.bus_unwatch_name(self.watch)
+            self.watch = 0
+
+    def name_appeared(self, conn, name, owner):
+        if not self.named:
+            log(f"{WAYDROID_NAME} is on the bus")
+        self.named = True
 
     def job_removed(self, conn, sender, path, interface, signal, params):
         job_id, job_path, unit, result = params.unpack()[:4]
@@ -315,16 +321,6 @@ class Client:
         self.job = None
         if result == "done":
             self.started = True
-            self.mark_ready()
-            return
-        if result == "canceled":
-            reason = self.end_reason()
-            if reason:
-                self.refuse(reason)
-                return
-            log(f"{UNIT} was canceled before it started, no refusal")
-            self.exit_code = 0
-            self.loop.quit()
             return
         self.refuse(self.end_reason() or (result if word_ok(result) else "start-failed"))
 
@@ -343,15 +339,7 @@ class Client:
             return
         path = reply.unpack()[0]
         self.job = str(path) if path else None
-
-    def stop_unit(self):
-        try:
-            self.bus.call_sync(MANAGER[0], MANAGER[1], MANAGER[2], "StopUnit",
-                               GLib.Variant("(ss)", (UNIT, "replace")), None, Gio.DBusCallFlags.NONE, 5000, None)
-        except GLib.Error as error:
-            log(f"StopUnit failed: {error.message}")
-            return False
-        return True
+        self.deadline = time.monotonic() + BOOT_TIMEOUT
 
     def refuse(self, reason):
         if self.refused:
@@ -384,35 +372,6 @@ class Client:
             if line:
                 log(line)
 
-    def activation_request(self):
-        wanted = read_text(os.path.join(state_dir(), "activate"))
-        if not wanted:
-            return ""
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", wanted):
-            log(f"the activation request names {wanted}, which is not a set name")
-            return ""
-        if not os.path.isdir(os.path.join(gapps_dir(), wanted)):
-            log(f"the activation request names {wanted}, which is not staged")
-            return ""
-        if wanted == self.failed_activation:
-            return ""
-        return wanted
-
-    def activate(self, wanted):
-        link = os.path.join(gapps_dir(), "current.new")
-        try:
-            if os.path.lexists(link):
-                os.unlink(link)
-            os.symlink(wanted, link)
-            os.replace(link, os.path.join(gapps_dir(), "current"))
-            os.unlink(os.path.join(state_dir(), "activate"))
-        except OSError as error:
-            log(f"cannot activate {wanted}: {error}")
-            self.failed_activation = wanted
-            return False
-        log(f"activated the GApps set {wanted}")
-        return True
-
     def clear_markers(self):
         directory = run_dir()
         for name in MARKERS:
@@ -421,49 +380,107 @@ class Client:
             except OSError:
                 pass
 
-    def write_session_env(self):
-        text = f"DISPLAY={env('DISPLAY')}\nGAMESCOPE_WAYLAND_DISPLAY={env('GAMESCOPE_WAYLAND_DISPLAY')}\n"
+    def write_session_env(self, layer):
+        wayland = env("GAMESCOPE_WAYLAND_DISPLAY")
+        text = (f"DISPLAY={env('DISPLAY')}\nGAMESCOPE_WAYLAND_DISPLAY={wayland}\nWAYLAND_DISPLAY={wayland}\n"
+                f"XDG_DATA_HOME={waydroid_data()}\nPULSE_RUNTIME_PATH={os.path.join(runtime_dir(), 'pulse')}\n"
+                f"MICROOS_ANDROID_LSFG_LAYER={1 if layer else 0}\n")
         if MANGOHUD_CONFIG.fullmatch(env("MANGOHUD_CONFIGFILE")):
             text += f"MANGOHUD_CONFIGFILE={env('MANGOHUD_CONFIGFILE')}\n"
         write_atomic(os.path.join(run_dir(), "session.env"), text)
 
+    def spawn(self, argv, done, extra=None):
+        launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_PIPE)
+        for key, value in (extra or {}).items():
+            launcher.setenv(key, value, True)
+        try:
+            process = launcher.spawnv(argv)
+        except GLib.Error as error:
+            log(f"cannot run {argv[0]}: {error.message}")
+
+            def failed():
+                done(-1, "")
+                return False
+
+            GLib.idle_add(failed)
+            return
+
+        def finished(proc, result):
+            try:
+                _ok, out, err = proc.communicate_utf8_finish(result)
+            except GLib.Error as error:
+                log(f"{argv[0]} {argv[1] if len(argv) > 1 else ''}: {error.message}")
+                done(-1, "")
+                return
+            for line in (err or "").splitlines():
+                if line:
+                    log(line)
+            done(proc.get_exit_status() if proc.get_if_exited() else -1, out or "")
+
+        process.communicate_utf8_async(None, None, finished)
+
+    def poll_boot(self):
+        self.booting = True
+
+        def done(code, _out):
+            self.booting = False
+            self.next_poll = time.monotonic() + BOOT_POLL_S
+            if code == 0 and not self.ready and not self.refused:
+                self.mark_ready()
+
+        self.spawn([GUEST, "boot"], done)
+
     def mark_ready(self):
         self.ready = True
+        self.spawn([WAYDROID, "show-full-ui"], self.shown,
+                   {"XDG_DATA_HOME": waydroid_data(), "WAYLAND_DISPLAY": env("GAMESCOPE_WAYLAND_DISPLAY")})
         write_atomic(os.path.join(run_dir(), "ready"), "\n")
         update_state({"last.result": "ready", "last.reason": "", "last.boottime": boottime_ms()})
         self.hide_boot_screen()
         log("android ready")
-        self.run_start_tasks()
+        for unit in WRITERS:
+            self.start_unit_named(unit, "fail")
+        self.spawn([GUEST, "opts"], self.opts_done)
 
-    def run_start_tasks(self):
-        self.start_unit_named(BATTERY, "fail")
-        keyboard = env("MICROOS_KEYBOARD_INSTALL", "/usr/libexec/microos/microos-android-keyboard")
-        try:
-            pid = GLib.spawn_async([keyboard, CONTAINER], flags=GLib.SpawnFlags.DO_NOT_REAP_CHILD,
-                                   standard_output=None, standard_error=None)[0]
-        except GLib.Error as error:
-            log(f"cannot run {keyboard}: {error.message}")
-            self.finish_start_tasks()
-            return
-        GLib.child_watch_add(GLib.PRIORITY_DEFAULT, pid, self.keyboard_done)
-
-    def keyboard_done(self, pid, status):
-        code = os.waitstatus_to_exitcode(status) if hasattr(os, "waitstatus_to_exitcode") else status
+    def shown(self, code, _out):
         if code:
-            log(f"the keyboard install exited {code}")
-        GLib.spawn_close_pid(pid)
-        self.finish_start_tasks()
+            log(f"show-full-ui exited {code}")
 
-    def finish_start_tasks(self):
+    def opts_done(self, code, _out):
+        if code:
+            log(f"the guest settings exited {code}")
+        self.spawn([GUEST, "sh", "pm list packages"], self.packages_done)
+
+    def packages_done(self, code, out):
+        gsf = False
+        if code == 0:
+            fields, gsf = gapps_fields(out)
+            update_state(fields)
+        else:
+            log(f"the guest package list exited {code}, the Google apps state is not read")
         write_atomic(os.path.join(run_dir(), "start-done"), "\n")
         log("start tasks done")
-        if read_text(os.path.join(run_dir(), "first-boot")) == "gapps":
-            self.start_unit_named(SETUP)
+        if gsf:
+            self.read_gsf()
 
-    def start_unit_named(self, unit, mode="replace"):
+    def read_gsf(self):
+        if read_text(GSF_ID):
+            return False
+        self.start_unit_named(GSF_UNIT, "replace", system=True)
+        GLib.timeout_add(GSF_EVERY_MS, self.read_gsf)
+        return False
+
+    def start_unit_named(self, unit, mode, system=False):
+        bus = self.bus
+        if system:
+            try:
+                bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+            except GLib.Error as error:
+                log(f"no system bus for {unit}: {error.message}")
+                return
         try:
-            self.bus.call_sync(MANAGER[0], MANAGER[1], MANAGER[2], "StartUnit",
-                               GLib.Variant("(ss)", (unit, mode)), None, Gio.DBusCallFlags.NONE, 5000, None)
+            bus.call_sync(MANAGER[0], MANAGER[1], MANAGER[2], "StartUnit",
+                          GLib.Variant("(ss)", (unit, mode)), None, Gio.DBusCallFlags.NONE, 5000, None)
         except GLib.Error as error:
             log(f"StartUnit {unit} failed: {error.message}")
 
@@ -481,52 +498,17 @@ class Client:
         if self.window is not None:
             self.window.hide()
 
-    def restart_for_gapps(self, wanted):
-        log(f"restarting Android for the GApps set {wanted}")
-        self.restarting = True
-        if not self.stop_unit():
-            self.restarting = False
-            self.failed_activation = wanted
-            log(f"cannot stop {UNIT} for {wanted}, Android keeps running")
-            return
-        self.ready = False
-        self.stopping = False
-
-    def resume_restart(self):
-        if unit_state(self.bus, UNIT) not in ("inactive", "failed", ""):
-            return True
-        self.restarting = False
-        wanted = self.activation_request()
-        if wanted and not self.activate(wanted):
-            log(f"cannot activate {wanted}, starting Android as it is")
-        self.started = False
-        self.job = None
-        self.write_session_env()
-        self.start_unit()
-        return True
-
     def tick(self):
-        if self.stopping:
-            if unit_state(self.bus, UNIT) in ("inactive", "failed", ""):
-                self.loop.quit()
-                return False
-            return True
-        if self.restarting:
-            return self.resume_restart()
-        reason = self.end_reason()
-        if reason and not self.ready:
-            self.refuse(reason)
+        if self.ready or self.refused:
             return False
-        if not self.started:
-            failed = read_text(os.path.join(run_dir(), "start-failed"))
-            if failed:
-                log(failed)
-                self.refuse(failed if word_ok(failed) else "start-failed")
-                return False
-        if self.ready:
-            wanted = self.activation_request()
-            if wanted:
-                self.restart_for_gapps(wanted)
+        if self.started and unit_state(self.bus, UNIT) in ("inactive", "failed", ""):
+            self.refuse(self.end_reason() or "start-failed")
+            return False
+        if time.monotonic() >= self.deadline:
+            self.refuse("boot-timeout")
+            return False
+        if self.started and self.named and not self.booting and time.monotonic() >= self.next_poll:
+            self.poll_boot()
         return True
 
     def finish(self):
@@ -535,32 +517,26 @@ class Client:
 
     def run(self):
         self.clear_markers()
-        self.write_session_env()
+        self.write_session_env(False)
         set_touch_mode()
         self.show_boot_screen()
-        wanted = self.activation_request()
-        if wanted:
-            self.activate(wanted)
-        card_wait()
         code, word = start_check()
         if code == 2:
             self.refuse(word or "check-refused")
-            return self.exit_code
+            return self.finish()
+        if code == 1:
+            self.refuse("not-installed")
+            return self.finish()
         if code != 0:
             log(f"the start check exited {code}, taking it as can run")
+        self.write_session_env(place_layer())
         self.subscribe()
-        signal.signal(signal.SIGTERM, lambda *args: self.request_stop())
-        signal.signal(signal.SIGINT, lambda *args: self.request_stop())
+        signal.signal(signal.SIGTERM, lambda *args: self.loop.quit())
+        signal.signal(signal.SIGINT, lambda *args: self.loop.quit())
         self.start_unit()
         GLib.timeout_add(TICK_MS, self.tick)
         self.loop.run()
         return self.finish()
-
-    def request_stop(self):
-        if self.stopping or self.restarting:
-            return
-        self.stopping = True
-        self.stop_unit()
 
 
 def main():
