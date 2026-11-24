@@ -31,7 +31,12 @@ grep -qE '^(Nice|IOSchedulingClass|CPUWeight)=' "${unit}" && fail "the user unit
 
 pins="${data}/share/microos-android/gapps.env"
 [[ "$(cut -d= -f1 "${pins}" | tr '\n' ' ')" == "MTG13_URL MTG13_SIZE MTG13_SHA256 " ]] || fail "pins keys: $(cat "${pins}")"
-grep -q '=.' "${pins}" && echo "SKIP MindTheGapps 13 pins are set, the unread pin check does not apply"
+. "${pins}"
+release='MindTheGapps-13\.0\.0-arm64-[0-9_]+'
+[[ "${MTG13_URL}" =~ ^https://github\.com/MindTheGapps/13\.0\.0-arm64/releases/download/${release}/${release}\.zip$ ]] \
+    || fail "MTG13_URL is not a MindTheGapps 13 arm64 release: ${MTG13_URL}"
+[[ "${MTG13_SIZE}" =~ ^[1-9][0-9]+$ && "${MTG13_SHA256}" =~ ^[0-9a-f]{64}$ ]] \
+    || fail "MTG13_SIZE or MTG13_SHA256: $(cat "${pins}")"
 grep -q 'MTG11\|MTG14\|mtg11' "${cli}" "${root}" && fail "the old MindTheGapps 11 and 14 pins are still named"
 grep -qF '"system/"' "${root}" || fail "the root helper does not take the zip's system tree"
 grep -qF 'gapps.manifest' "${root}" || fail "the root helper keeps no manifest of its overlay files"
