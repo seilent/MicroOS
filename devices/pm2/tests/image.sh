@@ -698,6 +698,23 @@ guestcmd=/usr/share/microos-android/cmd
   || fail "/usr/share/microos-android/cmd missing, mode or owner"
 [[ $(head -n 1 "$guestcmd") == '#!/system/bin/sh' ]] || fail "the guest cmd has no /system/bin/sh shebang"
 [[ $(< /usr/share/microos-android/display) == $'width=960\nheight=640\ndensity=213' ]] || fail "/usr/share/microos-android/display"
+
+rpm -q waydroid lxc >/dev/null || fail "waydroid or lxc missing"
+for c in waydroid lxc-start; do
+  command -v "$c" >/dev/null || fail "$c missing, Waydroid needs it"
+done
+for f in Waydroid.desktop waydroid.market.desktop waydroid.app.install.desktop; do
+  [[ ! -e /usr/share/applications/$f ]] || fail "/usr/share/applications/$f is in the image"
+done
+[[ $(readlink /usr/share/waydroid-extra/images) == /var/lib/microos-android/images/current ]] ||
+  fail "/usr/share/waydroid-extra/images is not the link to /var/lib/microos-android/images/current"
+[[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
+[[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
+  fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"
+grep -qx 'SystemdService=waydroid-container.service' /usr/share/dbus-1/system-services/id.waydro.Container.service ||
+  fail "id.waydro.Container.service does not activate waydroid-container.service"
+[[ $(systemctl is-enabled dev-binderfs.mount) == enabled ]] || fail "dev-binderfs.mount is not enabled"
+grep -qx 'Type=binder' /usr/lib/systemd/system/dev-binderfs.mount || fail "dev-binderfs.mount is not a binder mount"
 systemctl --global cat gamescope-session-plus@android.service | grep -qxF Wants=microos-android-pad.service \
   || fail "gamescope-session-plus@android.service does not want microos-android-pad.service"
 

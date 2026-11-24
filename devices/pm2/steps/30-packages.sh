@@ -187,9 +187,18 @@ if ! dnf -y install \
   iproute \
   inotify-tools \
   which \
+  e2fsprogs \
+  unzip \
+  waydroid \
   "${rpms[@]}"; then
   echo "30-packages: pipewire is pinned at $PIPEWIRE_EVR and wireplumber at $WIREPLUMBER_EVR; if a package needs newer ones, run packages/pipewire-aptx/bump.sh <pipewire EVR> <wireplumber EVR>" >&2
   exit 1
 fi
+
+rm /usr/share/applications/Waydroid.desktop /usr/share/applications/waydroid.market.desktop \
+  /usr/share/applications/waydroid.app.install.desktop
+install -d /usr/share/waydroid-extra
+ln -s /var/lib/microos-android/images/current /usr/share/waydroid-extra/images
+
 printf '[main]\nexcludepkgs=hyprland,hyprutils,hyprlang,hyprgraphics,hyprwire,hyprcursor,aquamarine,hyprgrass,udis86\n' \
   > /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf
