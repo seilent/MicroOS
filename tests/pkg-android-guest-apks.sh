@@ -18,6 +18,10 @@ vintf=$overlay/system/etc/vintf/manifest/$hal.xml
 helper=$overlay/system/priv-app/MicroOsHelper/MicroOsHelper.apk
 rro=$overlay/system/product/overlay/MicroOsTelephony/MicroOsTelephonyOverlay.apk
 volumes=$overlay/vendor/etc/audio_policy_volumes.xml
+hwc=$overlay/vendor/lib64/hw/hwcomposer.waydroid.so
+licdir=/usr/share/licenses/microos-android-guest-apks
+licenses=(COPYING.wayland COPYING.wayland-protocols LICENSE.hardware-waydroid LICENSE.libffi LICENSE.libxkbcommon
+  NOTICE.bionic NOTICE.hardware-waydroid NOTICE.libxkbcommon-parser)
 
 rpm=$(find "$dir" -maxdepth 1 -name 'microos-android-guest-apks-1-*.microos.aarch64.rpm')
 srpm=$(find "$dir" -maxdepth 1 -name 'microos-android-guest-apks-1-*.src.rpm')
@@ -32,12 +36,14 @@ if [[ $(rpm -qp --qf '%{VENDOR}' "$rpm") != MicroOS ]]; then fail "vendor"; fi
 if [[ $(rpm -qp --qf '%{RELEASE}' "$rpm") != *.microos ]]; then fail "release"; fi
 if [[ $(rpm -qp --qf '%{SOURCERPM}' "$rpm") != "${srpm##*/}" ]]; then fail "SOURCERPM"; fi
 license=$(rpm -qp --qf '%{LICENSE}' "$rpm")
-if [[ $license != 'GPL-2.0-or-later AND Apache-2.0' ]]; then fail "license tag: $license"; fi
+want='GPL-2.0-or-later AND Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND HPND AND HPND-sell-variant'
+if [[ $license != "$want AND GPL-3.0-or-later WITH Bison-exception-2.2" ]]; then fail "license tag: $license"; fi
 if requires=$(rpm -qp --requires "$rpm" | grep -v '^rpmlib('); then fail "requires: $requires"; fi
 
 sources=$(rpm -qp --qf '[%{SOURCE}\n]' "$srpm" | sort)
 want=$(printf '%s\n' overlay.manifest service.c "$hal.rc" "$hal.xml" build.sh SOURCE.env \
-  microos-android-guest-apks-helper.tar.gz microos-android-guest-apks-telephony.tar.gz audio_policy_volumes.xml | sort)
+  microos-android-guest-apks-helper.tar.gz microos-android-guest-apks-telephony.tar.gz audio_policy_volumes.xml \
+  hwcomposer.waydroid.so 0001-hwc-private-roundtrip-queue.patch hwc.env "${licenses[@]}" | sort)
 if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$sources")"; fi
 
 files=$(rpm -qlp "$rpm" | LC_ALL=C sort)
@@ -45,7 +51,8 @@ expected=$(printf '%s\n' "$share" "$manifest" "$vendorpin" "$overlay" "$overlay/
   "$overlay/system/bin" "${bin%/*}" "$bin" \
   "$overlay/system/etc" "${initrc%/*}" "$initrc" "$overlay/system/etc/vintf" "${vintf%/*}" "$vintf" \
   "$overlay/system/priv-app" "${helper%/*}" "$helper" "$overlay/system/product" "${rro%/*/*}" "${rro%/*}" "$rro" \
-  "$overlay/vendor" "${volumes%/*}" "$volumes" | LC_ALL=C sort)
+  "$overlay/vendor" "${volumes%/*}" "$volumes" "$overlay/vendor/lib64" "${hwc%/*}" "$hwc" \
+  "$licdir" "${licenses[@]/#/$licdir/}" | LC_ALL=C sort)
 if [[ $files != "$expected" ]]; then
   fail "file list: $(diff <(echo "$expected") <(echo "$files") | grep '^[<>]' | tr '\n' ' ')"
 fi
@@ -68,9 +75,10 @@ pins=$(printf '%s\n' \
   "b163a203c7ddc5c2886f6030c3c531341b68d7d0a6b6d2d2aaa46eb0cf12efd7 0644 ${vintf#"$overlay"/}" \
   "1bea3541ad971602a40620f72231d40d421ec26aea80092e8e3573ac51b1a223 0644 ${helper#"$overlay"/}" \
   "dc2810a28f07f25cb8476321007542a6b1e8c32a58c5555dce842f9e7f26229d 0644 ${rro#"$overlay"/}" \
-  "4ef8bc89e575d9be09ce25975e368493ee0b04256a67ab1b584bf1717a894166 0644 ${volumes#"$overlay"/}")
+  "4ef8bc89e575d9be09ce25975e368493ee0b04256a67ab1b584bf1717a894166 0644 ${volumes#"$overlay"/}" \
+  "540608d5169c528531a0ae8754beae5fa3f12de6edc2c187f3df13a8ff1b1dfc 0644 ${hwc#"$overlay"/}")
 [[ $(< "$root$manifest") == "$pins" ]] ||
-  fail "$manifest is not the pinned lights HAL, helper, telephony and volume set: $(< "$root$manifest")"
+  fail "$manifest is not the pinned lights HAL, helper, telephony, volume and composer set: $(< "$root$manifest")"
 while read -r sum mode path; do
   echo "$sum  $root$overlay/$path" | sha256sum -c --status - || fail "$overlay/$path does not match its manifest sha256"
   [[ $(stat -c %04a "$root$overlay/$path") == "$mode" ]] || fail "$overlay/$path is not $mode"
@@ -82,8 +90,8 @@ cmp -s "$tmp/src/$hal.rc" "$root$initrc" || fail "$initrc is not the SRPM's $hal
 cmp -s "$tmp/src/$hal.xml" "$root$vintf" || fail "$vintf is not the SRPM's $hal.xml"
 cmp -s "$tmp/src/audio_policy_volumes.xml" "$root$volumes" || fail "$volumes is not the SRPM's audio_policy_volumes.xml"
 [[ $(< "$root$vendorpin") == "VENDOR_SHA256=$VENDOR_SHA256" ]] || fail "$vendorpin is not SOURCE.env's VENDOR_SHA256"
-[[ -z $(find "$tmp/src" -name '*.so' -o -name '*.zip' -o -name "$hal") ]] ||
-  fail "the SRPM holds a binary or an NDK file"
+[[ -z $(find "$tmp/src" \( -name '*.so' ! -name hwcomposer.waydroid.so \) -o -name '*.zip' -o -name "$hal") ]] ||
+  fail "the SRPM holds a binary other than the composer or an NDK file"
 mkdir "$tmp/helper"
 tar -xzf "$tmp/src/microos-android-guest-apks-helper.tar.gz" -C "$tmp/helper"
 tar -xzf "$tmp/src/microos-android-guest-apks-telephony.tar.gz" -C "$tmp/helper"
@@ -97,6 +105,23 @@ out=$("$readelf" -l -S "$root$bin") || fail "llvm-readelf cannot read $bin"
 grep -qF '[Requesting program interpreter: /system/bin/linker64]' <<<"$out" ||
   fail "$bin is not an Android arm64 executable"
 if grep -qF .symtab <<<"$out"; then fail "$bin is not stripped"; fi
+
+cmp -s "$tmp/src/hwcomposer.waydroid.so" "$root$hwc" || fail "$hwc is not the SRPM's hwcomposer.waydroid.so"
+pin() { sed -n "s/^$1=//p" "$tmp/src/hwc.env"; }
+[[ $(sha256sum < "$root$hwc") == "$(pin HWC_SHA256)  -" ]] || fail "$hwc is not the library hwc.env pins"
+[[ $(sha256sum < "$tmp/src/0001-hwc-private-roundtrip-queue.patch") == "$(pin HWC_PATCH_SHA256)  -" ]] ||
+  fail "0001-hwc-private-roundtrip-queue.patch is not the patch hwc.env pins"
+[[ $(pin VENDOR_SHA256) == "$VENDOR_SHA256" ]] || fail "hwc.env's VENDOR_SHA256 is not SOURCE.env's"
+out=$("$readelf" -h -n "$root$hwc") || fail "llvm-readelf cannot read $hwc"
+grep -qE '^ +Machine: +AArch64$' <<<"$out" || fail "$hwc is not aarch64"
+grep -qE '^ +Build ID: f36942bb37ab1cbcec5bec174529ec05$' <<<"$out" || fail "$hwc BuildId"
+[[ $(pin HWC_BUILD_ID) == f36942bb37ab1cbcec5bec174529ec05 ]] || fail "hwc.env's HWC_BUILD_ID"
+licfiles=$(rpm -qp --licensefiles "$rpm" | LC_ALL=C sort)
+[[ $licfiles == "$(printf '%s\n' "${licenses[@]/#/$licdir/}" | LC_ALL=C sort)" ]] ||
+  fail "license files: $(tr '\n' ' ' <<<"$licfiles")"
+for f in "${licenses[@]}"; do
+  cmp -s "$tmp/src/$f" "$root$licdir/$f" || fail "$licdir/$f is not the SRPM's $f"
+done
 
 check_signed() {
   local apk=$root$1 cert=$2 out
