@@ -13,7 +13,7 @@ from gi.repository import Gio, GLib, GLibUnix
 
 ME = "microos-android-lsfg"
 MICROSET = ("net.seilent.MicroSet", "/net/seilent/MicroSet", "net.seilent.MicroSet1")
-CONTAINER = "lepton-android"
+GUEST = os.environ.get("MICROOS_ANDROID_GUEST") or "/usr/libexec/microos/microos-android-guest"
 TIMEOUT_S = float(os.environ.get("MICROOS_LSFG_TIMEOUT_S") or 5)
 LAYER = os.environ.get("MICROOS_ANDROID_LSFG_LAYER") == "1"
 DLL = os.environ.get("MICROOS_ANDROID_LSFG_DLL") == "1"
@@ -44,12 +44,12 @@ def script(lines):
 
 def guest(text):
     try:
-        result = subprocess.run(["podman", "exec", CONTAINER, "/system/bin/sh", "-c", text],
+        result = subprocess.run([GUEST, "sh", text],
                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=TIMEOUT_S)
     except subprocess.TimeoutExpired:
         return f"timed out after {TIMEOUT_S:g} s", ""
     except OSError as error:
-        return f"podman failed: {error}", ""
+        return f"the guest exec failed: {error}", ""
     out = result.stdout.decode(errors="replace")
     return (f"failed (rc={result.returncode})" if result.returncode else None), out
 
@@ -165,7 +165,15 @@ class Writer:
         self.reconcile()
 
 
+def clear():
+    error, _ = guest(script(CLEAR))
+    log(f"the clear at stop {error}" if error else "cleared at stop")
+    return 1 if error else 0
+
+
 def main():
+    if sys.argv[1:] == ["clear"]:
+        return clear()
     try:
         hz = panel_hz()
     except (OSError, ValueError) as error:

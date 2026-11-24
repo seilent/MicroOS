@@ -1,18 +1,16 @@
 [Unit]
-Description=Android session container
+Description=Android session on Waydroid
 Requisite=gamescope-session-plus@android.service
-After=gamescope-session-plus@android.service microos-lepton-prepare.service
-Requires=microos-lepton-prepare.service
+After=gamescope-session-plus@android.service
+PartOf=gamescope-session-plus@android.service
 StopPropagatedFrom=gamescope-session-plus@android.service
+Wants=microos-android-brightness.service
 
 [Service]
-Type=notify
-NotifyAccess=all
-EnvironmentFile=-%t/microos-android/session.env
-ExecStartPre=/usr/bin/podman rm -fi lepton-android
-ExecStart=/usr/libexec/microos/microos-android-run
-ExecStop=/usr/libexec/microos/microos-android-stop
-ExecStopPost=/usr/libexec/microos/microos-android-stop --post
-TimeoutStartSec=120
-TimeoutStopSec=20
-SuccessExitStatus=143
+Type=simple
+EnvironmentFile=%t/microos-android/session.env
+ExecStart=/usr/bin/flock -s /run/microos-android/images.lock /usr/bin/waydroid session start
+ExecStop=-/usr/libexec/microos/microos-android-guest stop
+ExecStop=/usr/bin/waydroid session stop
+ExecStopPost=/usr/bin/waydroid session stop
+TimeoutStopSec=45

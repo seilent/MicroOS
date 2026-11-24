@@ -102,6 +102,9 @@ def main():
     if reason:
         log(f"{reason}, no overlay control")
         return 0
+    if sys.argv[1:] == ["off"]:
+        Writer(None, path).write(False)
+        return 0
     loop = GLib.MainLoop()
     GLibUnix.signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, loop.quit)
     try:
