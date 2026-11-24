@@ -70,7 +70,8 @@ want=$(printf '%s\n' microos-boot-ok.service microos-provision.service microos-u
   microos-hexagonrpcd-adsp.service microos-session-switch@.service \
   microos-session-up@.service microos-session-fallback@.service microos-session-switcher.service \
   microos-session-switcher.path microos-session-boot.service microos-session-watch.service microos-session-attempt.service \
-  microos-waydroid-forward.service microos-android-images.service "${tests[@]}")
+  microos-waydroid-forward.service microos-android-images.service \
+  microos-selinux-watch.service "${tests[@]}")
 units=()
 for u in /usr/lib/systemd/system/microos-*; do
   [[ -f $u ]] && units+=("$u")
@@ -170,6 +171,7 @@ kept=(
   /usr/lib/systemd/system-preset/60-microos-waydroid.preset
   /usr/lib/systemd/system/dev-binderfs.mount
   /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf
+  /usr/lib/systemd/system/waydroid-container.service.d/20-microos-selinux-watch.conf
   /usr/lib/systemd/system/emergency.service.d/10-microos.conf
   /usr/lib/systemd/system/microos-android-images.service
   /usr/lib/systemd/system/microos-adsp-sensors.service
@@ -201,6 +203,7 @@ kept=(
   /usr/lib/systemd/system/microos-test-emergency.service
   /usr/lib/systemd/system/microos-test-gptdump.service
   /usr/lib/systemd/system/microos-test-panic.service
+  /usr/lib/systemd/system/microos-selinux-watch.service
   /usr/lib/systemd/system/microos-test-wdhang.service
   /usr/lib/systemd/system/microos-waydroid-forward.service
   /usr/lib/systemd/system/microos-update.service
@@ -273,6 +276,7 @@ kept=(
   /usr/libexec/microos/microos-powerkey
   /usr/libexec/microos/microos-provision
   /usr/libexec/microos/microos-sdam
+  /usr/libexec/microos/microos-selinux-watch
   /usr/libexec/microos/microos-session-boot
   /usr/libexec/microos/microos-session-track
   /usr/libexec/microos/microos-session-watch
@@ -428,6 +432,18 @@ done
 [[ -x /usr/libexec/microos/microos-fetch ]] || fail "microos-fetch missing, microos-android-images needs it"
 grep -qE '^MICROOS_BOOT_OK_ALLOW=.* microos-android-images\.service[ }]' /usr/lib/microos/boot-ok.conf ||
   fail "boot-ok.conf does not allow a failed microos-android-images.service"
+watch=/usr/libexec/microos/microos-selinux-watch
+[[ $(stat -c %a "$watch") == 755 && $(head -n 1 "$watch") == '#!/usr/bin/python3' ]] || fail "$watch is not a 755 python3 script"
+python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$watch" || fail "$watch does not parse"
+for k in 'NETLINK_SELINUX = 7' 'SELNLGRP_AVC = 1' 'STATUS = "/sys/fs/selinux/status"' 'UNIT = "waydroid-container.service"' \
+  'kmsg.write(f"selinux-watch: {kind} {value}\n")' 'notify(b"READY=1")'; do
+  grep -qF -- "$k" "$watch" || fail "$watch lacks $k"
+done
+[[ $(< /usr/lib/systemd/system/microos-selinux-watch.service) == $'[Unit]\nDescription=SELinux tripwire that stops Waydroid on a mode change or policy load\n\n[Service]\nType=notify\nExecStart=/usr/libexec/microos/microos-selinux-watch' ]] \
+  || fail "microos-selinux-watch.service"
+[[ $(systemctl is-enabled microos-selinux-watch.service) == static ]] || fail "microos-selinux-watch.service is not static, the container starts it"
+[[ $(< /usr/lib/systemd/system/waydroid-container.service.d/20-microos-selinux-watch.conf) == $'[Unit]\nBindsTo=microos-selinux-watch.service\nAfter=microos-selinux-watch.service' ]] \
+  || fail "waydroid-container.service.d/20-microos-selinux-watch.conf"
 [[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
 [[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
   fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"

@@ -1,0 +1,87 @@
+#!/usr/bin/python3
+import ctypes
+import mmap
+import os
+import select
+import socket
+import struct
+import subprocess
+
+NETLINK_SELINUX = 7
+SELNLGRP_AVC = 1
+SELNL_MSG_SETENFORCE = 0x10
+SELNL_MSG_POLICYLOAD = 0x11
+STATUS = "/sys/fs/selinux/status"
+UNIT = "waydroid-container.service"
+
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mmap.restype = ctypes.c_void_p
+libc.mmap.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long)
+
+
+def word(base, offset):
+    return ctypes.c_uint32.from_address(base + offset).value
+
+
+def page(base):
+    while True:
+        seq = word(base, 4)
+        if seq & 1:
+            continue
+        enforcing, policyload = word(base, 8), word(base, 12)
+        if word(base, 4) == seq:
+            return enforcing, policyload
+
+
+def messages(data):
+    offset = 0
+    while offset + 16 <= len(data):
+        length, kind = struct.unpack_from("=IH", data, offset)
+        if length < 16:
+            return
+        if kind == SELNL_MSG_SETENFORCE:
+            yield "setenforce", struct.unpack_from("=i", data, offset + 16)[0]
+        elif kind == SELNL_MSG_POLICYLOAD:
+            yield "policyload", struct.unpack_from("=I", data, offset + 16)[0]
+        offset += (length + 3) & ~3
+
+
+def trip(kind, value):
+    with open("/dev/kmsg", "w") as kmsg:
+        kmsg.write(f"selinux-watch: {kind} {value}\n")
+    subprocess.run(["systemctl", "stop", "--no-block", UNIT], check=True)
+
+
+def notify(state):
+    path = os.environ["NOTIFY_SOCKET"]
+    if path.startswith("@"):
+        path = "\0" + path[1:]
+    with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+        sock.connect(path)
+        sock.sendall(state)
+
+
+def main():
+    sock = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, NETLINK_SELINUX)
+    sock.bind((0, 1 << (SELNLGRP_AVC - 1)))
+    fd = os.open(STATUS, os.O_RDONLY)
+    base = libc.mmap(None, mmap.PAGESIZE, mmap.PROT_READ, mmap.MAP_SHARED, fd, 0)
+    if base in (None, ctypes.c_void_p(-1).value):
+        raise OSError(ctypes.get_errno(), f"mmap of {STATUS} failed")
+    seen = page(base)
+    notify(b"READY=1")
+    while True:
+        readable, _, _ = select.select([sock], [], [], 1)
+        if readable:
+            for kind, value in messages(sock.recv(65536)):
+                trip(kind, value)
+                seen = (value, seen[1]) if kind == "setenforce" else (seen[0], value)
+        now = page(base)
+        if now[0] != seen[0]:
+            trip("setenforce", now[0])
+        if now[1] != seen[1]:
+            trip("policyload", now[1])
+        seen = now
+
+
+main()
