@@ -378,8 +378,14 @@ guestlist=/usr/share/microos-android/overlay.manifest
 guestset=$(printf '%s\n' '0755 system/bin/hw/android.hardware.lights-service.microos' \
   '0644 system/etc/init/android.hardware.lights-service.microos.rc' \
   '0644 system/etc/vintf/manifest/android.hardware.lights-service.microos.xml' \
-  '0644 system/priv-app/MicroOsHelper/MicroOsHelper.apk')
-[[ $(cut -d' ' -f2- "$guestlist") == "$guestset" ]] || fail "$guestlist does not list the lights HAL and the helper"
+  '0644 system/priv-app/MicroOsHelper/MicroOsHelper.apk' \
+  '0644 system/product/overlay/MicroOsTelephony/MicroOsTelephonyOverlay.apk' \
+  '0644 vendor/etc/audio_policy_volumes.xml')
+[[ $(cut -d' ' -f2- "$guestlist") == "$guestset" ]] ||
+  fail "$guestlist does not list the lights HAL, the helper, the telephony overlay and the volume curves"
+vendorpin=$(sed -n 's/^VENDOR_SHA256=//p' /usr/share/microos-android/images.env)
+[[ -n $vendorpin && $(< /usr/share/microos-android/overlay.vendor) == "VENDOR_SHA256=$vendorpin" ]] ||
+  fail "/usr/share/microos-android/overlay.vendor is not made for the vendor image images.env pins"
 while read -r sum mode path; do
   [[ -f $guestfiles/$path && ! -L $guestfiles/$path ]] || fail "$guestfiles/$path missing"
   [[ $(rpm -qf --qf '%{NAME}' "$guestfiles/$path" 2>/dev/null) == microos-android-guest-apks ]] ||

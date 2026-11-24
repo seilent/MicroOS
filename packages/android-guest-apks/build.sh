@@ -17,6 +17,10 @@ grep -qx "Pkg.Revision=$BUILD_TOOLS_VERSION" "$tools/source.properties" ||
 platform=/opt/android-platform-$SDK_API
 grep -qx "AndroidVersion.ApiLevel=$SDK_API" "$platform/source.properties" ||
   { echo "build.sh: $platform is not the API $SDK_API platform" >&2; exit 1; }
+testkey=/opt/android-testkey
+{ echo "$SIGNER_PK8_SHA256  $testkey/testkey.pk8" | sha256sum -c --status - &&
+  echo "$SIGNER_X509_SHA256  $testkey/testkey.x509.pem" | sha256sum -c --status -; } ||
+  { echo "build.sh: $testkey is not the pinned AOSP test key" >&2; exit 1; }
 
 props=/keys/keystore.properties
 [[ -f $props ]] || { echo "build.sh: no $props, the helper key directory is mounted at /keys" >&2; exit 1; }
@@ -34,12 +38,15 @@ top=$(mktemp -d)
 trap 'rm -rf "${top:?}"' EXIT
 mkdir -p "$top/SOURCES"
 cp "$src/overlay.manifest" "$src/lights/service.c" "$src/lights/android.hardware.lights-service.microos.rc" \
-  "$src/lights/android.hardware.lights-service.microos.xml" "$src/build.sh" "$src/SOURCE.env" "$top/SOURCES/"
-tar -C "$src" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX \
-  -czf "$top/SOURCES/microos-android-guest-apks-helper.tar.gz" helper
+  "$src/lights/android.hardware.lights-service.microos.xml" "$src/build.sh" "$src/SOURCE.env" \
+  "$src/vendor-etc/audio_policy_volumes.xml" "$top/SOURCES/"
+for d in helper telephony; do
+  tar -C "$src" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX \
+    -czf "$top/SOURCES/microos-android-guest-apks-$d.tar.gz" "$d"
+done
 
 rpmbuild -ba --target aarch64 --define "_topdir $top" --define "ndk $ndk" --define "android_api $ANDROID_API" \
-  --define "build_tools $tools" --define "platform $platform" --define "sdk_api $SDK_API" \
+  --define "build_tools $tools" --define "platform $platform" --define "sdk_api $SDK_API" --define "testkey $testkey" \
   --define "helper_store $store" --define "helper_alias $key_alias" --define "helper_cert $HELPER_CERT_SHA256" \
   "$src/microos-android-guest-apks.spec"
 
