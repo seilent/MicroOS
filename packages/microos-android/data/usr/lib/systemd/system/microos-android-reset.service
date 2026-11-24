@@ -1,0 +1,9 @@
+[Unit]
+Description=Remove the Android guest data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-android-root reset
+StateDirectory=microos-android
+PrivateNetwork=yes
+NoNewPrivileges=yes

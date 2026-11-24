@@ -1,0 +1,11 @@
+[Unit]
+Description=Read the Android guest's GSF ID
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-android-root gsf
+StateDirectory=microos-android
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateNetwork=yes
+NoNewPrivileges=yes

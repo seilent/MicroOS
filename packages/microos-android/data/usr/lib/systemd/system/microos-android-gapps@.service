@@ -1,0 +1,12 @@
+[Unit]
+Description=MindTheGapps 13 in the Waydroid overlay (%i)
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30min
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/libexec/microos/microos-android-root gapps-%i
+StateDirectory=microos-android
+CacheDirectory=microos-android
+NoNewPrivileges=yes

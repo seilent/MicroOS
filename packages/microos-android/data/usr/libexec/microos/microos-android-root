@@ -1,0 +1,308 @@
+#!/usr/bin/python3
+import fcntl
+import hashlib
+import os
+import pwd
+import re
+import shutil
+import sqlite3
+import stat
+import subprocess
+import sys
+import tempfile
+import zipfile
+
+ME = "microos-android-root"
+USER = os.environ.get("MICROOS_ANDROID_USER") or "micro"
+DATA_PARTS = (".local", "share", "microos-waydroid", "waydroid", "data")
+LOCK = os.environ.get("MICROOS_ANDROID_IMAGES_LOCK") or "/run/microos-android/images.lock"
+VAR = os.environ.get("MICROOS_ANDROID_VAR") or "/var/lib/microos-android"
+CACHE = os.environ.get("MICROOS_ANDROID_GAPPS_CACHE") or "/var/cache/microos-android/gapps"
+OVERLAY = os.environ.get("MICROOS_WAYDROID_OVERLAY") or "/var/lib/waydroid/overlay"
+PINS = os.environ.get("MICROOS_ANDROID_GAPPS_PINS") or "/usr/share/microos-android/gapps.env"
+LAYERS = os.environ.get("MICROOS_ANDROID_LSFG_DIR") or "/usr/share/guestos/android-lsfg/vulkan"
+FETCH = os.environ.get("MICROOS_FETCH") or "/usr/libexec/microos/microos-fetch"
+LXC = os.environ.get("MICROOS_LXC_INFO") or "lxc-info"
+DB_MAX = 64 << 20
+ID = re.compile(r"[1-9][0-9]*")
+MEMBER = re.compile(r"system/[A-Za-z0-9._@+-]+(/[A-Za-z0-9._@+-]+)*")
+
+
+class Refused(Exception):
+    pass
+
+
+def log(message):
+    print(f"{ME}: {message}", file=sys.stderr, flush=True)
+
+
+def account():
+    entry = pwd.getpwnam(USER)
+    return os.environ.get("MICROOS_ANDROID_HOME") or entry.pw_dir, entry.pw_uid, entry.pw_gid
+
+
+def walk(parts, make=None):
+    home, uid, gid = account()
+    fd = os.open(home, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts:
+            try:
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                if make is None:
+                    raise
+                os.mkdir(part, 0o755, dir_fd=fd)
+                if make == "user":
+                    os.chown(part, uid, gid, dir_fd=fd, follow_symlinks=False)
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def write_file(path, text, mode=0o644):
+    directory = os.path.dirname(path)
+    os.makedirs(directory, mode=0o755, exist_ok=True)
+    handle, temp = tempfile.mkstemp(dir=directory, prefix=".microos.")
+    try:
+        with os.fdopen(handle, "w") as out:
+            out.write(text)
+        os.chmod(temp, mode)
+        os.replace(temp, path)
+    except BaseException:
+        if os.path.lexists(temp):
+            os.unlink(temp)
+        raise
+
+
+def stopped():
+    lock = os.open(LOCK, os.O_RDONLY)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(lock)
+        raise Refused(f"{LOCK} is held, Android is running")
+    result = subprocess.run([LXC, "-P", "/var/lib/waydroid/lxc", "-n", "waydroid", "-s"], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, timeout=10)
+    state = result.stdout.decode(errors="replace")
+    if "RUNNING" in state or "FROZEN" in state:
+        os.close(lock)
+        raise Refused("the Waydroid container is running")
+    return lock
+
+
+def gsf():
+    target = os.path.join(VAR, "gsf-id")
+    try:
+        fd = walk(DATA_PARTS + ("data", "com.google.android.gsf", "databases"))
+    except FileNotFoundError:
+        log("no GSF database yet")
+        return 0
+    try:
+        with tempfile.TemporaryDirectory() as scratch:
+            for name in ("gservices.db", "gservices.db-wal"):
+                try:
+                    source = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                except FileNotFoundError:
+                    if name == "gservices.db":
+                        log("no GSF database yet")
+                        return 0
+                    continue
+                with os.fdopen(source, "rb") as handle:
+                    info = os.fstat(handle.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_size > DB_MAX:
+                        raise Refused(f"{name} is not a regular file under {DB_MAX} B")
+                    with open(os.path.join(scratch, name), "wb") as out:
+                        shutil.copyfileobj(handle, out)
+            connection = sqlite3.connect(os.path.join(scratch, "gservices.db"))
+            try:
+                row = connection.execute("SELECT value FROM main WHERE name = 'android_id'").fetchone()
+            finally:
+                connection.close()
+    finally:
+        os.close(fd)
+    value = str(row[0]) if row and row[0] is not None else ""
+    if not ID.fullmatch(value):
+        log("no GSF ID yet")
+        return 0
+    write_file(target, value + "\n")
+    log("GSF ID read")
+    return 0
+
+
+def reset():
+    lock = stopped()
+    try:
+        try:
+            fd = walk(DATA_PARTS[:-1])
+        except FileNotFoundError:
+            log("no guest data")
+        else:
+            try:
+                shutil.rmtree(DATA_PARTS[-1], dir_fd=fd)
+            except FileNotFoundError:
+                log("no guest data")
+            finally:
+                os.close(fd)
+        try:
+            os.unlink(os.path.join(VAR, "gsf-id"))
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(lock)
+    log("the guest data is removed, the next start boots a fresh guest")
+    return 0
+
+
+def layer():
+    lock = stopped()
+    try:
+        names = sorted(name for name in os.listdir(LAYERS) if os.path.isfile(os.path.join(LAYERS, name)))
+        fd = walk(DATA_PARTS, make="user")
+        try:
+            for part in ("local", "debug", "vulkan"):
+                try:
+                    os.mkdir(part, 0o755, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                os.close(fd)
+                fd = child
+            os.fchmod(fd, 0o755)
+            for name in os.listdir(fd):
+                if name not in names:
+                    os.unlink(name, dir_fd=fd)
+            for name in names:
+                temp = f".{name}.new"
+                out = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644, dir_fd=fd)
+                with open(os.path.join(LAYERS, name), "rb") as handle, os.fdopen(out, "wb") as target:
+                    shutil.copyfileobj(handle, target)
+                    os.fchmod(target.fileno(), 0o644)
+                os.replace(temp, name, src_dir_fd=fd, dst_dir_fd=fd)
+        finally:
+            os.close(fd)
+    finally:
+        os.close(lock)
+    log(f"frame generation layer placed: {' '.join(names)}")
+    return 0
+
+
+def pins():
+    values = {}
+    with open(PINS) as handle:
+        for line in handle:
+            key, _, value = line.strip().partition("=")
+            values[key] = value
+    url, size, sha = values.get("MTG13_URL", ""), values.get("MTG13_SIZE", ""), values.get("MTG13_SHA256", "")
+    if not url or not size.isdigit() or not re.fullmatch(r"[0-9a-f]{64}", sha):
+        raise Refused(f"the MindTheGapps 13 pins in {PINS} are not set")
+    return url, size, sha
+
+
+def manifest():
+    entries = {}
+    try:
+        with open(os.path.join(VAR, "gapps.manifest")) as handle:
+            for line in handle:
+                sha, _, path = line.rstrip("\n").partition(" ")
+                if MEMBER.fullmatch(path):
+                    entries[path] = sha
+    except FileNotFoundError:
+        pass
+    return entries
+
+
+def drop(paths):
+    for path in sorted(paths, reverse=True):
+        full = os.path.join(OVERLAY, path)
+        try:
+            os.unlink(full)
+        except FileNotFoundError:
+            pass
+        parent = os.path.dirname(path)
+        while parent != "system":
+            try:
+                os.rmdir(os.path.join(OVERLAY, parent))
+            except OSError:
+                break
+            parent = os.path.dirname(parent)
+
+
+def gapps_install():
+    url, size, sha = pins()
+    lock = stopped()
+    try:
+        os.makedirs(CACHE, mode=0o755, exist_ok=True)
+        archive = os.path.join(CACHE, url.rsplit("/", 1)[-1])
+        if subprocess.run([FETCH, url, size, sha, archive]).returncode:
+            raise Refused(f"cannot fetch {url}")
+        entries = {}
+        with zipfile.ZipFile(archive) as bundle:
+            for member in bundle.infolist():
+                if member.is_dir() or not member.filename.startswith("system/"):
+                    continue
+                if not MEMBER.fullmatch(member.filename) or {".", ".."} & set(member.filename.split("/")):
+                    raise Refused(f"{member.filename} in {archive} is not a plain system path")
+                target = os.path.join(OVERLAY, member.filename)
+                os.makedirs(os.path.dirname(target), mode=0o755, exist_ok=True)
+                digest = hashlib.sha256()
+                handle, temp = tempfile.mkstemp(dir=os.path.dirname(target), prefix=".microos.")
+                with os.fdopen(handle, "wb") as out, bundle.open(member) as source:
+                    for chunk in iter(lambda: source.read(1 << 20), b""):
+                        digest.update(chunk)
+                        out.write(chunk)
+                os.chmod(temp, 0o644)
+                os.replace(temp, target)
+                entries[member.filename] = digest.hexdigest()
+        if not entries:
+            raise Refused(f"{archive} holds no system files")
+        drop(set(manifest()) - set(entries))
+        write_file(os.path.join(VAR, "gapps.manifest"),
+                   "".join(f"{entries[path]} {path}\n" for path in sorted(entries)))
+        os.unlink(archive)
+    finally:
+        os.close(lock)
+    log(f"MindTheGapps 13 installed into {OVERLAY}, {len(entries)} files")
+    return 0
+
+
+def gapps_remove():
+    lock = stopped()
+    try:
+        drop(manifest())
+        try:
+            os.unlink(os.path.join(VAR, "gapps.manifest"))
+        except FileNotFoundError:
+            pass
+        try:
+            os.unlink(os.path.join(VAR, "gsf-id"))
+        except FileNotFoundError:
+            pass
+    finally:
+        os.close(lock)
+    log(f"MindTheGapps removed from {OVERLAY}")
+    return 0
+
+
+VERBS = {"gsf": gsf, "reset": reset, "layer": layer, "gapps-install": gapps_install, "gapps-remove": gapps_remove}
+
+
+def main():
+    if len(sys.argv) != 2 or sys.argv[1] not in VERBS:
+        print(f"usage: {ME} {' | '.join(VERBS)}", file=sys.stderr)
+        return 2
+    try:
+        return VERBS[sys.argv[1]]()
+    except Refused as error:
+        log(f"refusing: {error}")
+        return 1
+    except (OSError, sqlite3.Error, zipfile.BadZipFile, subprocess.SubprocessError, KeyError) as error:
+        log(f"{sys.argv[1]} failed: {error}")
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

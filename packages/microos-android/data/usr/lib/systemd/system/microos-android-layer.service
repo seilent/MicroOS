@@ -1,0 +1,8 @@
+[Unit]
+Description=Place the frame generation layer in the Android guest data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/microos/microos-android-root layer
+PrivateNetwork=yes
+NoNewPrivileges=yes
