@@ -10,4 +10,5 @@
 (allow waydroid_t init_t (lnk_file (read)))
 (allow waydroid_t init_t (system (status)))
 (allow waydroid_t systemd_unit_file_t (dir (search)))
-(allow systemd_socket_proxyd_t unreserved_port_t (tcp_socket (name_connect)))
+(allow systemd_socket_proxyd_t unreserved_port_t (tcp_socket (name_bind name_connect)))
+(allow systemd_socket_proxyd_t node_t (tcp_socket (node_bind)))

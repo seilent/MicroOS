@@ -450,8 +450,10 @@ done
   || fail "waydroid-container.service.d/30-microos-android-adb.conf"
 [[ $(systemctl is-enabled microos-android-adb.socket) == static ]] || fail "microos-android-adb.socket is not static, the container starts it"
 [[ -x /usr/lib/systemd/systemd-socket-proxyd ]] || fail "systemd-socket-proxyd missing, remote adb needs it"
-grep -qxF '(allow systemd_socket_proxyd_t unreserved_port_t (tcp_socket (name_connect)))' /usr/share/selinux/packages/microos.cil \
-  || fail "microos.cil does not let systemd-socket-proxyd reach the guest's adb port"
+grep -qxF '(allow systemd_socket_proxyd_t unreserved_port_t (tcp_socket (name_bind name_connect)))' /usr/share/selinux/packages/microos.cil \
+  || fail "microos.cil does not let systemd-socket-proxyd listen on and reach the adb port"
+grep -qxF '(allow systemd_socket_proxyd_t node_t (tcp_socket (node_bind)))' /usr/share/selinux/packages/microos.cil \
+  || fail "microos.cil does not let systemd-socket-proxyd bind the adb listener"
 [[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
 [[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
   fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"
