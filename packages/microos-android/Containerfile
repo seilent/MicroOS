@@ -1,5 +1,1 @@
 FROM localhost/microos-pkg-builder
-
-RUN dnf -y --setopt=install_weak_deps=False install \
-      java-25-openjdk-devel curl unzip zip \
- && dnf clean all

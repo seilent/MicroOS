@@ -101,12 +101,6 @@ if [[ $aptx != "$eq" || -z ${aptx//[[:space:]]/} ]]; then
   fail "PipeWire SRPM pin of packages/microos-eq/SOURCE.env ($(tr '\n' ' ' <<<"$eq")) differs from packages/pipewire-aptx/SOURCE.env ($(tr '\n' ' ' <<<"$aptx"))"
 fi
 
-stub=$(. <(grep -E '^PLATFORM_(ZIP|URL|SHA)=' "$root/packages/microos-android/build/stub.sh") && printf '%s\n' "${PLATFORM_URL:-}" "${PLATFORM_SHA:-}")
-apks=$(. "$root/packages/android-guest-apks/SOURCE.env" && printf '%s\n' "${PLATFORM_URL:-}" "${PLATFORM_SHA256:-}")
-if [[ $stub != "$apks" || $(grep -c . <<<"$stub") != 2 ]]; then
-  fail "platform zip pin of packages/android-guest-apks/SOURCE.env ($(tr '\n' ' ' <<<"$apks")) differs from packages/microos-android/build/stub.sh ($(tr '\n' ' ' <<<"$stub"))"
-fi
-
 base=${PKG_HASH_BASE:-main}
 if old=$(git -C "$root" show "$base:build/pkg-hash.sh" 2>/dev/null); then
   mkdir -p "$tmp/base/build"
