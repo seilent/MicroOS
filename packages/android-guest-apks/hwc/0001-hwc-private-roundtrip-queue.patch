@@ -1,0 +1,86 @@
+From d8ee1b3c685ad88041e29f5e968cc1eab1839782 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Wed, 25 Nov 2026 03:45:34 +0900
+Subject: [PATCH] hwcomposer: wait for roundtrips on a private event queue
+
+---
+ hwcomposer/WaydroidClipboard.cpp |  6 +-----
+ hwcomposer/wayland-hwc.cpp       | 13 ++++++++++---
+ hwcomposer/wayland-hwc.h         |  2 ++
+ 3 files changed, 13 insertions(+), 8 deletions(-)
+
+diff --git a/hwcomposer/WaydroidClipboard.cpp b/hwcomposer/WaydroidClipboard.cpp
+index 672a5c0..a3d30a7 100644
+--- a/hwcomposer/WaydroidClipboard.cpp
++++ b/hwcomposer/WaydroidClipboard.cpp
+@@ -71,11 +71,7 @@ static void read_selection(struct display *display, struct wl_data_offer *offer,
+     wl_data_offer_receive(offer, mime_type.c_str(), fds[1]);
+     close(fds[1]);
+ 
+-    /* The wl_display_roundtrip is required here because we perform blocking read calls.
+-     * We need to make sure our request is sent to the compositor, otherwise the source client won’t send any data.
+-     * The blocking read calls stall the Wayland event loop.
+-     */
+-    wl_display_roundtrip(display->display);
++    display_roundtrip(display);
+ 
+     // Read the clipboard contents
+     display->clipboard.clear();
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index c75d93c..d1e46ab 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -478,6 +478,13 @@ static const struct wp_fractional_scale_v1_listener fractional_scale_listener =
+     .preferred_scale = fractional_scale_handle_preferred_scale
+ };
+ 
++void display_roundtrip(struct display *display) {
++    struct wl_event_queue *queue = wl_display_create_queue(display->display);
++    wl_display_roundtrip_queue(display->display, queue);
++    wl_event_queue_destroy(queue);
++    wl_display_dispatch_pending(display->display);
++}
++
+ std::unique_ptr<window>
+ window::create(struct display *display, bool use_subsurfaces, std::string appID, std::string taskID, hwc_color_t color)
+ {
+@@ -546,7 +553,7 @@ window::create(struct display *display, bool use_subsurfaces, std::string appID,
+     wl_surface_commit(window->surface);
+     // Wait for first configure event
+     do {
+-        wl_display_roundtrip(display->display);
++        display_roundtrip(display);
+     } while (!window->configured);
+ 
+     if (calibrating) {
+@@ -567,7 +574,7 @@ window::create(struct display *display, bool use_subsurfaces, std::string appID,
+         if (window->viewport && display->req_width && display->req_height)
+             wp_viewport_set_destination(window->viewport, display->req_width, display->req_height);
+         wl_surface_commit(window->surface);
+-        wl_display_roundtrip(display->display);
++        display_roundtrip(display);
+ 
+         if (fs) {
+             wp_fractional_scale_v1_destroy(fs);
+@@ -1924,7 +1931,7 @@ registry_handle_global(void *data, struct wl_registry *registry,
+         d->output = (struct wl_output*)wl_registry_bind(registry, id,
+                 &wl_output_interface, std::min(version, 3U));
+         wl_output_add_listener(d->output, &output_listener, d);
+-        wl_display_roundtrip(d->display);
++        display_roundtrip(d);
+     } else if (strcmp(interface, "wp_presentation") == 0) {
+         bool no_presentation = property_get_bool("persist.waydroid.no_presentation", false);
+         if (!no_presentation) {
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 82ebbd5..cb7739c 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -401,3 +401,5 @@ struct display *
+ create_display(const char* gralloc);
+ void
+ destroy_display(struct display *display);
++void
++display_roundtrip(struct display *display);
+-- 
+2.55.0
+

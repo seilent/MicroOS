@@ -2,15 +2,35 @@ FROM localhost/microos-pkg-builder
 
 COPY SOURCE.env /tmp/android-guest-apks/
 RUN --mount=type=cache,id=microos-android-ndk,target=/var/cache/android-ndk \
-    dnf -y --setopt=install_weak_deps=False install unzip \
+    dnf -y --setopt=install_weak_deps=False install unzip zip java-25-openjdk-devel \
  && dnf clean all \
  && . /tmp/android-guest-apks/SOURCE.env \
+ && get() { \
+      if ! echo "$2  $3" | sha256sum -c --status - 2>/dev/null; then \
+        curl -fsSL --retry 3 -o "$3" "$1" \
+        && echo "$2  $3" | sha256sum -c -; \
+      fi; \
+    } \
  && zip=/var/cache/android-ndk/${NDK_URL##*/} \
- && if ! echo "$NDK_SHA256  $zip" | sha256sum -c --status - 2>/dev/null; then \
-      curl -fsSL --retry 3 -o "$zip" "$NDK_URL" \
-      && echo "$NDK_SHA256  $zip" | sha256sum -c -; \
-    fi \
- && find /var/cache/android-ndk -maxdepth 1 -type f -name '*.zip' ! -name "${zip##*/}" -delete \
+ && tools=/var/cache/android-ndk/${BUILD_TOOLS_URL##*/} \
+ && platform=/var/cache/android-ndk/${PLATFORM_URL##*/} \
+ && get "$NDK_URL" "$NDK_SHA256" "$zip" \
+ && get "$BUILD_TOOLS_URL" "$BUILD_TOOLS_SHA256" "$tools" \
+ && get "$PLATFORM_URL" "$PLATFORM_SHA256" "$platform" \
+ && find /var/cache/android-ndk -maxdepth 1 -type f -name '*.zip' \
+      ! -name "${zip##*/}" ! -name "${tools##*/}" ! -name "${platform##*/}" -delete \
  && unzip -q "$zip" -d /opt \
  && grep -qxF "Pkg.Revision = $NDK_REVISION" "/opt/android-ndk-$NDK_VERSION/source.properties" \
+ && unzip -q "$tools" -d /tmp/android-guest-apks/build-tools \
+ && mv /tmp/android-guest-apks/build-tools/android-15 "/opt/android-build-tools-$BUILD_TOOLS_VERSION" \
+ && grep -qx "Pkg.Revision=$BUILD_TOOLS_VERSION" "/opt/android-build-tools-$BUILD_TOOLS_VERSION/source.properties" \
+ && unzip -q -j "$platform" android-13/android.jar android-13/source.properties -d "/opt/android-platform-$SDK_API" \
+ && grep -qx "AndroidVersion.ApiLevel=$SDK_API" "/opt/android-platform-$SDK_API/source.properties" \
+ && mkdir /opt/android-testkey \
+ && for f in "$SIGNER_PK8_SHA256 testkey.pk8" "$SIGNER_X509_SHA256 testkey.x509.pem"; do \
+      curl -fsSL --retry 3 \
+        "https://android.googlesource.com/platform/build/+/$SIGNER_REF/target/product/security/${f#* }?format=TEXT" \
+        | base64 -d > "/opt/android-testkey/${f#* }" \
+      && echo "${f%% *}  /opt/android-testkey/${f#* }" | sha256sum -c - || exit 1; \
+    done \
  && rm -rf /tmp/android-guest-apks

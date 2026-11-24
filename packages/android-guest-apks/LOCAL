@@ -1,1 +1,1 @@
-The Android NDK has Linux host tools for x86_64 only.
+The Android NDK and aapt2 have Linux host tools for x86_64 only, and the helper's signing key stays on the build PC.
