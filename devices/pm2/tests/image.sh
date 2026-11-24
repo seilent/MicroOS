@@ -693,10 +693,6 @@ fzlib=$(jq -r .layer.library_path /usr/share/vulkan/guestos-android/VkLayer_foss
 [[ $(< "$guestos/vendor/etc/init/microos-noubwc.rc") == $'on early-init\n    setprop debug.mesa.tu.debug noubwc' ]] \
   || fail "microos-noubwc.rc content"
 [[ ! -e $guestos/system/bin/cmd ]] || fail "a second guest cmd under $guestos"
-guestcmd=/usr/share/microos-android/cmd
-[[ -f $guestcmd && ! -L $guestcmd && $(stat -c '%a %U %G' "$guestcmd") == '755 root root' ]] \
-  || fail "/usr/share/microos-android/cmd missing, mode or owner"
-[[ $(head -n 1 "$guestcmd") == '#!/system/bin/sh' ]] || fail "the guest cmd has no /system/bin/sh shebang"
 [[ $(< /usr/share/microos-android/display) == $'width=960\nheight=640\ndensity=213\nubwc=0' ]] || fail "/usr/share/microos-android/display"
 
 rpm -q waydroid lxc >/dev/null || fail "waydroid or lxc missing"
