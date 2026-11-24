@@ -1,0 +1,13 @@
+[Unit]
+Description=Waydroid images for the Android session
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/libexec/microos/microos-android-images
+Nice=19
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=multi-user.target

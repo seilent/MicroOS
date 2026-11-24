@@ -70,7 +70,7 @@ want=$(printf '%s\n' microos-boot-ok.service microos-provision.service microos-u
   microos-hexagonrpcd-adsp.service microos-session-switch@.service \
   microos-session-up@.service microos-session-fallback@.service microos-session-switcher.service \
   microos-session-switcher.path microos-session-boot.service microos-session-watch.service microos-session-attempt.service \
-  microos-waydroid-forward.service "${tests[@]}")
+  microos-waydroid-forward.service microos-android-images.service "${tests[@]}")
 units=()
 for u in /usr/lib/systemd/system/microos-*; do
   [[ -f $u ]] && units+=("$u")
@@ -171,6 +171,7 @@ kept=(
   /usr/lib/systemd/system/dev-binderfs.mount
   /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf
   /usr/lib/systemd/system/emergency.service.d/10-microos.conf
+  /usr/lib/systemd/system/microos-android-images.service
   /usr/lib/systemd/system/microos-adsp-sensors.service
   /usr/lib/systemd/system/microos-bdaddr@.service
   /usr/lib/systemd/system/microos-boot-deadline.service
@@ -286,6 +287,7 @@ kept=(
   /usr/libexec/microos/microos-vpad
   /usr/libexec/microos/microos-remoteproc
   /usr/libexec/microos/microos-android-guard
+  /usr/libexec/microos/microos-android-images
   /usr/libexec/microos/prepare-root
   /usr/libexec/microos/wd-session
   /usr/libexec/microos/wd-stop
@@ -295,6 +297,7 @@ kept=(
   /usr/share/microos/keys/microos.pub
   /usr/share/microos/waydroid-forward.nft
   /usr/share/microos-android/display
+  /usr/share/microos-android/images.env
   /usr/share/licenses/microos-steam-seed/steam_subscriber_agreement.txt
   /usr/share/microos-seed/steam-seed.tar.zst
   /usr/share/microos-seed/steam-seed.version
@@ -361,7 +364,7 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "microos-vpad 50-microos-microset.conf"
 [[ $(< /usr/lib/systemd/user/microos-powerkey.service.d/50-microos-microset.conf) == $'[Service]\nEnvironment=MICROOS_POWERKEY_OVERLAY=1' ]] ||
   fail "microos-powerkey 50-microos-microset.conf"
-[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\ngamepads=joystick\nnavbar=1\nadb=remote' ]] ||
+[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\ngamepads=joystick\nnavbar=1\nadb=remote\nubwc=0' ]] ||
   fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
 product=/usr/share/guestos/android/system/product
 for f in overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk overlay/NavigationBarMode3Button/NavigationBarMode3ButtonOverlay.apk \
@@ -394,7 +397,7 @@ for f in Waydroid.desktop waydroid.market.desktop waydroid.app.install.desktop; 
 done
 [[ $(readlink /usr/share/waydroid-extra/images) == /var/lib/microos-android/images/current ]] ||
   fail "/usr/share/waydroid-extra/images is not the link to /var/lib/microos-android/images/current"
-[[ $(< /usr/lib/tmpfiles.d/microos-waydroid.conf) == $'d /var/cache/lxc 0755 root root -\nd /var/lib/lxc 0755 root root -\nd /var/lib/lxcfs 0755 root root -\nd /var/lib/waydroid 0755 root root -' ]] \
+[[ $(< /usr/lib/tmpfiles.d/microos-waydroid.conf) == $'d /var/cache/lxc 0755 root root -\nd /var/lib/lxc 0755 root root -\nd /var/lib/lxcfs 0755 root root -\nd /var/lib/waydroid 0755 root root -\nd /run/microos-android 0755 root root -\nf /run/microos-android/images.lock 0644 root root -\nd /var/lib/microos-android/images 0755 root root -\nd /var/cache/microos-android/images 0755 root root -' ]] \
   || fail "tmpfiles microos-waydroid.conf"
 [[ $(systemctl is-enabled dev-binderfs.mount) == enabled ]] || fail "dev-binderfs.mount is not enabled"
 grep -qx 'Type=binder' /usr/lib/systemd/system/dev-binderfs.mount || fail "dev-binderfs.mount is not a binder mount"
@@ -410,6 +413,21 @@ command -v nft >/dev/null || fail "nft missing, the Waydroid bridge and its forw
 [[ $(systemctl is-enabled microos-waydroid-forward.service) == enabled ]] || fail "microos-waydroid-forward.service is not enabled"
 systemctl cat microos-waydroid-forward.service | grep -qx 'ExecStart=/usr/sbin/nft -f /usr/share/microos/waydroid-forward.nft' ||
   fail "microos-waydroid-forward.service does not load waydroid-forward.nft"
+[[ $(< /usr/share/microos-android/images.env) == $'SET=los20av-20260927-20261022\nSYSTEM_URL=https://sourceforge.net/projects/waydroid/files/images/system/lineage/waydroid_arm64_only/lineage-20.0-20260927-VANILLA-waydroid_arm64_only-system.zip/download\nSYSTEM_SIZE=733009660\nSYSTEM_SHA256=a7806741ea8ca5be917d0c66b031d97a60abb7a95031ca5b35c40620b6273ccd\nVENDOR_URL=https://sourceforge.net/projects/waydroid/files/images/vendor/waydroid_arm64_only/lineage-20.0-20261022-MAINLINE-waydroid_arm64_only-vendor.zip/download\nVENDOR_SIZE=77356908\nVENDOR_SHA256=b634f6376cd20accfa835a78381e16f076057f8ca9a538a17282f25af04b44cc' ]] \
+  || fail "images.env is not the VANILLA system and MAINLINE vendor of the arm64_only set"
+[[ $(stat -c %a /usr/libexec/microos/microos-android-images) == 755 ]] || fail "microos-android-images is not 755"
+[[ $(systemctl is-enabled microos-android-images.service) == enabled ]] || fail "microos-android-images.service is not enabled"
+for l in Type=exec ExecStart=/usr/libexec/microos/microos-android-images Nice=19 IOSchedulingClass=idle; do
+  systemctl cat microos-android-images.service | grep -qxF "$l" || fail "microos-android-images.service lacks $l"
+done
+grep -qF 'props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false)' \
+  /usr/libexec/microos/microos-android-images || fail "microos-android-images does not set the adb, debuggable and suspend props"
+for c in flock unzip debugfs df; do
+  command -v "$c" >/dev/null || fail "$c missing, microos-android-images needs it"
+done
+[[ -x /usr/libexec/microos/microos-fetch ]] || fail "microos-fetch missing, microos-android-images needs it"
+grep -qE '^MICROOS_BOOT_OK_ALLOW=.* microos-android-images\.service[ }]' /usr/lib/microos/boot-ok.conf ||
+  fail "boot-ok.conf does not allow a failed microos-android-images.service"
 [[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
 [[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
   fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"
