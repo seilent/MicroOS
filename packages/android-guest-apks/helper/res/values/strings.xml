@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MicroOS</string>
+    <string name="internet">Internet</string>
+    <string name="bluetooth">Bluetooth</string>
+    <string name="use_wifi">Use Wi-Fi</string>
+    <string name="use_bluetooth">Use Bluetooth</string>
+    <string name="connected">Connected</string>
+    <string name="saved">Saved</string>
+    <string name="secured">Secured</string>
+    <string name="paired">Paired</string>
+    <string name="unsupported">Not supported</string>
+    <string name="password">Password</string>
+    <string name="connect">Connect</string>
+    <string name="wrong_password">Check password and try again</string>
+    <string name="failed">Couldn\'t connect</string>
+    <string name="pair_failed">Couldn\'t pair</string>
+    <string name="pair_title">Pair with %1$s?</string>
+    <string name="pair">Pair</string>
+</resources>

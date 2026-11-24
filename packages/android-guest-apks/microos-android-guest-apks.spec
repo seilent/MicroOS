@@ -1,5 +1,11 @@
 %{!?ndk:%{error:ndk is not defined}}
 %{!?android_api:%{error:android_api is not defined}}
+%{!?build_tools:%{error:build_tools is not defined}}
+%{!?platform:%{error:platform is not defined}}
+%{!?sdk_api:%{error:sdk_api is not defined}}
+%{!?helper_store:%{error:helper_store is not defined}}
+%{!?helper_alias:%{error:helper_alias is not defined}}
+%{!?helper_cert:%{error:helper_cert is not defined}}
 %global debug_package %{nil}
 %global __os_install_post %{nil}
 %global _build_id_links none
@@ -11,8 +17,8 @@
 Name:           microos-android-guest-apks
 Version:        1
 Release:        1%{?dist}.microos
-Summary:        The lights HAL of the Waydroid guest, as Waydroid overlay files
-License:        GPL-2.0-or-later
+Summary:        The lights HAL and the MicroOS helper of the Waydroid guest, as Waydroid overlay files
+License:        GPL-2.0-or-later AND Apache-2.0
 URL:            https://github.com/seilent/MicroOS
 Source0:        overlay.manifest
 Source1:        service.c
@@ -20,6 +26,7 @@ Source2:        %{hal}.rc
 Source3:        %{hal}.xml
 Source4:        build.sh
 Source5:        SOURCE.env
+Source6:        %{name}-helper.tar.gz
 Vendor:         MicroOS
 ExclusiveArch:  aarch64
 AutoReqProv:    no
@@ -27,14 +34,18 @@ AutoReqProv:    no
 %description
 An AIDL ILights V1 service for the Waydroid guest that writes the backlight
 level the guest sets to /data/microos/backlight, its init service and its VINTF
-manifest fragment, built with the Android NDK for API %{android_api}. They sit
-at their Waydroid overlay paths under %{overlay}, and
-overlay.manifest next to it lists each with its sha256 and mode.
-microos-android-overlay copies them into the Waydroid overlay before the
-container starts.
+manifest fragment, built with the Android NDK for API %{android_api}, and the
+MicroOS helper, a privileged app built with the API %{sdk_api} SDK and signed
+with its own key: Internet and Bluetooth quick settings tiles with their pages,
+and the guest's volume, airplane mode and power menu, linked to
+microos-android-bridge on the host over binder. They sit at their Waydroid
+overlay paths under %{overlay}, and overlay.manifest next to it lists each with
+its sha256 and mode. microos-android-overlay copies them into the Waydroid
+overlay before the container starts.
 
 %prep
 %setup -q -c -T
+tar -xzf %{SOURCE6}
 
 %build
 cc=%{ndkbin}/aarch64-linux-android%{android_api}-clang
@@ -47,15 +58,37 @@ sysroot=%{ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-lin
 "$cc" -std=c17 -O2 -Wall -Wextra -Werror -o %{hal} %{SOURCE1} libbinder_ndk.so -llog
 %{ndkbin}/llvm-strip %{hal}
 
+export TZ=UTC
+jar=%{platform}/android.jar
+signer="java --enable-native-access=ALL-UNNAMED -jar %{build_tools}/lib/apksigner.jar"
+mkdir helper-gen helper-classes helper-dex
+%{build_tools}/aapt2 compile --dir helper/res -o helper-res.zip
+%{build_tools}/aapt2 link --manifest helper/AndroidManifest.xml -I "$jar" --min-sdk-version %{sdk_api} \
+  --target-sdk-version %{sdk_api} --java helper-gen -o helper-unsigned.apk helper-res.zip
+javac -source 8 -target 8 -bootclasspath "$jar:%{build_tools}/core-lambda-stubs.jar" -Xlint:-options -encoding UTF-8 \
+  -d helper-classes $(find helper/src helper-gen -name '*.java' | LC_ALL=C sort)
+java -cp %{build_tools}/lib/d8.jar com.android.tools.r8.D8 --release --min-api %{sdk_api} --lib "$jar" \
+  --output helper-dex $(find helper-classes -name '*.class' | LC_ALL=C sort)
+touch -d @347155200 helper-dex/classes.dex
+(cd helper-dex && zip -q -0 -X ../helper-unsigned.apk classes.dex)
+%{build_tools}/zipalign -p -f 4 helper-unsigned.apk helper-aligned.apk
+$signer sign --ks %{helper_store} --ks-type PKCS12 --ks-key-alias %{helper_alias} \
+  --ks-pass env:MICROOS_HELPER_STORE_PASS --key-pass env:MICROOS_HELPER_KEY_PASS \
+  --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false \
+  --out MicroOsHelper.apk helper-aligned.apk
+$signer verify --min-sdk-version %{sdk_api} --print-certs MicroOsHelper.apk > helper-certs
+grep -qx 'Signer #1 certificate SHA-256 digest: %{helper_cert}' helper-certs
+
 %install
 install -Dpm644 %{SOURCE0} %{buildroot}%{_datadir}/microos-android/overlay.manifest
 install -Dm755 %{hal} %{buildroot}%{overlay}/system/bin/hw/%{hal}
 install -Dpm644 %{SOURCE2} %{buildroot}%{overlay}/system/etc/init/%{hal}.rc
 install -Dpm644 %{SOURCE3} %{buildroot}%{overlay}/system/etc/vintf/manifest/%{hal}.xml
+install -Dm644 MicroOsHelper.apk %{buildroot}%{overlay}/system/priv-app/MicroOsHelper/MicroOsHelper.apk
 
 %check
 while read -r sum mode path; do
-  echo "$sum  %{buildroot}%{overlay}/$path" | sha256sum -c -
+  echo "$sum  %{buildroot}%{overlay}/$path" | sha256sum -c - || { sha256sum "%{buildroot}%{overlay}/$path"; exit 1; }
   test "$(stat -c %04a "%{buildroot}%{overlay}/$path")" = "$mode"
 done < %{SOURCE0}
 test "$(find %{buildroot}%{overlay} -type f | wc -l)" = "$(wc -l < %{SOURCE0})"

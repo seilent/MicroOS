@@ -1,3 +1,4 @@
 d3b51bf93e9a626a36c288b772313367b2a3cd8220f1427d4b5e1464136495c7 0755 system/bin/hw/android.hardware.lights-service.microos
 1a9f711f51b113e3e5326ef35c076e470a1c732ee667197df8effca34803c56c 0644 system/etc/init/android.hardware.lights-service.microos.rc
 b163a203c7ddc5c2886f6030c3c531341b68d7d0a6b6d2d2aaa46eb0cf12efd7 0644 system/etc/vintf/manifest/android.hardware.lights-service.microos.xml
+1bea3541ad971602a40620f72231d40d421ec26aea80092e8e3573ac51b1a223 0644 system/priv-app/MicroOsHelper/MicroOsHelper.apk

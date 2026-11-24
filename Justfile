@@ -47,6 +47,10 @@ pkg name:
       mkdir -p "$PKG_CCACHE"
       cache=(-v "$PKG_CCACHE:/ccache:Z" -e CCACHE_DIR=/ccache)
     fi
+    keys=()
+    if [[ $1 == android-guest-apks ]]; then
+      keys=(-v "${MICROOS_HELPER_KEYS:-$HOME/keystores/microos-helper}:/keys:ro,Z")
+    fi
     if [[ -f packages/$1/fetch.sh ]]; then
       work=out/work/$1
       rm -rf "$work"
@@ -62,7 +66,7 @@ pkg name:
         "$img" /src/build.sh /out /work
       rm -rf "$work"
     else
-      podman run --rm --memory=14g --cpus=6 "${cache[@]}" "${mounts[@]}" \
+      podman run --rm --memory=14g --cpus=6 "${cache[@]}" "${mounts[@]}" "${keys[@]}" \
         -v "$PWD/packages/$1:/src:ro,Z" \
         -v "$PWD/$out:/out:Z" \
         "$img" /src/build.sh /out
