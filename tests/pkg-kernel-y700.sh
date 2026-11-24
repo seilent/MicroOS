@@ -33,7 +33,7 @@ builtin=(
   NETFILTER_NETLINK IP_ADVANCED_ROUTER IP_MULTIPLE_TABLES IPV6_MULTIPLE_TABLES FIB_RULES
   EFI EFI_STUB PANIC_ON_OOPS DEVMEM NVMEM_SYSFS
   USB_CONFIGFS USB_LIBCOMPOSITE USB_F_ACM USB_F_NCM USB_CONFIGFS_ACM PHY_SNPS_EUSB2 PHY_NXP_PTN3222
-  RUST ANDROID_BINDER_IPC_RUST
+  RUST ANDROID_BINDER_IPC_RUST PSI
 )
 for s in "${builtin[@]}"; do
   grep -qx "CONFIG_$s=y" "$kdir/config" || { echo "pkg-kernel-y700: CONFIG_$s is not built in" >&2; exit 1; }
@@ -43,6 +43,7 @@ grep -qE '^CONFIG_LSM="([^"]*,)?yama(,[^"]*)?"$' "$kdir/config" || { echo "pkg-k
 grep -qx 'CONFIG_PANIC_TIMEOUT=10' "$kdir/config" || { echo "pkg-kernel-y700: CONFIG_PANIC_TIMEOUT is not 10: $(grep '^CONFIG_PANIC_TIMEOUT=' "$kdir/config")" >&2; exit 1; }
 grep -qx '# CONFIG_RTC_DRV_EFI is not set' "$kdir/config" || { echo "pkg-kernel-y700: CONFIG_RTC_DRV_EFI is set" >&2; exit 1; }
 grep -qx '# CONFIG_RTC_HCTOSYS is not set' "$kdir/config" || { echo "pkg-kernel-y700: CONFIG_RTC_HCTOSYS is set" >&2; exit 1; }
+grep -qx '# CONFIG_PSI_DEFAULT_DISABLED is not set' "$kdir/config" || { echo "pkg-kernel-y700: CONFIG_PSI_DEFAULT_DISABLED is set" >&2; exit 1; }
 grep -qx 'CONFIG_GUNYAH_WATCHDOG=y' "$kdir/config" || { echo "pkg-kernel-y700: CONFIG_GUNYAH_WATCHDOG is not built in" >&2; exit 1; }
 
 for m in snd-seq joydev hid-playstation hid-sony hid-nintendo xpad zram exfat ntfs3 nfnetlink_log btrfs nvmem_qcom-spmi-sdam \
