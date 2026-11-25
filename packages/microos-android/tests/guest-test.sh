@@ -185,6 +185,7 @@ helper=net.seilent.microos.helper
     || fail "the shipped tiles lack the helper's Internet and Bluetooth tiles: ${tiles}"
 [[ ",${tiles}," != *",wifi,"* && ",${tiles}," != *",bt,"* && ${tiles} != *" "* ]] \
     || fail "the shipped tiles keep a stock radio tile or a space: ${tiles}"
+[[ ",${tiles}," == *",cast,"* ]] || fail "the shipped tiles lack the Cast tile: ${tiles}"
 
 (( failures == 0 )) || { echo "${failures} failure(s)" >&2; exit 1; }
 echo "guest-test: pass"

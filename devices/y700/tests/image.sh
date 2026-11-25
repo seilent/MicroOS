@@ -442,8 +442,8 @@ while read -r _ mode path; do
     fail "microos-android-overlay did not place $path"
 done < "$guestlist"
 command -v nft >/dev/null || fail "nft missing, the Waydroid bridge and its forward policy need it"
-[[ $(< /usr/share/microos/waydroid-forward.nft) == $'destroy table inet microos_waydroid\ntable inet microos_waydroid {\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t\tiifname "waydroid0" oifname "wl*" accept\n\t\tiifname "wl*" oifname "waydroid0" ct state established,related accept\n\t}\n}' ]] \
-  || fail "waydroid-forward.nft is not the drop policy with waydroid0 to Wi-Fi only"
+[[ $(< /usr/share/microos/waydroid-forward.nft) == $'destroy table inet microos_waydroid\ntable inet microos_waydroid {\n\tchain prerouting {\n\t\ttype filter hook prerouting priority filter; policy accept;\n\t\tiifname "waydroid0" udp sport 5353 @th,80,1 1 drop\n\t\tiifname "waydroid0" udp sport 5353 @th,128,16 != 0 drop\n\t}\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t\tiifname "waydroid0" oifname "wl*" accept\n\t\tiifname "wl*" oifname "waydroid0" ct state established,related accept\n\t}\n}' ]] \
+  || fail "waydroid-forward.nft is not the drop policy with waydroid0 to Wi-Fi only and the guest mDNS query only rules"
 [[ $(systemctl is-enabled microos-waydroid-forward.service) == enabled ]] || fail "microos-waydroid-forward.service is not enabled"
 systemctl cat microos-waydroid-forward.service | grep -qx 'ExecStart=/usr/sbin/nft -f /usr/share/microos/waydroid-forward.nft' ||
   fail "microos-waydroid-forward.service does not load waydroid-forward.nft"
@@ -454,8 +454,8 @@ systemctl cat microos-waydroid-forward.service | grep -qx 'ExecStart=/usr/sbin/n
 for l in Type=exec ExecStart=/usr/libexec/microos/microos-android-images Nice=19 IOSchedulingClass=idle; do
   systemctl cat microos-android-images.service | grep -qxF "$l" || fail "microos-android-images.service lacks $l"
 done
-grep -qF 'props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false)' \
-  /usr/libexec/microos/microos-android-images || fail "microos-android-images does not set the adb, debuggable and suspend props"
+grep -qF 'props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui)' \
+  /usr/libexec/microos/microos-android-images || fail "microos-android-images does not set the adb, debuggable, suspend and fake Wi-Fi props"
 for c in flock unzip debugfs df; do
   command -v "$c" >/dev/null || fail "$c missing, microos-android-images needs it"
 done

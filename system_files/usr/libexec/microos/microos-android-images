@@ -58,14 +58,14 @@ if [[ ! -f $state || $(< "$state") != "state=ready"$'\n'"set=$SET" || $(readlink
   waydroid init -f
 fi
 
-props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false)
+props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui)
 (( ubwc )) || props+=(debug.mesa.fd.mesa.debug=noubwc debug.mesa.tu.debug=noubwc)
 python3 - "$wcfg" "${props[@]}" <<'PY'
 import configparser
 import sys
 
 path = sys.argv[1]
-owned = ("ro.sf.lcd_density", "ro.adb.secure", "ro.debuggable", "persist.waydroid.suspend",
+owned = ("ro.sf.lcd_density", "ro.adb.secure", "ro.debuggable", "persist.waydroid.suspend", "persist.waydroid.fake_wifi",
          "debug.mesa.fd.mesa.debug", "debug.mesa.tu.debug")
 cfg = configparser.ConfigParser(interpolation=None)
 cfg.optionxform = str

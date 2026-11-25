@@ -1,7 +1,7 @@
 set gestural cmd overlay enable-exclusive --category com.android.internal.systemui.navbar.gestural
 set nav-hint content insert --uri content://lineagesettings/system --bind name:s:navigation_bar_hint --bind value:s:0
 set user-setup settings put secure user_setup_complete 1
-set qs-tiles settings put secure sysui_qs_tiles custom(net.seilent.microos.helper/.InternetTile),custom(net.seilent.microos.helper/.BluetoothTile),dnd,flashlight,rotation,battery,airplane,night,screenrecord
+set qs-tiles settings put secure sysui_qs_tiles custom(net.seilent.microos.helper/.InternetTile),custom(net.seilent.microos.helper/.BluetoothTile),dnd,flashlight,rotation,battery,cast,airplane,night,screenrecord
 set wifi-scan settings put global wifi_scan_always_enabled 0
 set ble-scan settings put global ble_scan_always_enabled 0
 set app-error settings put secure send_action_app_error 0

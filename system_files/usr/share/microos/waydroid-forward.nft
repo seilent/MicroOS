@@ -1,5 +1,10 @@
 destroy table inet microos_waydroid
 table inet microos_waydroid {
+	chain prerouting {
+		type filter hook prerouting priority filter; policy accept;
+		iifname "waydroid0" udp sport 5353 @th,80,1 1 drop
+		iifname "waydroid0" udp sport 5353 @th,128,16 != 0 drop
+	}
 	chain forward {
 		type filter hook forward priority filter; policy drop;
 		iifname "waydroid0" oifname "wl*" accept
