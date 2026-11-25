@@ -15,6 +15,7 @@ ME = "microos-android-lsfg"
 MICROSET = ("net.seilent.MicroSet", "/net/seilent/MicroSet", "net.seilent.MicroSet1")
 GUEST = os.environ.get("MICROOS_ANDROID_GUEST") or "/usr/libexec/microos/microos-android-guest"
 TIMEOUT_S = float(os.environ.get("MICROOS_LSFG_TIMEOUT_S") or 5)
+ANDROID_UNIT = "microos-android.service"
 LAYER = os.environ.get("MICROOS_ANDROID_LSFG_LAYER") == "1"
 DLL = os.environ.get("MICROOS_ANDROID_LSFG_DLL") == "1"
 DISPLAY_FILE = os.environ.get("MICROOS_DISPLAY_FILE") or "/usr/share/microos-android/display"
@@ -165,7 +166,20 @@ class Writer:
         self.reconcile()
 
 
+def android_state():
+    try:
+        result = subprocess.run(["systemctl", "--user", "is-active", ANDROID_UNIT],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.decode(errors="replace").strip()
+
+
 def clear():
+    state = android_state()
+    if state in ("inactive", "failed", "deactivating"):
+        log(f"{ANDROID_UNIT} is {state}, the next start writes the settings")
+        return 0
     error, _ = guest(script(CLEAR))
     log(f"the clear at stop {error}" if error else "cleared at stop")
     return 1 if error else 0

@@ -85,7 +85,13 @@ cat > "${GUEST}/getprop" <<'STUB'
 echo "getprop $1" >> "${STATE}/guest"
 cat "${STATE}/debuggable"
 STUB
-chmod 0755 "${T}/bin/guest" "${GUEST}/"*
+cat > "${T}/bin/systemctl" <<'STUB'
+#!/usr/bin/bash
+[[ "$*" == "--user is-active microos-android.service" ]] || exit 3
+cat "${STATE}/android-unit"
+STUB
+echo active > "${STATE}/android-unit"
+chmod 0755 "${T}/bin/guest" "${T}/bin/systemctl" "${GUEST}/"*
 export MICROOS_ANDROID_GUEST="${T}/bin/guest"
 export PATH="${T}/bin:${PATH}"
 
@@ -414,6 +420,19 @@ rc=0
 rm -f "${STATE}/gone"
 [[ "${rc}" == 1 ]] || fail "exit ${rc}"
 grep -q "microos-android-lsfg: the clear at stop failed" "${T}/stop.err" || fail "no log: $(cat "${T}/stop.err")"
+
+case_name="the clear at stop after the guest stopped first"
+echo failed > "${STATE}/android-unit"
+: > "${STATE}/gone"
+: > "${STATE}/guest"
+rc=0
+"${writer}" clear 2> "${T}/stop.err" || rc=$?
+rm -f "${STATE}/gone"
+echo active > "${STATE}/android-unit"
+[[ "${rc}" == 0 ]] || fail "exit ${rc}: $(cat "${T}/stop.err")"
+[[ ! -s "${STATE}/guest" ]] || fail "the guest was called: $(cat "${STATE}/guest")"
+grep -qxF "microos-android-lsfg: microos-android.service is failed, the next start writes the settings" "${T}/stop.err" \
+    || fail "no log: $(cat "${T}/stop.err")"
 
 [[ "${failures}" == 0 ]] || exit 1
 echo "lsfg-test: ok"
