@@ -46,12 +46,26 @@ export MICROOS_BRIGHTNESS_CALL_MS=1000
 export MICROOS_WAYDROID_CFG="${T}/waydroid.cfg"
 export MICROOS_BINDER_DIR="${T}/dev"
 export PYTHONPATH="${T}/py"
+export MICROOS_INPUT_SYSFS="${T}/sys"
+export MICROOS_INPUT_DIR="${T}/input"
 waydroid="${HOME}/.local/share/microos-waydroid"
 guest_dir="${waydroid}/waydroid/data/microos"
-mkdir -p "${STATE}" "${T}/py" "${guest_dir}" "${MICROOS_BINDER_DIR}"
+mkdir -p "${STATE}" "${T}/py" "${guest_dir}" "${MICROOS_BINDER_DIR}" "${MICROOS_INPUT_DIR}"
 : > "${MICROOS_BINDER_DIR}/anbox-binder"
 : > "${STATE}/binder"
 : > "${STATE}/microset"
+: > "${STATE}/ff"
+while read -r event name; do
+    mkdir -p "${MICROOS_INPUT_SYSFS}/${event}/device"
+    printf '%s\n' "${name}" > "${MICROOS_INPUT_SYSFS}/${event}/device/name"
+    : > "${MICROOS_INPUT_DIR}/${event}"
+done <<'EOF'
+event0 Novatek NT36523 Touchscreen
+event3 aw86927-haptics
+event4 aw86927-haptics
+event5 aw86927
+EOF
+printf '25 255\n' > "${guest_dir}/vibrator"
 
 cat > "${MICROOS_WAYDROID_CFG}" <<'EOF'
 [waydroid]
@@ -223,6 +237,71 @@ class Client:
         return False
 FAKE
 
+cat > "${T}/ff.py" <<'FAKE'
+import errno
+import fcntl
+import os
+import runpy
+import struct
+import sys
+
+STATE = os.environ["STATE"]
+DEV = os.environ["MICROOS_INPUT_DIR"]
+EVIOCSFF = (1 << 30) | (48 << 16) | (0x45 << 8) | 0x80
+EV_FF = 0x15
+FF_RUMBLE = 0x50
+real_ioctl = fcntl.ioctl
+real_write = os.write
+ids = {}
+
+
+def record(line):
+    with open(os.path.join(STATE, "ff"), "a") as handle:
+        handle.write(line + "\n")
+
+
+def node(fd):
+    try:
+        path = os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        return None
+    return os.path.basename(path) if os.path.dirname(path) == DEV else None
+
+
+def ioctl(fd, request, arg=0, mutate=True):
+    name = node(fd) if isinstance(fd, int) else None
+    if name is None or request != EVIOCSFF:
+        return real_ioctl(fd, request, arg, mutate)
+    if os.path.exists(os.path.join(STATE, f"gone-{name}")):
+        raise OSError(errno.ENODEV, os.strerror(errno.ENODEV))
+    kind, eid = struct.unpack_from("<Hh", arg)
+    length, = struct.unpack_from("<H", arg, 10)
+    strong, weak = struct.unpack_from("<HH", arg, 16)
+    if kind != FF_RUMBLE or len(arg) != 48 or weak:
+        record(f"bad upload {name} {bytes(arg).hex()}")
+        raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+    if eid == -1:
+        eid = ids[name] = ids.get(name, -1) + 1
+        struct.pack_into("<h", arg, 2, eid)
+    record(f"upload {name} {eid} {length} {strong}")
+    return 0
+
+
+def write(fd, data):
+    name = node(fd)
+    if name is None:
+        return real_write(fd, data)
+    _sec, _usec, kind, code, value = struct.unpack("<qqHHi", data)
+    record(f"play {name} {code} {value}" if kind == EV_FF else f"bad write {name} {bytes(data).hex()}")
+    return len(data)
+
+
+fcntl.ioctl = ioctl
+os.write = write
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+FAKE
+
 cat > "${T}/microsetd" <<'FAKE'
 import os
 
@@ -390,7 +469,7 @@ stop_microsetd() {
 }
 
 start() {
-    "${bridge}" > "${T}/out" 2>&1 &
+    python3 "${T}/ff.py" "${bridge}" > "${T}/out" 2>&1 &
     bridge_pid=$!
     pids+=("${bridge_pid}")
 }
@@ -433,6 +512,15 @@ acts() {
 }
 
 puts() { sed -n 's/^put 1 screen_brightness //p' "${STATE}/binder" | paste -sd ' '; }
+
+vibrate() {
+    printf '%s\n' "$1" > "${guest_dir}/vibrator.tmp"
+    mv -f "${guest_dir}/vibrator.tmp" "${guest_dir}/vibrator"
+}
+
+ffmark() { ffseen=$(wc -l < "${STATE}/ff"); }
+
+ffacts() { tail -n +"$((ffseen + 1))" "${STATE}/ff" | paste -sd ',' | sed 's/,/, /g'; }
 
 gets() { count '^get 1 screen_brightness$' "${STATE}/binder"; }
 
@@ -762,6 +850,57 @@ for _ in {1..100}; do [[ "$(acts)" == "override 1176, clear failed"*", clear" ]]
     || fail "a failed ClearOverride was not tried again: $(acts): $(cat "${T}/out")"
 [[ "$(host)" == "(<uint32 3922>,)" ]] || fail "a ClearOverride tried again: the host value: $(host)"
 
+for node in event3 event4; do
+    grep -qx "upload ${node} 0 0 0" "${STATE}/ff" \
+        || fail "the start did not upload an effect to ${node}: $(cat "${STATE}/ff")"
+done
+grep -qE 'event(0|5)' "${STATE}/ff" && fail "a node that is not aw86927-haptics was used: $(cat "${STATE}/ff")"
+grep -q '^play ' "${STATE}/ff" && fail "the vibration in the file at the start was played: $(cat "${STATE}/ff")"
+wait_log "vibrations play on ${MICROOS_INPUT_DIR}/event3 ${MICROOS_INPUT_DIR}/event4" \
+    || fail "the haptics nodes were not logged: $(cat "${T}/out")"
+
+mark
+ffmark
+vibrate "25 255"
+wait_for "upload event3 0 25 65535, play event3 0 1, upload event4 0 25 65535, play event4 0 1" ffacts \
+    || fail "a vibration: $(ffacts): $(cat "${T}/out")"
+ffmark
+vibrate "40 128"
+wait_for "upload event3 0 40 32896, play event3 0 1, upload event4 0 40 32896, play event4 0 1" ffacts \
+    || fail "a vibration at amplitude 128: $(ffacts)"
+ffmark
+vibrate "0 0"
+wait_for "play event3 0 0, play event4 0 0" ffacts || fail "a vibration off: $(ffacts)"
+ffmark
+vibrate "100000 255"
+wait_for "upload event3 0 65535 65535, play event3 0 1, upload event4 0 65535 65535, play event4 0 1" ffacts \
+    || fail "a vibration longer than the replay field: $(ffacts)"
+ffmark
+vibrate "30 255"
+vibrate "0 0"
+for _ in {1..100}; do [[ $(ffacts) == *"play event3 0 0, play event4 0 0" ]] && break; sleep 0.05; done
+[[ $(ffacts) == *"play event3 0 0, play event4 0 0" ]] \
+    || fail "an off right after a vibration did not stop it: $(ffacts)"
+ffmark
+for value in abc "25 256" 25 "-5 10"; do
+    vibrate "${value}"
+    wait_log "vibration '${value}' in ${guest_dir}/vibrator is not <ms> <0..255>, ignored" \
+        || fail "a vibration ${value} was not logged: $(cat "${T}/out")"
+done
+[[ -z $(ffacts) ]] || fail "a vibration that is not <ms> <amplitude> was played: $(ffacts)"
+: > "${STATE}/gone-event4"
+vibrate "25 255"
+wait_for "upload event3 0 25 65535, play event3 0 1" ffacts || fail "a vibration with a node gone: $(ffacts)"
+grep -q 'event4: ' "${T}/out" && fail "a node gone was logged: $(cat "${T}/out")"
+rm -f "${STATE}/gone-event4"
+ffmark
+vibrate "25 255"
+wait_for "upload event4 1 0 0, upload event3 0 25 65535, play event3 0 1, upload event4 1 25 65535, play event4 1 1" \
+    ffacts || fail "a node back after it was gone: $(ffacts): $(cat "${T}/out")"
+[[ $(count "^microos-android-brightness: vibrations play on " "${T}/out") == 2 ]] \
+    || fail "a node back was not logged: $(cat "${T}/out")"
+[[ -z "$(acts)" ]] || fail "a vibration reached microsetd: $(acts)"
+
 stop_bridge "a stop"
 
 grep -q '^bad ' "${STATE}/binder" && fail "a transaction with a wrong code or shape: $(cat "${STATE}/binder")"
@@ -807,6 +946,22 @@ stop_bridge "a stop during a stalled IPlatform call"
 
 grep -q '^bad ' "${STATE}/binder" && fail "a transaction with a wrong code or shape: $(cat "${STATE}/binder")"
 grep -q ' refused$' "${STATE}/microset" && fail "a microsetd call with a wrong type: $(cat "${STATE}/microset")"
+
+rm -f "${STATE}/platform-stall"
+export MICROOS_INPUT_SYSFS="${T}/nosys"
+mkdir -p "${MICROOS_INPUT_SYSFS}"
+ffmark
+start
+wait_log "no aw86927-haptics input node in ${MICROOS_INPUT_SYSFS}" \
+    || fail "a start with no haptics node was not logged: $(cat "${T}/out")"
+vibrate "25 255"
+vibrate "0 0"
+sleep 0.3
+[[ -z $(ffacts) ]] || fail "a vibration with no haptics node: $(ffacts)"
+[[ $(count '^microos-android-brightness: no aw86927-haptics input node' "${T}/out") == 1 ]] \
+    || fail "no haptics node was logged more than once: $(cat "${T}/out")"
+stop_bridge "a stop with no haptics node"
+grep -q '^bad ' "${STATE}/ff" && fail "an effect or event with a wrong shape: $(cat "${STATE}/ff")"
 
 [[ "${failures}" == 0 ]] || exit 1
 echo "brightness-test: ok"

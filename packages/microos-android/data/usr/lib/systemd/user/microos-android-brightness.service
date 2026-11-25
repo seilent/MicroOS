@@ -1,5 +1,5 @@
 [Unit]
-Description=Mirror the Android guest brightness with the host backlight
+Description=Mirror the Android guest brightness and vibrations on the host
 PartOf=microos-android.service
 After=microos-android.service
 

@@ -1,8 +1,11 @@
 #!/usr/bin/python3
 import configparser
+import errno
+import fcntl
 import os
 import re
 import signal
+import struct
 import sys
 
 import gbinder
@@ -33,6 +36,18 @@ ARM_MS = 1000
 GUEST_MAX = 255
 HOST_MAX = 10000
 LEVEL = re.compile(r"[0-9]+")
+VIBRATOR = "vibrator"
+VIBRATION = re.compile(r"([0-9]+) ([0-9]+)")
+HAPTICS = "aw86927-haptics"
+INPUT_SYSFS = os.environ.get("MICROOS_INPUT_SYSFS") or "/sys/class/input"
+INPUT_DIR = os.environ.get("MICROOS_INPUT_DIR") or "/dev/input"
+EVIOCSFF = (1 << 30) | (48 << 16) | (0x45 << 8) | 0x80
+EV_FF = 0x15
+FF_RUMBLE = 0x50
+REPLAY_MAX = 0xFFFF
+RUMBLE_MAX = 0xFFFF
+AMPLITUDE_MAX = 255
+SCAN_MS = 5000
 
 
 def log(message):
@@ -65,6 +80,77 @@ def guest_level(value):
 
 def entry(value):
     return GLib.Variant("(sv)", (KEY, GLib.Variant("u", value)))
+
+
+def effect(eid, length, strong):
+    return struct.pack("<HhHHHHH2xHH28x", FF_RUMBLE, eid, 0, 0, 0, length, 0, strong, 0)
+
+
+def input_event(kind, code, value):
+    return struct.pack("<qqHHi", 0, 0, kind, code, value)
+
+
+class Motors:
+    def __init__(self):
+        self.motors = {}
+        self.noted = set()
+        self.scan_at = 0
+        self.lost = False
+
+    def note(self, text):
+        if text not in self.noted:
+            self.noted.add(text)
+            log(text)
+
+    def scan(self):
+        self.scan_at = GLib.get_monotonic_time() // 1000 + SCAN_MS
+        self.lost = False
+        try:
+            entries = sorted(os.listdir(INPUT_SYSFS))
+        except OSError as error:
+            self.note(f"{INPUT_SYSFS}: {error.strerror}")
+            return
+        found = []
+        for name in entries:
+            node = os.path.join(INPUT_DIR, name)
+            if not name.startswith("event") or node in self.motors:
+                continue
+            if read(os.path.join(INPUT_SYSFS, name, "device/name")) != HAPTICS:
+                continue
+            try:
+                fd = os.open(node, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC)
+            except OSError as error:
+                self.note(f"{node}: {error.strerror}")
+                continue
+            buf = bytearray(effect(-1, 0, 0))
+            try:
+                fcntl.ioctl(fd, EVIOCSFF, buf)
+            except OSError as error:
+                os.close(fd)
+                self.note(f"{node}: upload: {error.strerror}")
+                continue
+            self.motors[node] = (fd, struct.unpack_from("<h", buf, 2)[0])
+            found.append(node)
+        if found:
+            log(f"vibrations play on {' '.join(sorted(self.motors))}")
+        elif not self.motors:
+            self.note(f"no {HAPTICS} input node in {INPUT_SYSFS}")
+
+    def play(self, length, strong):
+        if (self.lost or not self.motors) and GLib.get_monotonic_time() // 1000 >= self.scan_at:
+            self.scan()
+        for node, (fd, eid) in list(self.motors.items()):
+            try:
+                if length:
+                    fcntl.ioctl(fd, EVIOCSFF, effect(eid, length, strong))
+                os.write(fd, input_event(EV_FF, eid, 1 if length else 0))
+            except OSError as error:
+                if error.errno != errno.ENODEV:
+                    self.note(f"{node}: {error.strerror}")
+                    continue
+                os.close(fd)
+                del self.motors[node]
+                self.lost = True
 
 
 class ServiceManager(gbinder.ServiceManager):
@@ -244,6 +330,8 @@ class Bridge:
         self.platform = Platform(self.registered)
         self.directory = backlight_dir()
         self.path = os.path.join(self.directory, NAME)
+        self.vibrator = os.path.join(self.directory, VIBRATOR)
+        self.motors = Motors()
         self.monitor = None
         self.unwatchable = None
         self.reading = 0
@@ -265,6 +353,7 @@ class Bridge:
         self.hold = 0
 
     def start(self):
+        self.motors.scan()
         if self.arm(True):
             GLib.timeout_add(ARM_MS, self.arm)
         self.bus.signal_subscribe(
@@ -297,6 +386,19 @@ class Bridge:
             return
         if one.get_basename() == NAME or (other is not None and other.get_basename() == NAME):
             self.settle()
+        elif kind == Gio.FileMonitorEvent.RENAMED and other.get_basename() == VIBRATOR:
+            self.vibrate()
+        elif kind == Gio.FileMonitorEvent.MOVED_IN and one.get_basename() == VIBRATOR:
+            self.vibrate()
+
+    def vibrate(self):
+        text = read(self.vibrator)
+        found = VIBRATION.fullmatch(text)
+        if not found or int(found.group(2)) > AMPLITUDE_MAX:
+            log(f"vibration {text!r} in {self.vibrator} is not <ms> <0..{AMPLITUDE_MAX}>, ignored")
+            return
+        length, level = (int(value) for value in found.groups())
+        self.motors.play(min(length, REPLAY_MAX), level * RUMBLE_MAX // AMPLITUDE_MAX)
 
     def settle(self):
         if not self.reading:
