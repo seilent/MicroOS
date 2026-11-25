@@ -532,14 +532,11 @@ def main_run(binary):
     check("the loss turns the accel stream off", daemon.sent(0), (5, 22, disable(13, ACCEL)))
     status, items = daemon.complete(pending)
     check("the loss releases the pending poll", (status, len(events_of(items))), (0, 0))
-    check("sync after the loss", daemon.sync(), True)
-    check("still running after the loss", daemon.proc.poll(), None)
-    daemon.send("present 1")
-    check("added again when the service manager is back", daemon.expect(lambda t: t.startswith("add ")),
-          "add default object")
-    _, _, _, items = daemon.call(ACTIVATE, "i:1", "b:1")
-    check("accel on for the new guest", daemon.sent(0), (5, 22, enable(14, ACCEL, 50.0)))
-    check("sigterm exits 0 after the loss", daemon.stop(), 0)
+    try:
+        code = daemon.proc.wait(5)
+    except subprocess.TimeoutExpired:
+        code = None
+    check("exits 0 after the loss", code, 0)
     log = daemon.stderr()
     for line in ("waydroid-sensord: android.hardware.sensors@1.0::ISensors/default added on /dev/hwbinder",
                  "waydroid-sensord: accel: sensor hub at 5:21",
@@ -556,7 +553,7 @@ def main_run(binary):
                  "waydroid-sensord: ambient_light: the sensor hub lists none",
                  "waydroid-sensord: refused call 3 from uid 10050",
                  "waydroid-sensord: refused call 4 from uid 0",
-                 "waydroid-sensord: the service manager on /dev/hwbinder is gone"):
+                 "waydroid-sensord: the service manager on /dev/hwbinder is gone, exiting"):
         check("log %s" % line, line in log.splitlines(), True)
 
 

@@ -762,8 +762,9 @@ static void presence(GBinderServiceManager *manager, void *data)
 		}
 	} else if (registered) {
 		registered = FALSE;
-		say("the service manager on %s is gone", device);
+		say("the service manager on %s is gone, exiting", device);
 		lost();
+		g_main_loop_quit(loop);
 	}
 }
 
