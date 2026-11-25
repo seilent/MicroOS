@@ -179,7 +179,7 @@ rc=0
 [[ "${rc}" == 2 ]] || fail "an unknown verb exited ${rc}"
 
 shipped="${repo}/data/usr/share/microos-android/opts"
-tiles=$(sed -n 's/^set qs-tiles settings put secure sysui_qs_tiles //p' "${shipped}")
+tiles=$(sed -n 's/^set qs-tiles-cast settings put secure sysui_qs_tiles //p' "${shipped}")
 helper=net.seilent.microos.helper
 [[ ",${tiles}," == *",custom(${helper}/.InternetTile),"* && ",${tiles}," == *",custom(${helper}/.BluetoothTile),"* ]] \
     || fail "the shipped tiles lack the helper's Internet and Bluetooth tiles: ${tiles}"
