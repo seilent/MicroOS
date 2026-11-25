@@ -16,6 +16,8 @@ from gi.repository import Gio, GLib
 
 ME = "microos-android-brightness"
 MICROSET = ("net.seilent.MicroSet", "/net/seilent/MicroSet", "net.seilent.MicroSet1")
+POWERKEY = ("net.seilent.MicroOS.PowerKey", "/net/seilent/MicroOS/PowerKey", "net.seilent.MicroOS.PowerKey1")
+GUEST = os.environ.get("MICROOS_ANDROID_GUEST") or "/usr/libexec/microos/microos-android-guest"
 KEY = "display.brightness"
 NAME = "backlight"
 WAYDROID_CFG = os.environ.get("MICROOS_WAYDROID_CFG") or "/var/lib/waydroid/waydroid.cfg"
@@ -27,11 +29,21 @@ GET_INT = 12
 SYSTEM = 1
 DEAD_OBJECT = -32
 SETTING = "screen_brightness"
+TIMEOUT = "screen_off_timeout"
+TIMEOUT_MIN_MS = 10000
+DIM_MAX_MS = 7000
+DIM_RATIO = 0.2
+DIM_FLOAT = 0.05
+DIM_AMOUNT = 0.04
+POLICY = "dumpsys display | grep -m1 mPowerRequest="
+TIMED_OUT = "policy=DIM,"
+WAKE = "input keyevent KEYCODE_WAKEUP 0"
 SETTLE_MS = int(os.environ.get("MICROOS_BRIGHTNESS_SETTLE_MS") or 50)
 HOLD_MS = int(os.environ.get("MICROOS_BRIGHTNESS_HOLD_MS") or 2000)
 QUIET_MS = int(os.environ.get("MICROOS_BRIGHTNESS_QUIET_MS") or 300)
 CALL_MS = int(os.environ.get("MICROOS_BRIGHTNESS_CALL_MS") or 5000)
 RECHECK_MS = 1000
+STOP_MS = 1000
 ARM_MS = 1000
 GUEST_MAX = 255
 HOST_MAX = 10000
@@ -76,6 +88,11 @@ def host_points(level):
 
 def guest_level(value):
     return min(GUEST_MAX, max(1, (value * GUEST_MAX + HOST_MAX // 2) // HOST_MAX))
+
+
+def dim_level(user):
+    dim = max(min((user - 1) / (GUEST_MAX - 1) - DIM_AMOUNT, DIM_FLOAT), 0.0)
+    return int(1 + (GUEST_MAX - 1) * dim + 0.5)
 
 
 def entry(value):
@@ -324,9 +341,10 @@ class Platform:
 
 
 class Bridge:
-    def __init__(self, loop, bus):
+    def __init__(self, loop, bus, session):
         self.loop = loop
         self.bus = bus
+        self.session = session
         self.platform = Platform(self.registered)
         self.directory = backlight_dir()
         self.path = os.path.join(self.directory, NAME)
@@ -351,9 +369,21 @@ class Bridge:
         self.foreign = None
         self.held = None
         self.hold = 0
+        self.dim = None
+        self.expiry = 0
+        self.timing = False
+        self.cycle = 0
+        self.blanked = False
+        self.blankable = False
+        self.failing = set()
 
     def start(self):
         self.motors.scan()
+        if self.session is not None:
+            self.session.signal_subscribe(POWERKEY[0], POWERKEY[2], "ScreenChanged", POWERKEY[1], None,
+                                          Gio.DBusSignalFlags.NONE, self.screen_changed)
+            Gio.bus_watch_name_on_connection(self.session, POWERKEY[0], Gio.BusNameWatcherFlags.NONE,
+                                             self.powerkey_appeared, self.powerkey_vanished)
         if self.arm(True):
             GLib.timeout_add(ARM_MS, self.arm)
         self.bus.signal_subscribe(
@@ -423,9 +453,14 @@ class Bridge:
         return level
 
     def guest_moved(self):
+        if read(self.path) == "0":
+            self.lights_out()
+            return
         level = self.hal(True)
         if level is None:
             return
+        if self.dim is not None and abs(level - self.dim) > (1 if self.dim else 0):
+            self.lit()
         if not self.ready:
             if not self.dropped:
                 log(f"guest level {level} dropped: {MICROSET[0]} is not on the bus")
@@ -510,6 +545,7 @@ class Bridge:
         call(*args, done)
 
     def decide(self, user):
+        self.watch_dim(user)
         if self.calling or not self.ready:
             self.dirty = True
             return
@@ -629,7 +665,142 @@ class Bridge:
         self.step()
         return False
 
+    def watch_dim(self, user):
+        level = self.hal()
+        if level is None or level >= user or abs(level - dim_level(user)) > 1:
+            return
+        if self.dim is None:
+            self.dim = level
+        if self.timing or self.blanked or not self.blankable:
+            return
+        self.timing = True
+        cycle = self.cycle
+        self.platform.get(TIMEOUT, lambda error, timeout: self.dimmed(cycle, error, timeout))
+
+    def dimmed(self, cycle, error, timeout):
+        if cycle != self.cycle:
+            return
+        if error is not None:
+            self.complain(TIMEOUT, f"IPlatform settingsGetInt {TIMEOUT} failed: {error}")
+            self.timing = False
+            return
+        delay = min(DIM_MAX_MS, int(max(timeout, TIMEOUT_MIN_MS) * DIM_RATIO))
+        self.expiry = GLib.timeout_add(delay, self.timed_out, cycle)
+
+    def timed_out(self, cycle):
+        self.expiry = 0
+        self.guest(POLICY, lambda code, output: self.policy(cycle, code, output))
+        return False
+
+    def policy(self, cycle, code, output):
+        if cycle != self.cycle:
+            return
+        if code != 0:
+            self.complain(POLICY, f"{POLICY!r} in the guest exited {code}: {output}")
+            self.timing = False
+            return
+        self.failing.clear()
+        if TIMED_OUT in output:
+            self.blank("the guest screen timed out")
+
+    def complain(self, kind, text):
+        if kind not in self.failing:
+            self.failing.add(kind)
+            log(text)
+
+    def undim(self, level):
+        if self.expiry:
+            GLib.source_remove(self.expiry)
+            self.expiry = 0
+        self.timing = False
+        self.cycle += 1
+        self.dim = level
+
+    def lights_out(self):
+        self.undim(0)
+        if not self.blanked and self.blankable:
+            self.blank("the guest screen is off")
+
+    def lit(self):
+        self.undim(None)
+        if self.blanked:
+            self.blanked = False
+            self.powerkey("Restore", "the guest screen is on, restored the panel")
+
+    def blank(self, why):
+        self.blanked = True
+
+        def failed():
+            self.blanked = False
+
+        self.powerkey("Blank", f"{why}, blanked the panel", failed)
+
+    def powerkey(self, method, done, failed=None):
+        if self.session is None:
+            if failed is not None:
+                failed()
+            return
+
+        def replied(bus, result):
+            try:
+                bus.call_finish(result)
+            except GLib.Error as error:
+                log(f"{method} failed: {error.message}")
+                if failed is not None:
+                    failed()
+            else:
+                log(done)
+
+        self.session.call(*POWERKEY, method, None, None, Gio.DBusCallFlags.NO_AUTO_START, CALL_MS, None, replied)
+
+    def powerkey_appeared(self, _bus, _name, _owner):
+        self.blankable = True
+        if self.dim == 0 and not self.blanked:
+            self.blank("the guest screen is off")
+
+    def powerkey_vanished(self, _bus, name):
+        self.blankable = False
+        log(f"{name} is not on the user bus, the guest screen timeout leaves the panel on")
+
+    def screen_changed(self, _bus, _sender, _path, _iface, _signal, params):
+        if not params.unpack()[0] or not self.blanked:
+            return
+        self.blanked = False
+        self.undim(None)
+        log("the host woke the panel, waking the guest screen")
+        self.guest(WAKE, self.woke)
+
+    def woke(self, code, output):
+        if code != 0:
+            log(f"{WAKE!r} in the guest exited {code}: {output}")
+
+    def guest(self, script, then):
+        try:
+            process = Gio.Subprocess.new([GUEST, "sh", script],
+                                         Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
+        except GLib.Error as error:
+            then(-1, error.message)
+            return
+
+        def done(proc, result):
+            try:
+                _ok, output, _err = proc.communicate_utf8_finish(result)
+            except GLib.Error as error:
+                then(-1, error.message)
+                return
+            then(proc.get_exit_status() if proc.get_if_exited() else -1, " ".join((output or "").split()))
+
+        process.communicate_utf8_async(None, None, done)
+
     def quit(self):
+        if self.blanked and self.session is not None:
+            try:
+                self.session.call_sync(*POWERKEY, "Restore", None, None, Gio.DBusCallFlags.NO_AUTO_START, STOP_MS,
+                                       None)
+            except GLib.Error as error:
+                log(f"Restore failed: {error.message}")
+            else:
+                log("stopping, restored the panel")
         self.loop.quit()
         return GLib.SOURCE_REMOVE
 
@@ -640,8 +811,13 @@ def main():
     except GLib.Error as error:
         log(f"no system bus: {error.message}")
         return 1
+    try:
+        session = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+    except GLib.Error as error:
+        log(f"no user bus: {error.message}, the guest screen timeout leaves the panel on")
+        session = None
     loop = GLib.MainLoop()
-    bridge = Bridge(loop, bus)
+    bridge = Bridge(loop, bus, session)
     for number in (signal.SIGTERM, signal.SIGINT):
         GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, number, bridge.quit)
     bridge.start()
