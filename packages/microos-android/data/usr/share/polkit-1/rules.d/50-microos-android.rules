@@ -3,7 +3,7 @@ polkit.addRule(function(action, subject) {
     return;
   }
   var unit = action.lookup("unit");
-  var units = /^microos-android-(images|gsf|reset|layer|gapps@(install|remove))\.service$/;
+  var units = /^microos-android-(images|gsf|reset|layer|gapps@(fetch|install|remove))\.service$/;
   if (action.lookup("verb") == "start" && unit && units.test(unit)) {
     return polkit.Result.YES;
   }

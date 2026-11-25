@@ -112,6 +112,31 @@ root_unit() {
     "${SYSTEMCTL}" start "$1" || fail "$1 failed, journalctl -u $1 has its reason"
 }
 
+user_unit() {
+    "${SYSTEMCTL}" --user "$1" "$2" || fail "$1 of $2 failed, journalctl --user -u $2 has its reason"
+}
+
+gapps_install() {
+    local rc=0 next unit=microos-android-gapps@install.service
+    if ! "${SYSTEMCTL}" --user is-active -q microos-android.service; then
+        root_unit "${unit}"
+        say "MindTheGapps 13 is in the overlay, Android boots with it at its next start"
+        return
+    fi
+    root_unit microos-android-gapps@fetch.service
+    say "MindTheGapps 13 is fetched, Android stops for the install"
+    user_unit stop microos-android.service
+    "${SYSTEMCTL}" start "${unit}" || rc=1
+    if "${SYSTEMCTL}" --user is-active -q gamescope-session-plus@android.service; then
+        user_unit start microos-android.service
+        next="Android starts again with it"
+    else
+        next="Android boots with it at its next start"
+    fi
+    (( rc == 0 )) || fail "${unit} failed, journalctl -u ${unit} has its reason"
+    say "MindTheGapps 13 is in the overlay, ${next}"
+}
+
 case "${1:-}" in
     status)
         (( $# == 1 )) || usage
@@ -122,8 +147,7 @@ case "${1:-}" in
             install)
                 me="microos-android gapps install"
                 (( $# == 2 )) || usage
-                root_unit microos-android-gapps@install.service
-                say "MindTheGapps 13 is in the overlay, Android boots with it at its next start"
+                gapps_install
                 ;;
             remove)
                 me="microos-android gapps remove"
