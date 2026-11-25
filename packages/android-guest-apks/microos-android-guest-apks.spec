@@ -47,6 +47,8 @@ Source21:       vibrator.c
 Source22:       %{vibrator}.rc
 Source23:       %{vibrator}.xml
 Source24:       manifest.xml
+Source25:       0002-hwc-pen-on-touch-device.patch
+Source26:       0003-hwc-vsync-presented-grid.patch
 Vendor:         MicroOS
 ExclusiveArch:  aarch64
 AutoReqProv:    no
@@ -66,14 +68,17 @@ stock lux to brightness curve where the guest has
 ro.vendor.microos.light_sensor=1. The vendor's audio_policy_volumes.xml with
 flat music stream curves. The vendor's VINTF manifest.xml without its media.omx
 HAL, which the vendor image declares but does not ship. Waydroid's
-hwcomposer.waydroid.so with 0001-hwc-private-roundtrip-queue.patch, which waits
-for Wayland roundtrips on a private event queue, built in a LineageOS 20 tree
-and carried as a prebuilt with the patch and the tree's pins in hwc.env; the
-license texts of its parts are in %{_licensedir}/%{name}. They sit at their
-Waydroid overlay paths under %{overlay}, overlay.manifest next to it lists each
-with its sha256 and mode, and overlay.vendor names the sha256 of the vendor
-image zip they were made for. microos-android-overlay copies them into the
-Waydroid overlay before the container starts.
+hwcomposer.waydroid.so with three patches: it waits for Wayland roundtrips on a
+private event queue (0001-hwc-private-roundtrip-queue.patch), sends tablet tools
+to the guest as pens on the touch device and drops finger touches while a pen
+is down (0002-hwc-pen-on-touch-device.patch), and reports vsync on the grid of
+the last presented time (0003-hwc-vsync-presented-grid.patch). It is built in a
+LineageOS 20 tree and carried as a prebuilt with the patches and the tree's pins
+in hwc.env; the license texts of its parts are in %{_licensedir}/%{name}. They
+sit at their Waydroid overlay paths under %{overlay}, overlay.manifest next to
+it lists each with its sha256 and mode, and overlay.vendor names the sha256 of
+the vendor image zip they were made for. microos-android-overlay copies them
+into the Waydroid overlay before the container starts.
 
 %prep
 %setup -q -c -T

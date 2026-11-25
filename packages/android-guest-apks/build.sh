@@ -42,7 +42,8 @@ cp "$src/overlay.manifest" "$src/lights/service.c" "$src/lights/android.hardware
   "$src/vibrator/android.hardware.vibrator-service.microos.rc" \
   "$src/vibrator/android.hardware.vibrator-service.microos.xml" "$src/build.sh" "$src/SOURCE.env" \
   "$src/vendor-etc/audio_policy_volumes.xml" "$src/vendor-etc/vintf/manifest.xml" "$src/hwc/hwcomposer.waydroid.so" \
-  "$src/hwc/0001-hwc-private-roundtrip-queue.patch" "$src/hwc/hwc.env" "$src"/hwc/licenses/* "$top/SOURCES/"
+  "$src/hwc/0001-hwc-private-roundtrip-queue.patch" "$src/hwc/0002-hwc-pen-on-touch-device.patch" \
+  "$src/hwc/0003-hwc-vsync-presented-grid.patch" "$src/hwc/hwc.env" "$src"/hwc/licenses/* "$top/SOURCES/"
 for d in helper telephony display; do
   tar -C "$src" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX \
     -czf "$top/SOURCES/microos-android-guest-apks-$d.tar.gz" "$d"

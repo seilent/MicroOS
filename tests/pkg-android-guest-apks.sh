@@ -28,6 +28,7 @@ hwc=$overlay/vendor/lib64/hw/hwcomposer.waydroid.so
 licdir=/usr/share/licenses/microos-android-guest-apks
 licenses=(COPYING.wayland COPYING.wayland-protocols LICENSE.hardware-waydroid LICENSE.libffi LICENSE.libxkbcommon
   NOTICE.bionic NOTICE.hardware-waydroid NOTICE.libxkbcommon-parser)
+hwcpatches=(0001-hwc-private-roundtrip-queue.patch 0002-hwc-pen-on-touch-device.patch 0003-hwc-vsync-presented-grid.patch)
 
 rpm=$(find "$dir" -maxdepth 1 -name 'microos-android-guest-apks-1-*.microos.aarch64.rpm')
 srpm=$(find "$dir" -maxdepth 1 -name 'microos-android-guest-apks-1-*.src.rpm')
@@ -50,7 +51,7 @@ sources=$(rpm -qp --qf '[%{SOURCE}\n]' "$srpm" | sort)
 want=$(printf '%s\n' overlay.manifest service.c "$hal.rc" "$hal.xml" vibrator.c "$vib.rc" "$vib.xml" build.sh \
   SOURCE.env microos-android-guest-apks-helper.tar.gz microos-android-guest-apks-telephony.tar.gz \
   microos-android-guest-apks-display.tar.gz audio_policy_volumes.xml manifest.xml hwcomposer.waydroid.so \
-  0001-hwc-private-roundtrip-queue.patch hwc.env "${licenses[@]}" | sort)
+  "${hwcpatches[@]}" hwc.env "${licenses[@]}" | sort)
 if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$sources")"; fi
 
 files=$(rpm -qlp "$rpm" | LC_ALL=C sort)
@@ -92,7 +93,7 @@ pins=$(printf '%s\n' \
   "dc2810a28f07f25cb8476321007542a6b1e8c32a58c5555dce842f9e7f26229d 0644 ${rro#"$overlay"/}" \
   "4ef8bc89e575d9be09ce25975e368493ee0b04256a67ab1b584bf1717a894166 0644 ${volumes#"$overlay"/}" \
   "3e0242a9cb3a1b9460a946f89a57189161c428747f505ebdf2c1709e77355a1f 0644 ${vendorvintf#"$overlay"/}" \
-  "540608d5169c528531a0ae8754beae5fa3f12de6edc2c187f3df13a8ff1b1dfc 0644 ${hwc#"$overlay"/}")
+  "83ec0b77a6dc967872b7ae935d082a3037fdd35bd3c5ac0f1d352eddba8fdce0 0644 ${hwc#"$overlay"/}")
 [[ $(< "$root$manifest") == "$pins" ]] ||
   fail "$manifest is not the pinned lights and vibrator HALs, helper, telephony and display overlay, volume, VINTF" \
     "and composer set: $(< "$root$manifest")"
@@ -133,13 +134,23 @@ done
 cmp -s "$tmp/src/hwcomposer.waydroid.so" "$root$hwc" || fail "$hwc is not the SRPM's hwcomposer.waydroid.so"
 pin() { sed -n "s/^$1=//p" "$tmp/src/hwc.env"; }
 [[ $(sha256sum < "$root$hwc") == "$(pin HWC_SHA256)  -" ]] || fail "$hwc is not the library hwc.env pins"
-[[ $(sha256sum < "$tmp/src/0001-hwc-private-roundtrip-queue.patch") == "$(pin HWC_PATCH_SHA256)  -" ]] ||
-  fail "0001-hwc-private-roundtrip-queue.patch is not the patch hwc.env pins"
+for i in "${!hwcpatches[@]}"; do
+  [[ $(sha256sum < "$tmp/src/${hwcpatches[i]}") == "$(pin "HWC_PATCH$((i + 1))_SHA256")  -" ]] ||
+    fail "${hwcpatches[i]} is not the patch hwc.env pins"
+done
+series=$(cd "$tmp/src" && awk '
+  /^diff --git a\// { file = $3 }
+  /^index [0-9a-f]+\.\.[0-9a-f]+ / {
+    split($2, blob, /\.\./)
+    if (file in post && substr(post[file], 1, 7) != substr(blob[1], 1, 7)) print FILENAME, file
+    post[file] = blob[2]
+  }' "${hwcpatches[@]}")
+[[ -z $series ]] || fail "the composer patches are not one series in order: $series"
 [[ $(pin VENDOR_SHA256) == "$VENDOR_SHA256" ]] || fail "hwc.env's VENDOR_SHA256 is not SOURCE.env's"
 out=$("$readelf" -h -n "$root$hwc") || fail "llvm-readelf cannot read $hwc"
 grep -qE '^ +Machine: +AArch64$' <<<"$out" || fail "$hwc is not aarch64"
-grep -qE '^ +Build ID: f36942bb37ab1cbcec5bec174529ec05$' <<<"$out" || fail "$hwc BuildId"
-[[ $(pin HWC_BUILD_ID) == f36942bb37ab1cbcec5bec174529ec05 ]] || fail "hwc.env's HWC_BUILD_ID"
+grep -qE '^ +Build ID: 4594e9ca8272df47a1043cda4b535f06$' <<<"$out" || fail "$hwc BuildId"
+[[ $(pin HWC_BUILD_ID) == 4594e9ca8272df47a1043cda4b535f06 ]] || fail "hwc.env's HWC_BUILD_ID"
 licfiles=$(rpm -qp --licensefiles "$rpm" | LC_ALL=C sort)
 [[ $licfiles == "$(printf '%s\n' "${licenses[@]/#/$licdir/}" | LC_ALL=C sort)" ]] ||
   fail "license files: $(tr '\n' ' ' <<<"$licfiles")"

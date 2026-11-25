@@ -1,0 +1,101 @@
+From 0f17bdbb1278c6801ac055b002fb6d326949d06e Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Wed, 25 Nov 2026 13:35:45 +0900
+Subject: [PATCH] hwcomposer: report vsync on the presented time grid
+
+---
+ hwcomposer/hwcomposer.cpp | 36 ++++++++++++++++++++----------------
+ 1 file changed, 20 insertions(+), 16 deletions(-)
+
+diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
+index d24b035..e0fa442 100644
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -218,13 +218,13 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
+     return 0;
+ }
+ 
+-static long time_to_sleep_to_next_vsync(struct timespec *rt, uint64_t last_vsync_ns, unsigned vsync_period_ns)
++static int64_t next_vsync_ns(int64_t after_ns, int64_t last_vsync_ns, int64_t vsync_period_ns)
+ {
+-    uint64_t now = (uint64_t)rt->tv_sec * 1e9 + rt->tv_nsec;
+-    uint64_t frames_since_last_vsync = (now - last_vsync_ns) / vsync_period_ns + 1;
+-    uint64_t next_vsync = last_vsync_ns + frames_since_last_vsync * vsync_period_ns;
++    int64_t frames = (after_ns - last_vsync_ns) / vsync_period_ns;
++    if (last_vsync_ns + frames * vsync_period_ns > after_ns)
++        frames--;
+ 
+-    return next_vsync - now;
++    return last_vsync_ns + (frames + 1) * vsync_period_ns;
+ }
+ 
+ static void* hwc_vsync_thread(void* data) {
+@@ -238,19 +238,21 @@ static void* hwc_vsync_thread(void* data) {
+     }
+     bool vsync_enabled = false;
+ 
+-    struct timespec wait_time;
+-    wait_time.tv_sec = 0;
+-    wait_time.tv_nsec = time_to_sleep_to_next_vsync(&rt, pdev->last_vsync_ns, pdev->vsync_period_ns);
++    int64_t vsync_ns = next_vsync_ns(int64_t(rt.tv_sec) * 1000000000 + rt.tv_nsec, pdev->last_vsync_ns,
++                                     pdev->vsync_period_ns);
+ 
+     while (true) {
+         ATRACE_BEGIN("hwc_vsync_thread");
+-        int err = nanosleep(&wait_time, NULL);
+-        if (err == -1) {
+-            if (errno == EINTR) {
++        struct timespec wake_time;
++        wake_time.tv_sec = vsync_ns / 1000000000;
++        wake_time.tv_nsec = vsync_ns % 1000000000;
++        int err = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &wake_time, NULL);
++        if (err) {
++            if (err == EINTR) {
+                 break;
+             }
+             ATRACE_END();
+-            ALOGE("error in vsync thread: %s", strerror(errno));
++            ALOGE("error in vsync thread: %s", strerror(err));
+             continue;
+         }
+ 
+@@ -261,14 +263,16 @@ static void* hwc_vsync_thread(void* data) {
+                   __FILE__, __LINE__, strerror(errno));
+         }
+ 
+-        wait_time.tv_nsec = time_to_sleep_to_next_vsync(&rt, pdev->last_vsync_ns, pdev->vsync_period_ns);
++        int64_t timestamp = vsync_ns;
++        vsync_ns = next_vsync_ns(std::max<int64_t>(int64_t(rt.tv_sec) * 1000000000 + rt.tv_nsec,
++                                                   timestamp + pdev->vsync_period_ns / 2),
++                                 pdev->last_vsync_ns, pdev->vsync_period_ns);
+ 
+         if (!vsync_enabled || !pdev->procs || !pdev->procs->vsync) {
+             ATRACE_END();
+             continue;
+         }
+ 
+-        int64_t timestamp = (uint64_t)rt.tv_sec * 1e9 + rt.tv_nsec;
+         pdev->procs->vsync(pdev->procs, 0, timestamp);
+         ATRACE_END();
+     }
+@@ -296,7 +300,7 @@ feedback_presented(void *data,
+     auto *pdev = static_cast<waydroid_hwc_composer_device_1 *>(data);
+     wp_presentation_feedback_destroy(feedback);
+ 
+-    pdev->last_vsync_ns = (((uint64_t)tv_sec_hi << 32) + tv_sec_lo) * 1e9 + tv_nsec;
++    pdev->last_vsync_ns = (((uint64_t)tv_sec_hi << 32) + tv_sec_lo) * 1000000000 + tv_nsec;
+ }
+ 
+ static void
+@@ -800,7 +804,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
+             __FILE__, __LINE__, strerror(errno));
+     }
+ 
+-    pdev->last_vsync_ns = int64_t(rt.tv_sec) * 1e9 + rt.tv_nsec;
++    pdev->last_vsync_ns = int64_t(rt.tv_sec) * 1000000000 + rt.tv_nsec;
+ 
+     if (!pdev->vsync_thread) {
+         ret = pthread_create (&pdev->vsync_thread, NULL, hwc_vsync_thread, pdev);
+-- 
+2.43.0
+
