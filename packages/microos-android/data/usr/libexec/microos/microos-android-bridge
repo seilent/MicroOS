@@ -20,6 +20,7 @@ WAYDROID_CFG = os.environ.get("MICROOS_WAYDROID_CFG") or "/var/lib/waydroid/wayd
 BINDER_DIR = os.environ.get("MICROOS_BINDER_DIR") or "/dev"
 WPCTL = os.environ.get("MICROOS_WPCTL") or "/usr/bin/wpctl"
 PW_DUMP = os.environ.get("MICROOS_PW_DUMP") or "/usr/bin/pw-dump"
+GUEST = os.environ.get("MICROOS_ANDROID_GUEST") or "/usr/libexec/microos/microos-android-guest"
 HOLD_MS = int(os.environ.get("MICROOS_BRIDGE_HOLD_MS") or 2000)
 POWER_S = float(os.environ.get("MICROOS_BRIDGE_POWER_S") or 90)
 WPCTL_S = float(os.environ.get("MICROOS_BRIDGE_WPCTL_S") or 2)
@@ -1184,6 +1185,8 @@ class Bridge:
         self.seen = {name: -1 for name in RADIO_NAMES}
         self.airplane_path = os.path.join(home(), ".local/state/microos-android/radios.json")
         self.airplane = None
+        self.echo = None
+        self.syncing = None
         self.manager = None
         self.local = None
         self.present = False
@@ -1335,7 +1338,45 @@ class Bridge:
             self.sent = {RADIOS: self.radios()}
             self.send(RADIOS, self.sent[RADIOS])
             self.changed()
+            self.sync_airplane()
         return False
+
+    def sync_airplane(self):
+        on = 0 if self.airplane is None else 1
+        word, verb = ("enabled", "enable") if on else ("disabled", "disable")
+        script = (f'[ "$(cmd connectivity airplane-mode)" = {word} ] && echo kept'
+                  f' || {{ cmd connectivity airplane-mode {verb} && echo set; }}')
+        self.echo = on
+        try:
+            process = Gio.Subprocess.new([GUEST, "sh", script],
+                                         Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
+        except GLib.Error as error:
+            log(f"{GUEST} did not run: {error.message}")
+            self.echo = None
+            return
+        self.syncing = process
+
+        def communicated(proc, result):
+            if self.syncing is not process:
+                return
+            self.syncing = None
+            try:
+                _ok, out, _err = proc.communicate_utf8_finish(result)
+            except GLib.Error as error:
+                log(f"the airplane sync failed: {error.message}")
+                self.echo = None
+                return
+            rc = proc.get_exit_status() if proc.get_if_exited() else -proc.get_term_sig()
+            lines = (out or "").splitlines()
+            if rc or not lines or lines[-1] not in ("kept", "set"):
+                log(f"the airplane sync to {on} exited {rc}: {' '.join(lines)}")
+                self.echo = None
+            elif lines[-1] == "kept":
+                self.echo = None
+            else:
+                log(f"guest airplane set to {on}")
+
+        process.communicate_utf8_async(None, None, communicated)
 
     def died(self, link):
         if link is not self.callback:
@@ -1478,6 +1519,10 @@ class Bridge:
         on = read_choice(reader, 2)
         if self.callback is None:
             return (NOT_READY,)
+        echo, self.echo = self.echo, None
+        if on == echo:
+            log(f"airplane {on} from the sync")
+            return (OK,)
         states = dict(zip(RADIO_NAMES, self.radios()))
         self.seen = states
         if on:

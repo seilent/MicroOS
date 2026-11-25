@@ -44,6 +44,7 @@ export MICROOS_WAYDROID_CFG="${T}/waydroid.cfg"
 export MICROOS_BINDER_DIR="${T}/dev"
 export MICROOS_WPCTL="${T}/bin/wpctl"
 export MICROOS_PW_DUMP="${T}/bin/pw-dump"
+export MICROOS_ANDROID_GUEST="${T}/bin/guest"
 export MICROOS_BRIDGE_HOLD_MS=1000
 export MICROOS_BRIDGE_POWER_S=2
 export MICROOS_BRIDGE_WPCTL_S=1
@@ -54,7 +55,8 @@ system="${HOME}/.local/share/microos-waydroid/waydroid/data/system"
 mkdir -p "${STATE}/in" "${STATE}/out" "${STATE}/die" "${STATE}/sinks" "${T}/py" "${T}/bin" "${system}" \
     "${MICROOS_BINDER_DIR}"
 : > "${MICROOS_BINDER_DIR}/anbox-binder"
-for f in binder callbacks wpctl logind files nm bluez times; do : > "${STATE}/${f}"; done
+for f in binder callbacks wpctl logind files nm bluez times guest; do : > "${STATE}/${f}"; done
+printf '0\n' > "${STATE}/guest-airplane"
 printf '30 1\n' > "${STATE}/sinks/a"
 printf 'a\n' > "${STATE}/sinks/default"
 
@@ -415,7 +417,31 @@ while True:
         print('[\n  { "id": 30, "type": "PipeWire:Interface:Node" }\n]', flush=True)
     time.sleep(0.02)
 FAKE
-chmod 0755 "${T}/bin/wpctl" "${T}/bin/pw-dump"
+cat > "${T}/bin/guest" <<'FAKE'
+#!/usr/bin/bash
+cmd() {
+    if [[ $# == 2 && "$1 $2" == "connectivity airplane-mode" ]]; then
+        echo get >> "${STATE}/guest"
+        if [[ "$(cat "${STATE}/guest-airplane")" == 1 ]]; then echo enabled; else echo disabled; fi
+    elif [[ $# == 3 && "$1 $2" == "connectivity airplane-mode" && "$3" =~ ^(en|dis)able$ ]]; then
+        echo "$3" >> "${STATE}/guest"
+        if [[ "$3" == enable ]]; then echo 1; else echo 0; fi > "${STATE}/guest-airplane"
+    else
+        echo "bad cmd $*" >> "${STATE}/guest"
+        return 1
+    fi
+}
+if [[ $# != 2 || "$1" != sh ]]; then
+    echo "bad $*" >> "${STATE}/guest"
+    exit 2
+fi
+if [[ -e "${STATE}/guest-fails" ]]; then
+    echo "microos-android-guest: cannot connect to 192.0.2.2:5555" >&2
+    exit 255
+fi
+eval "$2"
+FAKE
+chmod 0755 "${T}/bin/wpctl" "${T}/bin/pw-dump" "${T}/bin/guest"
 
 cat > "${T}/logind" <<'FAKE'
 import os
@@ -1357,6 +1383,7 @@ for _ in {1..40}; do [[ -e "${airplane}" ]] || break; sleep 0.05; done
 mark
 expect "airplane on before a restart" "0 [0, 0]" "${uid}" 4 '[["i", 1]]'
 wait_cb 'cb10 2 [0, 0, "", ""]' || fail "airplane on before a restart: radios $(since)"
+printf '1\n' > "${STATE}/guest-airplane"
 stop_bridge "a stop inside airplane"
 grep -qx "unregister /net/seilent/MicroOs/BtAgent" "${STATE}/bluez" || fail "the stop did not unregister the agent"
 start_bridge
@@ -1581,6 +1608,97 @@ wait_count $((stops + 1)) '^stop-discovery$' "${STATE}/bluez" || fail "discovery
 wait_count $((rejected + 1)) '^agent org.bluez.Error.Rejected$' "${STATE}/bluez" \
     || fail "the open prompt was not rejected on the callback death: $(cat "${STATE}/bluez")"
 
+guest_calls() { tail -n +"$((g_seen + 1))" "${STATE}/guest" | paste -sd ' '; }
+host_sets() { echo "$(count '^set ' "${STATE}/nm") $(count '^set ' "${STATE}/bluez")"; }
+
+wait_radios() {
+    for _ in {1..100}; do
+        since | grep -qE "^$1 2 \[$2, " && return 0
+        sleep 0.05
+    done
+    return 1
+}
+
+sync_mark() {
+    mark
+    g_seen=$(wc -l < "${STATE}/guest")
+    sets=$(host_sets)
+}
+
+nm_stub /org/freedesktop/NetworkManager org.freedesktop.NetworkManager WirelessEnabled "<true>"
+bt_stub /org/bluez/hci0 org.bluez.Adapter1 Powered "<true>"
+printf '1\n' > "${STATE}/guest-airplane"
+sync_mark
+hello cb20
+wait_radios cb20 "1, 1" || fail "the radios before the airplane syncs: $(since)"
+wait_for "get disable" guest_calls \
+    || fail "a guest in airplane with the host radios on: $(guest_calls): $(cat "${T}/log")"
+[[ "$(cat "${STATE}/guest-airplane")" == 0 ]] || fail "the sync did not turn the guest airplane off"
+wait_log "guest airplane set to 0" || fail "the sync off was not logged: $(cat "${T}/log")"
+expect "the report of the sync off" "0 [0, 0]" "${uid}" 4 '[["i", 0]]'
+wait_log "airplane 0 from the sync" || fail "the report of the sync off: $(tail -n 5 "${T}/log")"
+sleep 0.3
+[[ "$(host_sets)" == "${sets}" ]] || fail "the sync off switched host radios: $(host_sets), was ${sets}"
+[[ ! -e "${airplane}" ]] || fail "the sync off wrote radios.json: $(cat "${airplane}")"
+
+wifi_off=$(count '^set WirelessEnabled false$' "${STATE}/nm")
+bt_off=$(count '^set Powered false$' "${STATE}/bluez")
+printf '1\n' > "${STATE}/guest-airplane"
+expect "airplane on after the sync" "0 [0, 0]" "${uid}" 4 '[["i", 1]]'
+[[ "$(cat "${airplane}" 2>&1)" == '["wifi", "bluetooth"]' ]] \
+    || fail "airplane on after the sync did not list both radios: $(cat "${airplane}" 2>&1)"
+wait_count $((wifi_off + 1)) '^set WirelessEnabled false$' "${STATE}/nm" || fail "airplane on after the sync: Wi-Fi"
+wait_count $((bt_off + 1)) '^set Powered false$' "${STATE}/bluez" || fail "airplane on after the sync: Bluetooth"
+wait_radios cb20 "0, 0" || fail "airplane on after the sync: radios $(since)"
+bt_stub /org/bluez/hci0 org.bluez.Adapter1 Powered "<true>"
+for _ in {1..40}; do [[ "$(cat "${airplane}" 2>&1)" == '["wifi"]' ]] && break; sleep 0.05; done
+[[ "$(cat "${airplane}" 2>&1)" == '["wifi"]' ]] || fail "Bluetooth on inside airplane: $(cat "${airplane}" 2>&1)"
+
+printf '0\n' > "${STATE}/guest-airplane"
+sync_mark
+hello cb21
+wait_for "get enable" guest_calls || fail "a guest out of airplane with the host in airplane: $(guest_calls)"
+wait_log "guest airplane set to 1" || fail "the sync on was not logged: $(cat "${T}/log")"
+expect "the report of the sync on" "0 [0, 0]" "${uid}" 4 '[["i", 1]]'
+wait_log "airplane 1 from the sync" || fail "the report of the sync on: $(tail -n 5 "${T}/log")"
+sleep 0.3
+[[ "$(host_sets)" == "${sets}" ]] || fail "the sync on switched host radios: $(tail -n 2 "${STATE}/bluez")"
+[[ "$(cat "${airplane}" 2>&1)" == '["wifi"]' ]] || fail "the sync on rewrote radios.json: $(cat "${airplane}" 2>&1)"
+
+sync_mark
+hello cb22
+wait_for get guest_calls || fail "a guest and a host both in airplane: no read: $(guest_calls)"
+sleep 0.3
+[[ "$(guest_calls)" == get ]] || fail "a guest and a host both in airplane: $(guest_calls)"
+[[ "$(host_sets)" == "${sets}" ]] || fail "a guest and a host both in airplane switched host radios"
+
+wifi_on=$(count '^set WirelessEnabled true$' "${STATE}/nm")
+printf '0\n' > "${STATE}/guest-airplane"
+expect "airplane off after the syncs" "0 [0, 0]" "${uid}" 4 '[["i", 0]]'
+wait_count $((wifi_on + 1)) '^set WirelessEnabled true$' "${STATE}/nm" || fail "airplane off after the syncs: Wi-Fi"
+[[ ! -e "${airplane}" ]] || fail "airplane off after the syncs kept radios.json: $(cat "${airplane}")"
+wait_radios cb22 "1, 1" || fail "airplane off after the syncs: radios $(since)"
+
+sync_mark
+hello cb23
+wait_for get guest_calls || fail "a guest and a host both out of airplane: no read: $(guest_calls)"
+sleep 0.3
+[[ "$(guest_calls)" == get ]] || fail "a guest and a host both out of airplane: $(guest_calls)"
+[[ "$(host_sets)" == "${sets}" ]] || fail "a guest and a host both out of airplane switched host radios"
+
+printf '1\n' > "${STATE}/guest-airplane"
+: > "${STATE}/guest-fails"
+sync_mark
+hello cb24
+wait_log "the airplane sync to 0 exited 255: microos-android-guest: cannot connect to 192.0.2.2:5555" \
+    || fail "a failed sync was not logged: $(cat "${T}/log")"
+rm -f "${STATE}/guest-fails"
+printf '0\n' > "${STATE}/guest-airplane"
+plain=$(count '^microos-android-bridge: airplane 0$' "${T}/log")
+expect "airplane off after a failed sync" "0 [0, 0]" "${uid}" 4 '[["i", 0]]'
+wait_count $((plain + 1)) '^microos-android-bridge: airplane 0$' "${T}/log" \
+    || fail "airplane off after a failed sync was taken as its report: $(tail -n 5 "${T}/log")"
+
 hello cb12
 mark
 pair "a pair with no pairing page"
@@ -1721,6 +1839,7 @@ stop_bridge "a stop"
 [[ "$(count '^Power\|^Reboot' "${STATE}/logind")" == "${calls}" ]] || fail "a stop called logind"
 
 grep -q '^bad ' "${STATE}/wpctl" && fail "a wpctl call with a wrong verb or sink: $(cat "${STATE}/wpctl")"
+grep -q '^bad ' "${STATE}/guest" && fail "a guest call the fake does not know: $(grep '^bad ' "${STATE}/guest")"
 
 [[ "${failures}" == 0 ]] || exit 1
 echo "bridge-test: ok"
