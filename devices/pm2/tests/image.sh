@@ -725,6 +725,7 @@ rpm -q waydroid lxc >/dev/null || fail "waydroid or lxc missing"
 for c in waydroid lxc-start; do
   command -v "$c" >/dev/null || fail "$c missing, Waydroid needs it"
 done
+! command -v waydroid-sensord >/dev/null || fail "waydroid-sensord is on the PM2, its sensor source is not proven"
 for f in Waydroid.desktop waydroid.market.desktop waydroid.app.install.desktop; do
   [[ ! -e /usr/share/applications/$f ]] || fail "/usr/share/applications/$f is in the image"
 done
