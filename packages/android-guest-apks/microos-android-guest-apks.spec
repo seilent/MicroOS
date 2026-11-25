@@ -14,11 +14,12 @@
 %global ndkbin %{ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin
 %global overlay %{_datadir}/microos-android/overlay
 %global hal android.hardware.lights-service.microos
+%global vibrator android.hardware.vibrator-service.microos
 
 Name:           microos-android-guest-apks
 Version:        1
 Release:        1%{?dist}.microos
-Summary:        The Waydroid guest's composer, lights HAL, helper, telephony and display overlays and volume curves, as overlay files
+Summary:        The Waydroid guest's composer, lights and vibrator HALs, helper, telephony and display overlays and volume curves, as overlay files
 License:        GPL-2.0-or-later AND Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND HPND AND HPND-sell-variant AND GPL-3.0-or-later WITH Bison-exception-2.2
 URL:            https://github.com/seilent/MicroOS
 Source0:        overlay.manifest
@@ -42,29 +43,35 @@ Source17:       NOTICE.bionic
 Source18:       NOTICE.hardware-waydroid
 Source19:       NOTICE.libxkbcommon-parser
 Source20:       %{name}-display.tar.gz
+Source21:       vibrator.c
+Source22:       %{vibrator}.rc
+Source23:       %{vibrator}.xml
 Vendor:         MicroOS
 ExclusiveArch:  aarch64
 AutoReqProv:    no
 
 %description
 An AIDL ILights V1 service for the Waydroid guest that writes the backlight
-level the guest sets to /data/microos/backlight, its init service and its VINTF
-manifest fragment, built with the Android NDK for API %{android_api}. The
-MicroOS helper, a privileged app built with the API %{sdk_api} SDK and signed
-with its own key: Internet and Bluetooth quick settings tiles with their pages,
-and the guest's volume, airplane mode and power menu, linked to
-microos-android-bridge on the host over binder. Static overlays of the
-framework, signed with the AOSP test key: voice calls and SMS off, and adaptive
-brightness on with the Y700's stock lux to brightness curve where the guest has
-ro.vendor.microos.light_sensor=1. The vendor's audio_policy_volumes.xml with flat music stream curves. Waydroid's
-hwcomposer.waydroid.so with 0001-hwc-private-roundtrip-queue.patch, which waits
-for Wayland roundtrips on a private event queue, built in a LineageOS 20 tree
-and carried as a prebuilt with the patch and the tree's pins in hwc.env; the
-license texts of its parts are in %{_licensedir}/%{name}. They sit at their
-Waydroid overlay paths under %{overlay}, overlay.manifest next to it lists each
-with its sha256 and mode, and overlay.vendor names the sha256 of the vendor
-image zip they were made for. microos-android-overlay copies them into the
-Waydroid overlay before the container starts.
+level the guest sets to /data/microos/backlight, and an AIDL IVibrator V2
+service that writes each vibration as its length in ms and its amplitude to
+/data/microos/vibrator, each with its init service and its VINTF manifest
+fragment, built with the Android NDK for API %{android_api}. The MicroOS
+helper, a privileged app built with the API %{sdk_api} SDK and signed with its
+own key: Internet and Bluetooth quick settings tiles with their pages, and the
+guest's volume, airplane mode and power menu, linked to microos-android-bridge
+on the host over binder. Static overlays of the framework, signed with the AOSP
+test key: voice calls and SMS off, and adaptive brightness on with the Y700's
+stock lux to brightness curve where the guest has
+ro.vendor.microos.light_sensor=1. The vendor's audio_policy_volumes.xml with
+flat music stream curves. Waydroid's hwcomposer.waydroid.so with
+0001-hwc-private-roundtrip-queue.patch, which waits for Wayland roundtrips on a
+private event queue, built in a LineageOS 20 tree and carried as a prebuilt
+with the patch and the tree's pins in hwc.env; the license texts of its parts
+are in %{_licensedir}/%{name}. They sit at their Waydroid overlay paths under
+%{overlay}, overlay.manifest next to it lists each with its sha256 and mode,
+and overlay.vendor names the sha256 of the vendor image zip they were made for.
+microos-android-overlay copies them into the Waydroid overlay before the
+container starts.
 
 %prep
 %setup -q -c -T
@@ -82,6 +89,8 @@ sysroot=%{ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-lin
 "$cc" -shared -nostdlib -Wl,-soname,libbinder_ndk.so -o libbinder_ndk.so binder_ndk.c
 "$cc" -std=c17 -O2 -Wall -Wextra -Werror -o %{hal} %{SOURCE1} libbinder_ndk.so -llog
 %{ndkbin}/llvm-strip %{hal}
+"$cc" -std=c17 -O2 -Wall -Wextra -Werror -o %{vibrator} %{SOURCE21} libbinder_ndk.so -llog
+%{ndkbin}/llvm-strip %{vibrator}
 
 export TZ=UTC
 jar=%{platform}/android.jar
@@ -121,6 +130,9 @@ install -Dpm644 %{SOURCE0} %{buildroot}%{_datadir}/microos-android/overlay.manif
 install -Dm755 %{hal} %{buildroot}%{overlay}/system/bin/hw/%{hal}
 install -Dpm644 %{SOURCE2} %{buildroot}%{overlay}/system/etc/init/%{hal}.rc
 install -Dpm644 %{SOURCE3} %{buildroot}%{overlay}/system/etc/vintf/manifest/%{hal}.xml
+install -Dm755 %{vibrator} %{buildroot}%{overlay}/system/bin/hw/%{vibrator}
+install -Dpm644 %{SOURCE22} %{buildroot}%{overlay}/system/etc/init/%{vibrator}.rc
+install -Dpm644 %{SOURCE23} %{buildroot}%{overlay}/system/etc/vintf/manifest/%{vibrator}.xml
 install -Dm644 MicroOsHelper.apk %{buildroot}%{overlay}/system/priv-app/MicroOsHelper/MicroOsHelper.apk
 for rro in Telephony Display; do
   install -Dm644 MicroOs${rro}Overlay.apk %{buildroot}%{overlay}/system/product/overlay/MicroOs$rro/MicroOs${rro}Overlay.apk

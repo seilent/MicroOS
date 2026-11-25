@@ -15,6 +15,10 @@ hal=android.hardware.lights-service.microos
 bin=$overlay/system/bin/hw/$hal
 initrc=$overlay/system/etc/init/$hal.rc
 vintf=$overlay/system/etc/vintf/manifest/$hal.xml
+vib=android.hardware.vibrator-service.microos
+vbin=$overlay/system/bin/hw/$vib
+vinitrc=$overlay/system/etc/init/$vib.rc
+vvintf=$overlay/system/etc/vintf/manifest/$vib.xml
 helper=$overlay/system/priv-app/MicroOsHelper/MicroOsHelper.apk
 rro=$overlay/system/product/overlay/MicroOsTelephony/MicroOsTelephonyOverlay.apk
 display=$overlay/system/product/overlay/MicroOsDisplay/MicroOsDisplayOverlay.apk
@@ -42,25 +46,28 @@ if [[ $license != "$want AND GPL-3.0-or-later WITH Bison-exception-2.2" ]]; then
 if requires=$(rpm -qp --requires "$rpm" | grep -v '^rpmlib('); then fail "requires: $requires"; fi
 
 sources=$(rpm -qp --qf '[%{SOURCE}\n]' "$srpm" | sort)
-want=$(printf '%s\n' overlay.manifest service.c "$hal.rc" "$hal.xml" build.sh SOURCE.env \
-  microos-android-guest-apks-helper.tar.gz microos-android-guest-apks-telephony.tar.gz \
-  microos-android-guest-apks-display.tar.gz audio_policy_volumes.xml \
-  hwcomposer.waydroid.so 0001-hwc-private-roundtrip-queue.patch hwc.env "${licenses[@]}" | sort)
+want=$(printf '%s\n' overlay.manifest service.c "$hal.rc" "$hal.xml" vibrator.c "$vib.rc" "$vib.xml" build.sh \
+  SOURCE.env microos-android-guest-apks-helper.tar.gz microos-android-guest-apks-telephony.tar.gz \
+  microos-android-guest-apks-display.tar.gz audio_policy_volumes.xml hwcomposer.waydroid.so \
+  0001-hwc-private-roundtrip-queue.patch hwc.env "${licenses[@]}" | sort)
 if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$sources")"; fi
 
 files=$(rpm -qlp "$rpm" | LC_ALL=C sort)
 expected=$(printf '%s\n' "$share" "$manifest" "$vendorpin" "$overlay" "$overlay/system" \
-  "$overlay/system/bin" "${bin%/*}" "$bin" \
-  "$overlay/system/etc" "${initrc%/*}" "$initrc" "$overlay/system/etc/vintf" "${vintf%/*}" "$vintf" \
-  "$overlay/system/priv-app" "${helper%/*}" "$helper" "$overlay/system/product" "${rro%/*/*}" "${rro%/*}" "$rro" "${display%/*}" "$display" \
+  "$overlay/system/bin" "${bin%/*}" "$bin" "$vbin" \
+  "$overlay/system/etc" "${initrc%/*}" "$initrc" "$vinitrc" "$overlay/system/etc/vintf" "${vintf%/*}" "$vintf" \
+  "$vvintf" \
+  "$overlay/system/priv-app" "${helper%/*}" "$helper" "$overlay/system/product" "${rro%/*/*}" "${rro%/*}" "$rro" \
+  "${display%/*}" "$display" \
   "$overlay/vendor" "${volumes%/*}" "$volumes" "$overlay/vendor/lib64" "${hwc%/*}" "$hwc" \
   "$licdir" "${licenses[@]/#/$licdir/}" | LC_ALL=C sort)
 if [[ $files != "$expected" ]]; then
   fail "file list: $(diff <(echo "$expected") <(echo "$files") | grep '^[<>]' | tr '\n' ' ')"
 fi
 modes=$(rpm -qp --qf '[%{FILEMODES:perms} %{FILENAMES}\n]' "$rpm" \
-  | awk -v bin="$bin" '$2 == bin ? $1 != "-rwxr-xr-x" : $1 != "drwxr-xr-x" && $1 != "-rw-r--r--"')
-if [[ -n $modes ]]; then fail "modes other than 755 dirs, a 755 HAL and 644 files: $modes"; fi
+  | awk -v bin="$bin" -v vbin="$vbin" '
+    $2 == bin || $2 == vbin ? $1 != "-rwxr-xr-x" : $1 != "drwxr-xr-x" && $1 != "-rw-r--r--"')
+if [[ -n $modes ]]; then fail "modes other than 755 dirs, 755 HALs and 644 files: $modes"; fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "${tmp:?}"' EXIT
@@ -73,15 +80,19 @@ root=$tmp/root
 
 pins=$(printf '%s\n' \
   "d3b51bf93e9a626a36c288b772313367b2a3cd8220f1427d4b5e1464136495c7 0755 ${bin#"$overlay"/}" \
+  "d58f19243ee3494a2f009a0cf3335a2f4c676cba263a11556c736be7d0270d5c 0755 ${vbin#"$overlay"/}" \
   "1a9f711f51b113e3e5326ef35c076e470a1c732ee667197df8effca34803c56c 0644 ${initrc#"$overlay"/}" \
+  "6a9741eba52cc880f8affa75dfa3e830e67f2c067b923dd6e669dafb84569f4c 0644 ${vinitrc#"$overlay"/}" \
   "b163a203c7ddc5c2886f6030c3c531341b68d7d0a6b6d2d2aaa46eb0cf12efd7 0644 ${vintf#"$overlay"/}" \
+  "c8e42691c4d54d52877ce0602d7036a074bdf5009119c3c75d1450906953877c 0644 ${vvintf#"$overlay"/}" \
   "1bea3541ad971602a40620f72231d40d421ec26aea80092e8e3573ac51b1a223 0644 ${helper#"$overlay"/}" \
   "59e26f9b74cc394eee5a989d55654759dbcff651f7dd7541a90801a0ebf0a9f5 0644 ${display#"$overlay"/}" \
   "dc2810a28f07f25cb8476321007542a6b1e8c32a58c5555dce842f9e7f26229d 0644 ${rro#"$overlay"/}" \
   "4ef8bc89e575d9be09ce25975e368493ee0b04256a67ab1b584bf1717a894166 0644 ${volumes#"$overlay"/}" \
   "540608d5169c528531a0ae8754beae5fa3f12de6edc2c187f3df13a8ff1b1dfc 0644 ${hwc#"$overlay"/}")
 [[ $(< "$root$manifest") == "$pins" ]] ||
-  fail "$manifest is not the pinned lights HAL, helper, telephony and display overlay, volume and composer set: $(< "$root$manifest")"
+  fail "$manifest is not the pinned lights and vibrator HALs, helper, telephony and display overlay, volume and" \
+    "composer set: $(< "$root$manifest")"
 while read -r sum mode path; do
   echo "$sum  $root$overlay/$path" | sha256sum -c --status - || fail "$overlay/$path does not match its manifest sha256"
   [[ $(stat -c %04a "$root$overlay/$path") == "$mode" ]] || fail "$overlay/$path is not $mode"
@@ -91,9 +102,12 @@ done < "$root$manifest"
 
 cmp -s "$tmp/src/$hal.rc" "$root$initrc" || fail "$initrc is not the SRPM's $hal.rc"
 cmp -s "$tmp/src/$hal.xml" "$root$vintf" || fail "$vintf is not the SRPM's $hal.xml"
+cmp -s "$tmp/src/$vib.rc" "$root$vinitrc" || fail "$vinitrc is not the SRPM's $vib.rc"
+cmp -s "$tmp/src/$vib.xml" "$root$vvintf" || fail "$vvintf is not the SRPM's $vib.xml"
 cmp -s "$tmp/src/audio_policy_volumes.xml" "$root$volumes" || fail "$volumes is not the SRPM's audio_policy_volumes.xml"
 [[ $(< "$root$vendorpin") == "VENDOR_SHA256=$VENDOR_SHA256" ]] || fail "$vendorpin is not SOURCE.env's VENDOR_SHA256"
-[[ -z $(find "$tmp/src" \( -name '*.so' ! -name hwcomposer.waydroid.so \) -o -name '*.zip' -o -name "$hal") ]] ||
+[[ -z $(find "$tmp/src" \( -name '*.so' ! -name hwcomposer.waydroid.so \) -o -name '*.zip' -o -name "$hal" \
+  -o -name "$vib") ]] ||
   fail "the SRPM holds a binary other than the composer or an NDK file"
 mkdir "$tmp/helper"
 tar -xzf "$tmp/src/microos-android-guest-apks-helper.tar.gz" -C "$tmp/helper"
@@ -105,10 +119,12 @@ keys=$(find "$tmp/src" "$tmp/helper" -name '*.keystore' -o -name '*.jks' -o -nam
 [[ -z $(find "$root$overlay" -path '*/etc/permissions/*' -o -path '*/etc/sysconfig/*') ]] ||
   fail "$overlay holds a privapp-permissions or sysconfig file"
 
-out=$("$readelf" -l -S "$root$bin") || fail "llvm-readelf cannot read $bin"
-grep -qF '[Requesting program interpreter: /system/bin/linker64]' <<<"$out" ||
-  fail "$bin is not an Android arm64 executable"
-if grep -qF .symtab <<<"$out"; then fail "$bin is not stripped"; fi
+for b in "$bin" "$vbin"; do
+  out=$("$readelf" -l -S "$root$b") || fail "llvm-readelf cannot read $b"
+  grep -qF '[Requesting program interpreter: /system/bin/linker64]' <<<"$out" ||
+    fail "$b is not an Android arm64 executable"
+  if grep -qF .symtab <<<"$out"; then fail "$b is not stripped"; fi
+done
 
 cmp -s "$tmp/src/hwcomposer.waydroid.so" "$root$hwc" || fail "$hwc is not the SRPM's hwcomposer.waydroid.so"
 pin() { sed -n "s/^$1=//p" "$tmp/src/hwc.env"; }
