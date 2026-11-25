@@ -128,6 +128,7 @@ kept=(
   /usr/lib/bootc/install/00-microos.toml
   /usr/lib/bootc/kargs.d/10-microos.toml
   /usr/lib/udev/rules.d/60-microos-backlight.rules
+  /usr/lib/udev/rules.d/60-microos-y700-haptics.rules
   /usr/lib/udev/rules.d/60-microos-y700-pcie-wakeup.rules
   /usr/lib/udev/rules.d/60-microos-y700-touch.rules
   /usr/lib/systemd/user-preset/60-microos-android.preset
@@ -685,6 +686,10 @@ udevadm verify --no-style /usr/lib/udev/rules.d/60-microos-backlight.rules >/dev
 rules=/usr/lib/udev/rules.d/60-microos-y700-pcie-wakeup.rules
 [[ $(< "$rules") == 'ACTION=="add", SUBSYSTEM=="pci", ATTR{class}=="0x060400", KERNELS=="1c00000.pcie", ATTR{power/wakeup}="disabled"' ]] \
   || fail "60-microos-y700-pcie-wakeup.rules"
+udevadm verify --no-style "$rules" >/dev/null 2>&1 || fail "$rules does not verify"
+rules=/usr/lib/udev/rules.d/60-microos-y700-haptics.rules
+[[ $(< "$rules") == 'SUBSYSTEM=="input", KERNEL=="event*", DEVPATH!="/devices/virtual/*", ATTRS{name}=="aw86927-haptics", TAG+="uaccess"' ]] \
+  || fail "60-microos-y700-haptics.rules"
 udevadm verify --no-style "$rules" >/dev/null 2>&1 || fail "$rules does not verify"
 rules=/usr/lib/udev/rules.d/60-microos-y700-touch.rules
 [[ $(< "$rules") == 'SUBSYSTEM=="input", KERNEL=="event*", DEVPATH!="/devices/virtual/*", ATTRS{id/bustype}=="001c", ATTRS{name}=="Novatek NT36523 Touchscreen|Novatek NT36523 Pen", ENV{LIBINPUT_CALIBRATION_MATRIX}="0 -1 1 1 0 0"' ]] \
