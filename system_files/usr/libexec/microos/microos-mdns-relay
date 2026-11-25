@@ -1,0 +1,263 @@
+#!/usr/bin/python3
+import errno
+import fcntl
+import fnmatch
+import os
+import select
+import signal
+import socket
+import struct
+import sys
+import time
+
+ME = "microos-mdns-relay"
+GROUP = "224.0.0.251"
+PORT = 5353
+SIZE = 9000
+HEADER = 12
+NAME_MAX = 255
+SIOCGIFADDR = 0x8915
+SIOCGIFINDEX = 0x8933
+IP_MULTICAST_ALL = 49
+RTMGRP_LINK = 0x1
+RTMGRP_IPV4_IFADDR = 0x10
+RATE = 20.0
+BURST = 50.0
+DROP_LOG_S = 60.0
+GONE = (errno.ENODEV, errno.ENXIO)
+MREQN = struct.Struct("=4s4si")
+PKTINFO = struct.Struct("=i4s4s")
+CMSG = socket.CMSG_SPACE(PKTINFO.size)
+
+
+class Stop(Exception):
+    def __init__(self, message, rc=0):
+        super().__init__(message)
+        self.rc = rc
+
+
+class Lost(Exception):
+    pass
+
+
+def log(message):
+    print(f"{ME}: {message}", file=sys.stderr, flush=True)
+
+
+def interface(name):
+    request = struct.pack("256s", name.encode())
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            index = struct.unpack_from("=i", fcntl.ioctl(sock, SIOCGIFINDEX, request), 16)[0]
+        except OSError as err:
+            if err.errno in GONE:
+                return None, None
+            raise
+        try:
+            address = socket.inet_ntoa(fcntl.ioctl(sock, SIOCGIFADDR, request)[20:24])
+        except OSError as err:
+            if err.errno in GONE:
+                return None, None
+            if err.errno != errno.EADDRNOTAVAIL:
+                raise
+            address = None
+    return index, address
+
+
+def query(data):
+    if data[2] & 0xF8 or data[3] & 0x0F or any(data[8:10]) or not any(data[4:6]):
+        return None
+    out = bytearray(data)
+    pos = HEADER
+    tails = {}
+    for _ in range(int.from_bytes(data[4:6], "big")):
+        starts = []
+        while pos < len(out) and 0 < out[pos] < 0x40:
+            starts.append(pos)
+            pos += 1 + out[pos]
+        end = pos
+        if pos >= len(out) or 0 < out[pos] < 0xC0:
+            return None
+        if out[pos]:
+            tail = tails.get((out[pos] & 0x3F) << 8 | out[pos + 1]) if pos + 1 < len(out) else None
+            pos += 2
+        else:
+            tail = 1
+            pos += 1
+        if tail is None or end - (starts[0] if starts else end) + tail > NAME_MAX or pos + 4 > len(out):
+            return None
+        for start in starts:
+            tails[start] = end - start + tail
+        out[pos + 2] &= 0x7F
+        pos += 4
+    out[2] &= 0xFD
+    out[6:12] = bytes(6)
+    return bytes(out[:pos])
+
+
+def member(index):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_PKTINFO, 1)
+    sock.setsockopt(socket.IPPROTO_IP, IP_MULTICAST_ALL, 0)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 0)
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 255)
+    sock.bind((GROUP, PORT))
+    sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, MREQN.pack(socket.inet_aton(GROUP), bytes(4), index))
+    sock.setblocking(False)
+    return sock
+
+
+class Relay:
+    def __init__(self, pattern, guest):
+        self.pattern, self.guest = pattern, guest
+        self.lan = self.lan_index = self.lan_address = None
+        self.guest_index = self.guest_address = None
+        self.stopping = False
+        self.seen = set()
+        self.tokens, self.filled = BURST, time.monotonic()
+        self.dropped, self.report_at = 0, 0.0
+        self.wake, wake = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+        signal.set_wakeup_fd(wake)
+        signal.signal(signal.SIGTERM, self.stop)
+        signal.signal(signal.SIGINT, self.stop)
+        self.nl = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, socket.NETLINK_ROUTE)
+        self.nl.bind((0, RTMGRP_LINK | RTMGRP_IPV4_IFADDR))
+
+    def stop(self, _sig, _frame):
+        self.stopping = True
+
+    def lookup(self):
+        lans = sorted(name for _index, name in socket.if_nameindex() if fnmatch.fnmatchcase(name, self.pattern))
+        if len(lans) > 1:
+            raise Stop(f"{self.pattern} matches {' '.join(lans)}", 1)
+        self.guest_index, self.guest_address = interface(self.guest)
+        if self.guest_index is None:
+            raise Stop(f"{self.guest} is gone")
+        if not lans:
+            return f"waiting for {self.pattern}"
+        self.lan = lans[0]
+        self.lan_index, self.lan_address = interface(self.lan)
+        if self.lan_index is None:
+            return f"waiting for {self.pattern}"
+        if self.guest_address is None:
+            return f"waiting for an IPv4 address on {self.guest}"
+        return None
+
+    def events(self):
+        try:
+            self.nl.recv(65536)
+        except OSError as err:
+            if err.errno != errno.ENOBUFS:
+                raise
+
+    def wait(self):
+        ready, _, _ = select.select([self.nl, self.wake], [], [])
+        if self.nl in ready:
+            self.events()
+
+    def current(self, name, index, gone):
+        now, address = interface(name)
+        if now != index:
+            raise gone(f"{name} is gone")
+        return address
+
+    def once(self, what, err):
+        if (what, err.errno) not in self.seen:
+            self.seen.add((what, err.errno))
+            log(f"{what}: {err.strerror}")
+
+    def receive(self, sock, index, address, name):
+        try:
+            data, ancdata, flags, source = sock.recvmsg(SIZE, CMSG)
+        except BlockingIOError:
+            return None
+        except OSError as err:
+            self.once(f"receive on {name}", err)
+            return None
+        if flags & socket.MSG_TRUNC or len(data) < HEADER or source[0] == address:
+            return None
+        for level, kind, value in ancdata:
+            if level == socket.IPPROTO_IP and kind == socket.IP_PKTINFO and PKTINFO.unpack(value)[0] == index:
+                return data
+        return None
+
+    def send(self, sock, data, index, address, name, gone):
+        info = PKTINFO.pack(index, socket.inet_aton(address), bytes(4))
+        try:
+            sock.sendmsg([data], [(socket.IPPROTO_IP, socket.IP_PKTINFO, info)], 0, (GROUP, PORT))
+        except OSError as err:
+            if err.errno in GONE:
+                raise gone(f"{name} is gone") from err
+            self.once(f"send to {name}", err)
+
+    def allow(self):
+        now = time.monotonic()
+        self.tokens = min(BURST, self.tokens + (now - self.filled) * RATE)
+        self.filled = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        self.dropped += 1
+        return False
+
+    def report(self):
+        now = time.monotonic()
+        if self.dropped and now >= self.report_at:
+            log(f"dropped {self.dropped} guest queries over {RATE:g} per second")
+            self.dropped, self.report_at = 0, now + DROP_LOG_S
+
+    def run(self):
+        with member(self.lan_index) as lan_sock, member(self.guest_index) as guest_sock:
+            log(f"relaying between {self.lan} ({self.lan_index}) at {self.lan_address or 'no address'} "
+                f"and {self.guest} ({self.guest_index}) at {self.guest_address}")
+            while not self.stopping:
+                timeout = max(0.0, self.report_at - time.monotonic()) if self.dropped else None
+                ready, _, _ = select.select([self.nl, lan_sock, guest_sock, self.wake], [], [], timeout)
+                if self.nl in ready:
+                    self.events()
+                    self.guest_address = self.current(self.guest, self.guest_index, Stop)
+                    self.lan_address = self.current(self.lan, self.lan_index, Lost)
+                if lan_sock in ready:
+                    data = self.receive(lan_sock, self.lan_index, self.lan_address, self.lan)
+                    if data and self.guest_address:
+                        self.send(guest_sock, data, self.guest_index, self.guest_address, self.guest, Stop)
+                if guest_sock in ready:
+                    data = self.receive(guest_sock, self.guest_index, self.guest_address, self.guest)
+                    data = data and query(data)
+                    if data and self.lan_address and self.allow():
+                        self.send(lan_sock, data, self.lan_index, self.lan_address, self.lan, Lost)
+                self.report()
+
+
+def main():
+    if len(sys.argv) != 3:
+        log("usage: microos-mdns-relay <LAN interface name or pattern> <guest interface>")
+        return 1
+    try:
+        relay = Relay(*sys.argv[1:])
+        said = None
+        while not relay.stopping:
+            waiting = relay.lookup()
+            if waiting is None:
+                try:
+                    relay.run()
+                except Lost as lost:
+                    said = f"waiting for {relay.pattern}"
+                    log(f"{lost}, {said}")
+                continue
+            if waiting != said:
+                log(waiting)
+                said = waiting
+            relay.wait()
+    except Stop as stop:
+        log(str(stop))
+        return stop.rc
+    except OSError as err:
+        log(f"cannot relay: {err.strerror}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

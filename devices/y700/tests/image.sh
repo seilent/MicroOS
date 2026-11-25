@@ -70,7 +70,7 @@ want=$(printf '%s\n' microos-boot-ok.service microos-provision.service microos-u
   microos-hexagonrpcd-adsp.service microos-session-switch@.service \
   microos-session-up@.service microos-session-fallback@.service microos-session-switcher.service \
   microos-session-switcher.path microos-session-boot.service microos-session-watch.service microos-session-attempt.service \
-  microos-waydroid-forward.service microos-android-images.service \
+  microos-waydroid-forward.service microos-mdns-relay.service microos-android-images.service \
   microos-selinux-watch.service microos-android-adb.socket microos-android-adb.service microos-android-gapps@.service \
   microos-android-gsf.service microos-android-layer.service microos-android-reset.service "${tests[@]}")
 units=()
@@ -211,6 +211,7 @@ kept=(
   /usr/lib/systemd/system/microos-selinux-watch.service
   /usr/lib/systemd/system/microos-test-wdhang.service
   /usr/lib/systemd/system/microos-waydroid-forward.service
+  /usr/lib/systemd/system/microos-mdns-relay.service
   /usr/lib/systemd/system/microos-update.service
   /usr/lib/systemd/system/microos-usb-console.service
   /usr/lib/systemd/system/microos-vpad.service
@@ -296,6 +297,7 @@ kept=(
   /usr/libexec/microos/microos-android-guard
   /usr/libexec/microos/microos-android-images
   /usr/libexec/microos/microos-android-overlay
+  /usr/libexec/microos/microos-mdns-relay
   /usr/libexec/microos/prepare-root
   /usr/share/microos/avb/testkey_rsa4096.pem
   /usr/share/microos/keys/microos-backup.pub
@@ -454,6 +456,17 @@ command -v nft >/dev/null || fail "nft missing, the Waydroid bridge and its forw
 [[ $(systemctl is-enabled microos-waydroid-forward.service) == enabled ]] || fail "microos-waydroid-forward.service is not enabled"
 systemctl cat microos-waydroid-forward.service | grep -qx 'ExecStart=/usr/sbin/nft -f /usr/share/microos/waydroid-forward.nft' ||
   fail "microos-waydroid-forward.service does not load waydroid-forward.nft"
+[[ $(stat -c %a /usr/libexec/microos/microos-mdns-relay) == 755 ]] || fail "microos-mdns-relay is not 755"
+for l in BindsTo=sys-subsystem-net-devices-waydroid0.device WantedBy=sys-subsystem-net-devices-waydroid0.device \
+  'ExecStart=/usr/libexec/microos/microos-mdns-relay wlp1s0 waydroid0' DynamicUser=yes CapabilityBoundingSet= \
+  'RestrictAddressFamilies=AF_INET AF_NETLINK' SystemCallFilter=@system-service MemoryDenyWriteExecute=yes; do
+  systemctl cat microos-mdns-relay.service | grep -qxF "$l" || fail "microos-mdns-relay.service lacks $l"
+done
+[[ $(systemctl is-enabled microos-mdns-relay.service) == enabled \
+  && -L /etc/systemd/system/sys-subsystem-net-devices-waydroid0.device.wants/microos-mdns-relay.service ]] \
+  || fail "microos-mdns-relay.service is not wanted by sys-subsystem-net-devices-waydroid0.device"
+! grep -qE '^ *enable-reflector *= *yes' /etc/avahi/avahi-daemon.conf 2>/dev/null \
+  || fail "avahi reflects mDNS, the relay forwards it"
 [[ $(< /usr/share/microos-android/images.env) == $'SET=los20av-20260927-20261022\nSYSTEM_URL=https://sourceforge.net/projects/waydroid/files/images/system/lineage/waydroid_arm64_only/lineage-20.0-20260927-VANILLA-waydroid_arm64_only-system.zip/download\nSYSTEM_SIZE=733009660\nSYSTEM_SHA256=a7806741ea8ca5be917d0c66b031d97a60abb7a95031ca5b35c40620b6273ccd\nVENDOR_URL=https://sourceforge.net/projects/waydroid/files/images/vendor/waydroid_arm64_only/lineage-20.0-20261022-MAINLINE-waydroid_arm64_only-vendor.zip/download\nVENDOR_SIZE=77356908\nVENDOR_SHA256=b634f6376cd20accfa835a78381e16f076057f8ca9a538a17282f25af04b44cc' ]] \
   || fail "images.env is not the VANILLA system and MAINLINE vendor of the arm64_only set"
 [[ $(stat -c %a /usr/libexec/microos/microos-android-images) == 755 ]] || fail "microos-android-images is not 755"

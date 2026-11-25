@@ -322,6 +322,7 @@ jobs:
           $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-launcher.sh
           $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-seed.sh
           $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/waydroid-host.sh
+          $PODMAN run --rm --security-opt apparmor=unconfined -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/mdns-relay-test.sh
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-libs.sh
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx/tests:/tests:ro" -v "$RUNNER_TEMP/pkgs/lsfg-vk:/lsfg-vk:ro" "$IMAGE:$TAG" /tests/lsfg-loader.sh /lsfg-vk
 
@@ -338,6 +339,7 @@ jobs:
           for t in bootimg bootimg-update bootok stub-lib etc-carry groups guard selinux-label slot update usb-console bdaddr session steam-launcher steam-seed ii-seed vpad sleep-gate sleep-hooks adsp-sensors lp-extent hexagonrpcd-adsp-sleep waydroid-host; do
             $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" "/tests/$t.sh"
           done
+          $PODMAN run --rm --privileged -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/mdns-relay-test.sh
           $PODMAN run --rm -e MICROOS_TREE=/ -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" \
             sh -c 'dnf -yq --setopt=install_weak_deps=False install dbus-daemon && /tests/powerkey.sh && /tests/gameidle.sh'
           $PODMAN run --rm -v "$RUNNER_TEMP/ctx/tests:/tests:ro" "$IMAGE:$TAG" /tests/steam-libs.sh
