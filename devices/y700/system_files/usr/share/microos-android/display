@@ -1,7 +1,7 @@
 width=2560
 height=1600
 density=400
-hz=165
+hz=120
 touch_mode=4
 gamepads=joystick
 navbar=1
