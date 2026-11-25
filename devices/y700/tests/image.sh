@@ -46,7 +46,7 @@ done
 grep -qx 'install_weak_deps=False' /etc/dnf/libdnf5.conf.d/10-microos.conf || fail "10-microos.conf does not turn off weak deps"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 own=$(rpm -qa --qf '%{NAME}\t%{VENDOR}\n' | awk -F'\t' '$2 == "MicroOS" { print $1 }' | LC_ALL=C sort | paste -sd' ')
-[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hexagonrpc hyprcursor hyprgraphics hyprgrass hyprland hyprland-guiutils hyprlang hyprpicker hyprsunset hyprtoolkit hyprutils hyprwire microos-android microos-android-guest-apks microos-android-guestos microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
+[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hexagonrpc hyprcursor hyprgraphics hyprgrass hyprland hyprland-guiutils hyprlang hyprpicker hyprsunset hyprtoolkit hyprutils hyprwire microos-android microos-android-guest-apks microos-android-guestos microos-android-sensors microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
   fail "MicroOS rpms: $own"
 for p in qbootctl inputplumber steamos-manager mangohud lsfg-vk microos-eq libfreeaptx \
   pipewire-codec-aptx microos-steam-seed; do
@@ -488,6 +488,20 @@ grep -qxF '(allow systemd_socket_proxyd_t node_t (tcp_socket (node_bind)))' /usr
   || fail "microos.cil does not let systemd-socket-proxyd bind the adb listener"
 grep -qxF '(allow init_t systemd_socket_proxyd_t (process2 (nnp_transition)))' /usr/share/selinux/packages/microos.cil \
   || fail "microos.cil does not let systemd-socket-proxyd enter its domain under DynamicUser's NoNewPrivileges"
+[[ $(rpm -q --qf '%{VENDOR}' microos-android-sensors) == MicroOS ]] ||
+  fail "microos-android-sensors is not the MicroOS build"
+[[ $(readlink -f "$(command -v waydroid-sensord)") == /usr/bin/waydroid-sensord &&
+  $(rpm -qf --qf '%{NAME}' /usr/bin/waydroid-sensord) == microos-android-sensors ]] ||
+  fail "waydroid-sensord on PATH is not microos-android-sensors's /usr/bin/waydroid-sensord"
+[[ $(stat -c %a /usr/bin/waydroid-sensord) == 755 ]] || fail "/usr/bin/waydroid-sensord is not 755"
+wd=/usr/lib/waydroid/tools
+grep -qF 'args, ["waydroid-sensord", "/dev/" + args.HWBINDER_DRIVER], output="background")' "$wd/actions/container_manager.py" \
+  && grep -qF 'command = ["pidof", "waydroid-sensord"]' "$wd/actions/container_manager.py" \
+  || fail "the Waydroid container manager no longer starts waydroid-sensord on the hwbinder node and kills it by pidof"
+grep -qF 'if which("waydroid-sensord") is None:' "$wd/helpers/images.py" \
+  || fail "Waydroid no longer keys waydroid.stub_sensors_hal on waydroid-sensord"
+grep -qxF '(allow waydroid_t self (qipcrtr_socket (create read write getattr)))' /usr/share/selinux/packages/microos.cil \
+  || fail "microos.cil does not let waydroid-sensord read the sensor hub over QRTR"
 [[ ! -e /var/lib/waydroid ]] || fail "/var/lib/waydroid is in the image, tmpfiles makes it"
 [[ $(systemctl is-enabled waydroid-container.service) == disabled ]] ||
   fail "waydroid-container.service is $(systemctl is-enabled waydroid-container.service), D-Bus activation starts it"
@@ -942,7 +956,7 @@ for p in /var/lib/waydroid:waydroid_data_t /usr/lib/waydroid/waydroid.py:waydroi
   /var/lib/microos-android/images:waydroid_data_t /var/lib/microos-android/images/current:waydroid_data_t \
   /var/lib/microos-android/images/los20-20260927-20261022/system.img:waydroid_data_t \
   /var/lib/misc/dnsmasq.waydroid0.leases:container_var_lib_t \
-  /usr/lib/systemd/systemd-socket-proxyd:systemd_socket_proxyd_exec_t; do
+  /usr/lib/systemd/systemd-socket-proxyd:systemd_socket_proxyd_exec_t /usr/bin/waydroid-sensord:bin_t; do
   fc=$(matchpathcon -n "${p%%:*}")
   [[ $fc == "system_u:object_r:${p#*:}:s0" ]] || fail "file_contexts labels ${p%%:*} $fc"
 done

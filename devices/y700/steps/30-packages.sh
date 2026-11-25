@@ -29,6 +29,7 @@ own=(
   microos-fonts/microos-fonts
   android-guest-apks/microos-android-guest-apks
   android-guestos/microos-android-guestos
+  android-sensors/microos-android-sensors
   microos-android/microos-android
 )
 

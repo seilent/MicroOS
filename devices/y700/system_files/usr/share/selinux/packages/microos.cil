@@ -10,6 +10,7 @@
 (allow waydroid_t init_t (lnk_file (read)))
 (allow waydroid_t init_t (system (status)))
 (allow waydroid_t systemd_unit_file_t (dir (search)))
+(allow waydroid_t self (qipcrtr_socket (create read write getattr)))
 (allow systemd_socket_proxyd_t unreserved_port_t (tcp_socket (name_bind name_connect)))
 (allow systemd_socket_proxyd_t node_t (tcp_socket (node_bind)))
 (allow init_t systemd_socket_proxyd_t (process2 (nnp_transition)))
