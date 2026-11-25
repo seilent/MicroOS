@@ -88,7 +88,7 @@ im() {
     MICROOS_FETCH=$w/fetch MICROOS_SPACE_FLOOR=0 "$images" > "$w/out" 2> "$w/err"
 }
 props() { python3 -c 'import configparser, sys; c = configparser.ConfigParser(interpolation=None); c.optionxform = str; c.read(sys.argv[1]); print(" ".join(k + "=" + v for k, v in c["properties"].items()))' "$w/waydroid.cfg"; }
-base='persist.waydroid.multi_windows=true ro.sf.lcd_density=400 ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false'
+base='persist.waydroid.multi_windows=true ro.sf.lcd_density=400 ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui'
 
 reset
 im || fail "images exited $? on a new set: $(< "$w/err")"
@@ -103,9 +103,11 @@ im || fail "images exited $? on a new set: $(< "$w/err")"
 
 : > "$calls"
 printf 'width=2560\ndensity=320\nubwc=1\n' > "$w/display"
+sed -i 's/^persist.waydroid.fake_wifi = .*/persist.waydroid.fake_wifi = com.example.app/' "$w/waydroid.cfg"
+grep -qxF 'persist.waydroid.fake_wifi = com.example.app' "$w/waydroid.cfg" || fail "no fake Wi-Fi line to replace in $w/waydroid.cfg"
 im || fail "images exited $? on a ready set: $(< "$w/err")"
 [[ $(< "$calls") == 'waydroid upgrade -o' ]] || fail "ready set calls: $(< "$calls")"
-[[ $(props) == "${base/400/320}" ]] || fail "props with UBWC on and density 320: $(props)"
+[[ $(props) == "${base/400/320}" ]] || fail "props with UBWC on, density 320 and another fake Wi-Fi list: $(props)"
 
 reset
 printf 'ro.system.product.cpu.abilist32=armeabi-v7a,armeabi\n' > "$w/build.prop"

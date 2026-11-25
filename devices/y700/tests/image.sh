@@ -454,8 +454,8 @@ systemctl cat microos-waydroid-forward.service | grep -qx 'ExecStart=/usr/sbin/n
 for l in Type=exec ExecStart=/usr/libexec/microos/microos-android-images Nice=19 IOSchedulingClass=idle; do
   systemctl cat microos-android-images.service | grep -qxF "$l" || fail "microos-android-images.service lacks $l"
 done
-grep -qF 'props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false)' \
-  /usr/libexec/microos/microos-android-images || fail "microos-android-images does not set the adb, debuggable and suspend props"
+grep -qF 'props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui)' \
+  /usr/libexec/microos/microos-android-images || fail "microos-android-images does not set the adb, debuggable, suspend and fake Wi-Fi props"
 for c in flock unzip debugfs df; do
   command -v "$c" >/dev/null || fail "$c missing, microos-android-images needs it"
 done
