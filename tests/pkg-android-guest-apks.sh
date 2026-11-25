@@ -17,6 +17,7 @@ initrc=$overlay/system/etc/init/$hal.rc
 vintf=$overlay/system/etc/vintf/manifest/$hal.xml
 helper=$overlay/system/priv-app/MicroOsHelper/MicroOsHelper.apk
 rro=$overlay/system/product/overlay/MicroOsTelephony/MicroOsTelephonyOverlay.apk
+display=$overlay/system/product/overlay/MicroOsDisplay/MicroOsDisplayOverlay.apk
 volumes=$overlay/vendor/etc/audio_policy_volumes.xml
 hwc=$overlay/vendor/lib64/hw/hwcomposer.waydroid.so
 licdir=/usr/share/licenses/microos-android-guest-apks
@@ -42,7 +43,8 @@ if requires=$(rpm -qp --requires "$rpm" | grep -v '^rpmlib('); then fail "requir
 
 sources=$(rpm -qp --qf '[%{SOURCE}\n]' "$srpm" | sort)
 want=$(printf '%s\n' overlay.manifest service.c "$hal.rc" "$hal.xml" build.sh SOURCE.env \
-  microos-android-guest-apks-helper.tar.gz microos-android-guest-apks-telephony.tar.gz audio_policy_volumes.xml \
+  microos-android-guest-apks-helper.tar.gz microos-android-guest-apks-telephony.tar.gz \
+  microos-android-guest-apks-display.tar.gz audio_policy_volumes.xml \
   hwcomposer.waydroid.so 0001-hwc-private-roundtrip-queue.patch hwc.env "${licenses[@]}" | sort)
 if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$sources")"; fi
 
@@ -50,7 +52,7 @@ files=$(rpm -qlp "$rpm" | LC_ALL=C sort)
 expected=$(printf '%s\n' "$share" "$manifest" "$vendorpin" "$overlay" "$overlay/system" \
   "$overlay/system/bin" "${bin%/*}" "$bin" \
   "$overlay/system/etc" "${initrc%/*}" "$initrc" "$overlay/system/etc/vintf" "${vintf%/*}" "$vintf" \
-  "$overlay/system/priv-app" "${helper%/*}" "$helper" "$overlay/system/product" "${rro%/*/*}" "${rro%/*}" "$rro" \
+  "$overlay/system/priv-app" "${helper%/*}" "$helper" "$overlay/system/product" "${rro%/*/*}" "${rro%/*}" "$rro" "${display%/*}" "$display" \
   "$overlay/vendor" "${volumes%/*}" "$volumes" "$overlay/vendor/lib64" "${hwc%/*}" "$hwc" \
   "$licdir" "${licenses[@]/#/$licdir/}" | LC_ALL=C sort)
 if [[ $files != "$expected" ]]; then
@@ -74,11 +76,12 @@ pins=$(printf '%s\n' \
   "1a9f711f51b113e3e5326ef35c076e470a1c732ee667197df8effca34803c56c 0644 ${initrc#"$overlay"/}" \
   "b163a203c7ddc5c2886f6030c3c531341b68d7d0a6b6d2d2aaa46eb0cf12efd7 0644 ${vintf#"$overlay"/}" \
   "1bea3541ad971602a40620f72231d40d421ec26aea80092e8e3573ac51b1a223 0644 ${helper#"$overlay"/}" \
+  "59e26f9b74cc394eee5a989d55654759dbcff651f7dd7541a90801a0ebf0a9f5 0644 ${display#"$overlay"/}" \
   "dc2810a28f07f25cb8476321007542a6b1e8c32a58c5555dce842f9e7f26229d 0644 ${rro#"$overlay"/}" \
   "4ef8bc89e575d9be09ce25975e368493ee0b04256a67ab1b584bf1717a894166 0644 ${volumes#"$overlay"/}" \
   "540608d5169c528531a0ae8754beae5fa3f12de6edc2c187f3df13a8ff1b1dfc 0644 ${hwc#"$overlay"/}")
 [[ $(< "$root$manifest") == "$pins" ]] ||
-  fail "$manifest is not the pinned lights HAL, helper, telephony, volume and composer set: $(< "$root$manifest")"
+  fail "$manifest is not the pinned lights HAL, helper, telephony and display overlay, volume and composer set: $(< "$root$manifest")"
 while read -r sum mode path; do
   echo "$sum  $root$overlay/$path" | sha256sum -c --status - || fail "$overlay/$path does not match its manifest sha256"
   [[ $(stat -c %04a "$root$overlay/$path") == "$mode" ]] || fail "$overlay/$path is not $mode"
@@ -95,6 +98,7 @@ cmp -s "$tmp/src/audio_policy_volumes.xml" "$root$volumes" || fail "$volumes is 
 mkdir "$tmp/helper"
 tar -xzf "$tmp/src/microos-android-guest-apks-helper.tar.gz" -C "$tmp/helper"
 tar -xzf "$tmp/src/microos-android-guest-apks-telephony.tar.gz" -C "$tmp/helper"
+tar -xzf "$tmp/src/microos-android-guest-apks-display.tar.gz" -C "$tmp/helper"
 keys=$(find "$tmp/src" "$tmp/helper" -name '*.keystore' -o -name '*.jks' -o -name '*.p12' -o -name '*.pk8' \
   -o -name '*.pem' -o -name 'keystore.properties' -o -name '*.apk' -o -name '*.dex' -o -name '*.jar')
 [[ -z $keys ]] || fail "the SRPM holds a key or a built file: $keys"
@@ -171,26 +175,31 @@ check_helper() {
 }
 
 check_rro() {
-  local apk=$root$rro out cert
+  local path=$1 pkg=$2 line=$3 want=$4 apk=$root$1 out cert
   [[ $(unzip -Z1 "$apk" | sort | paste -sd' ') == 'AndroidManifest.xml resources.arsc' ]] ||
-    fail "$rro entries: $(unzip -Z1 "$apk" | paste -sd' ')"
-  out=$("$tools/aapt2" dump badging "$apk") || { fail "aapt2 cannot read $rro"; return; }
-  grep -q "^package: name='net.seilent.microos.overlay.telephony' versionCode='1' versionName='1.0' " <<<"$out" ||
-    fail "$rro package line: $(head -n 1 <<<"$out")"
-  grep -qx "overlay: targetPackage='android' priority='1' isStatic='true'" <<<"$out" || fail "$rro overlay line"
+    fail "$path entries: $(unzip -Z1 "$apk" | paste -sd' ')"
+  out=$("$tools/aapt2" dump badging "$apk") || { fail "aapt2 cannot read $path"; return; }
+  grep -q "^package: name='$pkg' versionCode='1' versionName='1.0' " <<<"$out" ||
+    fail "$path package line: $(head -n 1 <<<"$out")"
+  grep -qxF "overlay: targetPackage='android' $line" <<<"$out" || fail "$path overlay line: $(grep '^overlay:' <<<"$out")"
   if grep -qE '^(launchable-activity|uses-permission):' <<<"$out"; then
-    fail "$rro declares an activity or a permission"
+    fail "$path declares an activity or a permission"
   fi
-  out=$("$tools/aapt2" dump xmltree --file AndroidManifest.xml "$apk") || { fail "aapt2 cannot dump $rro"; return; }
-  grep -qF ':hasCode(0x0101000c)=false' <<<"$out" || fail "$rro does not set hasCode false"
+  out=$("$tools/aapt2" dump xmltree --file AndroidManifest.xml "$apk") || { fail "aapt2 cannot dump $path"; return; }
+  grep -qF ':hasCode(0x0101000c)=false' <<<"$out" || fail "$path does not set hasCode false"
   if grep -qE '^ *E: (activity|activity-alias|service|receiver|provider|uses-permission) ' <<<"$out"; then
-    fail "$rro declares a component or a permission"
+    fail "$path declares a component or a permission"
   fi
-  out=$("$tools/aapt2" dump resources "$apk" | awk '$1 == "resource" { name = $3; getline; print name "=" $2 }' \
-    | LC_ALL=C sort | paste -sd' ') || { fail "aapt2 cannot dump the resources of $rro"; return; }
-  [[ $out == 'bool/config_sms_capable=false bool/config_voice_capable=false' ]] || fail "$rro resources: $out"
+  out=$("$tools/aapt2" dump resources "$apk" | awk '
+    function flush() { if (name != "") print name "=" value; name = "" }
+    $1 == "resource" { flush(); name = $3; value = ""; next }
+    $1 == "type" || $1 == "Package" || $1 == "Binary" { flush(); next }
+    name != "" { line = $0; gsub(/^ +| +$/, "", line); sub(/^\(\) /, "", line); value = value (value == "" ? "" : " ") line }
+    END { flush() }' | LC_ALL=C sort | paste -sd'|') ||
+    { fail "aapt2 cannot dump the resources of $path"; return; }
+  [[ $out == "$want" ]] || fail "$path resources: $out"
   cert=$(openssl x509 -in /opt/android-testkey/testkey.x509.pem -outform DER | sha256sum | cut -d' ' -f1)
-  check_signed "$rro" "$cert"
+  check_signed "$path" "$cert"
 }
 
 check_volumes() {
@@ -226,7 +235,11 @@ PY
 }
 
 check_helper
-check_rro
+check_rro "$rro" net.seilent.microos.overlay.telephony "priority='1' isStatic='true'" \
+  'bool/config_sms_capable=false|bool/config_voice_capable=false'
+check_rro "$display" net.seilent.microos.overlay.display \
+  "priority='2' isStatic='true' requiredPropertyName='ro.vendor.microos.light_sensor' requiredPropertyValue='1'" \
+  'array/config_autoBrightnessLcdBacklightValues=(array) size=15 [11, 11, 26, 42, 50, 56, 64, 70, 76, 86, 95, 105, 111, 118, 130]|array/config_autoBrightnessLevels=(array) size=14 [5, 15, 40, 100, 180, 400, 550, 1000, 1500, 2000, 2500, 3000, 4000, 5000]|bool/config_automatic_brightness_available=true'
 check_volumes
 
 exit "$rc"
