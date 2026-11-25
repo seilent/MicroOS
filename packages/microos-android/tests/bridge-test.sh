@@ -1749,6 +1749,25 @@ sleep 0.3
 [[ "$(guest_calls)" == get ]] || fail "a guest and a host both out of airplane: $(guest_calls)"
 [[ "$(host_sets)" == "${sets}" ]] || fail "a guest and a host both out of airplane switched host radios"
 
+stop_bridge "a stop before Wi-Fi comes back outside Android"
+printf '["wifi"]\n' > "${airplane}"
+printf '1\n' > "${STATE}/guest-airplane"
+start_bridge
+wait_log "microosbridge added" || fail "the start after Wi-Fi came back outside Android: $(cat "${T}/log")"
+wait_log "org.freedesktop.NetworkManager is on the bus" || fail "the start did not load NetworkManager"
+wait_log "org.bluez is on the bus" || fail "the start did not load BlueZ"
+sleep 0.3
+sync_mark
+hello cb25
+wait_log "wifi on at hello, out of the airplane list" || fail "Wi-Fi back outside Android: $(cat "${T}/log")"
+wait_for "get disable" guest_calls || fail "Wi-Fi back outside Android kept the guest in airplane: $(guest_calls)"
+[[ "$(cat "${STATE}/guest-airplane")" == 0 ]] || fail "Wi-Fi back outside Android: the guest airplane stayed on"
+[[ ! -e "${airplane}" ]] || fail "Wi-Fi back outside Android kept radios.json: $(cat "${airplane}")"
+expect "the report of the sync after Wi-Fi came back" "0 [0, 0]" "${uid}" 4 '[["i", 0]]'
+wait_log "airplane 0 from the sync" || fail "the report of the sync after Wi-Fi came back: $(tail -n 5 "${T}/log")"
+sleep 0.3
+[[ "$(host_sets)" == "${sets}" ]] || fail "Wi-Fi back outside Android switched host radios: $(host_sets), was ${sets}"
+
 printf '1\n' > "${STATE}/guest-airplane"
 : > "${STATE}/guest-fails"
 sync_mark
@@ -1865,9 +1884,10 @@ tail -n +"$((cb_seen + 1))" "${STATE}/callbacks" | grep -q '^cb4 ' \
 : > "${STATE}/die/cb4"
 wait_line "die cb4" "${STATE}/binder" || fail "the fake did not kill cb4"
 expect "power after the old callback died" "0 [0, 5]" "${uid}" 11 '[["s", "0battery"]]'
+deaths=$(count '^microos-android-bridge: the helper callback died$' "${T}/log")
 : > "${STATE}/die/cb5"
 wait_line "die cb5" "${STATE}/binder" || fail "the fake did not kill cb5"
-wait_count 2 '^microos-android-bridge: the helper callback died$' "${T}/log" \
+wait_count $((deaths + 1)) '^microos-android-bridge: the helper callback died$' "${T}/log" \
     || fail "the current callback death was not logged: $(cat "${T}/log")"
 expect "power after the current callback died" "0 [0, 1]" "${uid}" 11 '[["s", "0battery"]]'
 expect "hello with a dead callback" "${bad}" "${uid}" 1 '[["i", 1], ["o", "cb5"]]'

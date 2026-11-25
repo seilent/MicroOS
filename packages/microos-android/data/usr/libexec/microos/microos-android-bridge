@@ -1361,6 +1361,12 @@ class Bridge:
             self.sent = {RADIOS: self.radios()}
             self.send(RADIOS, self.sent[RADIOS])
             self.changed()
+            if self.airplane is not None:
+                states = dict(zip(RADIO_NAMES, self.sent[RADIOS]))
+                back = [radio for radio in self.airplane if states[radio] == 1]
+                if back:
+                    log(f"{', '.join(back)} on at hello, out of the airplane list")
+                    self.save_airplane([radio for radio in self.airplane if radio not in back])
             self.sync_airplane()
         return False
 
