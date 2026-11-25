@@ -34,6 +34,7 @@ PACKAGES = "packages.list"
 LOGIND = ("org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager")
 POWER = {"0userrequested": "PowerOff", "1userrequested": "Reboot"}
 SINK = "@DEFAULT_AUDIO_SINK@"
+MIXER = ("PipeWire:Interface:Node", "PipeWire:Interface:Device", "PipeWire:Interface:Metadata")
 VOLUME = re.compile(r"Volume: ([0-9]+)\.([0-9]{2})( \[MUTED\])?")
 UID = re.compile(r"1[0-9]{4}")
 ADDRESS = re.compile(r"[0-9A-F]{2}(:[0-9A-F]{2}){5}")
@@ -358,6 +359,8 @@ class Volume:
     def __init__(self, bridge):
         self.bridge = bridge
         self.dump = None
+        self.dumping = b""
+        self.kinds = {}
         self.settle = 0
         self.running = None
         self.timer = 0
@@ -398,9 +401,29 @@ class Volume:
             return
         if not data.get_size():
             return
-        if not self.settle:
+        *docs, self.dumping = (self.dumping + data.get_data()).split(b"\n]\n")
+        moved = False
+        for doc in docs:
+            moved = self.moved(doc + b"\n]") or moved
+        if moved and not self.settle:
             self.settle = GLib.timeout_add(SETTLE_MS, self.settled)
         stream.read_bytes_async(65536, GLib.PRIORITY_DEFAULT, None, self.dumped)
+
+    def moved(self, doc):
+        try:
+            items = json.loads(doc)
+        except ValueError as error:
+            log(f"{PW_DUMP} printed {len(doc)} bytes that are not JSON: {error}")
+            return False
+        moved = False
+        for item in items:
+            kind = item.get("type")
+            if kind is None:
+                kind = self.kinds.pop(item.get("id"), None)
+            else:
+                self.kinds[item.get("id")] = kind
+            moved = moved or kind in MIXER
+        return moved
 
     def dump_exited(self, process, result):
         try:
