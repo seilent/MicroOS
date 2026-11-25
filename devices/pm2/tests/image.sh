@@ -791,15 +791,16 @@ done
   || fail "images.env is not the VANILLA system and MAINLINE vendor of the arm64_only set"
 [[ $(stat -c %a /usr/libexec/microos/microos-android-images) == 755 ]] || fail "microos-android-images is not 755"
 [[ $(systemctl is-enabled microos-android-images.service) == enabled ]] || fail "microos-android-images.service is not enabled"
-for l in Type=exec ExecStart=/usr/libexec/microos/microos-android-images Nice=19 IOSchedulingClass=idle; do
+for l in Type=exec ExecStart=/usr/libexec/microos/microos-android-images Nice=19 IOSchedulingClass=idle RuntimeMaxSec=3h; do
   systemctl cat microos-android-images.service | grep -qxF "$l" || fail "microos-android-images.service lacks $l"
 done
 grep -qF 'props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui)' \
   /usr/libexec/microos/microos-android-images || fail "microos-android-images does not set the adb, debuggable, suspend and fake Wi-Fi props"
-for c in flock unzip debugfs df; do
+for c in flock unzip debugfs df lxc-info sha256sum; do
   command -v "$c" >/dev/null || fail "$c missing, microos-android-images needs it"
 done
 [[ -x /usr/libexec/microos/microos-fetch ]] || fail "microos-fetch missing, microos-android-images needs it"
+[[ $(/usr/libexec/microos/microos-android-images --stamp) =~ ^[0-9a-f]{64}$ ]] || fail "microos-android-images --stamp does not print a sha256"
 systemctl --global cat gamescope-session-plus@android.service | grep -qxF Wants=microos-android-pad.service \
   || fail "gamescope-session-plus@android.service does not want microos-android-pad.service"
 

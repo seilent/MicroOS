@@ -9,11 +9,29 @@ rc=0
 fail() { echo "FAIL: $*" >&2; rc=1; }
 
 guard=$tree/usr/libexec/microos/microos-android-guard
+images=$tree/usr/libexec/microos/microos-android-images
+w=$tmp/img
+pins=$w/images.env
+mkdir -p "$w"
+cp "$tree/usr/share/microos-android/images.env" "$pins"
+. "$pins"
+printf 'width=2560\ndensity=400\nubwc=0\n' > "$w/display"
+printf 'lxc.cgroup2.devices.deny = b *:* rwm\n' > "$w/config_base"
+st() { MICROOS_ANDROID_PINS=$pins MICROOS_DISPLAY_FILE=$w/display MICROOS_WAYDROID_BASE=$w/config_base "$images" --stamp; }
 cfg=$tmp/config
 devs=$tmp/devices
 base=$'lxc.rootfs.path = /var/lib/waydroid/rootfs\nlxc.cgroup2.devices.allow = a\nlxc.cgroup2.devices.deny = b *:* rwm\nlxc.cgroup2.devices.deny = c 1:1 rwm\nlxc.cgroup2.devices.deny = c 1:4 rwm\nlxc.include = /var/lib/waydroid/lxc/waydroid/config_nodes'
 printf 'Character devices:\n  1 mem\n 10 misc\n247 bsg\n\nBlock devices:\n  8 sd\n250 bsg\n' > "$devs"
-gd() { MICROOS_LXC_CONFIG=$cfg MICROOS_PROC_DEVICES=$devs "$guard"; }
+gd() {
+  MICROOS_LXC_CONFIG=$cfg MICROOS_PROC_DEVICES=$devs MICROOS_ANDROID_PINS=$pins MICROOS_DISPLAY_FILE=$w/display \
+    MICROOS_WAYDROID_BASE=$w/config_base MICROOS_ANDROID_IMAGES=$w/images MICROOS_ANDROID_STATE=$w/state \
+    MICROOS_ANDROID_INPUTS=$w/inputs MICROOS_ANDROID_IMAGES_BIN=$images "$guard"
+}
+mkdir -p "$w/images/$SET"
+ln -s "$SET" "$w/images/current"
+ready=$'state=ready\nset='"$SET"
+printf '%s\n' "$ready" > "$w/state"
+st > "$w/inputs"
 
 printf '%s\n' "$base" > "$cfg"
 out=$(gd) || fail "guard exited $? on a guarded config"
@@ -25,6 +43,44 @@ gd > /dev/null || fail "guard exited $? on its second run"
 printf 'Character devices:\n  1 mem\n\nBlock devices:\n  8 sd\n' > "$devs"
 out=$(gd) || fail "guard exited $? with no bsg major"
 [[ $out == 'microos-android-guard: bsg absent' && $(< "$cfg") == "$base" ]] || fail "guard with no bsg: $out: $(< "$cfg")"
+old=$(st)
+printf 'width=2560\ndensity=320\nubwc=0\n' > "$w/display"
+rc2=0
+gd > /dev/null 2> "$tmp/err" || rc2=$?
+[[ $rc2 == 1 && $(< "$cfg") == "$base" ]] &&
+  grep -qF "$w/inputs reads '$old', the booted OS needs '$(st)', microos-android-images.service applies it" "$tmp/err" ||
+  fail "guard with a stale inputs file: rc $rc2: $(< "$tmp/err")"
+printf 'width=2560\ndensity=400\nubwc=0\n' > "$w/display"
+rm "$w/inputs"
+rc2=0
+gd > /dev/null 2> "$tmp/err" || rc2=$?
+[[ $rc2 == 1 && $(< "$cfg") == "$base" ]] && grep -qF "$w/inputs reads '', the booted OS needs '$(st)'" "$tmp/err" ||
+  fail "guard with no inputs file: rc $rc2: $(< "$tmp/err")"
+st > "$w/inputs"
+printf 'state=fetching\nset=%s\n' "$SET" > "$w/state"
+rc2=0
+gd > /dev/null 2> "$tmp/err" || rc2=$?
+[[ $rc2 == 1 && $(< "$cfg") == "$base" ]] &&
+  grep -qF "$w/state reads 'state=fetching set=$SET', the booted OS needs 'state=ready set=$SET', microos-android-images.service applies it" "$tmp/err" ||
+  fail "guard with the images fetching: rc $rc2: $(< "$tmp/err")"
+printf 'state=ready\nset=los20a-20260927-20261022\n' > "$w/state"
+rc2=0
+gd > /dev/null 2> "$tmp/err" || rc2=$?
+[[ $rc2 == 1 ]] && grep -qF "$w/state reads 'state=ready set=los20a-20260927-20261022', the booted OS needs 'state=ready set=$SET'" "$tmp/err" ||
+  fail "guard with a ready state of another set: rc $rc2: $(< "$tmp/err")"
+rm "$w/state"
+rc2=0
+gd > /dev/null 2> "$tmp/err" || rc2=$?
+[[ $rc2 == 1 ]] && grep -qF "$w/state reads '', the booted OS needs" "$tmp/err" || fail "guard with no images state: rc $rc2: $(< "$tmp/err")"
+printf '%s\n' "$ready" > "$w/state"
+ln -sfn los20a-20260927-20261022 "$w/images/current"
+rc2=0
+gd > /dev/null 2> "$tmp/err" || rc2=$?
+[[ $rc2 == 1 && $(< "$cfg") == "$base" ]] &&
+  grep -qF "$w/images/current is 'los20a-20260927-20261022', the booted OS needs $SET, microos-android-images.service applies it" "$tmp/err" ||
+  fail "guard with current on another set: rc $rc2: $(< "$tmp/err")"
+ln -sfn "$SET" "$w/images/current"
+gd > /dev/null || fail "guard exited $? once the state, the inputs and current match again"
 grep -v 'devices.deny = b' <<< "$base" > "$cfg"
 rc2=0
 gd > /dev/null 2> "$tmp/err" || rc2=$?
@@ -34,15 +90,23 @@ rc2=0
 gd > /dev/null 2> "$tmp/err" || rc2=$?
 [[ $rc2 == 1 ]] && grep -q 'waydroid init comes first' "$tmp/err" || fail "guard with no config: rc $rc2"
 
-images=$tree/usr/libexec/microos/microos-android-images
-w=$tmp/img
 bin=$w/bin
 calls=$w/calls
 mkdir -p "$bin"
 cat > "$bin/systemctl" <<EOF
 #!/bin/sh
+if [ "\$*" = "stop waydroid-container.service" ]; then
+  echo "systemctl \$*" >> "$calls"
+  echo inactive > "$w/unit"
+  exit 0
+fi
 [ "\$*" = "show -P ActiveState waydroid-container.service" ] || exit 9
 cat "$w/unit"
+EOF
+cat > "$bin/lxc-info" <<EOF
+#!/bin/sh
+[ "\$*" = "-P $w/lxcp -n waydroid -sH" ] || exit 9
+cat "$w/container"
 EOF
 cat > "$bin/waydroid" <<EOF
 #!/bin/sh
@@ -60,10 +124,10 @@ EOF
 cat > "$w/fetch" <<EOF
 #!/bin/sh
 echo "fetch \$1 \$2 \$3 \$4" >> "$calls"
+[ ! -e "$w/term" ] || kill -TERM \$PPID
 cp "$w/src/\${4##*/}" "\$4"
 EOF
 chmod 755 "$bin"/* "$w/fetch"
-. "$tree/usr/share/microos-android/images.env"
 sysz=${SYSTEM_URL%/download}; sysz=${sysz##*/}
 venz=${VENDOR_URL%/download}; venz=${venz##*/}
 mkdir -p "$w/src"
@@ -75,20 +139,43 @@ for path, name in ((sys.argv[1], "system.img"), (sys.argv[2], "vendor.img")):
 PY2
 reset() {
   [[ ! -d $w/images ]] || chmod -R u+w "$w/images"
-  rm -rf "$w/images" "$w/cache" "$w/state" "$w/waydroid.cfg" "$calls"
+  rm -rf "$w/images" "$w/cache" "$w/state" "$w/inputs" "$w/waydroid.cfg" "$w/lxcp" "$calls"
   mkdir -p "$w/images/los20a-20260927-20261022" "$w/cache"
   : > "$w/lock"
   echo inactive > "$w/unit"
+  echo STOPPED > "$w/container"
   printf 'ro.product.cpu.abilist=arm64-v8a\nro.system.product.cpu.abilist32=\n' > "$w/build.prop"
   printf 'width=2560\ndensity=400\nubwc=0\n' > "$w/display"
 }
 im() {
-  PATH=$bin:$PATH MICROOS_ANDROID_PINS=$tree/usr/share/microos-android/images.env MICROOS_DISPLAY_FILE=$w/display MICROOS_ANDROID_IMAGES=$w/images MICROOS_ANDROID_CACHE=$w/cache \
-    MICROOS_ANDROID_STATE=$w/state MICROOS_ANDROID_LOCK=$w/lock MICROOS_WAYDROID_CFG=$w/waydroid.cfg \
-    MICROOS_FETCH=$w/fetch MICROOS_SPACE_FLOOR=0 "$images" > "$w/out" 2> "$w/err"
+  PATH=$bin:$PATH MICROOS_ANDROID_PINS=$pins MICROOS_DISPLAY_FILE=$w/display MICROOS_ANDROID_IMAGES=$w/images MICROOS_ANDROID_CACHE=$w/cache \
+    MICROOS_ANDROID_STATE=$w/state MICROOS_ANDROID_INPUTS=$w/inputs MICROOS_ANDROID_LOCK=$w/lock MICROOS_WAYDROID_CFG=$w/waydroid.cfg \
+    MICROOS_WAYDROID_BASE=$w/config_base MICROOS_WAYDROID_LXC=$w/lxcp \
+    MICROOS_FETCH=$w/fetch MICROOS_SPACE_FLOOR=0 "$images" "$@" > "$w/out" 2> "$w/err"
 }
 props() { python3 -c 'import configparser, sys; c = configparser.ConfigParser(interpolation=None); c.optionxform = str; c.read(sys.argv[1]); print(" ".join(k + "=" + v for k, v in c["properties"].items()))' "$w/waydroid.cfg"; }
 base='persist.waydroid.multi_windows=true ro.sf.lcd_density=400 ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui'
+
+reset
+rm "$w/lock"
+s1=$(st)
+im --stamp || fail "images --stamp exited $? with no lock: $(< "$w/err")"
+[[ $(< "$w/out") == "$s1" && $s1 =~ ^[0-9a-f]{64}$ && $(st) == "$s1" ]] || fail "--stamp printed $(< "$w/out"), then $(st), not one sha256"
+[[ ! -e $w/state && ! -e $w/inputs && ! -e $calls && ! -e $w/lock ]] || fail "--stamp wrote the state or the inputs, ran a tool or made the lock"
+printf 'width=2560\ndensity=320\nubwc=0\n' > "$w/display"
+[[ $(st) != "$s1" ]] || fail "--stamp did not change with the display file"
+printf 'width=2560\ndensity=400\nubwc=0\n' > "$w/display"
+[[ $(st) == "$s1" ]] || fail "--stamp did not come back with the display file"
+printf 'SET=other\n' >> "$pins"
+[[ $(st) != "$s1" ]] || fail "--stamp did not change with the pins file"
+cp "$tree/usr/share/microos-android/images.env" "$pins"
+printf 'lxc.cgroup2.devices.allow = a\n' >> "$w/config_base"
+[[ $(st) != "$s1" ]] || fail "--stamp did not change with Waydroid's config_base"
+printf 'lxc.cgroup2.devices.deny = b *:* rwm\n' > "$w/config_base"
+cp "$images" "$w/apply"
+printf '\n' >> "$w/apply"
+[[ $(MICROOS_ANDROID_PINS=$pins MICROOS_DISPLAY_FILE=$w/display MICROOS_WAYDROID_BASE=$w/config_base "$w/apply" --stamp) != "$s1" ]] ||
+  fail "--stamp did not change with the script"
 
 reset
 im || fail "images exited $? on a new set: $(< "$w/err")"
@@ -98,8 +185,17 @@ im || fail "images exited $? on a new set: $(< "$w/err")"
 [[ $(cat "$w/images/$SET/system.img" "$w/images/$SET/vendor.img") == system.imgvendor.img ]] || fail "new set images not unpacked"
 [[ -z $(find "$w/images/$SET" -perm /222) ]] || fail "the set is writable"
 [[ -z $(ls -A "$w/cache") ]] || fail "zips left in the cache: $(ls "$w/cache")"
-[[ $(< "$w/state") == $'state=ready\nset='"$SET" ]] || fail "state after a new set: $(< "$w/state")"
+[[ $(< "$w/state") == $'state=ready\nset='"$SET" && $(< "$w/inputs") == "$s1" && ! -e $w/inputs.new ]] ||
+  fail "state and inputs after a new set: $(< "$w/state"), $(< "$w/inputs")"
 [[ $(props) == "$base debug.mesa.fd.mesa.debug=noubwc debug.mesa.tu.debug=noubwc" ]] || fail "props after a new set: $(props)"
+printf 'lxc.cgroup2.devices.deny = b *:* rwm\n' > "$cfg"
+gd > /dev/null 2> "$tmp/err" || fail "guard exited $? on the state a new set wrote: $(< "$tmp/err")"
+
+rm "$w/inputs"
+: > "$calls"
+im || fail "images exited $? on a ready state with no inputs file: $(< "$w/err")"
+[[ $(< "$calls") == 'waydroid upgrade -o' && $(< "$w/state") == $'state=ready\nset='"$SET" && $(< "$w/inputs") == "$s1" ]] ||
+  fail "a ready state with no inputs file: calls $(< "$calls"), state $(< "$w/state")"
 
 : > "$calls"
 printf 'width=2560\ndensity=320\nubwc=1\n' > "$w/display"
@@ -108,6 +204,8 @@ grep -qxF 'persist.waydroid.fake_wifi = com.example.app' "$w/waydroid.cfg" || fa
 im || fail "images exited $? on a ready set: $(< "$w/err")"
 [[ $(< "$calls") == 'waydroid upgrade -o' ]] || fail "ready set calls: $(< "$calls")"
 [[ $(props) == "${base/400/320}" ]] || fail "props with UBWC on, density 320 and another fake Wi-Fi list: $(props)"
+[[ $(st) != "$s1" && $(< "$w/state") == $'state=ready\nset='"$SET" && $(< "$w/inputs") == "$(st)" ]] ||
+  fail "state and inputs after a props only run: $(< "$w/state"), $(< "$w/inputs")"
 printf 'width=2560\ndensity=400\nubwc=0\nlight_sensor=1\n' > "$w/display"
 im || fail "images exited $? with a light sensor: $(< "$w/err")"
 [[ $(props) == "$base debug.mesa.fd.mesa.debug=noubwc debug.mesa.tu.debug=noubwc ro.vendor.microos.light_sensor=1" ]] ||
@@ -117,27 +215,80 @@ im || fail "images exited $? after the light sensor went: $(< "$w/err")"
 [[ $(props) == "$base debug.mesa.fd.mesa.debug=noubwc debug.mesa.tu.debug=noubwc" ]] ||
   fail "props after the light sensor went: $(props)"
 
-reset
-printf 'ro.system.product.cpu.abilist32=armeabi-v7a,armeabi\n' > "$w/build.prop"
-rc2=0
-im || rc2=$?
-[[ $rc2 == 1 ]] && grep -q 'it needs AArch32' "$w/err" || fail "a 64_32 set: rc $rc2: $(< "$w/err")"
-[[ ! -e $w/images/current && $(< "$w/state") == $'state=failed\nset='"$SET" ]] || fail "a 64_32 set flipped current or left state $(< "$w/state")"
-! grep -q 'waydroid init' "$calls" || fail "a 64_32 set ran waydroid init"
-
-reset
-echo active > "$w/unit"
-rc2=0
-im || rc2=$?
-[[ $rc2 == 1 && ! -e $w/state && ! -e $calls ]] && grep -q 'waydroid-container.service is active' "$w/err" || fail "a running container: rc $rc2: $(< "$w/err")"
-
-reset
+printf 'width=2560\ndensity=320\nubwc=0\n' > "$w/display"
+before=$(< "$w/state")
+had=$(< "$w/inputs")
+: > "$calls"
 exec 8< "$w/lock"
 flock -s 8
 rc2=0
 im || rc2=$?
 exec 8<&-
-[[ $rc2 == 1 && ! -e $w/state && ! -e $calls ]] && grep -q 'the Android session holds' "$w/err" || fail "a held lock: rc $rc2: $(< "$w/err")"
+[[ $rc2 == 1 && $(< "$w/state") == "$before" && $(< "$w/inputs") == "$had" && ! -s $calls ]] &&
+  grep -qF "the Android session holds $w/lock" "$w/err" || fail "a held lock on a ready set: rc $rc2: $(< "$w/err")"
+
+reset
+printf 'old\n' > "$w/inputs"
+printf 'ro.system.product.cpu.abilist32=armeabi-v7a,armeabi\n' > "$w/build.prop"
+rc2=0
+im || rc2=$?
+[[ $rc2 == 1 ]] && grep -q 'it needs AArch32' "$w/err" || fail "a 64_32 set: rc $rc2: $(< "$w/err")"
+[[ ! -e $w/images/current && $(< "$w/state") == $'state=failed\nset='"$SET" && $(< "$w/inputs") == old ]] ||
+  fail "a 64_32 set flipped current or left state $(< "$w/state"), inputs $(< "$w/inputs")"
+! grep -q '^waydroid init' "$calls" || fail "a 64_32 set ran waydroid init"
+
+reset
+printf 'old\n' > "$w/inputs"
+mv "$w/src/$sysz" "$w/src/$sysz.off"
+rc2=0
+im || rc2=$?
+mv "$w/src/$sysz.off" "$w/src/$sysz"
+[[ $rc2 == 1 && ! -e $w/images/current && $(< "$w/state") == $'state=failed\nset='"$SET" && $(< "$w/inputs") == old ]] ||
+  fail "a failed fetch: rc $rc2, state $(< "$w/state"), inputs $(< "$w/inputs")"
+! grep -q '^waydroid\|^debugfs' "$calls" || fail "a failed fetch ran: $(< "$calls")"
+
+reset
+mkdir -p "$w/lxcp/waydroid"
+echo RUNNING > "$w/container"
+rc2=0
+im || rc2=$?
+[[ $rc2 == 1 && ! -e $w/images/current && $(< "$w/state") == $'state=failed\nset='"$SET" && ! -e $w/inputs ]] &&
+  grep -qF 'the Waydroid container is RUNNING, stop Android first' "$w/err" || fail "a running container: rc $rc2: $(< "$w/err")"
+! grep -q '^waydroid\|^systemctl' "$calls" || fail "a running container ran: $(< "$calls")"
+
+reset
+mkdir -p "$w/lxcp/waydroid"
+echo active > "$w/unit"
+im || fail "images exited $? with the container stopped and its manager active: $(< "$w/err")"
+[[ $(grep -v '^fetch \|^debugfs ' "$calls") == $'systemctl stop waydroid-container.service\nwaydroid init -f\nwaydroid upgrade -o' ]] ||
+  fail "a stopped container with its manager active: $(< "$calls")"
+
+reset
+ln -s los20a-20260927-20261022 "$w/images/current"
+printf 'old\n' > "$w/inputs"
+exec 8< "$w/lock"
+flock -s 8
+rc2=0
+im || rc2=$?
+exec 8<&-
+[[ $rc2 == 1 && $(< "$w/state") == $'state=failed\nset='"$SET" && $(< "$w/inputs") == old ]] &&
+  grep -qF "the Android session holds $w/lock, $SET is fetched and applies on the next run" "$w/err" ||
+  fail "a held lock after the fetch: rc $rc2: $(< "$w/err")"
+[[ $(readlink "$w/images/current") == los20a-20260927-20261022 ]] && ! grep -q '^waydroid' "$calls" ||
+  fail "a held lock after the fetch flipped current or ran waydroid: $(< "$calls")"
+chmod -R u+w "$w/images"
+im || fail "images exited $? once the lock was free: $(< "$w/err")"
+[[ $(readlink "$w/images/current") == "$SET" && $(< "$w/state") == $'state=ready\nset='"$SET" && $(< "$w/inputs") == "$s1" ]] ||
+  fail "the run after a held lock: current $(readlink "$w/images/current"), state $(< "$w/state"), inputs $(< "$w/inputs")"
+
+reset
+printf 'old\n' > "$w/inputs"
+: > "$w/term"
+rc2=0
+{ im || rc2=$?; } 2> /dev/null
+rm "$w/term"
+[[ $rc2 == 143 && $(< "$w/state") == $'state=failed\nset='"$SET" && $(< "$w/inputs") == old ]] ||
+  fail "a run stopped during the fetch: rc $rc2, state $(< "$w/state"), inputs $(< "$w/inputs")"
 
 reset
 printf 'density=400\n' > "$w/display"

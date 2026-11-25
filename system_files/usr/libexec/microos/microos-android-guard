@@ -3,8 +3,22 @@ set -euo pipefail
 
 cfg=${MICROOS_LXC_CONFIG:-/var/lib/waydroid/lxc/waydroid/config}
 devices=${MICROOS_PROC_DEVICES:-/proc/devices}
+pins=${MICROOS_ANDROID_PINS:-/usr/share/microos-android/images.env}
+images=${MICROOS_ANDROID_IMAGES:-/var/lib/microos-android/images}
+state=${MICROOS_ANDROID_STATE:-/var/lib/microos-android/images.state}
+inputs=${MICROOS_ANDROID_INPUTS:-/var/lib/microos-android/images.inputs}
+apply=${MICROOS_ANDROID_IMAGES_BIN:-/usr/libexec/microos/microos-android-images}
 rule='lxc.cgroup2.devices.deny = c [0-9]+:\* rwm'
 
+. "$pins"
+want=$'state=ready\nset='"$SET"
+got=$(cat "$state" 2> /dev/null) || got=
+[[ $got == "$want" ]] || { echo "microos-android-guard: $state reads '${got//$'\n'/ }', the booted OS needs '${want//$'\n'/ }', microos-android-images.service applies it" >&2; exit 1; }
+stamp=$("$apply" --stamp)
+had=$(cat "$inputs" 2> /dev/null) || had=
+[[ $had == "$stamp" ]] || { echo "microos-android-guard: $inputs reads '$had', the booted OS needs '$stamp', microos-android-images.service applies it" >&2; exit 1; }
+cur=$(readlink "$images/current") || cur=
+[[ $cur == "$SET" ]] || { echo "microos-android-guard: $images/current is '$cur', the booted OS needs $SET, microos-android-images.service applies it" >&2; exit 1; }
 [[ -f $cfg ]] || { echo "microos-android-guard: no $cfg, waydroid init comes first" >&2; exit 1; }
 grep -qxF 'lxc.cgroup2.devices.deny = b *:* rwm' "$cfg" || { echo "microos-android-guard: $cfg has no block guard" >&2; exit 1; }
 bsg=$(awk '/^Character devices:/ { c = 1; next } /^$/ { c = 0 } c && $2 == "bsg" { print $1 }' "$devices")

@@ -8,6 +8,7 @@ Type=exec
 ExecStart=/usr/libexec/microos/microos-android-images
 Nice=19
 IOSchedulingClass=idle
+RuntimeMaxSec=3h
 
 [Install]
 WantedBy=multi-user.target

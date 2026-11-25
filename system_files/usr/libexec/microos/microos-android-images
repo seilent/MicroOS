@@ -3,22 +3,24 @@ set -euo pipefail
 
 pins=${MICROOS_ANDROID_PINS:-/usr/share/microos-android/images.env}
 display=${MICROOS_DISPLAY_FILE:-/usr/share/microos-android/display}
+base=${MICROOS_WAYDROID_BASE:-/usr/lib/waydroid/data/configs/config_base}
 images=${MICROOS_ANDROID_IMAGES:-/var/lib/microos-android/images}
 cache=${MICROOS_ANDROID_CACHE:-/var/cache/microos-android/images}
 state=${MICROOS_ANDROID_STATE:-/var/lib/microos-android/images.state}
+inputs=${MICROOS_ANDROID_INPUTS:-/var/lib/microos-android/images.inputs}
 lock=${MICROOS_ANDROID_LOCK:-/run/microos-android/images.lock}
 wcfg=${MICROOS_WAYDROID_CFG:-/var/lib/waydroid/waydroid.cfg}
+lxc=${MICROOS_WAYDROID_LXC:-/var/lib/waydroid/lxc}
 fetch=${MICROOS_FETCH:-/usr/libexec/microos/microos-fetch}
 floor=${MICROOS_SPACE_FLOOR:-21474836480}
 
 say() { printf 'microos-android-images: %s\n' "$*"; }
 fail() { printf 'microos-android-images: %s\n' "$*" >&2; exit 1; }
+stamp() { cat "$pins" "$display" "$base" "$0" | sha256sum | cut -d' ' -f1; }
 mark() { printf 'state=%s\nset=%s\n' "$1" "$SET" > "$state.new"; mv "$state.new" "$state"; }
-failed() {
-  local rc=$?
-  (( rc == 0 )) || mark failed
-}
+applied() { stamp > "$inputs.new"; mv "$inputs.new" "$inputs"; }
 
+[[ ${1-} != --stamp ]] || { stamp; exit 0; }
 . "$pins"
 density=$(sed -n 's/^density=//p' "$display" | head -n 1)
 [[ $density =~ ^[0-9]+$ ]] || fail "no density in $display"
@@ -27,15 +29,10 @@ ubwc=$(sed -n 's/^ubwc=//p' "$display" | head -n 1)
 light=$(sed -n 's/^light_sensor=//p' "$display" | head -n 1)
 [[ -z $light || $light == 1 ]] || fail "light_sensor=$light in $display is not 1"
 
-exec 9< "$lock"
-flock -n -x 9 || fail "the Android session holds $lock"
-unit=$(systemctl show -P ActiveState waydroid-container.service)
-[[ $unit == inactive || $unit == failed ]] || fail "waydroid-container.service is $unit, stop Android first"
-
 new=0
 if [[ ! -f $state || $(< "$state") != "state=ready"$'\n'"set=$SET" || $(readlink "$images/current") != "$SET" || ! -f $wcfg ]]; then
   new=1
-  trap failed EXIT
+  trap 'mark failed' EXIT
   mark fetching
   free=$(df --output=avail -B1 "$cache" | tail -n 1)
   (( free >= floor )) || fail "$((free >> 30))G free under $cache, below the $((floor >> 30))G floor"
@@ -52,6 +49,17 @@ if [[ ! -f $state || $(< "$state") != "state=ready"$'\n'"set=$SET" || $(readlink
   grep -qx 'ro.system.product.cpu.abilist32=' <<< "$prop" ||
     fail "$SET's system image has no empty ro.system.product.cpu.abilist32, it needs AArch32"
   chmod -R a-w "$tmpd"
+fi
+
+exec 9< "$lock"
+flock -n -x 9 || fail "the Android session holds $lock, $SET is fetched and applies on the next run"
+container=STOPPED
+[[ ! -e $lxc/waydroid ]] || container=$(lxc-info -P "$lxc" -n waydroid -sH)
+[[ $container == STOPPED ]] || fail "the Waydroid container is $container, stop Android first"
+unit=$(systemctl show -P ActiveState waydroid-container.service)
+[[ $unit == inactive || $unit == failed ]] || systemctl stop waydroid-container.service
+
+if (( new )); then
   rm -rf "${images:?}/${SET:?}"
   mv -T "$tmpd" "$images/$SET"
   ln -sfn "$SET" "$images/current.new"
@@ -93,7 +101,8 @@ if (( new )); then
     [[ $d == "$images/$SET" || $d == "$images/current" ]] || rm -rf "${d:?}"
   done
   find "$cache" -mindepth 1 -delete
-  mark ready
-  trap - EXIT
-  say "$SET ready"
 fi
+applied
+mark ready
+trap - EXIT
+say "$SET ready"

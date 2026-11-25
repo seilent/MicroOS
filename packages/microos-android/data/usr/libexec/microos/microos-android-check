@@ -4,6 +4,9 @@ set -uo pipefail
 me=microos-android-check
 IMAGES="${MICROOS_ANDROID_IMAGES:-/var/lib/microos-android/images}"
 IMAGES_STATE="${MICROOS_ANDROID_IMAGES_STATE:-/var/lib/microos-android/images.state}"
+INPUTS="${MICROOS_ANDROID_INPUTS:-/var/lib/microos-android/images.inputs}"
+PINS="${MICROOS_ANDROID_PINS:-/usr/share/microos-android/images.env}"
+IMAGES_BIN="${MICROOS_ANDROID_IMAGES_BIN:-/usr/libexec/microos/microos-android-images}"
 DATA="${MICROOS_WAYDROID_DATA:-${HOME}/.local/share/microos-waydroid}"
 FLOOR="${MICROOS_ANDROID_FLOOR:-21474836480}"
 
@@ -14,7 +17,11 @@ word() {
 
 state=$(sed -n 's/^state=//p' "${IMAGES_STATE}" 2>/dev/null) || state=
 [[ "${state}" != fetching ]] || word downloading
-[[ -d "${IMAGES}/current/" ]] || exit 1
+. "${PINS}"
+[[ "$(cat "${IMAGES_STATE}" 2>/dev/null)" == "state=ready"$'\n'"set=${SET}" ]] || exit 1
+stamp=$("${IMAGES_BIN}" --stamp) || exit 1
+[[ "$(cat "${INPUTS}" 2>/dev/null)" == "${stamp}" ]] || exit 1
+[[ "$(readlink "${IMAGES}/current")" == "${SET}" && -d "${IMAGES}/current/" ]] || exit 1
 dir=${DATA}
 while [[ ! -e "${dir}" && "${dir}" == /*/* ]]; do
     dir=${dir%/*}

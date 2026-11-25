@@ -23,7 +23,7 @@ part=$(stat -c %s "${file}.part" 2>/dev/null) || part=0
 if (( part < size )); then
     say "downloading ${url##*/}"
     rc=0
-    curl -sS --proto =https --proto-redir =https -fL --retry 3 --connect-timeout 30 -C - -o "${file}.part" "${url}" || rc=$?
+    curl -sS --proto =https --proto-redir =https -fL --retry 3 --connect-timeout 30 --speed-limit 1024 --speed-time 60 -C - -o "${file}.part" "${url}" || rc=$?
     if (( rc == 33 )); then
         rm -f "${file}.part"
         printf 'microos-fetch: %s: the server refuses to resume, the next try starts over\n' "${url##*/}" >&2
