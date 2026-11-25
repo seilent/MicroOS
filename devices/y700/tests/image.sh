@@ -369,7 +369,7 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "microos-vpad 50-microos-microset.conf"
 [[ $(< /usr/lib/systemd/user/microos-powerkey.service.d/50-microos-microset.conf) == $'[Service]\nEnvironment=MICROOS_POWERKEY_OVERLAY=1' ]] ||
   fail "microos-powerkey 50-microos-microset.conf"
-[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\ngamepads=joystick\nnavbar=1\nadb=remote\nubwc=0' ]] ||
+[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\ngamepads=joystick\nnavbar=1\nadb=remote\nubwc=0\nlight_sensor=1' ]] ||
   fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
 guestfiles=/usr/share/microos-android/overlay
 guestlist=/usr/share/microos-android/overlay.manifest
@@ -379,10 +379,11 @@ guestset=$(printf '%s\n' '0755 system/bin/hw/android.hardware.lights-service.mic
   '0644 system/etc/init/android.hardware.lights-service.microos.rc' \
   '0644 system/etc/vintf/manifest/android.hardware.lights-service.microos.xml' \
   '0644 system/priv-app/MicroOsHelper/MicroOsHelper.apk' \
+  '0644 system/product/overlay/MicroOsDisplay/MicroOsDisplayOverlay.apk' \
   '0644 system/product/overlay/MicroOsTelephony/MicroOsTelephonyOverlay.apk' \
   '0644 vendor/etc/audio_policy_volumes.xml' '0644 vendor/lib64/hw/hwcomposer.waydroid.so')
 [[ $(cut -d' ' -f2- "$guestlist") == "$guestset" ]] ||
-  fail "$guestlist does not list the lights HAL, the helper, the telephony overlay, the volume curves and the composer"
+  fail "$guestlist does not list the lights HAL, the helper, the display and telephony overlays, the volume curves and the composer"
 vendorpin=$(sed -n 's/^VENDOR_SHA256=//p' /usr/share/microos-android/images.env)
 [[ -n $vendorpin && $(< /usr/share/microos-android/overlay.vendor) == "VENDOR_SHA256=$vendorpin" ]] ||
   fail "/usr/share/microos-android/overlay.vendor is not made for the vendor image images.env pins"
@@ -456,6 +457,8 @@ for l in Type=exec ExecStart=/usr/libexec/microos/microos-android-images Nice=19
 done
 grep -qF 'props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui)' \
   /usr/libexec/microos/microos-android-images || fail "microos-android-images does not set the adb, debuggable, suspend and fake Wi-Fi props"
+grep -qF '[[ $light != 1 ]] || props+=(ro.vendor.microos.light_sensor=1)' /usr/libexec/microos/microos-android-images ||
+  fail "microos-android-images does not mark a device with a light sensor for the display overlay"
 for c in flock unzip debugfs df; do
   command -v "$c" >/dev/null || fail "$c missing, microos-android-images needs it"
 done

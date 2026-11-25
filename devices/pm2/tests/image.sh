@@ -704,10 +704,11 @@ guestset=$(printf '%s\n' '0755 system/bin/hw/android.hardware.lights-service.mic
   '0644 system/etc/init/android.hardware.lights-service.microos.rc' \
   '0644 system/etc/vintf/manifest/android.hardware.lights-service.microos.xml' \
   '0644 system/priv-app/MicroOsHelper/MicroOsHelper.apk' \
+  '0644 system/product/overlay/MicroOsDisplay/MicroOsDisplayOverlay.apk' \
   '0644 system/product/overlay/MicroOsTelephony/MicroOsTelephonyOverlay.apk' \
   '0644 vendor/etc/audio_policy_volumes.xml' '0644 vendor/lib64/hw/hwcomposer.waydroid.so')
 [[ $(cut -d' ' -f2- "$guestlist") == "$guestset" ]] ||
-  fail "$guestlist does not list the lights HAL, the helper, the telephony overlay, the volume curves and the composer"
+  fail "$guestlist does not list the lights HAL, the helper, the display and telephony overlays, the volume curves and the composer"
 vendorpin=$(sed -n 's/^VENDOR_SHA256=//p' /usr/share/microos-android/images.env)
 [[ -n $vendorpin && $(< /usr/share/microos-android/overlay.vendor) == "VENDOR_SHA256=$vendorpin" ]] ||
   fail "/usr/share/microos-android/overlay.vendor is not made for the vendor image images.env pins"

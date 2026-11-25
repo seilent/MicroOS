@@ -18,7 +18,7 @@
 Name:           microos-android-guest-apks
 Version:        1
 Release:        1%{?dist}.microos
-Summary:        The Waydroid guest's composer, lights HAL, helper, telephony overlay and volume curves, as overlay files
+Summary:        The Waydroid guest's composer, lights HAL, helper, telephony and display overlays and volume curves, as overlay files
 License:        GPL-2.0-or-later AND Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND HPND AND HPND-sell-variant AND GPL-3.0-or-later WITH Bison-exception-2.2
 URL:            https://github.com/seilent/MicroOS
 Source0:        overlay.manifest
@@ -41,6 +41,7 @@ Source16:       LICENSE.libxkbcommon
 Source17:       NOTICE.bionic
 Source18:       NOTICE.hardware-waydroid
 Source19:       NOTICE.libxkbcommon-parser
+Source20:       %{name}-display.tar.gz
 Vendor:         MicroOS
 ExclusiveArch:  aarch64
 AutoReqProv:    no
@@ -52,9 +53,10 @@ manifest fragment, built with the Android NDK for API %{android_api}. The
 MicroOS helper, a privileged app built with the API %{sdk_api} SDK and signed
 with its own key: Internet and Bluetooth quick settings tiles with their pages,
 and the guest's volume, airplane mode and power menu, linked to
-microos-android-bridge on the host over binder. A static overlay of the
-framework with voice calls and SMS off, signed with the AOSP test key. The
-vendor's audio_policy_volumes.xml with flat music stream curves. Waydroid's
+microos-android-bridge on the host over binder. Static overlays of the
+framework, signed with the AOSP test key: voice calls and SMS off, and adaptive
+brightness on with the Y700's stock lux to brightness curve where the guest has
+ro.vendor.microos.light_sensor=1. The vendor's audio_policy_volumes.xml with flat music stream curves. Waydroid's
 hwcomposer.waydroid.so with 0001-hwc-private-roundtrip-queue.patch, which waits
 for Wayland roundtrips on a private event queue, built in a LineageOS 20 tree
 and carried as a prebuilt with the patch and the tree's pins in hwc.env; the
@@ -68,6 +70,7 @@ Waydroid overlay before the container starts.
 %setup -q -c -T
 tar -xzf %{SOURCE6}
 tar -xzf %{SOURCE7}
+tar -xzf %{SOURCE20}
 
 %build
 cc=%{ndkbin}/aarch64-linux-android%{android_api}-clang
@@ -101,15 +104,17 @@ $signer sign --ks %{helper_store} --ks-type PKCS12 --ks-key-alias %{helper_alias
 $signer verify --min-sdk-version %{sdk_api} --print-certs MicroOsHelper.apk > helper-certs
 grep -qx 'Signer #1 certificate SHA-256 digest: %{helper_cert}' helper-certs
 
-%{build_tools}/aapt2 compile --dir telephony/res -o telephony-res.zip
-%{build_tools}/aapt2 link --manifest telephony/AndroidManifest.xml -I "$jar" --min-sdk-version %{sdk_api} \
-  --target-sdk-version %{sdk_api} --no-resource-deduping --no-resource-removal -o telephony-unsigned.apk \
-  telephony-res.zip
-%{build_tools}/zipalign -p -f 4 telephony-unsigned.apk telephony-aligned.apk
-$signer sign --key %{testkey}/testkey.pk8 --cert %{testkey}/testkey.x509.pem \
-  --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false \
-  --out MicroOsTelephonyOverlay.apk telephony-aligned.apk
-$signer verify --min-sdk-version %{sdk_api} MicroOsTelephonyOverlay.apk
+for rro in telephony:Telephony display:Display; do
+  d=${rro%%:*}
+  %{build_tools}/aapt2 compile --dir $d/res -o $d-res.zip
+  %{build_tools}/aapt2 link --manifest $d/AndroidManifest.xml -I "$jar" --min-sdk-version %{sdk_api} \
+    --target-sdk-version %{sdk_api} --no-resource-deduping --no-resource-removal -o $d-unsigned.apk $d-res.zip
+  %{build_tools}/zipalign -p -f 4 $d-unsigned.apk $d-aligned.apk
+  $signer sign --key %{testkey}/testkey.pk8 --cert %{testkey}/testkey.x509.pem \
+    --v1-signing-enabled false --v2-signing-enabled true --v3-signing-enabled true --v4-signing-enabled false \
+    --out MicroOs${rro#*:}Overlay.apk $d-aligned.apk
+  $signer verify --min-sdk-version %{sdk_api} MicroOs${rro#*:}Overlay.apk
+done
 
 %install
 install -Dpm644 %{SOURCE0} %{buildroot}%{_datadir}/microos-android/overlay.manifest
@@ -117,8 +122,9 @@ install -Dm755 %{hal} %{buildroot}%{overlay}/system/bin/hw/%{hal}
 install -Dpm644 %{SOURCE2} %{buildroot}%{overlay}/system/etc/init/%{hal}.rc
 install -Dpm644 %{SOURCE3} %{buildroot}%{overlay}/system/etc/vintf/manifest/%{hal}.xml
 install -Dm644 MicroOsHelper.apk %{buildroot}%{overlay}/system/priv-app/MicroOsHelper/MicroOsHelper.apk
-install -Dm644 MicroOsTelephonyOverlay.apk \
-  %{buildroot}%{overlay}/system/product/overlay/MicroOsTelephony/MicroOsTelephonyOverlay.apk
+for rro in Telephony Display; do
+  install -Dm644 MicroOs${rro}Overlay.apk %{buildroot}%{overlay}/system/product/overlay/MicroOs$rro/MicroOs${rro}Overlay.apk
+done
 install -Dpm644 %{SOURCE8} %{buildroot}%{overlay}/vendor/etc/audio_policy_volumes.xml
 install -Dpm644 %{SOURCE9} %{buildroot}%{overlay}/vendor/lib64/hw/hwcomposer.waydroid.so
 install -Dpm644 -t %{buildroot}%{_licensedir}/%{name} %{SOURCE12} %{SOURCE13} %{SOURCE14} %{SOURCE15} \
