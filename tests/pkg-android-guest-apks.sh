@@ -23,6 +23,7 @@ helper=$overlay/system/priv-app/MicroOsHelper/MicroOsHelper.apk
 rro=$overlay/system/product/overlay/MicroOsTelephony/MicroOsTelephonyOverlay.apk
 display=$overlay/system/product/overlay/MicroOsDisplay/MicroOsDisplayOverlay.apk
 volumes=$overlay/vendor/etc/audio_policy_volumes.xml
+vendorvintf=$overlay/vendor/etc/vintf/manifest.xml
 hwc=$overlay/vendor/lib64/hw/hwcomposer.waydroid.so
 licdir=/usr/share/licenses/microos-android-guest-apks
 licenses=(COPYING.wayland COPYING.wayland-protocols LICENSE.hardware-waydroid LICENSE.libffi LICENSE.libxkbcommon
@@ -48,7 +49,7 @@ if requires=$(rpm -qp --requires "$rpm" | grep -v '^rpmlib('); then fail "requir
 sources=$(rpm -qp --qf '[%{SOURCE}\n]' "$srpm" | sort)
 want=$(printf '%s\n' overlay.manifest service.c "$hal.rc" "$hal.xml" vibrator.c "$vib.rc" "$vib.xml" build.sh \
   SOURCE.env microos-android-guest-apks-helper.tar.gz microos-android-guest-apks-telephony.tar.gz \
-  microos-android-guest-apks-display.tar.gz audio_policy_volumes.xml hwcomposer.waydroid.so \
+  microos-android-guest-apks-display.tar.gz audio_policy_volumes.xml manifest.xml hwcomposer.waydroid.so \
   0001-hwc-private-roundtrip-queue.patch hwc.env "${licenses[@]}" | sort)
 if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$sources")"; fi
 
@@ -59,7 +60,8 @@ expected=$(printf '%s\n' "$share" "$manifest" "$vendorpin" "$overlay" "$overlay/
   "$vvintf" \
   "$overlay/system/priv-app" "${helper%/*}" "$helper" "$overlay/system/product" "${rro%/*/*}" "${rro%/*}" "$rro" \
   "${display%/*}" "$display" \
-  "$overlay/vendor" "${volumes%/*}" "$volumes" "$overlay/vendor/lib64" "${hwc%/*}" "$hwc" \
+  "$overlay/vendor" "${volumes%/*}" "$volumes" "${vendorvintf%/*}" "$vendorvintf" "$overlay/vendor/lib64" \
+  "${hwc%/*}" "$hwc" \
   "$licdir" "${licenses[@]/#/$licdir/}" | LC_ALL=C sort)
 if [[ $files != "$expected" ]]; then
   fail "file list: $(diff <(echo "$expected") <(echo "$files") | grep '^[<>]' | tr '\n' ' ')"
@@ -89,10 +91,11 @@ pins=$(printf '%s\n' \
   "59e26f9b74cc394eee5a989d55654759dbcff651f7dd7541a90801a0ebf0a9f5 0644 ${display#"$overlay"/}" \
   "dc2810a28f07f25cb8476321007542a6b1e8c32a58c5555dce842f9e7f26229d 0644 ${rro#"$overlay"/}" \
   "4ef8bc89e575d9be09ce25975e368493ee0b04256a67ab1b584bf1717a894166 0644 ${volumes#"$overlay"/}" \
+  "3e0242a9cb3a1b9460a946f89a57189161c428747f505ebdf2c1709e77355a1f 0644 ${vendorvintf#"$overlay"/}" \
   "540608d5169c528531a0ae8754beae5fa3f12de6edc2c187f3df13a8ff1b1dfc 0644 ${hwc#"$overlay"/}")
 [[ $(< "$root$manifest") == "$pins" ]] ||
-  fail "$manifest is not the pinned lights and vibrator HALs, helper, telephony and display overlay, volume and" \
-    "composer set: $(< "$root$manifest")"
+  fail "$manifest is not the pinned lights and vibrator HALs, helper, telephony and display overlay, volume, VINTF" \
+    "and composer set: $(< "$root$manifest")"
 while read -r sum mode path; do
   echo "$sum  $root$overlay/$path" | sha256sum -c --status - || fail "$overlay/$path does not match its manifest sha256"
   [[ $(stat -c %04a "$root$overlay/$path") == "$mode" ]] || fail "$overlay/$path is not $mode"
@@ -105,6 +108,7 @@ cmp -s "$tmp/src/$hal.xml" "$root$vintf" || fail "$vintf is not the SRPM's $hal.
 cmp -s "$tmp/src/$vib.rc" "$root$vinitrc" || fail "$vinitrc is not the SRPM's $vib.rc"
 cmp -s "$tmp/src/$vib.xml" "$root$vvintf" || fail "$vvintf is not the SRPM's $vib.xml"
 cmp -s "$tmp/src/audio_policy_volumes.xml" "$root$volumes" || fail "$volumes is not the SRPM's audio_policy_volumes.xml"
+cmp -s "$tmp/src/manifest.xml" "$root$vendorvintf" || fail "$vendorvintf is not the SRPM's manifest.xml"
 [[ $(< "$root$vendorpin") == "VENDOR_SHA256=$VENDOR_SHA256" ]] || fail "$vendorpin is not SOURCE.env's VENDOR_SHA256"
 [[ -z $(find "$tmp/src" \( -name '*.so' ! -name hwcomposer.waydroid.so \) -o -name '*.zip' -o -name "$hal" \
   -o -name "$vib") ]] ||
@@ -250,6 +254,25 @@ PY
   ) == "$VOLUMES_SHA256  -" ]] || fail "$volumes with its music curves put back is not the vendor's file"
 }
 
+check_vintf() {
+  [[ $(python3 - "$root$vendorvintf" << 'PY' | sha256sum
+import sys
+
+omx = (b'    <hal format="hidl">\n        <name>android.hardware.media.omx</name>\n'
+       b'        <transport>hwbinder</transport>\n        <version>1.0</version>\n'
+       b'        <interface>\n            <name>IOmx</name>\n            <instance>default</instance>\n'
+       b'        </interface>\n        <interface>\n            <name>IOmxStore</name>\n'
+       b'            <instance>default</instance>\n        </interface>\n'
+       b'        <fqname>@1.0::IOmx/default</fqname>\n        <fqname>@1.0::IOmxStore/default</fqname>\n'
+       b'    </hal>\n')
+memtrack = b'    <hal format="hidl">\n        <name>android.hardware.memtrack</name>\n'
+with open(sys.argv[1], "rb") as f:
+    data = f.read()
+sys.stdout.buffer.write(data.replace(memtrack, omx + memtrack) if data.count(memtrack) == 1 else b"")
+PY
+  ) == "$VINTF_SHA256  -" ]] || fail "$vendorvintf with its media.omx HAL put back is not the vendor's manifest.xml"
+}
+
 check_helper
 check_rro "$rro" net.seilent.microos.overlay.telephony "priority='1' isStatic='true'" \
   'bool/config_sms_capable=false|bool/config_voice_capable=false'
@@ -257,5 +280,6 @@ check_rro "$display" net.seilent.microos.overlay.display \
   "priority='2' isStatic='true' requiredPropertyName='ro.vendor.microos.light_sensor' requiredPropertyValue='1'" \
   'array/config_autoBrightnessLcdBacklightValues=(array) size=15 [11, 11, 26, 42, 50, 56, 64, 70, 76, 86, 95, 105, 111, 118, 130]|array/config_autoBrightnessLevels=(array) size=14 [5, 15, 40, 100, 180, 400, 550, 1000, 1500, 2000, 2500, 3000, 4000, 5000]|bool/config_automatic_brightness_available=true'
 check_volumes
+check_vintf
 
 exit "$rc"

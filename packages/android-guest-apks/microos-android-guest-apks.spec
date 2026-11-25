@@ -19,7 +19,7 @@
 Name:           microos-android-guest-apks
 Version:        1
 Release:        1%{?dist}.microos
-Summary:        The Waydroid guest's composer, lights and vibrator HALs, helper, telephony and display overlays and volume curves, as overlay files
+Summary:        The Waydroid guest's composer, HALs, helper, overlays, volume curves and VINTF manifest as overlay files
 License:        GPL-2.0-or-later AND Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND HPND AND HPND-sell-variant AND GPL-3.0-or-later WITH Bison-exception-2.2
 URL:            https://github.com/seilent/MicroOS
 Source0:        overlay.manifest
@@ -46,6 +46,7 @@ Source20:       %{name}-display.tar.gz
 Source21:       vibrator.c
 Source22:       %{vibrator}.rc
 Source23:       %{vibrator}.xml
+Source24:       manifest.xml
 Vendor:         MicroOS
 ExclusiveArch:  aarch64
 AutoReqProv:    no
@@ -63,15 +64,16 @@ on the host over binder. Static overlays of the framework, signed with the AOSP
 test key: voice calls and SMS off, and adaptive brightness on with the Y700's
 stock lux to brightness curve where the guest has
 ro.vendor.microos.light_sensor=1. The vendor's audio_policy_volumes.xml with
-flat music stream curves. Waydroid's hwcomposer.waydroid.so with
-0001-hwc-private-roundtrip-queue.patch, which waits for Wayland roundtrips on a
-private event queue, built in a LineageOS 20 tree and carried as a prebuilt
-with the patch and the tree's pins in hwc.env; the license texts of its parts
-are in %{_licensedir}/%{name}. They sit at their Waydroid overlay paths under
-%{overlay}, overlay.manifest next to it lists each with its sha256 and mode,
-and overlay.vendor names the sha256 of the vendor image zip they were made for.
-microos-android-overlay copies them into the Waydroid overlay before the
-container starts.
+flat music stream curves. The vendor's VINTF manifest.xml without its media.omx
+HAL, which the vendor image declares but does not ship. Waydroid's
+hwcomposer.waydroid.so with 0001-hwc-private-roundtrip-queue.patch, which waits
+for Wayland roundtrips on a private event queue, built in a LineageOS 20 tree
+and carried as a prebuilt with the patch and the tree's pins in hwc.env; the
+license texts of its parts are in %{_licensedir}/%{name}. They sit at their
+Waydroid overlay paths under %{overlay}, overlay.manifest next to it lists each
+with its sha256 and mode, and overlay.vendor names the sha256 of the vendor
+image zip they were made for. microos-android-overlay copies them into the
+Waydroid overlay before the container starts.
 
 %prep
 %setup -q -c -T
@@ -138,6 +140,7 @@ for rro in Telephony Display; do
   install -Dm644 MicroOs${rro}Overlay.apk %{buildroot}%{overlay}/system/product/overlay/MicroOs$rro/MicroOs${rro}Overlay.apk
 done
 install -Dpm644 %{SOURCE8} %{buildroot}%{overlay}/vendor/etc/audio_policy_volumes.xml
+install -Dpm644 %{SOURCE24} %{buildroot}%{overlay}/vendor/etc/vintf/manifest.xml
 install -Dpm644 %{SOURCE9} %{buildroot}%{overlay}/vendor/lib64/hw/hwcomposer.waydroid.so
 install -Dpm644 -t %{buildroot}%{_licensedir}/%{name} %{SOURCE12} %{SOURCE13} %{SOURCE14} %{SOURCE15} \
   %{SOURCE16} %{SOURCE17} %{SOURCE18} %{SOURCE19}
