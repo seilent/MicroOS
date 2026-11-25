@@ -89,7 +89,3 @@ a usage error or when the server lacks the request. Touch and tablets on a conne
 
 Fedora's `0001-cstdint.patch` is not carried: reshade `696b14cd` already includes `<cstdint>` in
 `source/effect_token.hpp` (reshade `5c8b8f09`).
-
-`0009` publishes the FPS limit the frame limiter applies as `GAMESCOPE_FPS_LIMIT_FEEDBACK` (CARDINAL, 0 for no limit) on
-every Xwayland root, written when it changes and on each root as its server starts. Steam's quick access frame limit
-arrives over `gamescope_control` and never shows in `GAMESCOPE_FPS_LIMIT`.
