@@ -38,8 +38,10 @@ top=$(mktemp -d)
 trap 'rm -rf "${top:?}"' EXIT
 mkdir -p "$top/SOURCES"
 cp "$src/overlay.manifest" "$src/lights/service.c" "$src/lights/android.hardware.lights-service.microos.rc" \
-  "$src/lights/android.hardware.lights-service.microos.xml" "$src/build.sh" "$src/SOURCE.env" \
-  "$src/vendor-etc/audio_policy_volumes.xml" "$src/hwc/hwcomposer.waydroid.so" \
+  "$src/lights/android.hardware.lights-service.microos.xml" "$src/vibrator/vibrator.c" \
+  "$src/vibrator/android.hardware.vibrator-service.microos.rc" \
+  "$src/vibrator/android.hardware.vibrator-service.microos.xml" "$src/build.sh" "$src/SOURCE.env" \
+  "$src/vendor-etc/audio_policy_volumes.xml" "$src/vendor-etc/vintf/manifest.xml" "$src/hwc/hwcomposer.waydroid.so" \
   "$src/hwc/0001-hwc-private-roundtrip-queue.patch" "$src/hwc/hwc.env" "$src"/hwc/licenses/* "$top/SOURCES/"
 for d in helper telephony display; do
   tar -C "$src" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX \

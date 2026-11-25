@@ -37,6 +37,12 @@ dbus-daemon --config-file="${T}/system.conf" --nofork &
 pids+=($!)
 for _ in {1..50}; do [[ -S "${T}/system" ]] && break; sleep 0.1; done
 export DBUS_SYSTEM_BUS_ADDRESS="unix:path=${T}/system"
+sed -e 's|<type>system</type>|<type>session</type>|' -e "s|${T}/system<|${T}/session<|" "${T}/system.conf" \
+    > "${T}/session.conf"
+dbus-daemon --config-file="${T}/session.conf" --nofork &
+pids+=($!)
+for _ in {1..50}; do [[ -S "${T}/session" ]] && break; sleep 0.1; done
+export DBUS_SESSION_BUS_ADDRESS="unix:path=${T}/session"
 
 export STATE="${T}/state"
 export HOME="${T}/home"
@@ -46,12 +52,29 @@ export MICROOS_BRIGHTNESS_CALL_MS=1000
 export MICROOS_WAYDROID_CFG="${T}/waydroid.cfg"
 export MICROOS_BINDER_DIR="${T}/dev"
 export PYTHONPATH="${T}/py"
+export MICROOS_INPUT_SYSFS="${T}/sys"
+export MICROOS_INPUT_DIR="${T}/input"
+export MICROOS_ANDROID_GUEST="${T}/guest"
 waydroid="${HOME}/.local/share/microos-waydroid"
 guest_dir="${waydroid}/waydroid/data/microos"
-mkdir -p "${STATE}" "${T}/py" "${guest_dir}" "${MICROOS_BINDER_DIR}"
+mkdir -p "${STATE}" "${T}/py" "${guest_dir}" "${MICROOS_BINDER_DIR}" "${MICROOS_INPUT_DIR}"
 : > "${MICROOS_BINDER_DIR}/anbox-binder"
 : > "${STATE}/binder"
 : > "${STATE}/microset"
+: > "${STATE}/ff"
+: > "${STATE}/powerkey"
+: > "${STATE}/guest"
+while read -r event name; do
+    mkdir -p "${MICROOS_INPUT_SYSFS}/${event}/device"
+    printf '%s\n' "${name}" > "${MICROOS_INPUT_SYSFS}/${event}/device/name"
+    : > "${MICROOS_INPUT_DIR}/${event}"
+done <<'EOF'
+event0 Novatek NT36523 Touchscreen
+event3 aw86927-haptics
+event4 aw86927-haptics
+event5 aw86927
+EOF
+printf '25 255\n' > "${guest_dir}/vibrator"
 
 cat > "${MICROOS_WAYDROID_CFG}" <<'EOF'
 [waydroid]
@@ -209,7 +232,7 @@ class Client:
         shape = [kind for kind, _ in values]
         if flags == 0 and code == 12 and shape == ["i", "s"] and values[0][1] == 1:
             record(f"get 1 {values[1][1]}")
-            with open(SETTING) as handle:
+            with open(SETTING if values[1][1] == "screen_brightness" else os.path.join(STATE, values[1][1])) as handle:
                 reply_func(Reply([0, int(handle.read())]), 0)
         elif flags == 0 and code == 11 and shape == ["i", "s", "i"] and values[0][1] == 1:
             record(f"put 1 {values[1][1]} {values[2][1]}")
@@ -221,6 +244,129 @@ class Client:
             reply_func(Reply([-1]), 0)
         destroy_notif()
         return False
+FAKE
+
+cat > "${T}/ff.py" <<'FAKE'
+import errno
+import fcntl
+import os
+import runpy
+import struct
+import sys
+
+STATE = os.environ["STATE"]
+DEV = os.environ["MICROOS_INPUT_DIR"]
+EVIOCSFF = (1 << 30) | (48 << 16) | (0x45 << 8) | 0x80
+EV_FF = 0x15
+FF_RUMBLE = 0x50
+real_ioctl = fcntl.ioctl
+real_write = os.write
+ids = {}
+
+
+def record(line):
+    with open(os.path.join(STATE, "ff"), "a") as handle:
+        handle.write(line + "\n")
+
+
+def node(fd):
+    try:
+        path = os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        return None
+    return os.path.basename(path) if os.path.dirname(path) == DEV else None
+
+
+def ioctl(fd, request, arg=0, mutate=True):
+    name = node(fd) if isinstance(fd, int) else None
+    if name is None or request != EVIOCSFF:
+        return real_ioctl(fd, request, arg, mutate)
+    if os.path.exists(os.path.join(STATE, f"gone-{name}")):
+        raise OSError(errno.ENODEV, os.strerror(errno.ENODEV))
+    kind, eid = struct.unpack_from("<Hh", arg)
+    length, = struct.unpack_from("<H", arg, 10)
+    strong, weak = struct.unpack_from("<HH", arg, 16)
+    if kind != FF_RUMBLE or len(arg) != 48 or weak:
+        record(f"bad upload {name} {bytes(arg).hex()}")
+        raise OSError(errno.EINVAL, os.strerror(errno.EINVAL))
+    if eid == -1:
+        eid = ids[name] = ids.get(name, -1) + 1
+        struct.pack_into("<h", arg, 2, eid)
+    record(f"upload {name} {eid} {length} {strong}")
+    return 0
+
+
+def write(fd, data):
+    name = node(fd)
+    if name is None:
+        return real_write(fd, data)
+    _sec, _usec, kind, code, value = struct.unpack("<qqHHi", data)
+    record(f"play {name} {code} {value}" if kind == EV_FF else f"bad write {name} {bytes(data).hex()}")
+    return len(data)
+
+
+fcntl.ioctl = ioctl
+os.write = write
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+FAKE
+
+cat > "${T}/guest" <<'FAKE'
+#!/usr/bin/bash
+printf '%s\n' "$2" >> "${STATE}/guest"
+if [[ $2 == *dumpsys* && -e ${STATE}/guest-fails ]]; then
+    rm -f "${STATE}/guest-fails"
+    echo "error: closed"
+    exit 1
+fi
+[[ $2 == *dumpsys* ]] && cat "${STATE}/policy"
+exit 0
+FAKE
+chmod +x "${T}/guest"
+
+cat > "${T}/powerkey" <<'FAKE'
+import os
+
+import gi
+
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+NAME = "net.seilent.MicroOS.PowerKey"
+PATH = "/net/seilent/MicroOS/PowerKey"
+IFACE = "net.seilent.MicroOS.PowerKey1"
+XML = f"""
+<node>
+  <interface name="{IFACE}">
+    <method name="Blank"/>
+    <method name="Restore"/>
+    <signal name="ScreenChanged"><arg type="b"/></signal>
+  </interface>
+  <interface name="test.Stub">
+    <method name="Wake"/>
+  </interface>
+</node>
+"""
+STATE = os.environ["STATE"]
+
+
+def record(line):
+    with open(os.path.join(STATE, "powerkey"), "a") as handle:
+        handle.write(line + "\n")
+
+
+def method(conn, _sender, _path, _iface, name, _params, invocation):
+    if name != "Wake":
+        record(name)
+    conn.emit_signal(None, PATH, IFACE, "ScreenChanged", GLib.Variant("(b)", (name != "Blank",)))
+    invocation.return_value(None)
+
+
+bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+for info in Gio.DBusNodeInfo.new_for_xml(XML).interfaces:
+    bus.register_object(PATH, info, method, None, None)
+Gio.bus_own_name_on_connection(bus, NAME, Gio.BusNameOwnerFlags.NONE, lambda *_: record("ready"), None)
+GLib.MainLoop().run()
 FAKE
 
 cat > "${T}/microsetd" <<'FAKE'
@@ -384,13 +530,24 @@ start_microsetd() {
     exit 1
 }
 
+start_powerkey() {
+    local ready
+    ready=$(count '^ready$' "${STATE}/powerkey")
+    python3 "${T}/powerkey" &
+    pk=$!
+    pids+=("${pk}")
+    for _ in {1..50}; do (( $(count '^ready$' "${STATE}/powerkey") > ready )) && return 0; sleep 0.1; done
+    echo "FAIL: fake microos-powerkey did not start" >&2
+    exit 1
+}
+
 stop_microsetd() {
     kill "${msd}" 2>/dev/null || true
     wait "${msd}" 2>/dev/null || true
 }
 
 start() {
-    "${bridge}" > "${T}/out" 2>&1 &
+    python3 "${T}/ff.py" "${bridge}" > "${T}/out" 2>&1 &
     bridge_pid=$!
     pids+=("${bridge_pid}")
 }
@@ -434,6 +591,27 @@ acts() {
 
 puts() { sed -n 's/^put 1 screen_brightness //p' "${STATE}/binder" | paste -sd ' '; }
 
+vibrate() {
+    printf '%s\n' "$1" > "${guest_dir}/vibrator.tmp"
+    mv -f "${guest_dir}/vibrator.tmp" "${guest_dir}/vibrator"
+}
+
+ffmark() { ffseen=$(wc -l < "${STATE}/ff"); }
+
+ffacts() { tail -n +"$((ffseen + 1))" "${STATE}/ff" | paste -sd ',' | sed 's/,/, /g'; }
+
+pkmark() { pkseen=$(wc -l < "${STATE}/powerkey"); }
+
+pkacts() { tail -n +"$((pkseen + 1))" "${STATE}/powerkey" | grep -vx ready | paste -sd ',' | sed 's/,/, /g'; }
+
+gmark() { gseen=$(wc -l < "${STATE}/guest"); }
+
+gacts() { tail -n +"$((gseen + 1))" "${STATE}/guest" | paste -sd ',' | sed 's/,/, /g'; }
+
+wake() {
+    gdbus call --session -d net.seilent.MicroOS.PowerKey -o /net/seilent/MicroOS/PowerKey -m test.Stub.Wake > /dev/null
+}
+
 gets() { count '^get 1 screen_brightness$' "${STATE}/binder"; }
 
 failed() { count '^microos-android-brightness: IPlatform .* failed: ' "${T}/out"; }
@@ -466,6 +644,7 @@ setting 100
 guest 90
 echo 5000 > "${STATE}/stored"
 start_microsetd
+start_powerkey
 mark
 start
 wait_for "128" puts || fail "the start push: $(puts): $(cat "${T}/out")"
@@ -622,11 +801,17 @@ guest 153
 [[ "$(host)" == "(<uint32 6000>,)" ]] || fail "a host Set while the override was held: the host value: $(host)"
 
 mark
+pkmark
+gmark
 n=$(wc -l < "${T}/out")
 guest 0
-sleep 0.3
+wait_for "Blank" pkacts || fail "a guest 0 did not blank the panel: $(pkacts): $(cat "${T}/out")"
+sleep 0.2
 [[ -z "$(acts)" ]] || fail "a guest 0 reached microsetd: $(acts)"
-[[ "$(wc -l < "${T}/out")" == "${n}" ]] || fail "a guest 0 was logged: $(cat "${T}/out")"
+off="microos-android-brightness: the guest screen is off, blanked the panel"
+[[ "$(tail -n +"$((n + 1))" "${T}/out")" == "${off}" ]] \
+    || fail "a guest 0 was not logged as the blank alone: $(cat "${T}/out")"
+[[ -z "$(gacts)" ]] || fail "a guest 0 ran a guest command: $(gacts)"
 for value in abc 256 12.5 -3; do
     guest "${value}"
     wait_log "guest level '${value}' in ${guest_dir}/backlight is not 1..255, ignored" \
@@ -641,6 +826,8 @@ grep -q "Traceback" "${T}/out" && fail "a guest level that is not a number left 
 mark
 : > "${STATE}/platform-stall"
 guest 40
+wait_for "Blank, Restore" pkacts || fail "the guest back from 0 did not restore the panel: $(pkacts)"
+wait_log "the guest screen is on, restored the panel" || fail "the restore was not logged: $(cat "${T}/out")"
 for _ in {1..100}; do grep -qx "stall 12" "${STATE}/binder" && break; sleep 0.05; done
 grep -qx "stall 12" "${STATE}/binder" || fail "a stalled IPlatform call was not made: $(cat "${STATE}/binder")"
 guest xyz
@@ -762,7 +949,144 @@ for _ in {1..100}; do [[ "$(acts)" == "override 1176, clear failed"*", clear" ]]
     || fail "a failed ClearOverride was not tried again: $(acts): $(cat "${T}/out")"
 [[ "$(host)" == "(<uint32 3922>,)" ]] || fail "a ClearOverride tried again: the host value: $(host)"
 
+python3 - "${bridge}" <<'PROBE' || fail "the dim levels are not DisplayPowerController's"
+import runpy
+import sys
+
+dim = runpy.run_path(sys.argv[1], run_name="probe")["dim_level"]
+want = {255: 14, 127: 14, 100: 14, 24: 14, 20: 10, 12: 2, 11: 1, 2: 1, 1: 1}
+sys.exit(0 if all(dim(user) == level for user, level in want.items()) else 1)
+PROBE
+
+echo 10000 > "${STATE}/screen_off_timeout"
+echo "mPowerRequest=policy=DIM, useProximitySensor=false" > "${STATE}/policy"
+mark
+pkmark
+gmark
+guest 14
+wait_for "override 549" acts || fail "the guest dim: $(acts): $(cat "${T}/out")"
+sleep 1
+[[ -z "$(pkacts)" && -z "$(gacts)" ]] || fail "the panel was blanked before the 2 s dim: $(pkacts) $(gacts)"
+wait_for "Blank" pkacts || fail "the end of the guest timeout did not blank the panel: $(pkacts): $(cat "${T}/out")"
+[[ "$(gacts)" == "dumpsys display | grep -m1 mPowerRequest=" ]] || fail "the dim policy was not read: $(gacts)"
+grep -qx "get 1 screen_off_timeout" "${STATE}/binder" || fail "the guest timeout was not read: $(cat "${STATE}/binder")"
+wait_log "the guest screen timed out, blanked the panel" || fail "the blank was not logged: $(cat "${T}/out")"
+pkmark
+gmark
+wake
+wait_for "input keyevent KEYCODE_WAKEUP 0" gacts || fail "a host wake did not wake the guest screen: $(gacts)"
+wait_log "the host woke the panel, waking the guest screen" || fail "the guest wake was not logged: $(cat "${T}/out")"
+guest 100
+wait_for "override 549, clear" acts || fail "the undim after a host wake: $(acts)"
+sleep 0.3
+[[ -z "$(pkacts)" ]] || fail "the undim after a host wake called microos-powerkey: $(pkacts)"
+wake
+sleep 0.3
+[[ "$(gacts)" == "input keyevent KEYCODE_WAKEUP 0" ]] \
+    || fail "a host wake the bridge did not blank woke the guest: $(gacts)"
+
+mark
+pkmark
+gmark
+guest 14
+sleep 1
+guest 100
+sleep 1.6
+[[ -z "$(pkacts)" && -z "$(gacts)" ]] || fail "an undim before the end of the timeout: $(pkacts) $(gacts)"
+wait_for "override 549, clear" acts || fail "an undim before the end of the timeout: $(acts)"
+
+echo "mPowerRequest=policy=BRIGHT, useProximitySensor=false" > "${STATE}/policy"
+mark
+pkmark
+gmark
+guest 14
+wait_for "dumpsys display | grep -m1 mPowerRequest=" gacts || fail "a held dim level: $(gacts)"
+sleep 3.5
+[[ -z "$(pkacts)" ]] || fail "a dim level the guest holds bright blanked the panel: $(pkacts)"
+[[ "$(gacts)" == "dumpsys display | grep -m1 mPowerRequest=" ]] \
+    || fail "a dim level the guest holds bright was read again: $(gacts)"
+guest 100
+wait_for "override 549, clear" acts || fail "an undim after a held dim level: $(acts)"
+
+echo "mPowerRequest=policy=DIM, useProximitySensor=false" > "${STATE}/policy"
+pkmark
+gmark
+: > "${STATE}/guest-fails"
+guest 14
+for _ in {1..200}; do [[ "$(pkacts)" == Blank ]] && break; sleep 0.05; done
+[[ "$(pkacts)" == Blank ]] || fail "a timeout after a failed policy read: $(pkacts): $(cat "${T}/out")"
+[[ "$(gacts)" == "dumpsys display | grep -m1 mPowerRequest=, dumpsys display | grep -m1 mPowerRequest=" ]] \
+    || fail "a failed policy read was not read again: $(gacts)"
+policy_failed="^microos-android-brightness: 'dumpsys display | grep -m1 mPowerRequest=' in the guest"
+policy_failed+=" exited 1: error: closed$"
+[[ $(count "${policy_failed}" "${T}/out") == 1 ]] || fail "a failed policy read was not logged once: $(cat "${T}/out")"
+gmark
+guest 100
+wait_for "Blank, Restore" pkacts || fail "the guest awake while blank did not restore the panel: $(pkacts)"
+restored='^microos-android-brightness: the guest screen is on, restored the panel$'
+for _ in {1..100}; do [[ $(count "${restored}" "${T}/out") == 2 ]] && break; sleep 0.05; done
+[[ $(count "${restored}" "${T}/out") == 2 ]] || fail "the restore was not logged: $(cat "${T}/out")"
+sleep 0.3
+[[ -z "$(gacts)" ]] || fail "the guest awake while blank ran $(gacts)"
+
+for node in event3 event4; do
+    grep -qx "upload ${node} 0 0 0" "${STATE}/ff" \
+        || fail "the start did not upload an effect to ${node}: $(cat "${STATE}/ff")"
+done
+grep -qE 'event(0|5)' "${STATE}/ff" && fail "a node that is not aw86927-haptics was used: $(cat "${STATE}/ff")"
+grep -q '^play ' "${STATE}/ff" && fail "the vibration in the file at the start was played: $(cat "${STATE}/ff")"
+wait_log "vibrations play on ${MICROOS_INPUT_DIR}/event3 ${MICROOS_INPUT_DIR}/event4" \
+    || fail "the haptics nodes were not logged: $(cat "${T}/out")"
+
+mark
+ffmark
+vibrate "25 255"
+wait_for "upload event3 0 25 65535, play event3 0 1, upload event4 0 25 65535, play event4 0 1" ffacts \
+    || fail "a vibration: $(ffacts): $(cat "${T}/out")"
+ffmark
+vibrate "40 128"
+wait_for "upload event3 0 40 32896, play event3 0 1, upload event4 0 40 32896, play event4 0 1" ffacts \
+    || fail "a vibration at amplitude 128: $(ffacts)"
+ffmark
+vibrate "0 0"
+wait_for "play event3 0 0, play event4 0 0" ffacts || fail "a vibration off: $(ffacts)"
+ffmark
+vibrate "100000 255"
+wait_for "upload event3 0 65535 65535, play event3 0 1, upload event4 0 65535 65535, play event4 0 1" ffacts \
+    || fail "a vibration longer than the replay field: $(ffacts)"
+ffmark
+vibrate "30 255"
+vibrate "0 0"
+for _ in {1..100}; do [[ $(ffacts) == *"play event3 0 0, play event4 0 0" ]] && break; sleep 0.05; done
+[[ $(ffacts) == *"play event3 0 0, play event4 0 0" ]] \
+    || fail "an off right after a vibration did not stop it: $(ffacts)"
+ffmark
+for value in abc "25 256" 25 "-5 10"; do
+    vibrate "${value}"
+    wait_log "vibration '${value}' in ${guest_dir}/vibrator is not <ms> <0..255>, ignored" \
+        || fail "a vibration ${value} was not logged: $(cat "${T}/out")"
+done
+[[ -z $(ffacts) ]] || fail "a vibration that is not <ms> <amplitude> was played: $(ffacts)"
+: > "${STATE}/gone-event4"
+vibrate "25 255"
+wait_for "upload event3 0 25 65535, play event3 0 1" ffacts || fail "a vibration with a node gone: $(ffacts)"
+grep -q 'event4: ' "${T}/out" && fail "a node gone was logged: $(cat "${T}/out")"
+rm -f "${STATE}/gone-event4"
+ffmark
+vibrate "25 255"
+wait_for "upload event4 1 0 0, upload event3 0 25 65535, play event3 0 1, upload event4 1 25 65535, play event4 1 1" \
+    ffacts || fail "a node back after it was gone: $(ffacts): $(cat "${T}/out")"
+[[ $(count "^microos-android-brightness: vibrations play on " "${T}/out") == 2 ]] \
+    || fail "a node back was not logged: $(cat "${T}/out")"
+[[ -z "$(acts)" ]] || fail "a vibration reached microsetd: $(acts)"
+
+pkmark
+guest 0
+wait_for "Blank" pkacts || fail "a guest 0 before a stop: $(pkacts)"
 stop_bridge "a stop"
+[[ "$(pkacts)" == "Blank, Restore" ]] || fail "a stop while blank did not restore the panel: $(pkacts)"
+grep -qx "microos-android-brightness: stopping, restored the panel" "${T}/out" \
+    || fail "the restore at the stop was not logged: $(cat "${T}/out")"
 
 grep -q '^bad ' "${STATE}/binder" && fail "a transaction with a wrong code or shape: $(cat "${STATE}/binder")"
 rm -rf "${waydroid:?}"
@@ -807,6 +1131,34 @@ stop_bridge "a stop during a stalled IPlatform call"
 
 grep -q '^bad ' "${STATE}/binder" && fail "a transaction with a wrong code or shape: $(cat "${STATE}/binder")"
 grep -q ' refused$' "${STATE}/microset" && fail "a microsetd call with a wrong type: $(cat "${STATE}/microset")"
+
+rm -f "${STATE}/platform-stall"
+kill "${pk}"
+wait "${pk}" 2>/dev/null || true
+export MICROOS_INPUT_SYSFS="${T}/nosys"
+mkdir -p "${MICROOS_INPUT_SYSFS}"
+ffmark
+start
+wait_log "no aw86927-haptics input node in ${MICROOS_INPUT_SYSFS}" \
+    || fail "a start with no haptics node was not logged: $(cat "${T}/out")"
+vibrate "25 255"
+vibrate "0 0"
+sleep 0.3
+[[ -z $(ffacts) ]] || fail "a vibration with no haptics node: $(ffacts)"
+[[ $(count '^microos-android-brightness: no aw86927-haptics input node' "${T}/out") == 1 ]] \
+    || fail "no haptics node was logged more than once: $(cat "${T}/out")"
+wait_log "net.seilent.MicroOS.PowerKey is not on the user bus, the guest screen timeout leaves the panel on" \
+    || fail "a start with no microos-powerkey was not logged: $(cat "${T}/out")"
+guest 0
+sleep 0.3
+grep -q 'Blank' "${T}/out" && fail "a guest 0 with no microos-powerkey tried to blank: $(cat "${T}/out")"
+pkmark
+start_powerkey
+wait_for "Blank" pkacts || fail "a guest 0 was not blanked once microos-powerkey came: $(pkacts): $(cat "${T}/out")"
+guest 60
+wait_for "Blank, Restore" pkacts || fail "the guest back after a late blank: $(pkacts)"
+stop_bridge "a stop with no haptics node"
+grep -q '^bad ' "${STATE}/ff" && fail "an effect or event with a wrong shape: $(cat "${STATE}/ff")"
 
 [[ "${failures}" == 0 ]] || exit 1
 echo "brightness-test: ok"

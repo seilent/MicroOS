@@ -18,7 +18,8 @@ OVERLAY = ("net.seilent.MicroSet.Overlay", "/net/seilent/MicroSet/Overlay", "net
 NAME = "net.seilent.MicroOS.PowerKey"
 PATH = "/net/seilent/MicroOS/PowerKey"
 IFACE = Gio.DBusNodeInfo.new_for_xml(
-    '<node><interface name="net.seilent.MicroOS.PowerKey1"><method name="OpenQuickAccess"/></interface></node>'
+    '<node><interface name="net.seilent.MicroOS.PowerKey1"><method name="OpenQuickAccess"/><method name="Blank"/>'
+    '<method name="Restore"/><signal name="ScreenChanged"><arg type="b"/></signal></interface></node>'
 ).interfaces[0]
 USE_OVERLAY = os.environ.get("MICROOS_POWERKEY_OVERLAY") == "1"
 SOCKET = os.environ.get("MICROOS_POWERKEY_SOCKET", "/run/microos-vpad/power")
@@ -167,7 +168,7 @@ class Powerkey:
 
     def message(self, words):
         if len(words) == 2 and words[0] == "state":
-            self.off = words[1] == "off"
+            self.set_off(words[1] == "off")
             if not self.got_state:
                 self.got_state = True
                 log("connected to microos-vpad")
@@ -185,11 +186,22 @@ class Powerkey:
             except ValueError:
                 log(f"bad event {' '.join(words)}")
                 return
-            self.off = words[2] == "off"
+            self.set_off(words[2] == "off")
             self.drain()
             self.event(words[0], down)
             return
         log(f"bad event {' '.join(words)}")
+
+    def set_off(self, off):
+        if off == self.off:
+            return
+        self.off = off
+        if self.session is None:
+            return
+        try:
+            self.session.emit_signal(None, PATH, IFACE.name, "ScreenChanged", GLib.Variant("(b)", (not off,)))
+        except GLib.Error as err:
+            log(f"ScreenChanged: {err.message}")
 
     def drain(self):
         try:
@@ -355,10 +367,18 @@ class Powerkey:
         self.session = None
         log("user bus closed, double tap opens the quick access menu")
 
-    def method_call(self, _conn, _sender, _path, _iface, _method, _params, invocation):
-        if self.off or self.asleep():
+    def method_call(self, _conn, _sender, _path, _iface, method, _params, invocation):
+        if method == "Blank":
+            done = self.send("blank")
+        elif method == "Restore":
+            self.restore()
+            done = not self.off
+        elif self.off or self.asleep():
             invocation.return_dbus_error(f"{NAME}.Error.ScreenOff", "the screen is off")
-        elif self.send("qam"):
+            return
+        else:
+            done = self.send("qam")
+        if done:
             invocation.return_value(None)
         else:
             invocation.return_dbus_error(f"{NAME}.Error.NoVpad", "microos-vpad is not connected")
@@ -375,7 +395,7 @@ class Powerkey:
         self.fail_logged = False
         self.stop_timers()
         if self.send("restore"):
-            self.off = False
+            self.set_off(False)
 
     def stop_timers(self):
         for name in ("decide_timer", "resleep_timer"):

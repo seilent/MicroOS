@@ -27,8 +27,9 @@ Requires:       pipewire-utils
 %description
 The Android session of MicroOS: Waydroid in a gamescope session, its
 client and stop, the guest exec path over adb, the status service, the
-battery, brightness, frame generation and overlay writers, the helper
-app bridge, and the Google Play install into the Waydroid overlay.
+battery, brightness, screen off and vibration, frame generation and overlay
+writers, the helper app bridge, and the Google Play install into the Waydroid
+overlay.
 
 %prep
 %setup -q -c -T

@@ -386,6 +386,41 @@ steam_off
 [[ $(count "$tmp/logind.log" "release sleep delay") == 0 ]] || fail "delay released by a vpad restart"
 kill -0 "$pk" 2> /dev/null || fail "helper exited: $(cat "$tmp/powerkey.err")"
 
+OVERLAY=1 boot screen
+for _ in {1..30}; do [[ $(owned) == '(true,)' ]] && break; sleep 0.1; done
+gdbus monitor --session --dest net.seilent.MicroOS.PowerKey > "$tmp/monitor.log" 2>&1 & mon=$!
+pids+=("$mon")
+sleep 0.5
+pkcall() {
+  gdbus call --session -d net.seilent.MicroOS.PowerKey -o /net/seilent/MicroOS/PowerKey \
+    -m "net.seilent.MicroOS.PowerKey1.$1" 2>&1
+}
+screens() { sed -n 's/.*\.ScreenChanged (\(true\|false\),)$/\1/p' "$tmp/monitor.log" | paste -sd' '; }
+pkcall Blank > /dev/null || fail "Blank: $(cat "$tmp/powerkey.err")"
+for _ in {1..30}; do [[ $(screens) == false ]] && break; sleep 0.1; done
+[[ $(words) == blank && $(screens) == false ]] || fail "Blank: $(words), screens $(screens)"
+pkcall Blank > /dev/null || fail "Blank while blank: $(cat "$tmp/powerkey.err")"
+sleep 1.5
+[[ $(words) == 'blank blank' && $(screens) == false ]] || fail "Blank while blank: $(words), screens $(screens)"
+[[ $(suspends) == 0 ]] || fail "Blank slept the tablet"
+pkcall Restore > /dev/null || fail "Restore: $(cat "$tmp/powerkey.err")"
+for _ in {1..30}; do [[ $(screens) == 'false true' ]] && break; sleep 0.1; done
+[[ $(words) == 'blank blank restore' && $(screens) == 'false true' ]] || fail "Restore: $(words), screens $(screens)"
+pkcall Restore > /dev/null || fail "Restore while on: $(cat "$tmp/powerkey.err")"
+pkcall Blank > /dev/null || fail "Blank after Restore: $(cat "$tmp/powerkey.err")"
+for _ in {1..30}; do [[ $(screens) == 'false true false' ]] && break; sleep 0.1; done
+[[ $(words) == 'blank blank restore restore blank' ]] || fail "Restore while on or Blank after Restore: $(words)"
+feed 'down now off' 'single last on'
+for _ in {1..30}; do [[ $(screens) == 'false true false true' ]] && break; sleep 0.1; done
+[[ $(words) == 'blank blank restore restore blank restore' && $(screens) == 'false true false true' ]] ||
+  fail "power key after Blank: $(words), screens $(screens)"
+[[ $(suspends) == 0 && -z $(calls) ]] || fail "a tap on a blanked panel slept: $(suspends) suspends, $(calls)"
+stop "$vp"
+for _ in {1..30}; do [[ $(said 'microos-vpad gone') == 1 ]] && break; sleep 0.1; done
+got=$(pkcall Blank) && fail "Blank with vpad gone: $got"
+[[ $got == *net.seilent.MicroOS.PowerKey.Error.NoVpad* ]] || fail "Blank with vpad gone: $got"
+stop "$mon"
+
 OVERLAY=1 boot overlay
 for _ in {1..30}; do [[ $(owned) == '(true,)' ]] && break; sleep 0.1; done
 [[ $(owned) == '(true,)' ]] || fail "PowerKey name not owned with the knob: $(cat "$tmp/powerkey.err")"
