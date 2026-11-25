@@ -749,6 +749,11 @@ grep -qx 'Type=binder' /usr/lib/systemd/system/dev-binderfs.mount || fail "dev-b
 wcb=/usr/lib/waydroid/data/configs/config_base
 [[ $(sha256sum < "$wcb") == 'e42a696066defbcd5fd12528404cb2342b3bcc27ff337a1e94c7565fd35cf31b  -' ]] ||
   fail "$wcb is not waydroid-1.6.3-1.fc44's file plus allow a, the block deny and the c 1:1 and c 1:4 denies"
+wih=/usr/lib/waydroid/tools/interfaces/IHardware.py
+[[ $(sha256sum < "$wih") == '989512f352217ca9011d2008799c1df5e8d08ac8a0ad88ecfd6752cb4cd2f690  -' ]] ||
+  fail "$wih is not waydroid-1.6.3-1.fc44's file with the caller gate (uid 0 or 1000, never upgrade)"
+! compgen -G '/usr/lib/waydroid/tools/interfaces/__pycache__/IHardware.*' > /dev/null ||
+  fail "IHardware bytecode from before the caller gate is in the image"
 dropin=$(printf '%s\n' '[Unit]' 'Before=systemd-user-sessions.service' '' '[Service]' \
   'ExecStartPre=/usr/libexec/microos/microos-android-guard' 'ExecStartPre=/usr/libexec/microos/microos-android-overlay')
 [[ $(< /usr/lib/systemd/system/waydroid-container.service.d/10-microos.conf) == "$dropin" ]] ||

@@ -210,6 +210,23 @@ install -d /usr/share/waydroid-extra
 ln -s /var/lib/microos-android/images/current /usr/share/waydroid-extra/images
 printf '%s\n' 'lxc.cgroup2.devices.allow = a' 'lxc.cgroup2.devices.deny = b *:* rwm' \
   'lxc.cgroup2.devices.deny = c 1:1 rwm' 'lxc.cgroup2.devices.deny = c 1:4 rwm' >> /usr/lib/waydroid/data/configs/config_base
+python3 - /usr/lib/waydroid/tools/interfaces/IHardware.py <<'PY'
+import sys
+
+path = sys.argv[1]
+reply = "        reader = req.init_reader()\n        local_response = response.new_reply()\n"
+gate = ("        euid = req.sender_euid()\n"
+        "        if euid not in (0, 1000) or code in (TRANSACTION_upgrade, TRANSACTION_upgrade2):\n"
+        "            logging.warning(\"{}: refused call {} from uid {}\".format(SERVICE_NAME, code, euid))\n"
+        "            return local_response, -1\n")
+with open(path) as handle:
+    text = handle.read()
+if text.count(reply) != 1:
+    sys.exit(f"{path}: the reply lines are not there once")
+with open(path, "w") as handle:
+    handle.write(text.replace(reply, reply + gate))
+PY
+rm /usr/lib/waydroid/tools/interfaces/__pycache__/IHardware.*.pyc
 
 printf '[main]\nexcludepkgs=hyprland,hyprutils,hyprlang,hyprgraphics,hyprwire,hyprcursor,aquamarine,hyprgrass,hyprsunset,hyprpicker,xdg-desktop-portal-hyprland,hyprtoolkit,hyprland-guiutils,udis86\n' \
   > /etc/dnf/libdnf5.conf.d/20-microos-hyprland.conf
