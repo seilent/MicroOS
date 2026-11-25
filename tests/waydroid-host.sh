@@ -106,6 +106,14 @@ printf 'width=2560\ndensity=320\nubwc=1\n' > "$w/display"
 im || fail "images exited $? on a ready set: $(< "$w/err")"
 [[ $(< "$calls") == 'waydroid upgrade -o' ]] || fail "ready set calls: $(< "$calls")"
 [[ $(props) == "${base/400/320}" ]] || fail "props with UBWC on and density 320: $(props)"
+printf 'width=2560\ndensity=400\nubwc=0\nlight_sensor=1\n' > "$w/display"
+im || fail "images exited $? with a light sensor: $(< "$w/err")"
+[[ $(props) == "$base debug.mesa.fd.mesa.debug=noubwc debug.mesa.tu.debug=noubwc ro.vendor.microos.light_sensor=1" ]] ||
+  fail "props with a light sensor: $(props)"
+printf 'width=2560\ndensity=400\nubwc=0\n' > "$w/display"
+im || fail "images exited $? after the light sensor went: $(< "$w/err")"
+[[ $(props) == "$base debug.mesa.fd.mesa.debug=noubwc debug.mesa.tu.debug=noubwc" ]] ||
+  fail "props after the light sensor went: $(props)"
 
 reset
 printf 'ro.system.product.cpu.abilist32=armeabi-v7a,armeabi\n' > "$w/build.prop"
@@ -134,6 +142,13 @@ printf 'density=400\n' > "$w/display"
 rc2=0
 im || rc2=$?
 [[ $rc2 == 1 ]] && grep -q 'ubwc= in' "$w/err" || fail "a display file without ubwc: rc $rc2: $(< "$w/err")"
+
+reset
+printf 'density=400\nubwc=0\nlight_sensor=yes\n' > "$w/display"
+rc2=0
+im || rc2=$?
+[[ $rc2 == 1 && ! -e $w/state ]] && grep -q 'light_sensor=yes in' "$w/err" ||
+  fail "a display file with light_sensor=yes: rc $rc2: $(< "$w/err")"
 
 overlay=$tree/usr/libexec/microos/microos-android-overlay
 o=$tmp/ovl

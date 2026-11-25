@@ -7,3 +7,4 @@ gamepads=joystick
 navbar=1
 adb=remote
 ubwc=0
+light_sensor=1

@@ -369,7 +369,7 @@ schema=$(sed -n 's/^Environment=MICROSET_SCHEMA_DIR=//p' /usr/lib/systemd/system
   fail "microos-vpad 50-microos-microset.conf"
 [[ $(< /usr/lib/systemd/user/microos-powerkey.service.d/50-microos-microset.conf) == $'[Service]\nEnvironment=MICROOS_POWERKEY_OVERLAY=1' ]] ||
   fail "microos-powerkey 50-microos-microset.conf"
-[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\ngamepads=joystick\nnavbar=1\nadb=remote\nubwc=0' ]] ||
+[[ $(< /usr/share/microos-android/display) == $'width=2560\nheight=1600\ndensity=400\nhz=165\ntouch_mode=4\ngamepads=joystick\nnavbar=1\nadb=remote\nubwc=0\nlight_sensor=1' ]] ||
   fail "/usr/share/microos-android/display is not the TB321FU landscape panel"
 guestfiles=/usr/share/microos-android/overlay
 guestlist=/usr/share/microos-android/overlay.manifest
@@ -456,6 +456,8 @@ for l in Type=exec ExecStart=/usr/libexec/microos/microos-android-images Nice=19
 done
 grep -qF 'props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false)' \
   /usr/libexec/microos/microos-android-images || fail "microos-android-images does not set the adb, debuggable and suspend props"
+grep -qF '[[ $light != 1 ]] || props+=(ro.vendor.microos.light_sensor=1)' /usr/libexec/microos/microos-android-images ||
+  fail "microos-android-images does not mark a device with a light sensor for the display overlay"
 for c in flock unzip debugfs df; do
   command -v "$c" >/dev/null || fail "$c missing, microos-android-images needs it"
 done

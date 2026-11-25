@@ -24,6 +24,8 @@ density=$(sed -n 's/^density=//p' "$display" | head -n 1)
 [[ $density =~ ^[0-9]+$ ]] || fail "no density in $display"
 ubwc=$(sed -n 's/^ubwc=//p' "$display" | head -n 1)
 [[ $ubwc == [01] ]] || fail "ubwc=$ubwc in $display is not 0 or 1"
+light=$(sed -n 's/^light_sensor=//p' "$display" | head -n 1)
+[[ -z $light || $light == 1 ]] || fail "light_sensor=$light in $display is not 1"
 
 exec 9< "$lock"
 flock -n -x 9 || fail "the Android session holds $lock"
@@ -60,13 +62,14 @@ fi
 
 props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false)
 (( ubwc )) || props+=(debug.mesa.fd.mesa.debug=noubwc debug.mesa.tu.debug=noubwc)
+[[ $light != 1 ]] || props+=(ro.vendor.microos.light_sensor=1)
 python3 - "$wcfg" "${props[@]}" <<'PY'
 import configparser
 import sys
 
 path = sys.argv[1]
 owned = ("ro.sf.lcd_density", "ro.adb.secure", "ro.debuggable", "persist.waydroid.suspend",
-         "debug.mesa.fd.mesa.debug", "debug.mesa.tu.debug")
+         "debug.mesa.fd.mesa.debug", "debug.mesa.tu.debug", "ro.vendor.microos.light_sensor")
 cfg = configparser.ConfigParser(interpolation=None)
 cfg.optionxform = str
 with open(path) as handle:
