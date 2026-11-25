@@ -90,7 +90,7 @@ pins=$(printf '%s\n' \
   "c8e42691c4d54d52877ce0602d7036a074bdf5009119c3c75d1450906953877c 0644 ${vvintf#"$overlay"/}" \
   "1bea3541ad971602a40620f72231d40d421ec26aea80092e8e3573ac51b1a223 0644 ${helper#"$overlay"/}" \
   "59e26f9b74cc394eee5a989d55654759dbcff651f7dd7541a90801a0ebf0a9f5 0644 ${display#"$overlay"/}" \
-  "dc2810a28f07f25cb8476321007542a6b1e8c32a58c5555dce842f9e7f26229d 0644 ${rro#"$overlay"/}" \
+  "01870ad79f25ac482a18a3c0c7ae0474f8e2d51dd1e963f1dcba16c1eba3e3de 0644 ${rro#"$overlay"/}" \
   "4ef8bc89e575d9be09ce25975e368493ee0b04256a67ab1b584bf1717a894166 0644 ${volumes#"$overlay"/}" \
   "3e0242a9cb3a1b9460a946f89a57189161c428747f505ebdf2c1709e77355a1f 0644 ${vendorvintf#"$overlay"/}" \
   "83ec0b77a6dc967872b7ae935d082a3037fdd35bd3c5ac0f1d352eddba8fdce0 0644 ${hwc#"$overlay"/}")
@@ -286,7 +286,7 @@ PY
 
 check_helper
 check_rro "$rro" net.seilent.microos.overlay.telephony "priority='1' isStatic='true'" \
-  'bool/config_sms_capable=false|bool/config_voice_capable=false'
+  'bool/config_sms_capable=false|bool/config_voice_capable=false|string/config_customAdbPublicKeyConfirmationComponent="android/.MicroOsAdbKeysOnly"|string/config_customAdbPublicKeyConfirmationSecondaryUserComponent="android/.MicroOsAdbKeysOnly"'
 check_rro "$display" net.seilent.microos.overlay.display \
   "priority='2' isStatic='true' requiredPropertyName='ro.vendor.microos.light_sensor' requiredPropertyValue='1'" \
   'array/config_autoBrightnessLcdBacklightValues=(array) size=15 [11, 11, 26, 42, 50, 56, 64, 70, 76, 86, 95, 105, 111, 118, 130]|array/config_autoBrightnessLevels=(array) size=14 [5, 15, 40, 100, 180, 400, 550, 1000, 1500, 2000, 2500, 3000, 4000, 5000]|bool/config_automatic_brightness_available=true'

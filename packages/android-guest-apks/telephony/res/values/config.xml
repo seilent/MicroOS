@@ -2,4 +2,6 @@
 <resources>
     <bool name="config_voice_capable">false</bool>
     <bool name="config_sms_capable">false</bool>
+    <string name="config_customAdbPublicKeyConfirmationComponent" translatable="false">android/.MicroOsAdbKeysOnly</string>
+    <string name="config_customAdbPublicKeyConfirmationSecondaryUserComponent" translatable="false">android/.MicroOsAdbKeysOnly</string>
 </resources>

@@ -63,8 +63,9 @@ helper, a privileged app built with the API %{sdk_api} SDK and signed with its
 own key: Internet and Bluetooth quick settings tiles with their pages, and the
 guest's volume, airplane mode and power menu, linked to microos-android-bridge
 on the host over binder. Static overlays of the framework, signed with the AOSP
-test key: voice calls and SMS off, and adaptive brightness on with the Y700's
-stock lux to brightness curve where the guest has
+test key: voice calls and SMS off, no prompt for an adb key the guest does not
+list, and adaptive brightness on with the Y700's stock lux to brightness curve
+where the guest has
 ro.vendor.microos.light_sensor=1. The vendor's audio_policy_volumes.xml with
 flat music stream curves. The vendor's VINTF manifest.xml without its media.omx
 HAL, which the vendor image declares but does not ship. Waydroid's
