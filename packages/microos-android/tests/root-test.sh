@@ -156,10 +156,28 @@ if [[ "${rc}" != 1 ]] || ! grep -q "pins in ${MICROOS_ANDROID_GAPPS_PINS} are no
     fail "gapps-install with empty pins: ${rc} $(cat "${T}/err")"
 fi
 [[ ! -e "${STATE}/fetch" ]] || fail "gapps-install fetched with empty pins"
+run gapps-fetch
+if [[ "${rc}" != 1 ]] || ! grep -q "pins in ${MICROOS_ANDROID_GAPPS_PINS} are not set" "${T}/err"; then
+    fail "gapps-fetch with empty pins: ${rc} $(cat "${T}/err")"
+fi
+[[ ! -e "${STATE}/fetch" ]] || fail "gapps-fetch fetched with empty pins"
 sha=$(printf '%064d' 0 | tr 0 a)
 printf 'MTG13_URL=https://example.invalid/MindTheGapps-13.0.0-arm64.zip\nMTG13_SIZE=10\nMTG13_SHA256=%s\n' "${sha}" \
     > "${MICROOS_ANDROID_GAPPS_PINS}"
 zip_of "${STATE}/zip" system/product/priv-app/Phonesky/Phonesky.apk system/system_ext/etc/permissions/a.xml META-INF/x
+echo RUNNING > "${STATE}/container"
+(exec 9< "${MICROOS_ANDROID_IMAGES_LOCK}" && flock -s 9 && exec sleep 600) &
+holder=$!
+sleep 0.3
+run gapps-fetch
+[[ "${rc}" == 0 && -f "${MICROOS_ANDROID_GAPPS_CACHE}/MindTheGapps-13.0.0-arm64.zip" ]] \
+    || fail "gapps-fetch with Android running: ${rc} $(cat "${T}/err")"
+[[ ! -e "${MICROOS_ANDROID_VAR}/gapps.manifest" && -z "$(ls -A "${MICROOS_WAYDROID_OVERLAY}")" ]] \
+    || fail "gapps-fetch wrote into the overlay"
+kill "${holder}"
+wait "${holder}" 2>/dev/null || true
+holder=
+rm -f "${STATE}/container"
 run gapps-install
 [[ "${rc}" == 0 ]] || fail "gapps-install: ${rc} $(cat "${T}/err")"
 grep -qxF "https://example.invalid/MindTheGapps-13.0.0-arm64.zip 10 ${sha} ${MICROOS_ANDROID_GAPPS_CACHE}/MindTheGapps-13.0.0-arm64.zip" \
@@ -185,6 +203,8 @@ run gapps-install
 touch "${STATE}/fetch-fail"
 run gapps-install
 if [[ "${rc}" != 1 ]] || ! grep -q "cannot fetch" "${T}/err"; then fail "a failed fetch: ${rc}"; fi
+run gapps-fetch
+if [[ "${rc}" != 1 ]] || ! grep -q "cannot fetch" "${T}/err"; then fail "a failed gapps-fetch: ${rc}"; fi
 rm -f "${STATE}/fetch-fail"
 echo FROZEN > "${STATE}/container"
 run gapps-remove

@@ -60,6 +60,11 @@ XML = """
       <arg type="s" direction="in"/>
       <arg type="o" direction="out"/>
     </method>
+    <method name="StopUnit">
+      <arg type="s" direction="in"/>
+      <arg type="s" direction="in"/>
+      <arg type="o" direction="out"/>
+    </method>
     <signal name="JobRemoved">
       <arg type="u"/>
       <arg type="o"/>
@@ -82,6 +87,7 @@ UNIT_XML = """
 """
 bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
 jobs = {"n": 0}
+owner = {"id": 0}
 
 
 def read(name, fallback):
@@ -96,16 +102,23 @@ def call(conn, sender, path, interface, name, params, invocation):
     unit, mode = params.unpack()
     jobs["n"] += 1
     job = "/org/freedesktop/systemd1/job/%d" % jobs["n"]
+    verb = "stop" if name == "StopUnit" else "start"
     with open(os.path.join(STATE, "calls"), "a") as handle:
-        handle.write("start %s %s\n" % (unit, mode))
+        handle.write("%s %s %s\n" % (verb, unit, mode))
     invocation.return_value(GLib.Variant("(o)", (job,)))
     if unit != "microos-android.service":
         return
-    result = read("job-result", "done")
-    if result == "done":
+    result = "done" if verb == "stop" else read("job-result", "done")
+    if verb == "stop":
+        with open(os.path.join(STATE, "unit-state"), "w") as handle:
+            handle.write("inactive\n")
+        if owner["id"]:
+            Gio.bus_unown_name(owner["id"])
+            owner["id"] = 0
+    elif result == "done":
         with open(os.path.join(STATE, "unit-state"), "w") as handle:
             handle.write("active\n")
-        Gio.bus_own_name_on_connection(bus, "id.waydro.Session", Gio.BusNameOwnerFlags.NONE, None, None)
+        owner["id"] = Gio.bus_own_name_on_connection(bus, "id.waydro.Session", Gio.BusNameOwnerFlags.NONE, None, None)
 
     def removed():
         bus.emit_signal(None, "/org/freedesktop/systemd1", "org.freedesktop.systemd1.Manager", "JobRemoved",
@@ -117,6 +130,10 @@ def call(conn, sender, path, interface, name, params, invocation):
 
 def properties(conn, sender, path, interface, name, params, invocation):
     unit = path.rsplit("/", 1)[-1].replace("_2d", "-").replace("_40", "@").replace("_2e", ".")
+    if params.unpack()[1] == "Job":
+        job = int(read("session-job", "0")) if unit != "microos-android.service" else 0
+        invocation.return_value(GLib.Variant("(v)", (GLib.Variant("(uo)", (job, "/")),)))
+        return
     value = read("unit-state", "inactive") if unit == "microos-android.service" else read("session-state", "active")
     invocation.return_value(GLib.Variant("(v)", (GLib.Variant("s", value),)))
 
@@ -223,6 +240,18 @@ wait_for() {
     return 1
 }
 
+reap() {
+    local i
+    for (( i = 0; i < 50; i++ )); do
+        kill -0 "$1" 2>/dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$1" 2>/dev/null; then
+        kill -KILL "$1" 2>/dev/null
+    fi
+    wait "$1" 2>/dev/null
+}
+
 refused() {
     local want=$1 rc=0
     timeout 20 python3 "${client}" 2> "${T}/err" || rc=$?
@@ -284,9 +313,82 @@ sleep 1
 kill -0 "${cpid}" 2>/dev/null || fail "the client exited after ready"
 kill -TERM "${cpid}"
 rc=0
-wait "${cpid}" || rc=$?
+reap "${cpid}" || rc=$?
 [[ "${rc}" == 0 ]] || fail "the client exited ${rc} on TERM"
 grep -q 'microos-android.service' <(grep -v '^start' "${STATE}/calls") && fail "the client stopped the session"
+
+unit_call() {
+    gdbus call --session --dest org.freedesktop.systemd1 --object-path /org/freedesktop/systemd1 \
+        --method "org.freedesktop.systemd1.Manager.$1" "'microos-android.service'" "'replace'" > /dev/null
+}
+
+reset
+touch "${STATE}/booted"
+echo 'package:com.android.settings' > "${STATE}/packages"
+python3 "${client}" 2> "${T}/err" &
+cpid=$!
+pids+=("${cpid}")
+wait_for '[[ -e "${MICROOS_RUNTIME_DIR}/start-done" ]]' || fail "no start-done before the restart"
+[[ "$(state_of gapps.play)" == off ]] || fail "gapps.play before the Google Play install"
+printf 'package:com.android.vending\npackage:com.google.android.gms\npackage:com.google.android.gsf\n' > "${STATE}/packages"
+rm -f "${MICROOS_RUNTIME_DIR}/start-done"
+echo running > "${MICROOS_RUNTIME_DIR}/gapps-install"
+unit_call StopUnit
+wait_for 'grep -q "id.waydro.Session left the bus" "${T}/err"' || fail "the client did not see Android stop"
+sleep 1
+kill -0 "${cpid}" 2>/dev/null || fail "the client exited while Google Play installs"
+unit_call StartUnit
+rm -f "${MICROOS_RUNTIME_DIR}/gapps-install"
+wait_for '[[ -e "${MICROOS_RUNTIME_DIR}/start-done" ]]' \
+    || fail "the start tasks did not run again: $(tail -n 3 "${T}/err")"
+[[ -e "${MICROOS_RUNTIME_DIR}/ready" && "$(state_of last.result)" == ready ]] || fail "not ready after the restart"
+[[ "$(state_of gapps.play)" == on && "$(state_of gapps.gms)" == on ]] || fail "gapps state after the restart"
+for unit in microos-android-battery.service microos-android-bridge.service microos-android-brightness.service \
+    microos-android-lsfg.service microos-android-perf.service; do
+    [[ "$(grep -cx "start ${unit} fail" "${STATE}/calls")" == 2 ]] \
+        || fail "${unit} not started again: $(cat "${STATE}/calls")"
+done
+[[ "$(grep -c '^show-full-ui ' "${STATE}/waydroid")" == 2 ]] || fail "show-full-ui after the restart"
+[[ "$(grep -cx opts "${STATE}/guest")" == 2 ]] || fail "the guest settings did not run again"
+wait_for 'grep -qx "start microos-android-gsf.service replace" "${STATE}/calls"' || fail "no GSF read after the restart"
+[[ ! -e "${STATE}/track" ]] || fail "the restart was taken as a refusal: $(cat "${STATE}/track")"
+kill -0 "${cpid}" 2>/dev/null || fail "the client exited after the restart"
+kill -TERM "${cpid}"
+reap "${cpid}"
+
+reset
+touch "${STATE}/booted"
+python3 "${client}" 2> "${T}/err" &
+cpid=$!
+pids+=("${cpid}")
+wait_for '[[ -e "${MICROOS_RUNTIME_DIR}/start-done" ]]' || fail "no start-done before the guest stops"
+unit_call StopUnit
+if ! wait_for '! kill -0 "${cpid}" 2>/dev/null'; then
+    fail "the client stayed after the guest stopped"
+    kill -TERM "${cpid}"
+fi
+rc=0
+reap "${cpid}" || rc=$?
+[[ "${rc}" == 1 ]] || fail "a guest stopped after ready: exit ${rc}, $(tail -n 3 "${T}/err")"
+[[ "$(state_of last.result)" == refused && "$(state_of last.reason)" == guest-stopped ]] \
+    || fail "a guest stopped after ready: state $(state_of last.result) $(state_of last.reason)"
+grep -qx "refuse android 7 guest-stopped" "${STATE}/track" 2>/dev/null \
+    || fail "a guest stopped after ready: no refusal recorded: $(cat "${STATE}/track" 2>/dev/null)"
+
+reset
+touch "${STATE}/booted"
+python3 "${client}" 2> "${T}/err" &
+cpid=$!
+pids+=("${cpid}")
+wait_for '[[ -e "${MICROOS_RUNTIME_DIR}/start-done" ]]' || fail "no start-done before the session stops"
+echo 9 > "${STATE}/session-job"
+unit_call StopUnit
+wait_for 'grep -q "id.waydro.Session left the bus" "${T}/err"' || fail "the client did not see the session stop Android"
+sleep 1
+kill -0 "${cpid}" 2>/dev/null || fail "the client exited before its session stopped it"
+[[ ! -e "${STATE}/track" && "$(state_of last.result)" == ready ]] || fail "a session stop was taken as a refusal"
+kill -TERM "${cpid}"
+reap "${cpid}"
 
 reset
 touch "${STATE}/booted"
@@ -302,7 +404,7 @@ grep -q 'microos-android-layer.service failed' "${T}/err" || fail "no layer fail
 [[ "$(state_of gapps.play)" == off ]] || fail "gapps.play with no Play"
 grep -q 'microos-android-gsf.service' "${STATE}/calls" && fail "the GSF read started with no GSF"
 kill -TERM "${cpid}"
-wait "${cpid}" 2>/dev/null
+reap "${cpid}"
 
 (( failures == 0 )) || { echo "${failures} failure(s)" >&2; exit 1; }
 echo "client-test: pass"

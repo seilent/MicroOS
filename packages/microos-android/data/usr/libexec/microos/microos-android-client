@@ -167,14 +167,28 @@ def unit_path(unit):
     return "/org/freedesktop/systemd1/unit/" + unit.replace("-", "_2d").replace("@", "_40").replace(".", "_2e")
 
 
-def unit_state(bus, unit):
+def unit_property(bus, unit, name, fallback):
     try:
         reply = bus.call_sync(MANAGER[0], unit_path(unit), PROPS, "Get",
-                              GLib.Variant("(ss)", ("org.freedesktop.systemd1.Unit", "ActiveState")),
+                              GLib.Variant("(ss)", ("org.freedesktop.systemd1.Unit", name)),
                               None, Gio.DBusCallFlags.NONE, 2000, None)
     except GLib.Error:
-        return ""
+        return fallback
     return reply.unpack()[0]
+
+
+def unit_state(bus, unit):
+    return unit_property(bus, unit, "ActiveState", "")
+
+
+def session_changing(bus):
+    if unit_state(bus, SESSION) in ("deactivating", "inactive", "failed"):
+        return True
+    return unit_property(bus, SESSION, "Job", (0, "/"))[0] != 0
+
+
+def gapps_installing():
+    return read_text(os.path.join(run_dir(), "gapps-install")) == "running"
 
 
 def session_serial():
@@ -264,14 +278,15 @@ class Window:
 
     def show(self):
         gtk = self.gtk
-        if not gtk.init_check([])[0]:
-            raise RuntimeError("no display")
-        self.window = gtk.Window(type=gtk.WindowType.TOPLEVEL)
-        self.window.set_decorated(False)
-        self.window.set_skip_taskbar_hint(True)
-        self.window.set_skip_pager_hint(True)
-        self.window.fullscreen()
-        self.window.connect("delete-event", lambda *args: True)
+        if self.window is None:
+            if not gtk.init_check([])[0]:
+                raise RuntimeError("no display")
+            self.window = gtk.Window(type=gtk.WindowType.TOPLEVEL)
+            self.window.set_decorated(False)
+            self.window.set_skip_taskbar_hint(True)
+            self.window.set_skip_pager_hint(True)
+            self.window.fullscreen()
+            self.window.connect("delete-event", lambda *args: True)
         self.window.show_all()
 
     def hide(self):
@@ -300,7 +315,7 @@ class Client:
         self.subscriptions.append(self.bus.signal_subscribe(
             MANAGER[0], MANAGER[2], "JobRemoved", MANAGER[1], None, Gio.DBusSignalFlags.NONE, self.job_removed))
         self.watch = Gio.bus_watch_name_on_connection(self.bus, WAYDROID_NAME, Gio.BusNameWatcherFlags.NONE,
-                                                      self.name_appeared, None)
+                                                      self.name_appeared, self.name_vanished)
 
     def unsubscribe(self):
         for subscription in self.subscriptions:
@@ -314,6 +329,34 @@ class Client:
         if not self.named:
             log(f"{WAYDROID_NAME} is on the bus")
         self.named = True
+        if self.ready and not self.refused:
+            self.restart()
+
+    def name_vanished(self, conn, name):
+        if self.named and self.ready:
+            log(f"{WAYDROID_NAME} left the bus")
+            self.show_boot_screen()
+            GLib.timeout_add(TICK_MS, self.watch_guest)
+        self.named = False
+
+    def watch_guest(self):
+        if self.named or self.refused:
+            return False
+        if gapps_installing() or session_changing(self.bus):
+            return True
+        if unit_state(self.bus, UNIT) in ("inactive", "failed", ""):
+            self.refuse("guest-stopped")
+            return False
+        return True
+
+    def restart(self):
+        log("android starts again")
+        self.ready = False
+        self.started = True
+        self.clear_markers()
+        self.deadline = time.monotonic() + BOOT_TIMEOUT
+        self.next_poll = 0.0
+        GLib.timeout_add(TICK_MS, self.tick)
 
     def job_removed(self, conn, sender, path, interface, signal, params):
         job_id, job_path, unit, result = params.unpack()[:4]
@@ -489,7 +532,7 @@ class Client:
         if env("MICROOS_ANDROID_NO_UI") == "1":
             return
         try:
-            self.window = Window()
+            self.window = self.window or Window()
             self.window.show()
         except (ImportError, RuntimeError, ValueError) as error:
             log(f"no boot screen: {error}")

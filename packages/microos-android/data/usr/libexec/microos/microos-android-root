@@ -231,14 +231,25 @@ def drop(paths):
             parent = os.path.dirname(parent)
 
 
+def fetched(url, size, sha):
+    os.makedirs(CACHE, mode=0o755, exist_ok=True)
+    archive = os.path.join(CACHE, url.rsplit("/", 1)[-1])
+    if subprocess.run([FETCH, url, size, sha, archive]).returncode:
+        raise Refused(f"cannot fetch {url}")
+    return archive
+
+
+def gapps_fetch():
+    archive = fetched(*pins())
+    log(f"{archive} is fetched and verified")
+    return 0
+
+
 def gapps_install():
     url, size, sha = pins()
     lock = stopped()
     try:
-        os.makedirs(CACHE, mode=0o755, exist_ok=True)
-        archive = os.path.join(CACHE, url.rsplit("/", 1)[-1])
-        if subprocess.run([FETCH, url, size, sha, archive]).returncode:
-            raise Refused(f"cannot fetch {url}")
+        archive = fetched(url, size, sha)
         entries = {}
         with zipfile.ZipFile(archive) as bundle:
             for member in bundle.infolist():
@@ -287,7 +298,8 @@ def gapps_remove():
     return 0
 
 
-VERBS = {"gsf": gsf, "reset": reset, "layer": layer, "gapps-install": gapps_install, "gapps-remove": gapps_remove}
+VERBS = {"gsf": gsf, "reset": reset, "layer": layer, "gapps-fetch": gapps_fetch, "gapps-install": gapps_install,
+         "gapps-remove": gapps_remove}
 
 
 def main():

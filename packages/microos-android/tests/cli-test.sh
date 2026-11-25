@@ -22,6 +22,7 @@ mkdir -p "${STATE}" "${HOME}" "${MICROOS_ANDROID_STATE}" "${MICROOS_ANDROID_IMAG
 cat > "${T}/systemctl" <<'STUB'
 #!/usr/bin/bash
 echo "$*" >> "${STATE}/systemctl"
+[[ "$1 $2" != "--user is-active" ]] || exec grep -qxF -- "${@: -1}" "${STATE}/active" 2>/dev/null
 exit "$(cat "${STATE}/rc" 2>/dev/null || echo 0)"
 STUB
 chmod 0755 "${T}/systemctl"

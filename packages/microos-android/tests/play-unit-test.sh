@@ -32,7 +32,8 @@ check microos-android-gapps@.service Type=oneshot 'ExecStart=/usr/libexec/microo
 re=$(sed -n 's/^  var units = \/\(.*\)\/;$/\1/p' "${rules}")
 [[ -n "${re}" ]] || fail "no unit pattern in the polkit rule"
 for u in microos-android-images.service microos-android-gsf.service microos-android-reset.service \
-    microos-android-layer.service microos-android-gapps@install.service microos-android-gapps@remove.service; do
+    microos-android-layer.service microos-android-gapps@fetch.service microos-android-gapps@install.service \
+    microos-android-gapps@remove.service; do
     [[ "${u}" =~ ${re} ]] || fail "the polkit rule refuses ${u}"
 done
 for u in microos-android-gapps@other.service microos-android-root.service microos-android.service xmicroos-android-gsf.service \
