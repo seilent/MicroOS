@@ -26,6 +26,7 @@ LXC = os.environ.get("MICROOS_LXC_INFO") or "lxc-info"
 DB_MAX = 64 << 20
 ID = re.compile(r"[1-9][0-9]*")
 MEMBER = re.compile(r"system/[A-Za-z0-9._@+-]+(/[A-Za-z0-9._@+-]+)*")
+SKIPPED = ("system/product/priv-app/VelvetTitan/",)
 
 
 class Refused(Exception):
@@ -253,7 +254,7 @@ def gapps_install():
         entries = {}
         with zipfile.ZipFile(archive) as bundle:
             for member in bundle.infolist():
-                if member.is_dir() or not member.filename.startswith("system/"):
+                if member.is_dir() or not member.filename.startswith("system/") or member.filename.startswith(SKIPPED):
                     continue
                 if not MEMBER.fullmatch(member.filename) or {".", ".."} & set(member.filename.split("/")):
                     raise Refused(f"{member.filename} in {archive} is not a plain system path")

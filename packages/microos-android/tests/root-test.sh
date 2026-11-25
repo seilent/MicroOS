@@ -164,7 +164,8 @@ fi
 sha=$(printf '%064d' 0 | tr 0 a)
 printf 'MTG13_URL=https://example.invalid/MindTheGapps-13.0.0-arm64.zip\nMTG13_SIZE=10\nMTG13_SHA256=%s\n' "${sha}" \
     > "${MICROOS_ANDROID_GAPPS_PINS}"
-zip_of "${STATE}/zip" system/product/priv-app/Phonesky/Phonesky.apk system/system_ext/etc/permissions/a.xml META-INF/x
+zip_of "${STATE}/zip" system/product/priv-app/Phonesky/Phonesky.apk system/system_ext/etc/permissions/a.xml META-INF/x \
+    system/product/priv-app/VelvetTitan/VelvetTitan.apk
 echo RUNNING > "${STATE}/container"
 (exec 9< "${MICROOS_ANDROID_IMAGES_LOCK}" && flock -s 9 && exec sleep 600) &
 holder=$!
@@ -186,6 +187,7 @@ apk="${MICROOS_WAYDROID_OVERLAY}/system/product/priv-app/Phonesky/Phonesky.apk"
 [[ "$(cat "${apk}")" == "bytes of system/product/priv-app/Phonesky/Phonesky.apk" && "$(stat -c %a "${apk}")" == 644 ]] \
     || fail "the overlay apk"
 [[ ! -e "${MICROOS_WAYDROID_OVERLAY}/META-INF" ]] || fail "a file outside system/ reached the overlay"
+[[ ! -e "${MICROOS_WAYDROID_OVERLAY}/system/product/priv-app/VelvetTitan" ]] || fail "VelvetTitan reached the overlay"
 manifest="${MICROOS_ANDROID_VAR}/gapps.manifest"
 [[ "$(cut -d' ' -f2 "${manifest}" | tr '\n' ' ')" == "system/product/priv-app/Phonesky/Phonesky.apk system/system_ext/etc/permissions/a.xml " ]] \
     || fail "manifest: $(cat "${manifest}")"
