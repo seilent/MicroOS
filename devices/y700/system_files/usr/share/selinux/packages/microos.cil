@@ -16,6 +16,7 @@
 (allow init_t systemd_socket_proxyd_t (process2 (nnp_transition)))
 (allow systemd_socket_proxyd_t syslogd_var_run_t (sock_file (write)))
 (allow systemd_socket_proxyd_t syslogd_t (unix_dgram_socket (sendto)))
+(allow systemd_socket_proxyd_t kernel_t (unix_dgram_socket (sendto)))
 (allow systemd_socket_proxyd_t nsfs_t (file (getattr)))
 (allow systemd_socket_proxyd_t pidfs_t (filesystem (getattr)))
 (dontaudit unconfined_service_t self (capability2 (mac_admin)))
