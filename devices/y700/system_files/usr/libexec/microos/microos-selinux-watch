@@ -69,19 +69,24 @@ def main():
     if base in (None, ctypes.c_void_p(-1).value):
         raise OSError(ctypes.get_errno(), f"mmap of {STATUS} failed")
     seen = page(base)
+    if seen[0] != 1:
+        with open("/dev/kmsg", "w") as kmsg:
+            kmsg.write(f"selinux-watch: enforcing {seen[0]} at start, Waydroid refused\n")
+        raise SystemExit(1)
     notify(b"READY=1")
     while True:
         readable, _, _ = select.select([sock], [], [], 1)
         if readable:
             for kind, value in messages(sock.recv(65536)):
                 trip(kind, value)
-                seen = (value, seen[1]) if kind == "setenforce" else (seen[0], value)
+                return
         now = page(base)
         if now[0] != seen[0]:
             trip("setenforce", now[0])
+            return
         if now[1] != seen[1]:
             trip("policyload", now[1])
-        seen = now
+            return
 
 
 main()

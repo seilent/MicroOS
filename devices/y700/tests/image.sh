@@ -493,7 +493,8 @@ watch=/usr/libexec/microos/microos-selinux-watch
 [[ $(stat -c %a "$watch") == 755 && $(head -n 1 "$watch") == '#!/usr/bin/python3' ]] || fail "$watch is not a 755 python3 script"
 python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' "$watch" || fail "$watch does not parse"
 for k in 'NETLINK_SELINUX = 7' 'SELNLGRP_AVC = 1' 'STATUS = "/sys/fs/selinux/status"' 'UNIT = "waydroid-container.service"' \
-  'kmsg.write(f"selinux-watch: {kind} {value}\n")' 'notify(b"READY=1")'; do
+  'kmsg.write(f"selinux-watch: {kind} {value}\n")' 'notify(b"READY=1")' \
+  'kmsg.write(f"selinux-watch: enforcing {seen[0]} at start, Waydroid refused\n")'; do
   grep -qF -- "$k" "$watch" || fail "$watch lacks $k"
 done
 [[ $(< /usr/lib/systemd/system/microos-selinux-watch.service) == $'[Unit]\nDescription=SELinux tripwire that stops Waydroid on a mode change or policy load\n\n[Service]\nType=notify\nExecStart=/usr/libexec/microos/microos-selinux-watch' ]] \
