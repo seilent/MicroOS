@@ -70,23 +70,22 @@ service_manager_protocol = aidl3
 EOF
 
 cat > "${T}/py/sitecustomize.py" <<'FAKE'
-import builtins
 import os
 
 STATE = os.environ.get("STATE")
-real_stat = os.stat
-real_open = builtins.open
+real_lstat = os.lstat
+real_open = os.open
 
 
 def note(kind, path):
     if STATE and isinstance(path, (str, bytes, os.PathLike)) and os.path.basename(os.fsdecode(path)) == "packages.list":
-        with real_open(os.path.join(STATE, "files"), "a") as handle:
+        with open(os.path.join(STATE, "files"), "a") as handle:
             handle.write(kind + "\n")
 
 
-def stat(path, *args, **kwargs):
-    note("stat", path)
-    return real_stat(path, *args, **kwargs)
+def lstat(path, *args, **kwargs):
+    note("lstat", path)
+    return real_lstat(path, *args, **kwargs)
 
 
 def opened(path, *args, **kwargs):
@@ -94,8 +93,8 @@ def opened(path, *args, **kwargs):
     return real_open(path, *args, **kwargs)
 
 
-os.stat = stat
-builtins.open = opened
+os.lstat = lstat
+os.open = opened
 FAKE
 
 cat > "${T}/py/gbinder.py" <<'FAKE'
@@ -789,6 +788,7 @@ FAKE
 
 cat > "${T}/bluez" <<'FAKE'
 import os
+import sys
 
 import gi
 
@@ -931,6 +931,9 @@ def method(_conn, sender, path, iface, name, params, invocation):
         agent.clear()
     elif name == "StartDiscovery":
         record("start-discovery")
+        if os.path.exists(os.path.join(STATE, "bluez-discovery-fails")):
+            invocation.return_dbus_error("org.bluez.Error.NotReady", "Resource Not Ready")
+            return
         change(HCI, ADAPTER, "Discovering", GLib.Variant("b", True))
         GLib.timeout_add(50, device, "AA:BB:CC:DD:EE:02", "Keyboard fixture", False)
     elif name == "StopDiscovery":
@@ -947,8 +950,8 @@ def method(_conn, sender, path, iface, name, params, invocation):
 
 export("/org/bluez", {MANAGER: {}})
 ids["/org/bluez"].append(bus.register_object("/org/bluez", infos["test.Stub"], method, None, None))
-export(HCI, {ADAPTER: {"Address": GLib.Variant("s", "00:11:22:33:44:55"), "Powered": GLib.Variant("b", False),
-                       "Discovering": GLib.Variant("b", False)}})
+export(HCI, {ADAPTER: {"Address": GLib.Variant("s", "00:11:22:33:44:55"),
+                       "Powered": GLib.Variant("b", sys.argv[1] == "on"), "Discovering": GLib.Variant("b", False)}})
 device("AA:BB:CC:DD:EE:01", "Headset fixture", True)
 device("AA:BB:CC:DD:EE:03", LONG, True)
 device("AA:BB:CC:DD:EE:04", "AA-BB-CC-DD-EE-04", False, False)
@@ -1119,13 +1122,35 @@ sleep 0.15
 : > "${STATE}/files"
 expect "a burst of refused calls" "${refused}" 10999 5 '[["i", 1]]' 0 net.seilent.microos.IBridge 1000
 took=$(sed -n 's/^burst 1000 //p' "${STATE}/binder" | tail -n 1)
-stats=$(count '^stat$' "${STATE}/files")
+stats=$(count '^lstat$' "${STATE}/files")
 allowed=$(python3 -c "import sys; print(int(float(sys.argv[1]) * 10) + 1)" "${took:-0}")
 (( stats <= allowed )) || fail "a burst of 1000 refusals in ${took} s made ${stats} stats, more than ${allowed}"
 (( stats >= 1 )) || fail "a refused call did not stat packages.list"
 burst=$(count '^microos-android-bridge: refused 5 from uid 10999$' "${T}/log")
 all=$(count '^microos-android-bridge: refused [0-9]* from uid [0-9]*$' "${T}/log")
 (( burst >= 1 && all <= 10 )) || fail "the refusal log is not capped at 10 lines: ${all}: $(cat "${T}/log")"
+: > "${STATE}/files"
+mkfifo "${system}/packages.list.tmp"
+mv -f "${system}/packages.list.tmp" "${system}/packages.list"
+wait_count 1 '^open$' "${STATE}/files" || fail "a FIFO packages.list was not opened: $(tail -n 5 "${T}/log")"
+expect "hello with a FIFO packages.list" "${refused}" "${uid}" 1 '[["i", 1], ["o", "cb1"]]'
+expect "a call after a FIFO packages.list" "${refused}" "${uid}" 11 '[["s", "0battery"]]'
+entry 10123 > "${T}/packages.target"
+: > "${STATE}/files"
+ln -s "${T}/packages.target" "${system}/packages.list.tmp"
+mv -f "${system}/packages.list.tmp" "${system}/packages.list"
+wait_count 1 '^open$' "${STATE}/files" || fail "a symlinked packages.list was not opened: $(tail -n 5 "${T}/log")"
+expect "hello with a symlinked packages.list" "${refused}" "${uid}" 1 '[["i", 1], ["o", "cb1"]]'
+expect "a call after a symlinked packages.list" "${refused}" "${uid}" 11 '[["s", "0battery"]]'
+{ entry 10123; head -c $((4 << 20)) /dev/zero | tr '\0' '\n'; } > "${system}/packages.list.tmp"
+mv -f "${system}/packages.list.tmp" "${system}/packages.list"
+wait_log "${system}/packages.list is over 4194304 bytes" || fail "a packages.list over 4 MiB: $(tail -n 5 "${T}/log")"
+expect "hello with a packages.list over 4 MiB" "${refused}" "${uid}" 1 '[["i", 1], ["o", "cb1"]]'
+expect "a call after a packages.list over 4 MiB" "${refused}" "${uid}" 11 '[["s", "0battery"]]'
+n=$(count '^microos-android-bridge: helper uid 10123$' "${T}/log")
+packages "$(entry 10123)"
+wait_count $((n + 1)) '^microos-android-bridge: helper uid 10123$' "${T}/log" \
+    || fail "a regular packages.list after a FIFO, a symlink and a large file was not read: $(tail -n 5 "${T}/log")"
 
 expect "hello" "0 [0, 0]" "${uid}" 1 '[["i", 1], ["o", "cb1"]]'
 wait_line 'cb1 2 [-1, -1, "", ""]' "${STATE}/callbacks" || fail "no radios after hello: $(cat "${STATE}/callbacks")"
@@ -1323,7 +1348,7 @@ stop_nm() { kill "${nm_pid}"; wait "${nm_pid}" 2>/dev/null || true; }
 
 start_bluez() {
     bluez_starts=$((bluez_starts + 1))
-    python3 "${T}/bluez" >> "${T}/fakes.log" 2>&1 &
+    python3 "${T}/bluez" "${1:-off}" >> "${T}/fakes.log" 2>&1 &
     bluez_pid=$!
     pids+=("${bluez_pid}")
     wait_count "${bluez_starts}" '^ready$' "${STATE}/bluez" || { echo "FAIL: fake BlueZ did not start" >&2; exit 1; }
@@ -1371,6 +1396,14 @@ prompted() {
         sleep 0.05
     done
     fail "$2: no prompt: $(since)"
+}
+
+wait_radios() {
+    for _ in {1..100}; do
+        since | grep -qE "^$1 2 \[$2, " && return 0
+        sleep 0.05
+    done
+    return 1
 }
 
 reset_device() {
@@ -1637,6 +1670,42 @@ for _ in {1..40}; do since | grep -qE '^cb11 2 \[1, 1, "[^"]*", "Headset fixture
 since | grep -qE '^cb11 2 \[1, 1, "[^"]*", "Headset fixture"\]$' || fail "the connected device in radios: $(since)"
 
 mark
+stops=$(count '^stop-discovery$' "${STATE}/bluez")
+expect "watchBluetooth off" "0 [0, 0]" "${uid}" 7 '[["i", 0]]'
+wait_count $((stops + 1)) '^stop-discovery$' "${STATE}/bluez" \
+    || fail "watchBluetooth off did not stop discovery: $(cat "${STATE}/bluez")"
+expect "Bluetooth off" "0 [0, 0]" "${uid}" 3 '[["i", 1], ["i", 0]]'
+wait_radios cb11 "1, 0" || fail "Bluetooth off did not reach radios: $(since)"
+starts=$(count '^start-discovery$' "${STATE}/bluez")
+expect "watchBluetooth with Bluetooth off" "0 [0, 0]" "${uid}" 7 '[["i", 1]]'
+sleep 0.3
+[[ "$(count '^start-discovery$' "${STATE}/bluez")" == "${starts}" ]] \
+    || fail "watchBluetooth with Bluetooth off started discovery: $(cat "${STATE}/bluez")"
+mark
+expect "Bluetooth on from the pairing page" "0 [0, 0]" "${uid}" 3 '[["i", 1], ["i", 1]]'
+wait_count $((starts + 1)) '^start-discovery$' "${STATE}/bluez" \
+    || fail "Bluetooth on with the watch set did not start discovery: $(cat "${STATE}/bluez")"
+wait_radios cb11 "1, 1" || fail "Bluetooth on from the pairing page did not reach radios: $(since)"
+mark
+expect "Bluetooth off with the watch set" "0 [0, 0]" "${uid}" 3 '[["i", 1], ["i", 0]]'
+wait_radios cb11 "1, 0" || fail "Bluetooth off with the watch set did not reach radios: $(since)"
+expect "Bluetooth on again with the watch set" "0 [0, 0]" "${uid}" 3 '[["i", 1], ["i", 1]]'
+wait_count $((starts + 2)) '^start-discovery$' "${STATE}/bluez" \
+    || fail "Bluetooth off and on with the watch set did not start discovery again: $(cat "${STATE}/bluez")"
+stops=$(count '^stop-discovery$' "${STATE}/bluez")
+expect "watchBluetooth off before a discovery error" "0 [0, 0]" "${uid}" 7 '[["i", 0]]'
+wait_count $((stops + 1)) '^stop-discovery$' "${STATE}/bluez" \
+    || fail "watchBluetooth off before a discovery error did not stop discovery: $(cat "${STATE}/bluez")"
+: > "${STATE}/bluez-discovery-fails"
+expect "watchBluetooth with a discovery error" "0 [0, 0]" "${uid}" 7 '[["i", 1]]'
+wait_log "StartDiscovery failed: org.bluez.Error.NotReady" || fail "a discovery error was not logged: $(cat "${T}/log")"
+rm -f "${STATE}/bluez-discovery-fails"
+starts=$(count '^start-discovery$' "${STATE}/bluez")
+expect "watchBluetooth after a discovery error" "0 [0, 0]" "${uid}" 7 '[["i", 1]]'
+wait_count $((starts + 1)) '^start-discovery$' "${STATE}/bluez" \
+    || fail "a discovery error kept the next watchBluetooth from starting discovery: $(cat "${STATE}/bluez")"
+
+mark
 pair "a pair"
 prompted cb11 "a pair"
 expect "a second pair" "0 [0, 4, 0]" "${uid}" 9 '[["s", "AA:BB:CC:DD:EE:02"]]'
@@ -1673,14 +1742,6 @@ wait_count $((rejected + 1)) '^agent org.bluez.Error.Rejected$' "${STATE}/bluez"
 
 guest_calls() { tail -n +"$((g_seen + 1))" "${STATE}/guest" | paste -sd ' '; }
 host_sets() { echo "$(count '^set ' "${STATE}/nm") $(count '^set ' "${STATE}/bluez")"; }
-
-wait_radios() {
-    for _ in {1..100}; do
-        since | grep -qE "^$1 2 \[$2, " && return 0
-        sleep 0.05
-    done
-    return 1
-}
 
 sync_mark() {
     mark
@@ -1800,7 +1861,7 @@ discoveries=$(count '^start-discovery$' "${STATE}/bluez")
 stop_bluez
 wait_cb "cb12 5 [${request}, 10, \"\"]" || fail "a BlueZ drop did not fail the pair: $(since)"
 wait_cb "cb12 6 [${prompt}, 3, \"${keyboard}\", 0]" || fail "a BlueZ drop: no cancel: $(since)"
-start_bluez
+start_bluez on
 wait_count $((registers + 1)) '^register ' "${STATE}/bluez" || fail "the agent was not registered again"
 wait_count $((discoveries + 1)) '^start-discovery$' "${STATE}/bluez" || fail "discovery did not start again"
 

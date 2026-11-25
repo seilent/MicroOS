@@ -4,6 +4,7 @@ import json
 import os
 import re
 import signal
+import stat
 import struct
 import sys
 import time
@@ -31,6 +32,7 @@ INTERFACE = "net.seilent.microos.IBridge"
 CALLBACK = "net.seilent.microos.IBridgeCallback"
 PACKAGE = "net.seilent.microos.helper"
 PACKAGES = "packages.list"
+PACKAGES_MAX = 4 << 20
 LOGIND = ("org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager")
 POWER = {"0userrequested": "PowerOff", "1userrequested": "Reboot"}
 SINK = "@DEFAULT_AUDIO_SINK@"
@@ -328,18 +330,34 @@ class Packages:
 
     def signature(self):
         try:
-            info = os.stat(self.path)
+            info = os.lstat(self.path)
         except OSError:
             return None
         return info.st_ino, info.st_size, info.st_mtime_ns
+
+    def contents(self):
+        found = os.open(self.path, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            if not stat.S_ISREG(os.fstat(found).st_mode):
+                return b""
+            fd = os.open(f"/proc/self/fd/{found}", os.O_RDONLY | os.O_CLOEXEC)
+        finally:
+            os.close(found)
+        try:
+            data = os.read(fd, PACKAGES_MAX + 1)
+        finally:
+            os.close(fd)
+        if len(data) > PACKAGES_MAX:
+            log(f"{self.path} is over {PACKAGES_MAX} bytes")
+            return b""
+        return data
 
     def read(self):
         self.seen = self.signature()
         uid = None
         if self.seen is not None:
             try:
-                with open(self.path, "rb") as handle:
-                    uid = helper_uid(handle.read().decode(errors="replace"))
+                uid = helper_uid(self.contents().decode(errors="replace"))
             except OSError:
                 uid = None
         if uid != self.uid:
@@ -964,6 +982,8 @@ class Blue(Cache):
         self.prompts = {}
         self.prompt = 0
         self.discovering = False
+        self.starting = False
+        self.powered = False
 
     def start(self):
         info = Gio.DBusNodeInfo.new_for_xml(AGENT_XML).interfaces[0]
@@ -993,10 +1013,10 @@ class Blue(Cache):
         self.bridge.bus.call(BLUEZ, BLUEZ_PATH, AGENT_MANAGER, "RegisterAgent",
                              GLib.Variant("(os)", (AGENT_PATH, "DisplayYesNo")), None, Gio.DBusCallFlags.NONE, -1,
                              None, registered)
-        if self.bridge.bt_watch:
-            self.discover(True)
+        self.follow_power()
 
     def lost(self):
+        self.powered = False
         self.discovering = False
         requests = sorted(self.connects) + ([self.pairing] if self.pairing is not None else [])
         self.pairing = None
@@ -1004,6 +1024,20 @@ class Blue(Cache):
         for request in requests:
             self.bridge.result(request, FAILED, "")
         self.close(True)
+
+    def moved(self, *_args):
+        self.follow_power()
+        super().moved()
+
+    def follow_power(self):
+        powered = self.state() == 1
+        if powered == self.powered:
+            return
+        self.powered = powered
+        if not powered:
+            self.discovering = False
+        elif self.bridge.bt_watch:
+            self.discover(True)
 
     def adapter(self):
         return self.proxy(HCI, ADAPTER)
@@ -1046,12 +1080,28 @@ class Blue(Cache):
                              logged("Set Powered"))
 
     def discover(self, on):
-        if on == self.discovering or (on and self.adapter() is None):
+        if not on:
+            if self.discovering:
+                self.discovering = False
+                self.bridge.bus.call(BLUEZ, HCI, ADAPTER, "StopDiscovery", None, None, Gio.DBusCallFlags.NONE, -1,
+                                     None, logged("StopDiscovery"))
             return
-        self.discovering = on
-        method = "StartDiscovery" if on else "StopDiscovery"
-        self.bridge.bus.call(BLUEZ, HCI, ADAPTER, method, None, None, Gio.DBusCallFlags.NONE, -1, None,
-                             logged(method))
+        if self.discovering or self.starting or self.state() != 1:
+            return
+        self.starting = True
+        self.bridge.bus.call(BLUEZ, HCI, ADAPTER, "StartDiscovery", None, None, Gio.DBusCallFlags.NONE, -1, None,
+                             self.started)
+
+    def started(self, bus, result):
+        self.starting = False
+        try:
+            bus.call_finish(result)
+        except GLib.Error as error:
+            log(f"StartDiscovery failed: {error_name(error) or error.message}")
+            return
+        self.discovering = self.state() == 1
+        if not self.bridge.bt_watch:
+            self.discover(False)
 
     def connect_device(self, address, connect):
         path = self.find(address)
