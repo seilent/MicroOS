@@ -55,7 +55,7 @@ system="${HOME}/.local/share/microos-waydroid/waydroid/data/system"
 mkdir -p "${STATE}/in" "${STATE}/out" "${STATE}/die" "${STATE}/sinks" "${T}/py" "${T}/bin" "${system}" \
     "${MICROOS_BINDER_DIR}"
 : > "${MICROOS_BINDER_DIR}/anbox-binder"
-for f in binder callbacks wpctl logind files nm bluez times guest; do : > "${STATE}/${f}"; done
+for f in binder callbacks wpctl clients logind files nm bluez times guest; do : > "${STATE}/${f}"; done
 printf '0\n' > "${STATE}/guest-airplane"
 printf '30 1\n' > "${STATE}/sinks/a"
 printf 'a\n' > "${STATE}/sinks/default"
@@ -366,6 +366,8 @@ def store(name, hundredths, muted):
     os.replace(path + ".tmp", path)
 
 
+with open(os.path.join(STATE, "clients"), "a") as handle:
+    handle.write(f"{os.getpid()}\n")
 verb, sink = sys.argv[1], sys.argv[2]
 if sink != "@DEFAULT_AUDIO_SINK@" or verb not in ("get-volume", "set-volume", "set-mute"):
     record(f"bad {' '.join(sys.argv[1:])}")
@@ -402,19 +404,61 @@ with open(os.path.join(STATE, "pw-dump.args"), "w") as handle:
     handle.write(" ".join(sys.argv[1:]) + "\n")
 with open(os.path.join(STATE, "pw-dump.pid"), "w") as handle:
     handle.write(f"{os.getpid()}\n")
-last = None
+OBJECT = """[
+  {
+    "id": %d,
+    "type": "PipeWire:Interface:%s",
+    "permissions": [ "r", "w", "x", "m" ],
+    "info": {
+      "change-mask": [
+        "props"
+      ],
+      "props": {
+        "application.name": "%s"
+      }
+    }
+  }
+]"""
+GONE = """[
+  {
+    "id": %d,
+    "info": null
+  }
+]"""
+
+
+def clients():
+    with open(os.path.join(STATE, "clients")) as handle:
+        return handle.read().count("\n")
+
+
+ids = {"default": 29}
+last = {}
+started = clients()
+client = 99
 while True:
-    seen = []
-    for name in sorted(os.listdir(SINKS)):
+    seen = {}
+    for name in os.listdir(SINKS):
         if not name.endswith(".tmp"):
             try:
                 with open(os.path.join(SINKS, name)) as handle:
-                    seen.append((name, handle.read()))
+                    seen[name] = handle.read()
             except OSError:
                 pass
-    if seen != last:
-        last = seen
-        print('[\n  { "id": 30, "type": "PipeWire:Interface:Node" }\n]', flush=True)
+    for name in sorted(set(seen) | set(last)):
+        if seen.get(name) != last.get(name):
+            ident = ids.setdefault(name, 29 + len(ids))
+            if name not in seen:
+                print(GONE % ident, flush=True)
+            else:
+                print(OBJECT % (ident, "Metadata" if name == "default" else "Node", name), flush=True)
+    last = seen
+    now = clients()
+    for _ in range(started, now):
+        client += 1
+        print(OBJECT % (client, "Client", "wpctl"), flush=True)
+        print(GONE % client, flush=True)
+    started = now
     time.sleep(0.02)
 FAKE
 cat > "${T}/bin/guest" <<'FAKE'
@@ -1232,6 +1276,25 @@ report 8 15 0
 report 10 15 0
 wait_for "set-volume 0.6667" writes || fail "the write after a killed one: $(writes): $(cat "${T}/log")"
 grep -q '^equal ' "${STATE}/wpctl" && fail "a write equal at the guest index: $(cat "${STATE}/wpctl")"
+
+runs() { wc -l < "${STATE}/clients"; }
+settled=
+for _ in {1..20}; do
+    seen=$(runs)
+    sleep 0.5
+    [[ "$(runs)" == "${seen}" ]] && { settled=1; break; }
+done
+[[ -n "${settled}" ]] || fail "wpctl still runs 10 s after the last volume change: $(tail -n 5 "${T}/log")"
+seen=$(runs)
+host > /dev/null
+sleep 2
+[[ "$(runs)" == "$((seen + 1))" ]] \
+    || fail "pw-dump client updates made $(($(runs) - seen - 1)) wpctl runs in 2 s with no volume change"
+seen=$(runs)
+rm -f "${STATE}/sinks/a"
+for _ in {1..100}; do (( $(runs) > seen )) && break; sleep 0.05; done
+sleep 1
+(( $(runs) == seen + 1 )) || fail "a sink removal made $(($(runs) - seen)) wpctl runs in 1 s, want 1"
 
 kill "$(cat "${STATE}/pw-dump.pid")"
 wait_log "pw-dump exited -15: host volume changes no longer reach the guest" \
