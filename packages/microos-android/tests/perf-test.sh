@@ -250,6 +250,13 @@ rc=0
 MANGOHUD_CONFIGFILE= timeout 15 "${writer}" off 2> "${T}/stop.err" || rc=$?
 [[ "${rc}" == 0 ]] && grep -q "no MANGOHUD_CONFIGFILE, no overlay control" "${T}/stop.err" || fail "off with no config: ${rc}"
 
+case_name="no system bus"
+rc=0
+MANGOHUD_CONFIGFILE="${cfg}" DBUS_SYSTEM_BUS_ADDRESS="unix:path=${T}/nobus" timeout 10 "${writer}" 2> "${T}/out" || rc=$?
+[[ "${rc}" == 1 ]] && grep -q "^microos-android-perf: no system bus, no overlay control: " "${T}/out" \
+    || fail "exit ${rc}: $(cat "${T}/out")"
+[[ "$(cat "${cfg}")" == no_display ]] || fail "the config changed: $(cat "${cfg}")"
+
 case_name="one config path pattern"
 pattern=$(sed -n 's/^CONFIG = re.compile(r"\(.*\)")$/\1/p' "${writer}")
 [[ -n "${pattern}" ]] || fail "no pattern in the writer"
