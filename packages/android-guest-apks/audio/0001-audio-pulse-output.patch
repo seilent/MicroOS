@@ -1,0 +1,945 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Fri, 27 Nov 2026 01:33:12 +0900
+Subject: [PATCH] audio: play the output through libpulse
+
+---
+ audio/audio_hw.c | 730 ++++++++++++++++++++++++++++++++++++++---------
+ 1 file changed, 596 insertions(+), 134 deletions(-)
+
+diff --git a/audio/audio_hw.c b/audio/audio_hw.c
+index 35f2070..e518a48 100644
+--- a/audio/audio_hw.c
++++ b/audio/audio_hw.c
+@@ -15,12 +15,14 @@
+  */
+ 
+ #define LOG_TAG "audio_hw_primary"
+-//#define LOG_NDEBUG 0
+ 
+ #include <errno.h>
++#include <inttypes.h>
+ #include <malloc.h>
+ #include <pthread.h>
++#include <sched.h>
+ #include <stdint.h>
++#include <stdio.h>
+ #include <sys/time.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -36,10 +38,12 @@
+ #include <hardware/audio.h>
+ 
+ #include <alsa/asoundlib.h>
+-#include <audio_utils/resampler.h>
+-#include <audio_utils/echo_reference.h>
+ #include <hardware/audio_effect.h>
+-#include <audio_effects/effect_aec.h>
++#include <pulse/error.h>
++#include <pulse/rtclock.h>
++#include <pulse/stream.h>
++#include <pulse/thread-mainloop.h>
++#include <pulse/timeval.h>
+ 
+ /* Minimum granularity - Arbitrary but small value */
+ #define CODEC_BASE_FRAME_COUNT 32
+@@ -59,26 +63,38 @@
+ #define CAPTURE_PERIOD_START_THRESHOLD 0
+ #define CAPTURE_CODEC_SAMPLING_RATE 16000
+ 
+-/* Playback codec parameters */
+-/* number of base blocks in a short period (low latency) */
+-#define PLAYBACK_PERIOD_MULTIPLIER 32  /* 21 ms */
+-/* number of frames per short period (low latency) */
+-#define PLAYBACK_PERIOD_SIZE 1024
+-/* number of pseudo periods for low latency playback */
+-#define PLAYBACK_PERIOD_COUNT 4
+-#define PLAYBACK_PERIOD_START_THRESHOLD 2
+ #define PLAYBACK_CODEC_SAMPLING_RATE 48000
+-#define MIN_WRITE_SLEEP_US      2000
++#define PLAYBACK_DEFAULT_PERIOD 256
++#define PLAYBACK_PULSE_PERIODS 3
++#define PLAYBACK_RT_PRIORITY 3
++#define PLAYBACK_WRITE_BOUND_USEC (100 * PA_USEC_PER_MSEC)
++#define PLAYBACK_CONNECT_INTERVAL_USEC (100 * PA_USEC_PER_MSEC)
++#define PLAYBACK_REPORT_INTERVAL_USEC (60 * PA_USEC_PER_SEC)
++#define PLAYBACK_PERIOD_PROP "vendor.microos.audio.period_frames"
++#define PLAYBACK_DEBUG_PROP "vendor.microos.audio.debug"
+ 
+ struct alsa_audio_device {
+     struct audio_hw_device hw_device;
+ 
+-    pthread_mutex_t lock;   /* see note below on mutex acquisition order */
++    pthread_mutex_t lock;
+     int out_devices;
+     int in_devices;
+     struct alsa_stream_in *active_input;
+     struct alsa_stream_out *active_output;
++    struct alsa_stream_out *outputs;
+     bool mic_mute;
++    pa_threaded_mainloop *loop;
++    pa_mainloop_api *api;
++    pa_defer_event *connect_event;
++    pa_context *context;
++    unsigned int period;
++    bool loop_rt;
++    bool connecting;
++    bool failing;
++    unsigned int attempts;
++    unsigned int failed_attempts;
++    pa_usec_t last_attempt;
++    pa_usec_t last_report;
+ };
+ 
+ /* Configuration for a stream */
+@@ -124,21 +140,43 @@ struct alsa_stream_in {
+     unsigned int read;
+ };
+ 
++struct out_stats {
++    uint64_t written;
++    uint64_t presented;
++    uint64_t render_base;
++    struct timespec time;
++    bool valid;
++    pa_usec_t latency;
++    int64_t fill;
++    unsigned int underflows;
++    unsigned int stalls;
++    uint64_t dropped;
++    unsigned int reconnects;
++};
++
+ struct alsa_stream_out {
+     struct audio_stream_out stream;
+ 
+-    pthread_mutex_t lock;   /* see note below on mutex acquisition order */
++    pthread_mutex_t lock;
+     struct pcm_config config;
+-    snd_pcm_t *pcm;
+-    bool unavailable;
+     int standby;
+     struct alsa_audio_device *dev;
+-    int write_threshold;
+-    unsigned int written;
++    unsigned int period;
++    pa_stream *s;
++    pa_time_event *bound;
++    bool corked;
++    bool started;
++    bool writer_rt;
++    bool restarted;
++    bool stream_tried;
++    bool stream_failing;
++    pa_usec_t last_stream_attempt;
++    pa_usec_t last_debug;
++    pthread_mutex_t stats_lock;
++    struct out_stats stats;
++    struct alsa_stream_out *next;
+ };
+ 
+-static size_t out_get_buffer_size(const struct audio_stream *stream);
+-
+ static void select_devices(struct alsa_audio_device *adev)
+ {
+     int headphones_on;
+@@ -153,107 +191,412 @@ static void select_devices(struct alsa_audio_device *adev)
+     ALOGV("hp=%c speaker=%c headset-mic=%c", headphones_on ? 'y' : 'n', speaker_on ? 'y' : 'n', headset_mic_on ? 'y' : 'n');
+ }
+ 
+-/* must be called with hw device and output stream mutexes locked */
+-static int start_output_stream(struct alsa_stream_out *out)
++static void set_fifo(const char *who)
+ {
+-    struct alsa_audio_device *adev = out->dev;
+-    snd_pcm_hw_params_t *hwparams;
+-    int ret;
++    struct sched_param param = { .sched_priority = PLAYBACK_RT_PRIORITY };
+ 
+-    /* default to low power: will be corrected in out_write if necessary before first write to
+-     * tinyalsa.
+-     */
+-    out->write_threshold = PLAYBACK_PERIOD_COUNT * PLAYBACK_PERIOD_SIZE;
+-    out->config.start_threshold = PLAYBACK_PERIOD_START_THRESHOLD * PLAYBACK_PERIOD_SIZE;
+-    out->config.avail_min = PLAYBACK_PERIOD_SIZE;
+-    out->unavailable = true;
+-    unsigned int pcm_retry_count = PCM_OPEN_RETRIES;
+- 
+-    while (1) {
+-        ret = snd_pcm_open(&out->pcm, "pulse", SND_PCM_STREAM_PLAYBACK, 0);
+-        if (ret < 0) {
+-            if (out->pcm != NULL) {
+-                snd_pcm_close(out->pcm);
+-                out->pcm = NULL;
+-            }
+-            if (--pcm_retry_count == 0) {
+-                ALOGE("Failed to open pcm_out after %d tries", PCM_OPEN_RETRIES);
+-                adev->active_output = NULL;
+-                return -ENODEV;
+-            }
+-            usleep(PCM_OPEN_WAIT_TIME_MS * 1000);
+-        } else {
+-            break;
++    if (sched_setscheduler(0, SCHED_FIFO | SCHED_RESET_ON_FORK, &param) < 0)
++        ALOGW("%s thread keeps its policy: %s", who, strerror(errno));
++}
++
++static void context_failed(struct alsa_audio_device *adev, int error)
++{
++    if (adev->context) {
++        pa_context_set_state_callback(adev->context, NULL, NULL);
++        pa_context_unref(adev->context);
++        adev->context = NULL;
++    }
++    if (!adev->failing) {
++        adev->failing = true;
++        adev->failed_attempts = 0;
++        adev->last_report = pa_rtclock_now();
++        ALOGE("pulse: %s, reconnecting", pa_strerror(error));
++    }
++}
++
++static void context_state_cb(pa_context *c, void *userdata)
++{
++    struct alsa_audio_device *adev = userdata;
++
++    if (!adev->loop_rt) {
++        adev->loop_rt = true;
++        set_fifo("pulse loop");
++    }
++    switch (pa_context_get_state(c)) {
++    case PA_CONTEXT_READY:
++        if (adev->failing)
++            ALOGI("pulse: connected after %u attempts", adev->failed_attempts);
++        adev->failing = false;
++        break;
++    case PA_CONTEXT_FAILED:
++    case PA_CONTEXT_TERMINATED:
++        if (c == adev->context)
++            context_failed(adev, pa_context_errno(c));
++        break;
++    default:
++        break;
++    }
++    pa_threaded_mainloop_signal(adev->loop, 0);
++}
++
++static void connect_cb(pa_mainloop_api *api, pa_defer_event *e, void *userdata)
++{
++    struct alsa_audio_device *adev = userdata;
++    pa_usec_t now = pa_rtclock_now();
++    pa_proplist *props;
++    pa_context *c;
++    char value[32];
++
++    api->defer_enable(e, 0);
++    adev->connecting = false;
++    pa_threaded_mainloop_signal(adev->loop, 0);
++    if (adev->context)
++        return;
++    adev->attempts++;
++    adev->last_attempt = now;
++    if (adev->failing) {
++        adev->failed_attempts++;
++        if (now - adev->last_report >= PLAYBACK_REPORT_INTERVAL_USEC) {
++            adev->last_report = now;
++            ALOGW("pulse: still down after %u attempts", adev->failed_attempts);
+         }
+     }
++    props = pa_proplist_new();
++    snprintf(value, sizeof(value), "%u/%u", adev->period, PLAYBACK_CODEC_SAMPLING_RATE);
++    pa_proplist_sets(props, "pulse.min.req", value);
++    pa_proplist_sets(props, "pulse.min.quantum", value);
++    c = pa_context_new_with_proplist(api, "Waydroid", props);
++    pa_proplist_free(props);
++    if (!c) {
++        context_failed(adev, PA_ERR_INTERNAL);
++        return;
++    }
++    adev->context = c;
++    pa_context_set_state_callback(c, context_state_cb, adev);
++    if (pa_context_connect(c, NULL, PA_CONTEXT_NOAUTOSPAWN, NULL) < 0 && adev->context == c)
++        context_failed(adev, pa_context_errno(c));
++}
+ 
+-    snd_pcm_hw_params_alloca(&hwparams);
+-    if (snd_pcm_hw_params_any(out->pcm, hwparams) < 0) {
+-        ALOGE("Can not configure this PCM device.");
+-        adev->active_output = NULL;
+-        return -ENODEV;
++static void want_context(struct alsa_audio_device *adev)
++{
++    if (adev->context || adev->connecting)
++        return;
++    if (adev->attempts && pa_rtclock_now() - adev->last_attempt < PLAYBACK_CONNECT_INTERVAL_USEC)
++        return;
++    adev->connecting = true;
++    adev->api->defer_enable(adev->connect_event, 1);
++}
++
++static void set_period(struct alsa_audio_device *adev, unsigned int period)
++{
++    if (adev->period != period && adev->context) {
++        pa_context_set_state_callback(adev->context, NULL, NULL);
++        pa_context_disconnect(adev->context);
++        pa_context_unref(adev->context);
++        adev->context = NULL;
+     }
++    adev->period = period;
++}
+ 
+-    if (snd_pcm_hw_params_set_access(out->pcm, hwparams, SND_PCM_ACCESS_RW_INTERLEAVED) < 0) {
+-        ALOGE("Error setting access.\n");
+-        adev->active_output = NULL;
+-  	    return -ENODEV;
++static void stream_signal_cb(pa_stream *s, void *userdata)
++{
++    struct alsa_stream_out *out = userdata;
++
++    pa_threaded_mainloop_signal(out->dev->loop, 0);
++}
++
++static void stream_request_cb(pa_stream *s, size_t bytes, void *userdata)
++{
++    struct alsa_stream_out *out = userdata;
++
++    pa_threaded_mainloop_signal(out->dev->loop, 0);
++}
++
++static void stream_started_cb(pa_stream *s, void *userdata)
++{
++    struct alsa_stream_out *out = userdata;
++
++    out->started = true;
++}
++
++static void stream_underflow_cb(pa_stream *s, void *userdata)
++{
++    struct alsa_stream_out *out = userdata;
++
++    if (out->corked)
++        return;
++    pthread_mutex_lock(&out->stats_lock);
++    out->stats.underflows++;
++    pthread_mutex_unlock(&out->stats_lock);
++}
++
++static void stream_latency_cb(pa_stream *s, void *userdata)
++{
++    struct alsa_stream_out *out = userdata;
++    const pa_timing_info *ti = pa_stream_get_timing_info(s);
++
++    if (ti && !ti->write_index_corrupt && !ti->read_index_corrupt) {
++        pthread_mutex_lock(&out->stats_lock);
++        out->stats.fill = ti->write_index - ti->read_index;
++        pthread_mutex_unlock(&out->stats_lock);
+     }
++    pa_threaded_mainloop_signal(out->dev->loop, 0);
++}
+ 
+-    if (snd_pcm_hw_params_set_format(out->pcm, hwparams, out->config.format) < 0) {
+-        ALOGE("Error setting format.\n");
+-        adev->active_output = NULL;
+-  	    return -ENODEV;
++static void bound_cb(pa_mainloop_api *api, pa_time_event *e, const struct timeval *tv, void *userdata)
++{
++    struct alsa_stream_out *out = userdata;
++
++    pa_threaded_mainloop_signal(out->dev->loop, 0);
++}
++
++static void orphan_state_cb(pa_stream *s, void *userdata)
++{
++    switch (pa_stream_get_state(s)) {
++    case PA_STREAM_READY:
++        pa_stream_disconnect(s);
++        break;
++    case PA_STREAM_FAILED:
++    case PA_STREAM_TERMINATED:
++        pa_stream_set_state_callback(s, NULL, NULL);
++        pa_stream_unref(s);
++        break;
++    default:
++        break;
+     }
++}
+ 
+-    if (snd_pcm_hw_params_set_rate_near(out->pcm, hwparams, &out->config.rate, 0) < 0) {
+-        ALOGE("Error setting rate.\n");
+-        adev->active_output = NULL;
+-  	    return -ENODEV;
++static void stream_close(struct alsa_stream_out *out)
++{
++    pa_stream_state_t state;
++
++    if (out->bound) {
++        out->dev->api->time_free(out->bound);
++        out->bound = NULL;
++    }
++    if (!out->s)
++        return;
++    pthread_mutex_lock(&out->stats_lock);
++    out->stats.fill = -1;
++    pthread_mutex_unlock(&out->stats_lock);
++    state = pa_stream_get_state(out->s);
++    pa_stream_set_state_callback(out->s, NULL, NULL);
++    pa_stream_set_write_callback(out->s, NULL, NULL);
++    pa_stream_set_started_callback(out->s, NULL, NULL);
++    pa_stream_set_underflow_callback(out->s, NULL, NULL);
++    pa_stream_set_latency_update_callback(out->s, NULL, NULL);
++    if (state == PA_STREAM_CREATING) {
++        pa_stream_set_state_callback(out->s, orphan_state_cb, NULL);
++        out->s = NULL;
++        return;
+     }
++    if (state == PA_STREAM_READY)
++        pa_stream_disconnect(out->s);
++    pa_stream_unref(out->s);
++    out->s = NULL;
++}
+ 
+-    if (snd_pcm_hw_params_set_channels(out->pcm, hwparams, out->config.channels) < 0) {
+-        ALOGE("Error setting channels.\n");
+-        adev->active_output = NULL;
+-  	    return -ENODEV;
++static void stream_open(struct alsa_stream_out *out)
++{
++    struct alsa_audio_device *adev = out->dev;
++    uint32_t period_bytes = out->period * audio_stream_out_frame_size(&out->stream);
++    pa_sample_spec spec = {
++        .format = PA_SAMPLE_S16LE,
++        .rate = out->config.rate,
++        .channels = out->config.channels,
++    };
++    pa_buffer_attr attr = {
++        .maxlength = (uint32_t)-1,
++        .tlength = PLAYBACK_PULSE_PERIODS * period_bytes,
++        .prebuf = period_bytes,
++        .minreq = period_bytes,
++        .fragsize = (uint32_t)-1,
++    };
++    pa_channel_map map;
++    pa_usec_t now = pa_rtclock_now();
++
++    if (out->stream_tried && now - out->last_stream_attempt < PLAYBACK_CONNECT_INTERVAL_USEC)
++        return;
++    out->stream_tried = true;
++    out->last_stream_attempt = now;
++    out->s = pa_stream_new(adev->context, "Waydroid", &spec, pa_channel_map_init_stereo(&map));
++    if (!out->s)
++        return;
++    if (!out->bound)
++        out->bound = pa_context_rttime_new(adev->context, PA_USEC_INVALID, bound_cb, out);
++    out->corked = true;
++    out->started = false;
++    pa_stream_set_state_callback(out->s, stream_signal_cb, out);
++    pa_stream_set_write_callback(out->s, stream_request_cb, out);
++    pa_stream_set_started_callback(out->s, stream_started_cb, out);
++    pa_stream_set_underflow_callback(out->s, stream_underflow_cb, out);
++    pa_stream_set_latency_update_callback(out->s, stream_latency_cb, out);
++    if (!out->bound || pa_stream_connect_playback(out->s, NULL, &attr,
++            PA_STREAM_INTERPOLATE_TIMING | PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_EARLY_REQUESTS |
++            PA_STREAM_START_CORKED, NULL, NULL) < 0)
++        stream_close(out);
++}
++
++static bool stream_ready(struct alsa_stream_out *out)
++{
++    struct alsa_audio_device *adev = out->dev;
++
++    if (out->s) {
++        switch (pa_stream_get_state(out->s)) {
++        case PA_STREAM_READY:
++            if (out->stream_failing)
++                ALOGI("pulse stream: open again");
++            out->stream_failing = false;
++            return true;
++        case PA_STREAM_UNCONNECTED:
++        case PA_STREAM_CREATING:
++            return false;
++        default:
++            if (!out->stream_failing && pa_stream_get_state(out->s) == PA_STREAM_FAILED && adev->context &&
++                    pa_context_get_state(adev->context) == PA_CONTEXT_READY) {
++                out->stream_failing = true;
++                ALOGE("pulse stream: %s, reopening", pa_strerror(pa_context_errno(adev->context)));
++            }
++            stream_close(out);
++            break;
++        }
++    }
++    if (!adev->context || pa_context_get_state(adev->context) != PA_CONTEXT_READY) {
++        want_context(adev);
++        return false;
+     }
++    stream_open(out);
++    return false;
++}
+ 
+-    if (snd_pcm_hw_params_set_periods(out->pcm, hwparams, out->config.period_count, 0) < 0) {
+-        ALOGE("Error setting periods.\n");
+-        adev->active_output = NULL;
+-  	    return -ENODEV;
++static bool stream_wait(struct alsa_stream_out *out, pa_usec_t deadline)
++{
++    struct alsa_audio_device *adev = out->dev;
++    pa_context_state_t state;
++
++    if (pa_rtclock_now() >= deadline)
++        return false;
++    if (out->s) {
++        if (pa_stream_get_state(out->s) != PA_STREAM_CREATING)
++            return false;
++    } else if (adev->context) {
++        state = pa_context_get_state(adev->context);
++        if (state == PA_CONTEXT_READY || !PA_CONTEXT_IS_GOOD(state))
++            return false;
++    } else if (!adev->connecting) {
++        return false;
+     }
++    if (adev->context) {
++        if (out->bound)
++            pa_context_rttime_restart(adev->context, out->bound, deadline);
++        else
++            out->bound = pa_context_rttime_new(adev->context, deadline, bound_cb, out);
++        if (!out->bound)
++            return false;
++    }
++    pa_threaded_mainloop_wait(adev->loop);
++    if (out->bound)
++        adev->api->time_restart(out->bound, NULL);
++    return true;
++}
+ 
+-    snd_pcm_uframes_t num_frames = out_get_buffer_size((struct audio_stream *)out) /
+-                                   audio_stream_out_frame_size((struct audio_stream_out *)out);
+-    if (snd_pcm_hw_params_set_buffer_size(out->pcm, hwparams, num_frames) < 0) {
+-        ALOGE("Error setting buffer size.\n");
+-        adev->active_output = NULL;
+-  	    return -ENODEV;
++static size_t queue_frames(struct alsa_stream_out *out, const uint8_t *data, size_t bytes, pa_usec_t deadline,
++        bool *stalled, bool *lost)
++{
++    struct alsa_audio_device *adev = out->dev;
++    size_t frame_size = audio_stream_out_frame_size(&out->stream);
++    size_t left = bytes;
++    pa_operation *o;
++
++    if (out->corked) {
++        o = pa_stream_cork(out->s, 0, NULL, NULL);
++        if (o)
++            pa_operation_unref(o);
++        out->corked = false;
++        out->started = false;
+     }
++    pa_context_rttime_restart(pa_stream_get_context(out->s), out->bound, deadline);
++    while (left >= frame_size && pa_stream_get_state(out->s) == PA_STREAM_READY) {
++        size_t n = pa_stream_writable_size(out->s);
+ 
+-    if (snd_pcm_hw_params(out->pcm, hwparams) < 0) {
+-        ALOGE("Error setting HW params.");
+-        adev->active_output = NULL;
+-        return -ENODEV;
++        if (n == (size_t)-1)
++            break;
++        if (n > left)
++            n = left;
++        n -= n % frame_size;
++        if (n) {
++            if (pa_stream_write(out->s, data, n, NULL, 0, PA_SEEK_RELATIVE) < 0)
++                break;
++            data += n;
++            left -= n;
++        } else if (pa_rtclock_now() >= deadline) {
++            *stalled = out->started;
++            break;
++        } else {
++            pa_threaded_mainloop_wait(adev->loop);
++        }
+     }
++    adev->api->time_restart(out->bound, NULL);
++    *lost = pa_stream_get_state(out->s) != PA_STREAM_READY;
++    return bytes - left;
++}
+ 
+-    if (snd_pcm_prepare(out->pcm) < 0) {
+-       ALOGE("Can not prepare this PCM device.");
+-        adev->active_output = NULL;
+-        return -ENODEV;
++static void update_stats(struct alsa_stream_out *out, size_t frames, size_t dropped, bool stalled)
++{
++    struct out_stats *st = &out->stats;
++    pa_usec_t latency = 0;
++    int negative = 0;
++    bool have = false;
++
++    if (out->s && pa_stream_get_state(out->s) == PA_STREAM_READY)
++        have = pa_stream_get_latency(out->s, &latency, &negative) == 0;
++    pthread_mutex_lock(&out->stats_lock);
++    if (out->restarted) {
++        st->render_base = st->presented;
++        out->restarted = false;
+     }
++    st->written += frames;
++    st->dropped += dropped;
++    st->stalls += stalled;
++    st->reconnects = out->dev->attempts ? out->dev->attempts - 1 : 0;
++    if (have) {
++        st->latency = negative ? 0 : latency;
++        st->valid = true;
++    }
++    if (st->valid) {
++        uint64_t pending = st->latency * out->config.rate / PA_USEC_PER_SEC;
++        uint64_t presented = st->written > pending ? st->written - pending : 0;
+ 
+-    if (snd_pcm_state(out->pcm) != SND_PCM_STATE_PREPARED) {
+-        ALOGE("cannot open pcm_out driver");
+-        snd_pcm_close(out->pcm);
+-        adev->active_output = NULL;
+-        return -ENODEV;
++        if (presented > st->presented)
++            st->presented = presented;
++        clock_gettime(CLOCK_MONOTONIC, &st->time);
+     }
++    pthread_mutex_unlock(&out->stats_lock);
++}
+ 
+-    out->unavailable = false;
+-    adev->active_output = out;
+-    return 0;
++static void format_stats(struct alsa_stream_out *out, char *buf, size_t len)
++{
++    struct out_stats st;
++
++    pthread_mutex_lock(&out->stats_lock);
++    st = out->stats;
++    pthread_mutex_unlock(&out->stats_lock);
++    snprintf(buf, len, "period=%u underflows=%u stalls=%u dropped=%" PRIu64 " reconnects=%u fill=%" PRId64
++             " latency_us=%" PRIu64 " written=%" PRIu64 " presented=%" PRIu64, out->period, st.underflows,
++             st.stalls, st.dropped, st.reconnects, st.fill, (uint64_t)st.latency, st.written, st.presented);
++}
++
++static unsigned int out_period(void)
++{
++    char value[PROPERTY_VALUE_MAX];
++
++    if (property_get(PLAYBACK_PERIOD_PROP, value, "") <= 0)
++        return PLAYBACK_DEFAULT_PERIOD;
++    if (strcmp(value, "64") && strcmp(value, "128") && strcmp(value, "256")) {
++        ALOGE("%s=%s is not 64, 128 or 256", PLAYBACK_PERIOD_PROP, value);
++        return 0;
++    }
++    return atoi(value);
+ }
+ 
+ static uint32_t out_get_sample_rate(const struct audio_stream *stream)
+@@ -270,11 +613,8 @@ static int out_set_sample_rate(struct audio_stream *stream, uint32_t rate)
+ 
+ static size_t out_get_buffer_size(const struct audio_stream *stream)
+ {
+-    /* return the closest majoring multiple of 16 frames, as
+-     * audioflinger expects audio buffers to be a multiple of 16 frames */
+-    size_t size = PLAYBACK_PERIOD_SIZE;
+-    size = ((size + 15) / 16) * 16;
+-    size = size * audio_stream_out_frame_size((struct audio_stream_out *)stream);
++    struct alsa_stream_out *out = (struct alsa_stream_out *)stream;
++    size_t size = out->period * audio_stream_out_frame_size((struct audio_stream_out *)stream);
+     ALOGV("out_get_buffer_size: %zu", size);
+     return size;
+ }
+@@ -371,10 +711,24 @@ static int out_set_format(struct audio_stream *stream, audio_format_t format)
+ static int do_output_standby(struct alsa_stream_out *out)
+ {
+     struct alsa_audio_device *adev = out->dev;
++    pa_operation *o;
+ 
+     if (!out->standby) {
+-        snd_pcm_close(out->pcm);
+-        out->pcm = NULL;
++        pa_threaded_mainloop_lock(adev->loop);
++        if (out->s && pa_stream_get_state(out->s) == PA_STREAM_READY) {
++            o = pa_stream_cork(out->s, 1, NULL, NULL);
++            if (o)
++                pa_operation_unref(o);
++            o = pa_stream_flush(out->s, NULL, NULL);
++            if (o)
++                pa_operation_unref(o);
++        }
++        out->corked = true;
++        pa_threaded_mainloop_unlock(adev->loop);
++        pthread_mutex_lock(&out->stats_lock);
++        out->stats.presented = out->stats.written;
++        clock_gettime(CLOCK_MONOTONIC, &out->stats.time);
++        pthread_mutex_unlock(&out->stats_lock);
+         adev->active_output = NULL;
+         out->standby = 1;
+     }
+@@ -398,6 +752,11 @@ static int out_standby(struct audio_stream *stream)
+ static int out_dump(const struct audio_stream *stream, int fd)
+ {
+     ALOGV("out_dump");
++    struct alsa_stream_out *out = (struct alsa_stream_out *)stream;
++    char line[256];
++
++    format_stats(out, line, sizeof(line));
++    dprintf(fd, "MicroOS pulse output: %s\n", line);
+     return 0;
+ }
+ 
+@@ -440,7 +799,7 @@ static uint32_t out_get_latency(const struct audio_stream_out *stream)
+ {
+     ALOGV("out_get_latency");
+     struct alsa_stream_out *out = (struct alsa_stream_out *)stream;
+-    return (PLAYBACK_PERIOD_SIZE * PLAYBACK_PERIOD_COUNT * 1000) / out->config.rate;
++    return (PLAYBACK_PULSE_PERIODS * out->period * 1000 + out->config.rate - 1) / out->config.rate;
+ }
+ 
+ static int out_set_volume(struct audio_stream_out *stream, float left,
+@@ -453,44 +812,55 @@ static int out_set_volume(struct audio_stream_out *stream, float left,
+ static ssize_t out_write(struct audio_stream_out *stream, const void* buffer,
+         size_t bytes)
+ {
+-    int ret;
+     struct alsa_stream_out *out = (struct alsa_stream_out *)stream;
+     struct alsa_audio_device *adev = out->dev;
+     size_t frame_size = audio_stream_out_frame_size(stream);
+     size_t out_frames = bytes / frame_size;
++    size_t queued = 0;
++    bool ready, stalled = false, lost = false;
++    char line[256];
++    pa_usec_t start = pa_rtclock_now(), deadline = start + PLAYBACK_WRITE_BOUND_USEC, now, left;
+ 
+-    /* acquiring hw device mutex systematically is useful if a low priority thread is waiting
+-     * on the output stream mutex - e.g. executing select_mode() while holding the hw device
+-     * mutex
+-     */
+-    pthread_mutex_lock(&adev->lock);
+     pthread_mutex_lock(&out->lock);
+     if (out->standby) {
+-        ret = start_output_stream(out);
+-        if (ret != 0) {
+-            pthread_mutex_unlock(&adev->lock);
+-            goto exit;
++        pthread_mutex_unlock(&out->lock);
++        pthread_mutex_lock(&adev->lock);
++        pthread_mutex_lock(&out->lock);
++        if (out->standby) {
++            out->standby = 0;
++            out->restarted = true;
++            adev->active_output = out;
+         }
+-        out->standby = 0;
++        pthread_mutex_unlock(&adev->lock);
+     }
+-
+-    pthread_mutex_unlock(&adev->lock);
+-
+-    ret = snd_pcm_writei(out->pcm, buffer, out_frames);
+-    if (ret == -EPIPE) {
+-	    snd_pcm_prepare(out->pcm);
+-	    ret = snd_pcm_writei(out->pcm, buffer, out_frames);
++    if (!out->writer_rt) {
++        out->writer_rt = true;
++        set_fifo("writer");
+     }
+ 
+-    if (ret > 0) {
+-        out->written += ret;
++    pa_threaded_mainloop_lock(adev->loop);
++    ready = stream_ready(out);
++    while (!ready && stream_wait(out, deadline))
++        ready = stream_ready(out);
++    if (ready)
++        queued = queue_frames(out, buffer, bytes, deadline, &stalled, &lost) / frame_size;
++    update_stats(out, out_frames, out_frames - queued, stalled);
++    pa_threaded_mainloop_unlock(adev->loop);
++
++    now = pa_rtclock_now();
++    if (now - out->last_debug >= PA_USEC_PER_SEC) {
++        out->last_debug = now;
++        if (property_get_bool(PLAYBACK_DEBUG_PROP, false)) {
++            format_stats(out, line, sizeof(line));
++            ALOGI("%s", line);
++        }
+     }
+-exit:
+     pthread_mutex_unlock(&out->lock);
+ 
+-    if (ret < 0) {
+-        usleep((int64_t)bytes * 1000000 / audio_stream_out_frame_size(stream) /
+-                out_get_sample_rate(&stream->common));
++    if (!ready || lost) {
++        left = (pa_usec_t)(out_frames - queued) * PA_USEC_PER_SEC / out_get_sample_rate(&stream->common);
++        if (left > now - start)
++            usleep(left - (now - start));
+     }
+ 
+     return bytes;
+@@ -499,9 +869,33 @@ exit:
+ static int out_get_render_position(const struct audio_stream_out *stream,
+         uint32_t *dsp_frames)
+ {
++    struct alsa_stream_out *out = (struct alsa_stream_out *)stream;
++    int ret = -EINVAL;
++
+     *dsp_frames = 0;
+-    ALOGV("out_get_render_position: dsp_frames: %p", dsp_frames);
+-    return -EINVAL;
++    pthread_mutex_lock(&out->stats_lock);
++    if (out->stats.valid) {
++        *dsp_frames = (uint32_t)(out->stats.presented - out->stats.render_base);
++        ret = 0;
++    }
++    pthread_mutex_unlock(&out->stats_lock);
++    return ret;
++}
++
++static int out_get_presentation_position(const struct audio_stream_out *stream,
++        uint64_t *frames, struct timespec *timestamp)
++{
++    struct alsa_stream_out *out = (struct alsa_stream_out *)stream;
++    int ret = -EINVAL;
++
++    pthread_mutex_lock(&out->stats_lock);
++    if (out->stats.valid) {
++        *frames = out->stats.presented;
++        *timestamp = out->stats.time;
++        ret = 0;
++    }
++    pthread_mutex_unlock(&out->stats_lock);
++    return ret;
+ }
+ 
+ static int out_add_audio_effect(const struct audio_stream *stream, effect_handle_t effect)
+@@ -793,11 +1187,17 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
+ 
+     struct alsa_audio_device *ladev = (struct alsa_audio_device *)dev;
+     struct alsa_stream_out *out;
++    unsigned int period;
+     int ret = 0;
+ 
++    period = out_period();
++    if (!period)
++        return -EINVAL;
++
+     out = (struct alsa_stream_out *)calloc(1, sizeof(struct alsa_stream_out));
+     if (!out)
+         return -ENOMEM;
++    pthread_mutex_init(&out->stats_lock, NULL);
+ 
+     out->stream.common.get_sample_rate = out_get_sample_rate;
+     out->stream.common.set_sample_rate = out_set_sample_rate;
+@@ -816,12 +1216,12 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
+     out->stream.write = out_write;
+     out->stream.get_render_position = out_get_render_position;
+     out->stream.get_next_write_timestamp = out_get_next_write_timestamp;
++    out->stream.get_presentation_position = out_get_presentation_position;
+ 
+     out->config.channels = CHANNEL_STEREO;
+     out->config.rate = PLAYBACK_CODEC_SAMPLING_RATE;
+     out->config.format = SND_PCM_FORMAT_S16_LE;
+-    out->config.period_size = PLAYBACK_PERIOD_SIZE;
+-    out->config.period_count = PLAYBACK_PERIOD_COUNT;
++    out->period = period;
+ 
+     if (out->config.rate != config->sample_rate ||
+            audio_channel_count_from_out_mask(config->channel_mask) != CHANNEL_STEREO ||
+@@ -837,12 +1237,23 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
+ 
+     out->dev = ladev;
+     out->standby = 1;
+-    out->unavailable = false;
++    out->corked = true;
++    out->stats.fill = -1;
+ 
+     config->format = out_get_format(&out->stream.common);
+     config->channel_mask = out_get_channels(&out->stream.common);
+     config->sample_rate = out_get_sample_rate(&out->stream.common);
+ 
++    pthread_mutex_lock(&ladev->lock);
++    out->next = ladev->outputs;
++    ladev->outputs = out;
++    pthread_mutex_unlock(&ladev->lock);
++
++    pa_threaded_mainloop_lock(ladev->loop);
++    set_period(ladev, period);
++    want_context(ladev);
++    pa_threaded_mainloop_unlock(ladev->loop);
++
+     *stream_out = &out->stream;
+ 
+     return 0;
+@@ -852,6 +1263,26 @@ static void adev_close_output_stream(struct audio_hw_device *dev,
+         struct audio_stream_out *stream)
+ {
+     ALOGV("adev_close_output_stream...");
++    struct alsa_audio_device *adev = (struct alsa_audio_device *)dev;
++    struct alsa_stream_out *out = (struct alsa_stream_out *)stream;
++    struct alsa_stream_out **p;
++
++    pthread_mutex_lock(&adev->lock);
++    pthread_mutex_lock(&out->lock);
++    pa_threaded_mainloop_lock(adev->loop);
++    stream_close(out);
++    pa_threaded_mainloop_unlock(adev->loop);
++    if (adev->active_output == out)
++        adev->active_output = NULL;
++    for (p = &adev->outputs; *p; p = &(*p)->next) {
++        if (*p == out) {
++            *p = out->next;
++            break;
++        }
++    }
++    pthread_mutex_unlock(&out->lock);
++    pthread_mutex_unlock(&adev->lock);
++    pthread_mutex_destroy(&out->stats_lock);
+     free(stream);
+ }
+ 
+@@ -1026,6 +1457,19 @@ static int adev_dump(const audio_hw_device_t *device, int fd)
+ static int adev_close(hw_device_t *device)
+ {
+     ALOGV("adev_close");
++    struct alsa_audio_device *adev = (struct alsa_audio_device *)device;
++    struct alsa_stream_out *out;
++
++    pa_threaded_mainloop_stop(adev->loop);
++    for (out = adev->outputs; out; out = out->next)
++        stream_close(out);
++    if (adev->context) {
++        pa_context_set_state_callback(adev->context, NULL, NULL);
++        pa_context_disconnect(adev->context);
++        pa_context_unref(adev->context);
++    }
++    adev->api->defer_free(adev->connect_event);
++    pa_threaded_mainloop_free(adev->loop);
+     free(device);
+     return 0;
+ }
+@@ -1049,6 +1493,24 @@ static int adev_open(const hw_module_t* module, const char* name,
+     if (!adev)
+         return -ENOMEM;
+ 
++    adev->loop = pa_threaded_mainloop_new();
++    if (!adev->loop) {
++        free(adev);
++        return -ENOMEM;
++    }
++    pa_threaded_mainloop_set_name(adev->loop, "microos-pulse");
++    adev->api = pa_threaded_mainloop_get_api(adev->loop);
++    adev->connect_event = adev->api->defer_new(adev->api, connect_cb, adev);
++    if (adev->connect_event)
++        adev->api->defer_enable(adev->connect_event, 0);
++    if (!adev->connect_event || pa_threaded_mainloop_start(adev->loop) < 0) {
++        if (adev->connect_event)
++            adev->api->defer_free(adev->connect_event);
++        pa_threaded_mainloop_free(adev->loop);
++        free(adev);
++        return -ENODEV;
++    }
++
+     adev->hw_device.common.tag = HARDWARE_DEVICE_TAG;
+     adev->hw_device.common.version = AUDIO_DEVICE_API_VERSION_2_0;
+     adev->hw_device.common.module = (struct hw_module_t *) module;
+-- 
+2.43.0
+

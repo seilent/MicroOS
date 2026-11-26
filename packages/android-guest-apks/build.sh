@@ -18,6 +18,9 @@ platform=/opt/android-platform-$SDK_API
 grep -qx "AndroidVersion.ApiLevel=$SDK_API" "$platform/source.properties" ||
   { echo "build.sh: $platform is not the API $SDK_API platform" >&2; exit 1; }
 testkey=/opt/android-testkey
+image_syms=/opt/android-image-symbols
+[[ $(< "$image_syms/pins") == "SYSTEM_SHA256=$SYSTEM_SHA256"$'\n'"VENDOR_SHA256=$VENDOR_SHA256" ]] ||
+  { echo "build.sh: $image_syms is not made from the system and vendor images SOURCE.env pins" >&2; exit 1; }
 { echo "$SIGNER_PK8_SHA256  $testkey/testkey.pk8" | sha256sum -c --status - &&
   echo "$SIGNER_X509_SHA256  $testkey/testkey.x509.pem" | sha256sum -c --status -; } ||
   { echo "build.sh: $testkey is not the pinned AOSP test key" >&2; exit 1; }
@@ -43,15 +46,20 @@ cp "$src/overlay.manifest" "$src/lights/service.c" "$src/lights/android.hardware
   "$src/vibrator/android.hardware.vibrator-service.microos.xml" "$src/build.sh" "$src/SOURCE.env" \
   "$src/vendor-etc/audio_policy_volumes.xml" "$src/vendor-etc/vintf/manifest.xml" "$src/hwc/hwcomposer.waydroid.so" \
   "$src/hwc/0001-hwc-private-roundtrip-queue.patch" "$src/hwc/0002-hwc-pen-on-touch-device.patch" \
-  "$src/hwc/0003-hwc-vsync-presented-grid.patch" "$src/hwc/hwc.env" "$src"/hwc/licenses/* "$top/SOURCES/"
+  "$src/hwc/0003-hwc-vsync-presented-grid.patch" "$src/hwc/hwc.env" "$src"/hwc/licenses/* "$src/audio/audio_hw.c" \
+  "$src/audio/0001-audio-pulse-output.patch" "$src/audio/audio.env" "$src/audio/alsa-headers.sh" \
+  "$src"/audio/licenses/* "$top/SOURCES/"
 for d in helper telephony display; do
   tar -C "$src" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX \
     -czf "$top/SOURCES/microos-android-guest-apks-$d.tar.gz" "$d"
 done
+tar -C "$src/audio" --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner --mode=u=rwX,go=rX \
+  -czf "$top/SOURCES/microos-android-guest-apks-audio.tar.gz" include alsa
 
 rpmbuild -ba --target aarch64 --define "_topdir $top" --define "ndk $ndk" --define "android_api $ANDROID_API" \
   --define "build_tools $tools" --define "platform $platform" --define "sdk_api $SDK_API" --define "testkey $testkey" \
   --define "helper_store $store" --define "helper_alias $key_alias" --define "helper_cert $HELPER_CERT_SHA256" \
+  --define "image_syms $image_syms" \
   "$src/microos-android-guest-apks.spec"
 
 find "$top/RPMS" "$top/SRPMS" -name '*.rpm' -exec cp -t "$out" {} +

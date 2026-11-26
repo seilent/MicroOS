@@ -2,6 +2,7 @@
 set -euo pipefail
 
 dir=${1:?usage: pkg-android-guest-apks.sh <rpmdir>}
+here=$(cd "$(dirname "$0")" && pwd)
 rc=0
 fail() { echo "FAIL: $*" >&2; rc=1; }
 . "$dir/SOURCE.env"
@@ -25,10 +26,12 @@ display=$overlay/system/product/overlay/MicroOsDisplay/MicroOsDisplayOverlay.apk
 volumes=$overlay/vendor/etc/audio_policy_volumes.xml
 vendorvintf=$overlay/vendor/etc/vintf/manifest.xml
 hwc=$overlay/vendor/lib64/hw/hwcomposer.waydroid.so
+audiohal=$overlay/vendor/lib64/hw/audio.primary.waydroid.so
 licdir=/usr/share/licenses/microos-android-guest-apks
 licenses=(COPYING.wayland COPYING.wayland-protocols LICENSE.hardware-waydroid LICENSE.libffi LICENSE.libxkbcommon
-  NOTICE.bionic NOTICE.hardware-waydroid NOTICE.libxkbcommon-parser)
+  NOTICE.bionic NOTICE.hardware-waydroid NOTICE.libxkbcommon-parser NOTICE.libhardware LGPL.pulseaudio COPYING.alsa-lib)
 hwcpatches=(0001-hwc-private-roundtrip-queue.patch 0002-hwc-pen-on-touch-device.patch 0003-hwc-vsync-presented-grid.patch)
+audiopatches=(0001-audio-pulse-output.patch)
 
 rpm=$(find "$dir" -maxdepth 1 -name 'microos-android-guest-apks-1-*.microos.aarch64.rpm')
 srpm=$(find "$dir" -maxdepth 1 -name 'microos-android-guest-apks-1-*.src.rpm')
@@ -44,14 +47,17 @@ if [[ $(rpm -qp --qf '%{RELEASE}' "$rpm") != *.microos ]]; then fail "release"; 
 if [[ $(rpm -qp --qf '%{SOURCERPM}' "$rpm") != "${srpm##*/}" ]]; then fail "SOURCERPM"; fi
 license=$(rpm -qp --qf '%{LICENSE}' "$rpm")
 want='GPL-2.0-or-later AND Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND HPND AND HPND-sell-variant'
-if [[ $license != "$want AND GPL-3.0-or-later WITH Bison-exception-2.2" ]]; then fail "license tag: $license"; fi
+if [[ $license != "$want AND GPL-3.0-or-later WITH Bison-exception-2.2 AND LGPL-2.1-or-later" ]]; then
+  fail "license tag: $license"
+fi
 if requires=$(rpm -qp --requires "$rpm" | grep -v '^rpmlib('); then fail "requires: $requires"; fi
 
 sources=$(rpm -qp --qf '[%{SOURCE}\n]' "$srpm" | sort)
 want=$(printf '%s\n' overlay.manifest service.c "$hal.rc" "$hal.xml" vibrator.c "$vib.rc" "$vib.xml" build.sh \
   SOURCE.env microos-android-guest-apks-helper.tar.gz microos-android-guest-apks-telephony.tar.gz \
   microos-android-guest-apks-display.tar.gz audio_policy_volumes.xml manifest.xml hwcomposer.waydroid.so \
-  "${hwcpatches[@]}" hwc.env "${licenses[@]}" | sort)
+  "${hwcpatches[@]}" hwc.env "${licenses[@]}" audio_hw.c "${audiopatches[@]}" audio.env alsa-headers.sh \
+  microos-android-guest-apks-audio.tar.gz | sort)
 if [[ $sources != "$want" ]]; then fail "SRPM sources: $(tr '\n' ' ' <<<"$sources")"; fi
 
 files=$(rpm -qlp "$rpm" | LC_ALL=C sort)
@@ -62,7 +68,7 @@ expected=$(printf '%s\n' "$share" "$manifest" "$vendorpin" "$overlay" "$overlay/
   "$overlay/system/priv-app" "${helper%/*}" "$helper" "$overlay/system/product" "${rro%/*/*}" "${rro%/*}" "$rro" \
   "${display%/*}" "$display" \
   "$overlay/vendor" "${volumes%/*}" "$volumes" "${vendorvintf%/*}" "$vendorvintf" "$overlay/vendor/lib64" \
-  "${hwc%/*}" "$hwc" \
+  "${hwc%/*}" "$hwc" "$audiohal" \
   "$licdir" "${licenses[@]/#/$licdir/}" | LC_ALL=C sort)
 if [[ $files != "$expected" ]]; then
   fail "file list: $(diff <(echo "$expected") <(echo "$files") | grep '^[<>]' | tr '\n' ' ')"
@@ -93,10 +99,11 @@ pins=$(printf '%s\n' \
   "01870ad79f25ac482a18a3c0c7ae0474f8e2d51dd1e963f1dcba16c1eba3e3de 0644 ${rro#"$overlay"/}" \
   "4ef8bc89e575d9be09ce25975e368493ee0b04256a67ab1b584bf1717a894166 0644 ${volumes#"$overlay"/}" \
   "3e0242a9cb3a1b9460a946f89a57189161c428747f505ebdf2c1709e77355a1f 0644 ${vendorvintf#"$overlay"/}" \
+  "7aaacce2124037b204bc78376f166089e09299a26357781258d07f03908303c5 0644 ${audiohal#"$overlay"/}" \
   "83ec0b77a6dc967872b7ae935d082a3037fdd35bd3c5ac0f1d352eddba8fdce0 0644 ${hwc#"$overlay"/}")
 [[ $(< "$root$manifest") == "$pins" ]] ||
-  fail "$manifest is not the pinned lights and vibrator HALs, helper, telephony and display overlay, volume, VINTF" \
-    "and composer set: $(< "$root$manifest")"
+  fail "$manifest is not the pinned lights and vibrator HALs, helper, telephony and display overlay, volume, VINTF," \
+    "audio HAL and composer set: $(< "$root$manifest")"
 while read -r sum mode path; do
   echo "$sum  $root$overlay/$path" | sha256sum -c --status - || fail "$overlay/$path does not match its manifest sha256"
   [[ $(stat -c %04a "$root$overlay/$path") == "$mode" ]] || fail "$overlay/$path is not $mode"
@@ -133,24 +140,79 @@ done
 
 cmp -s "$tmp/src/hwcomposer.waydroid.so" "$root$hwc" || fail "$hwc is not the SRPM's hwcomposer.waydroid.so"
 pin() { sed -n "s/^$1=//p" "$tmp/src/hwc.env"; }
+apin() { sed -n "s/^$1=//p" "$tmp/src/audio.env"; }
+one_series() {
+  (cd "$tmp/src" && awk '
+    /^diff --git a\// { file = $3 }
+    /^index [0-9a-f]+\.\.[0-9a-f]+ / {
+      split($2, blob, /\.\./)
+      if (file in post && substr(post[file], 1, 7) != substr(blob[1], 1, 7)) print FILENAME, file
+      post[file] = blob[2]
+    }' "$@")
+}
 [[ $(sha256sum < "$root$hwc") == "$(pin HWC_SHA256)  -" ]] || fail "$hwc is not the library hwc.env pins"
 for i in "${!hwcpatches[@]}"; do
   [[ $(sha256sum < "$tmp/src/${hwcpatches[i]}") == "$(pin "HWC_PATCH$((i + 1))_SHA256")  -" ]] ||
     fail "${hwcpatches[i]} is not the patch hwc.env pins"
 done
-series=$(cd "$tmp/src" && awk '
-  /^diff --git a\// { file = $3 }
-  /^index [0-9a-f]+\.\.[0-9a-f]+ / {
-    split($2, blob, /\.\./)
-    if (file in post && substr(post[file], 1, 7) != substr(blob[1], 1, 7)) print FILENAME, file
-    post[file] = blob[2]
-  }' "${hwcpatches[@]}")
+series=$(one_series "${hwcpatches[@]}")
 [[ -z $series ]] || fail "the composer patches are not one series in order: $series"
 [[ $(pin VENDOR_SHA256) == "$VENDOR_SHA256" ]] || fail "hwc.env's VENDOR_SHA256 is not SOURCE.env's"
 out=$("$readelf" -h -n "$root$hwc") || fail "llvm-readelf cannot read $hwc"
 grep -qE '^ +Machine: +AArch64$' <<<"$out" || fail "$hwc is not aarch64"
 grep -qE '^ +Build ID: 4594e9ca8272df47a1043cda4b535f06$' <<<"$out" || fail "$hwc BuildId"
 [[ $(pin HWC_BUILD_ID) == 4594e9ca8272df47a1043cda4b535f06 ]] || fail "hwc.env's HWC_BUILD_ID"
+
+mkdir "$tmp/audio"
+tar -xzf "$tmp/src/microos-android-guest-apks-audio.tar.gz" -C "$tmp/audio"
+cp "$tmp/src/audio_hw.c" "$tmp/audio/audio_hw.c"
+filepins=$(sed -n 's/^FILE=//p' "$tmp/src/audio.env")
+while read -r path repo repopath sum; do
+  case $path in
+    licenses/*) file=$tmp/src/${path#licenses/} ;;
+    *) file=$tmp/audio/$path ;;
+  esac
+  [[ $(apin "${repo}_URL") == https://github.com/* && $(apin "${repo}_COMMIT") =~ ^[0-9a-f]{40}$ && -n $repopath ]] ||
+    fail "audio.env names no repo URL, commit and path for $path"
+  [[ -f $file && $(sha256sum < "$file") == "$sum  -" ]] || fail "$path is not the file audio.env pins"
+done <<<"$filepins"
+unpinned=$(LC_ALL=C comm -23 <(cd "$tmp/audio" && find audio_hw.c include alsa -type f | LC_ALL=C sort) \
+  <(cut -d' ' -f1 <<<"$filepins" | LC_ALL=C sort))
+[[ -z $unpinned ]] || fail "vendored audio files audio.env does not pin: $(tr '\n' ' ' <<<"$unpinned")"
+for f in NOTICE.libhardware LGPL.pulseaudio COPYING.alsa-lib; do
+  grep -qx "licenses/$f .*" <<<"$filepins" || fail "audio.env does not pin the license text $f"
+done
+for i in "${!audiopatches[@]}"; do
+  [[ $(sha256sum < "$tmp/src/${audiopatches[i]}") == "$(apin "PATCH$((i + 1))_SHA256")  -" ]] ||
+    fail "${audiopatches[i]} is not the patch audio.env pins"
+done
+series=$(one_series "${audiopatches[@]}")
+[[ -z $series ]] || fail "the audio patches are not one series in order: $series"
+size=$(stat -c %s "$tmp/audio/audio_hw.c")
+base=$({ printf 'blob %s\0' "$size"; cat "$tmp/audio/audio_hw.c"; } | sha1sum | cut -c1-7)
+grep -qE "^index ${base}[0-9a-f]*\.\." "$tmp/src/${audiopatches[0]}" ||
+  fail "${audiopatches[0]} does not start from the audio_hw.c audio.env pins"
+[[ $(apin MANIFEST_COMMIT) == "$(pin MANIFEST_COMMIT)" ]] || fail "audio.env's MANIFEST_COMMIT is not hwc.env's"
+out=$("$readelf" -h -l -S -d --dyn-syms -W "$root$audiohal") || fail "llvm-readelf cannot read $audiohal"
+grep -qE '^ +Machine: +AArch64$' <<<"$out" || fail "$audiohal is not aarch64"
+grep -qE '^ +Type: +DYN ' <<<"$out" || fail "$audiohal is not a shared object"
+if grep -qE '^ +INTERP ' <<<"$out"; then fail "$audiohal names an interpreter"; fi
+if grep -qF .symtab <<<"$out"; then fail "$audiohal is not stripped"; fi
+if grep -qF TEXTREL <<<"$out"; then fail "$audiohal has text relocations"; fi
+needed=$(sed -n 's/.*(NEEDED) *Shared library: \[\(.*\)\]$/\1/p' <<<"$out" | LC_ALL=C sort | paste -sd' ')
+[[ $needed == "libasound.so libc.so libcutils.so liblog.so libpulse.so" ]] || fail "$audiohal NEEDED: $needed"
+[[ -n $(awk '$4 == "OBJECT" && $5 == "GLOBAL" && $7 != "UND" && $8 == "HMI"' <<<"$out") ]] ||
+  fail "$audiohal does not export HMI"
+patch -s -p2 -d "$tmp/audio" < "$tmp/src/${audiopatches[0]}" || fail "${audiopatches[0]} does not apply"
+bash "$tmp/src/alsa-headers.sh" "$tmp/audio/alsa" "$tmp/audio/include" || fail "alsa-headers.sh"
+if gcc -std=gnu11 -O2 -g -Wall -Wextra -Wno-unused-parameter -Wno-unused-but-set-variable -Werror -DNDEBUG \
+  -D_GNU_SOURCE '-D__unused=__attribute__((unused))' -isystem "$tmp/audio/include" -I "$here/pkg-android-guest-apks" \
+  -pthread -o "$tmp/audiotest" "$tmp/audio/audio_hw.c" "$here/pkg-android-guest-apks/fakepulse.c" \
+  "$here/pkg-android-guest-apks/audiotest.c"; then
+  "$tmp/audiotest" || fail "audiotest"
+else
+  fail "the audio HAL does not build against fakepulse"
+fi
 licfiles=$(rpm -qp --licensefiles "$rpm" | LC_ALL=C sort)
 [[ $licfiles == "$(printf '%s\n' "${licenses[@]/#/$licdir/}" | LC_ALL=C sort)" ]] ||
   fail "license files: $(tr '\n' ' ' <<<"$licfiles")"

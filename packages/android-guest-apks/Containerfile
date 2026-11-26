@@ -34,3 +34,40 @@ RUN --mount=type=cache,id=microos-android-ndk,target=/var/cache/android-ndk \
       && echo "${f%% *}  /opt/android-testkey/${f#* }" | sha256sum -c - || exit 1; \
     done \
  && rm -rf /tmp/android-guest-apks
+
+COPY SOURCE.env /tmp/android-images/
+RUN --mount=type=cache,id=microos-android-images,target=/var/cache/android-images \
+    dnf -y --setopt=install_weak_deps=False install e2fsprogs \
+ && dnf clean all \
+ && . /tmp/android-images/SOURCE.env \
+ && get() { \
+      if ! echo "$2  $3" | sha256sum -c --status - 2>/dev/null; then \
+        curl -fsSL --retry 3 -o "$3" "$1" \
+        && echo "$2  $3" | sha256sum -c -; \
+      fi; \
+    } \
+ && sys=/var/cache/android-images/$(basename "${SYSTEM_URL%/download}") \
+ && ven=/var/cache/android-images/$(basename "${VENDOR_URL%/download}") \
+ && get "$SYSTEM_URL" "$SYSTEM_SHA256" "$sys" \
+ && get "$VENDOR_URL" "$VENDOR_SHA256" "$ven" \
+ && find /var/cache/android-images -maxdepth 1 -type f ! -name "${sys##*/}" ! -name "${ven##*/}" -delete \
+ && img=/tmp/android-images \
+ && unzip -q -d "$img" "$sys" system.img \
+ && unzip -q -d "$img" "$ven" vendor.img \
+ && readelf=/opt/android-ndk-$NDK_VERSION/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf \
+ && out=/opt/android-image-symbols \
+ && mkdir "$out" \
+ && for f in vendor.img:/lib64/libpulse.so vendor.img:/lib64/libasound.so \
+      system.img:/system/apex/com.android.vndk.current/lib64/libcutils.so; do \
+      lib=${f##*/} \
+      && debugfs -R "cat ${f#*:}" "$img/${f%%:*}" > "$img/$lib" 2> /dev/null \
+      && "$readelf" -h "$img/$lib" | grep -qE '^ +Machine: +AArch64$' \
+      && "$readelf" --dyn-syms -W "$img/$lib" \
+        | awk '$7 != "UND" && ($5 == "GLOBAL" || $5 == "WEAK") && $8 != "" { sub(/@.*/, "", $8); print $8 }' \
+        | LC_ALL=C sort -u > "$out/$lib.syms" \
+      && test -s "$out/$lib.syms" \
+      && "$readelf" -d "$img/$lib" | sed -n 's/.*(SONAME) *Library soname: \[\(.*\)\]$/\1/p' > "$out/$lib.soname" \
+      && test -s "$out/$lib.soname" || exit 1; \
+    done \
+ && printf 'SYSTEM_SHA256=%s\nVENDOR_SHA256=%s\n' "$SYSTEM_SHA256" "$VENDOR_SHA256" > "$out/pins" \
+ && rm -rf "$img"

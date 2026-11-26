@@ -7,6 +7,7 @@
 %{!?helper_store:%{error:helper_store is not defined}}
 %{!?helper_alias:%{error:helper_alias is not defined}}
 %{!?helper_cert:%{error:helper_cert is not defined}}
+%{!?image_syms:%{error:image_syms is not defined}}
 %global debug_package %{nil}
 %global __os_install_post %{nil}
 %global _build_id_links none
@@ -15,12 +16,13 @@
 %global overlay %{_datadir}/microos-android/overlay
 %global hal android.hardware.lights-service.microos
 %global vibrator android.hardware.vibrator-service.microos
+%global audiohal audio.primary.waydroid
 
 Name:           microos-android-guest-apks
 Version:        1
 Release:        1%{?dist}.microos
 Summary:        The Waydroid guest's composer, HALs, helper, overlays, volume curves and VINTF manifest as overlay files
-License:        GPL-2.0-or-later AND Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND HPND AND HPND-sell-variant AND GPL-3.0-or-later WITH Bison-exception-2.2
+License:        GPL-2.0-or-later AND Apache-2.0 AND MIT AND BSD-2-Clause AND BSD-3-Clause AND HPND AND HPND-sell-variant AND GPL-3.0-or-later WITH Bison-exception-2.2 AND LGPL-2.1-or-later
 URL:            https://github.com/seilent/MicroOS
 Source0:        overlay.manifest
 Source1:        service.c
@@ -49,6 +51,14 @@ Source23:       %{vibrator}.xml
 Source24:       manifest.xml
 Source25:       0002-hwc-pen-on-touch-device.patch
 Source26:       0003-hwc-vsync-presented-grid.patch
+Source27:       audio_hw.c
+Source28:       0001-audio-pulse-output.patch
+Source29:       audio.env
+Source30:       alsa-headers.sh
+Source31:       %{name}-audio.tar.gz
+Source32:       NOTICE.libhardware
+Source33:       LGPL.pulseaudio
+Source34:       COPYING.alsa-lib
 Vendor:         MicroOS
 ExclusiveArch:  aarch64
 AutoReqProv:    no
@@ -75,7 +85,14 @@ to the guest as pens on the touch device and drops finger touches while a pen
 is down (0002-hwc-pen-on-touch-device.patch), and reports vsync on the grid of
 the last presented time (0003-hwc-vsync-presented-grid.patch). It is built in a
 LineageOS 20 tree and carried as a prebuilt with the patches and the tree's pins
-in hwc.env; the license texts of its parts are in %{_licensedir}/%{name}. They
+in hwc.env. Waydroid's audio.primary.waydroid.so with its output on the vendor
+libpulse (0001-audio-pulse-output.patch): its own realtime pulse loop and
+context, a period of 64, 128 or 256 frames from
+vendor.microos.audio.period_frames (256 when unset), a write bounded at 100 ms,
+a presentation position from the stream latency, a per second log line while
+vendor.microos.audio.debug=1, built with the NDK against the headers audio.env
+pins and checked against the dynamic symbols of the pinned vendor and system
+images. The license texts of the parts are in %{_licensedir}/%{name}. They
 sit at their Waydroid overlay paths under %{overlay}, overlay.manifest next to
 it lists each with its sha256 and mode, and overlay.vendor names the sha256 of
 the vendor image zip they were made for. microos-android-overlay copies them
@@ -86,6 +103,11 @@ into the Waydroid overlay before the container starts.
 tar -xzf %{SOURCE6}
 tar -xzf %{SOURCE7}
 tar -xzf %{SOURCE20}
+mkdir audio
+tar -xzf %{SOURCE31} -C audio
+cp -p %{SOURCE27} audio/audio_hw.c
+patch -s -p2 -d audio < %{SOURCE28}
+bash %{SOURCE30} audio/alsa audio/include
 
 %build
 cc=%{ndkbin}/aarch64-linux-android%{android_api}-clang
@@ -99,6 +121,52 @@ sysroot=%{ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-lin
 %{ndkbin}/llvm-strip %{hal}
 "$cc" -std=c17 -O2 -Wall -Wextra -Werror -o %{vibrator} %{SOURCE21} libbinder_ndk.so -llog
 %{ndkbin}/llvm-strip %{vibrator}
+
+"$cc" -std=gnu11 -O2 -fPIC -Wall -Wno-unused-parameter -Wno-unused-but-set-variable -Werror -DNDEBUG \
+  -isystem audio/include -c -o audio_hw.o audio/audio_hw.c
+{
+  for lib in libc libm libdl liblog; do
+    %{ndkbin}/llvm-nm -D --defined-only --format=just-symbols "$sysroot/$lib.so"
+  done
+  %{ndkbin}/llvm-nm --defined-only --format=just-symbols "$("$cc" -print-libgcc-file-name)"
+} | sed 's/@.*//' | LC_ALL=C sort -u > ndk.syms
+vendor="libpulse.so libasound.so libcutils.so"
+for lib in $vendor; do
+  : > "${lib%.so}.c"
+done
+%{ndkbin}/llvm-nm -u --format=just-symbols audio_hw.o | LC_ALL=C sort -u > audio_hw.undef
+while read -r sym; do
+  if grep -qxF "$sym" ndk.syms; then continue; fi
+  from=
+  for lib in $vendor; do
+    if grep -qxF "$sym" "%{image_syms}/$lib.syms"; then
+      test -z "$from" || { echo "$sym is in $from and $lib" >&2; exit 1; }
+      from=$lib
+    fi
+  done
+  test -n "$from" || { echo "$sym is in no vendor library" >&2; exit 1; }
+  echo "void $sym(void) {}" >> "${from%.so}.c"
+done < audio_hw.undef
+for lib in $vendor; do
+  "$cc" -shared -nostdlib -Wl,-soname,"$(cat "%{image_syms}/$lib.soname")" -o "$lib" "${lib%.so}.c"
+done
+"$cc" -shared -fPIC -Wl,--no-undefined -Wl,--as-needed -o %{audiohal}.so audio_hw.o -L. -lpulse -lasound -lcutils \
+  -llog -lm -ldl
+%{ndkbin}/llvm-strip %{audiohal}.so
+%{ndkbin}/llvm-readelf --dyn-syms -W %{audiohal}.so | awk '$7 == "UND" && $8 != "" { sub(/@.*/, "", $8); print $8 }' |
+  LC_ALL=C sort -u > %{audiohal}.undef
+while read -r sym; do
+  from=ndk
+  if ! grep -qxF "$sym" ndk.syms; then
+    from=
+    for lib in $vendor; do
+      if grep -qxF "$sym" "%{image_syms}/$lib.syms"; then from=$lib; fi
+    done
+    test -n "$from" || { echo "vendor symbol check: $sym is in no vendor library" >&2; exit 1; }
+  fi
+  echo "vendor symbol check: $sym $from"
+done < %{audiohal}.undef
+echo "vendor symbol check: $(wc -l < %{audiohal}.undef) undefined symbols found, $(paste -sd' ' %{image_syms}/pins)"
 
 export TZ=UTC
 jar=%{platform}/android.jar
@@ -148,8 +216,9 @@ done
 install -Dpm644 %{SOURCE8} %{buildroot}%{overlay}/vendor/etc/audio_policy_volumes.xml
 install -Dpm644 %{SOURCE24} %{buildroot}%{overlay}/vendor/etc/vintf/manifest.xml
 install -Dpm644 %{SOURCE9} %{buildroot}%{overlay}/vendor/lib64/hw/hwcomposer.waydroid.so
+install -Dm644 %{audiohal}.so %{buildroot}%{overlay}/vendor/lib64/hw/%{audiohal}.so
 install -Dpm644 -t %{buildroot}%{_licensedir}/%{name} %{SOURCE12} %{SOURCE13} %{SOURCE14} %{SOURCE15} \
-  %{SOURCE16} %{SOURCE17} %{SOURCE18} %{SOURCE19}
+  %{SOURCE16} %{SOURCE17} %{SOURCE18} %{SOURCE19} %{SOURCE32} %{SOURCE33} %{SOURCE34}
 grep -x 'VENDOR_SHA256=[0-9a-f]\{64\}' %{SOURCE5} > %{buildroot}%{_datadir}/microos-android/overlay.vendor
 
 %check
@@ -175,3 +244,6 @@ test "$(find %{buildroot}%{overlay} -type f | wc -l)" = "$(wc -l < %{SOURCE0})"
 %license %{_licensedir}/%{name}/NOTICE.bionic
 %license %{_licensedir}/%{name}/NOTICE.hardware-waydroid
 %license %{_licensedir}/%{name}/NOTICE.libxkbcommon-parser
+%license %{_licensedir}/%{name}/NOTICE.libhardware
+%license %{_licensedir}/%{name}/LGPL.pulseaudio
+%license %{_licensedir}/%{name}/COPYING.alsa-lib
