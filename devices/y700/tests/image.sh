@@ -112,6 +112,9 @@ for u in pipewire.socket pipewire-pulse.socket wireplumber.service microos-andro
 done
 null=/usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
 grep -qF 'factory.name = support.null-audio-sink' "$null" && grep -qF 'priority.session = 1' "$null" || fail "$null"
+renderer=$(systemctl --global cat microset-overlay@android.service | awk 'index($0, "UnsetEnvironment=") == 1 { v = substr($0, 18); if (v == "") n = 0; else l[++n] = v }
+  END { for (i = 1; i <= n; i++) print l[i] }') || fail "systemctl --global cat microset-overlay@android.service"
+[[ $renderer == 'QT_QUICK_BACKEND QT_XCB_GL_INTEGRATION' ]] || fail "microset-overlay@android.service UnsetEnvironment: $renderer"
 switch=/usr/share/wireplumber/scripts/microos/switch-on-connect.lua
 switchconf=/usr/share/wireplumber/wireplumber.conf.d/53-microos-switch.conf
 luajit -b "$switch" /dev/null && grep -qF '"default.configured.audio.sink"' "$switch" || fail "$switch"
@@ -138,6 +141,7 @@ kept=(
   /usr/lib/udev/rules.d/60-microos-y700-touch.rules
   /usr/lib/systemd/user-preset/60-microos-android.preset
   /usr/lib/systemd/user-preset/60-microos-audio.preset
+  /usr/lib/systemd/user/microset-overlay@.service.d/60-microos-renderer.conf
   /usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
   /usr/share/wireplumber/scripts/microos/switch-on-connect.lua
   /usr/share/wireplumber/wireplumber.conf.d/53-microos-switch.conf
