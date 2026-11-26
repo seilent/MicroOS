@@ -1,0 +1,162 @@
+#!/usr/bin/python3
+import os
+import signal
+import subprocess
+import sys
+
+import gi
+
+gi.require_version("Gio", "2.0")
+gi.require_version("GLibUnix", "2.0")
+from gi.repository import Gio, GLib, GLibUnix
+
+ME = "microos-android-rotation"
+MICROSET = ("net.seilent.MicroSet", "/net/seilent/MicroSet", "net.seilent.MicroSet1")
+GUEST = os.environ.get("MICROOS_ANDROID_GUEST") or "/usr/libexec/microos/microos-android-guest"
+TIMEOUT_S = float(os.environ.get("MICROOS_ROTATION_TIMEOUT_S") or 5)
+DISPLAY_FILE = os.environ.get("MICROOS_DISPLAY_FILE") or "/usr/share/microos-android/display"
+ORIENTATIONS = ("portrait", "portrait-flipped", "landscape", "landscape-flipped")
+ROTATIONS = ("0", "1", "2", "3")
+DEFAULTS = {"display.auto_rotate": True, "display.orientation": "portrait"}
+FIXED = "/system/bin/wm fixed-to-user-rotation"
+USER_ROTATION = "/system/bin/cmd settings put system user_rotation"
+
+
+def log(message):
+    print(f"{ME}: {message}", file=sys.stderr, flush=True)
+
+
+def quote(text):
+    return "'" + str(text).replace("'", "'\\''") + "'"
+
+
+def script(lines):
+    return "r=0\n" + "".join(f"{line} >/dev/null 2>&1 || r=1\n" for line in lines) + 'exit "$r"\n'
+
+
+def guest(text):
+    try:
+        result = subprocess.run([GUEST, "sh", text],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return f"timed out after {TIMEOUT_S:g} s", ""
+    except OSError as error:
+        return f"the guest exec failed: {error}", ""
+    out = result.stdout.decode(errors="replace")
+    return (f"failed (rc={result.returncode})" if result.returncode else None), out
+
+
+def rotations():
+    with open(DISPLAY_FILE) as handle:
+        values = [line.strip()[len("orientation="):] for line in handle if line.startswith("orientation=")]
+    if not values:
+        return None
+    items = [item.split(":") for item in values[0].split(",")]
+    pairs = {item[0]: item[1] for item in items if len(item) == 2}
+    if len(items) != len(ORIENTATIONS) or sorted(pairs) != sorted(ORIENTATIONS) \
+            or any(rotation not in ROTATIONS for rotation in pairs.values()):
+        raise ValueError(f"orientation={values[0]} in {DISPLAY_FILE} is not a rotation map")
+    return {name: int(rotation) for name, rotation in pairs.items()}
+
+
+class Writer:
+    def __init__(self, bus, rotations):
+        self.bus = bus
+        self.rotations = rotations
+        self.values = None
+        self.bad = set()
+
+    def valid(self, key):
+        value = self.values[key]
+        if type(value) is type(DEFAULTS[key]) and (key != "display.orientation" or value in self.rotations):
+            return True
+        if (key, repr(value)) not in self.bad:
+            self.bad.add((key, repr(value)))
+            log(f"{key} {value!r} not valid, the guest is left as it is")
+        return False
+
+    def force(self):
+        orientation = self.values["display.orientation"]
+        rotation = self.rotations[orientation]
+        error, _ = guest(script([f"{FIXED} enabled", f"{USER_ROTATION} {quote(rotation)}"]))
+        summary = f"forced {orientation}, rotation {rotation}"
+        log(f"{summary}: {error}" if error else summary)
+
+    def release(self):
+        error, out = guest(f"{FIXED}\n")
+        if error:
+            log(f"the rotation mode read {error}")
+            return
+        if out.split("\n", 1)[0].strip() != "enabled":
+            log("auto")
+            return
+        error, _ = guest(script([f"{FIXED} default", f"{USER_ROTATION} 0"]))
+        log(f"released: {error}" if error else "released")
+
+    def reconcile(self):
+        if self.values is None:
+            self.release()
+        elif not self.valid("display.auto_rotate"):
+            return
+        elif self.values["display.auto_rotate"]:
+            self.release()
+        elif self.valid("display.orientation"):
+            self.force()
+
+    def appeared(self, _conn, _name, _owner):
+        self.bus.call(
+            *MICROSET, "List", GLib.Variant("(s)", ("display.",)),
+            GLib.VariantType("(a{sv})"), Gio.DBusCallFlags.NONE, 5000, None, self.loaded, None,
+        )
+
+    def loaded(self, bus, result, _data):
+        try:
+            values = bus.call_finish(result).unpack()[0]
+        except GLib.Error as err:
+            log(f"reading the display keys failed: {err.message}")
+            return
+        self.values = {key: values.get(key, default) for key, default in DEFAULTS.items()}
+        self.reconcile()
+
+    def vanished(self, _conn, _name):
+        if self.values is not None:
+            self.values = None
+            self.reconcile()
+
+    def changed(self, _conn, _sender, _path, _iface, _signal, params):
+        key, value = params.unpack()
+        if self.values is None:
+            return
+        self.values[key] = value
+        self.reconcile()
+
+
+def main():
+    try:
+        mapping = rotations()
+    except (OSError, ValueError) as error:
+        log(f"cannot read the orientation map: {error}")
+        return 1
+    if mapping is None:
+        log(f"{DISPLAY_FILE} has no orientation map, no forced orientation")
+        return 0
+    loop = GLib.MainLoop()
+    GLibUnix.signal_add(GLib.PRIORITY_HIGH, signal.SIGTERM, loop.quit)
+    try:
+        bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    except GLib.Error as err:
+        log(f"no system bus, no forced orientation: {err.message}")
+        return 1
+    writer = Writer(bus, mapping)
+    for key in DEFAULTS:
+        bus.signal_subscribe(
+            MICROSET[0], MICROSET[2], "Changed", MICROSET[1], key, Gio.DBusSignalFlags.NONE, writer.changed,
+        )
+    Gio.bus_watch_name_on_connection(bus, MICROSET[0], Gio.BusNameWatcherFlags.NONE, writer.appeared,
+                                     writer.vanished)
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

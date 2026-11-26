@@ -8,3 +8,4 @@ navbar=1
 adb=remote
 ubwc=0
 light_sensor=1
+orientation=landscape:0,landscape-flipped:2,portrait:1,portrait-flipped:3

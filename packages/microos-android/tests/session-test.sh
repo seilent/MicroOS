@@ -78,9 +78,9 @@ got=$(MICROOS_GAMESCOPE="${T}/gamescope" MICROOS_DISPLAY_FILE="${T}/absent-displ
 
 for u in microos-android.service microos-android-status.service microos-android-battery.service \
     microos-android-brightness.service microos-android-gapps.service microos-android-lsfg.service \
-    microos-android-perf.service "${pm2_units}/microos-android-pad.service" "${system}/microos-android-gsf.service" \
-    "${system}/microos-android-reset.service" "${system}/microos-android-layer.service" \
-    "${system}/microos-android-gapps@.service"; do
+    microos-android-perf.service microos-android-rotation.service "${pm2_units}/microos-android-pad.service" \
+    "${system}/microos-android-gsf.service" "${system}/microos-android-reset.service" \
+    "${system}/microos-android-layer.service" "${system}/microos-android-gapps@.service"; do
     [[ "${u}" == /* ]] || u="${units}/${u}"
     [[ -f "${u}" ]] || { fail "${u##*/} missing"; continue; }
     grep -qx '\[Unit\]' "${u}" || fail "${u##*/} has no [Unit]"

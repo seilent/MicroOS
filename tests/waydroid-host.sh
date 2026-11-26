@@ -206,7 +206,7 @@ im || fail "images exited $? on a ready set: $(< "$w/err")"
 [[ $(props) == "${base/400/320}" ]] || fail "props with UBWC on, density 320 and another fake Wi-Fi list: $(props)"
 [[ $(st) != "$s1" && $(< "$w/state") == $'state=ready\nset='"$SET" && $(< "$w/inputs") == "$(st)" ]] ||
   fail "state and inputs after a props only run: $(< "$w/state"), $(< "$w/inputs")"
-printf 'width=2560\ndensity=400\nubwc=0\nlight_sensor=1\n' > "$w/display"
+printf 'width=2560\ndensity=400\nubwc=0\nlight_sensor=1\norientation=landscape:0,landscape-flipped:2,portrait:1,portrait-flipped:3\n' > "$w/display"
 im || fail "images exited $? with a light sensor: $(< "$w/err")"
 [[ $(props) == "$base debug.mesa.fd.mesa.debug=noubwc debug.mesa.tu.debug=noubwc ro.vendor.microos.light_sensor=1" ]] ||
   fail "props with a light sensor: $(props)"

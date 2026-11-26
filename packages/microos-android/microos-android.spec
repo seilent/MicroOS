@@ -27,9 +27,9 @@ Requires:       pipewire-utils
 %description
 The Android session of MicroOS: Waydroid in a gamescope session, its
 client and stop, the guest exec path over adb, the status service, the
-battery, brightness, screen off and vibration, frame generation and overlay
-writers, the helper app bridge, and the Google Play install into the Waydroid
-overlay.
+battery, brightness, screen off and vibration, frame generation, overlay and
+forced orientation writers, the helper app bridge, and the Google Play install
+into the Waydroid overlay.
 
 %prep
 %setup -q -c -T
@@ -56,6 +56,7 @@ test -z "$(find %{buildroot} -type f -perm /022)"
 %{_userunitdir}/microos-android-gapps.service
 %{_userunitdir}/microos-android-lsfg.service
 %{_userunitdir}/microos-android-perf.service
+%{_userunitdir}/microos-android-rotation.service
 %{_userunitdir}/microos-android-status.service
 %{_unitdir}/microos-android-gapps@.service
 %{_unitdir}/microos-android-gsf.service

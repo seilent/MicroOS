@@ -36,7 +36,7 @@ grep -qE '^(KillMode|SendSIGKILL|Restart)=' "${unit}" && fail "the session owner
 for line in PartOf=microos-android.service After=microos-android.service; do
     grep -qxF "${line}" "${units}/microos-android-brightness.service" || fail "the bridge lacks ${line}"
 done
-for u in battery lsfg perf; do
+for u in battery lsfg perf rotation; do
     for line in BindsTo=microos-android.service After=microos-android.service; do
         grep -qxF "${line}" "${units}/microos-android-${u}.service" || fail "microos-android-${u}.service lacks ${line}"
     done
@@ -45,7 +45,7 @@ grep -qxF 'ExecStopPost=/usr/libexec/microos/microos-android-lsfg clear' "${unit
     || fail "the frame generation writer does not clear at stop"
 grep -qxF 'ExecStopPost=/usr/libexec/microos/microos-android-perf off' "${units}/microos-android-perf.service" \
     || fail "the overlay writer does not turn the overlay off at stop"
-for u in lsfg perf; do
+for u in lsfg perf rotation; do
     grep -qxF 'EnvironmentFile=%t/microos-android/session.env' "${units}/microos-android-${u}.service" \
         || fail "microos-android-${u}.service does not read session.env"
 done

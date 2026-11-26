@@ -26,6 +26,7 @@ python=(
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-client"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-lsfg"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-perf"
+  "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-rotation"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-root"
   "$repo/packages/microos-android/data/usr/libexec/microos/microos-android-status"
 )
@@ -50,7 +51,7 @@ hits=$(grep -rnE 'MICROEMU|microemu|microos-lepton|lepton-android|liblepton|podm
 out=$(mktemp)
 trap 'rm -f "${out:?}"' EXIT
 for t in guest-test root-test reset-test gapps-install-test play-unit-test run-test check-test status-test state-test \
-  client-test session-test cli-test storage-test lsfg-test perf-test battery-test brightness-test; do
+  client-test session-test cli-test storage-test lsfg-test perf-test rotation-test battery-test brightness-test; do
   if ! bash "${tests}/${t}.sh" > "$out" 2>&1; then
     fail "${t}.sh: $(tail -n 5 "$out" | tr '\n' ' ')"
   fi

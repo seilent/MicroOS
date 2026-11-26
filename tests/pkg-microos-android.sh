@@ -46,6 +46,7 @@ for f in \
   /usr/libexec/microos/microos-android-install \
   /usr/libexec/microos/microos-android-lsfg \
   /usr/libexec/microos/microos-android-perf \
+  /usr/libexec/microos/microos-android-rotation \
   /usr/libexec/microos/microos-android-root \
   /usr/libexec/microos/microos-android-status \
   /usr/libexec/microos/microos-fetch \
@@ -57,6 +58,7 @@ for f in \
   /usr/lib/systemd/user/microos-android-gapps.service \
   /usr/lib/systemd/user/microos-android-lsfg.service \
   /usr/lib/systemd/user/microos-android-perf.service \
+  /usr/lib/systemd/user/microos-android-rotation.service \
   /usr/lib/systemd/user/microos-android-status.service \
   /usr/lib/systemd/system/microos-android-gapps@.service \
   /usr/lib/systemd/system/microos-android-gsf.service \

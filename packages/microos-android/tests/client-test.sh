@@ -299,7 +299,7 @@ for line in DISPLAY=:0 GAMESCOPE_WAYLAND_DISPLAY=gamescope-0 WAYLAND_DISPLAY=gam
 done
 grep -qx 'start microos-android-layer.service' "${STATE}/systemctl" || fail "no layer start: $(cat "${STATE}/systemctl")"
 for unit in microos-android-battery.service microos-android-bridge.service microos-android-brightness.service \
-    microos-android-lsfg.service microos-android-perf.service; do
+    microos-android-lsfg.service microos-android-perf.service microos-android-rotation.service; do
     grep -qx "start ${unit} fail" "${STATE}/calls" || fail "${unit} not started: $(cat "${STATE}/calls")"
 done
 grep -qx 'start microos-android.service replace' "${STATE}/calls" || fail "the session owner was not started"
@@ -344,7 +344,7 @@ wait_for '[[ -e "${MICROOS_RUNTIME_DIR}/start-done" ]]' \
 [[ -e "${MICROOS_RUNTIME_DIR}/ready" && "$(state_of last.result)" == ready ]] || fail "not ready after the restart"
 [[ "$(state_of gapps.play)" == on && "$(state_of gapps.gms)" == on ]] || fail "gapps state after the restart"
 for unit in microos-android-battery.service microos-android-bridge.service microos-android-brightness.service \
-    microos-android-lsfg.service microos-android-perf.service; do
+    microos-android-lsfg.service microos-android-perf.service microos-android-rotation.service; do
     [[ "$(grep -cx "start ${unit} fail" "${STATE}/calls")" == 2 ]] \
         || fail "${unit} not started again: $(cat "${STATE}/calls")"
 done
