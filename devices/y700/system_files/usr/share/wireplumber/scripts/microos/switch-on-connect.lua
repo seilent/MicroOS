@@ -1,6 +1,6 @@
 log = Log.open_topic ("s-microos-switch")
 
-local skip = { "controller", "gamepad", "dualsense", "dualshock", "hdmi", "displaylink" }
+local skip = { "controller", "gamepad", "hdmi", "displaylink" }
 
 local function external (name)
   if name:find ("^alsa_output%.usb%-") == nil and name:find ("^bluez_output%.") == nil then

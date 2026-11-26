@@ -117,6 +117,7 @@ renderer=$(systemctl --global cat microset-overlay@android.service | awk 'index(
 [[ $renderer == 'QT_QUICK_BACKEND QT_XCB_GL_INTEGRATION' ]] || fail "microset-overlay@android.service UnsetEnvironment: $renderer"
 switch=/usr/share/wireplumber/scripts/microos/switch-on-connect.lua
 switchconf=/usr/share/wireplumber/wireplumber.conf.d/53-microos-switch.conf
+command -v luajit > /dev/null || fail "no luajit for the switch-on-connect check"
 luajit -b "$switch" /dev/null && grep -qF '"default.configured.audio.sink"' "$switch" || fail "$switch"
 grep -qxF '    before = [ monitor.alsa, monitor.bluez ]' "$switchconf" \
   && grep -qxF '    hooks.microos.switch-on-connect = required' "$switchconf" || fail "$switchconf"
