@@ -112,6 +112,11 @@ for u in pipewire.socket pipewire-pulse.socket wireplumber.service microos-andro
 done
 null=/usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
 grep -qF 'factory.name = support.null-audio-sink' "$null" && grep -qF 'priority.session = 1' "$null" || fail "$null"
+switch=/usr/share/wireplumber/scripts/microos/switch-on-connect.lua
+switchconf=/usr/share/wireplumber/wireplumber.conf.d/53-microos-switch.conf
+luajit -b "$switch" /dev/null && grep -qF '"default.configured.audio.sink"' "$switch" || fail "$switch"
+grep -qxF '    before = [ monitor.alsa, monitor.bluez ]' "$switchconf" \
+  && grep -qxF '    hooks.microos.switch-on-connect = required' "$switchconf" || fail "$switchconf"
 [[ $(compgen -G '/usr/lib/systemd/user/microos-*' | LC_ALL=C sort) == $'/usr/lib/systemd/user/microos-android-battery.service\n/usr/lib/systemd/user/microos-android-bridge.service\n/usr/lib/systemd/user/microos-android-brightness.service\n/usr/lib/systemd/user/microos-android-gapps.service\n/usr/lib/systemd/user/microos-android-lsfg.service\n/usr/lib/systemd/user/microos-android-perf.service\n/usr/lib/systemd/user/microos-android-status.service\n/usr/lib/systemd/user/microos-android.service\n/usr/lib/systemd/user/microos-desktop.service\n/usr/lib/systemd/user/microos-desktop.service.d\n/usr/lib/systemd/user/microos-gameidle.service\n/usr/lib/systemd/user/microos-ii-seed.service\n/usr/lib/systemd/user/microos-powerkey.service\n/usr/lib/systemd/user/microos-powerkey.service.d\n/usr/lib/systemd/user/microos-session-alive-desktop.timer\n/usr/lib/systemd/user/microos-session-alive@.service\n/usr/lib/systemd/user/microos-session-alive@.timer\n/usr/lib/systemd/user/microos-session-install@.service\n/usr/lib/systemd/user/microos-steam-seed.service\n/usr/lib/systemd/user/microos-ydotoold.service' ]] \
   || fail "MicroOS user units: $(compgen -G '/usr/lib/systemd/user/microos-*' | tr '\n' ' ')"
 [[ $(< /usr/lib/systemd/system-preset/50-microos.preset) == 'enable microos-*' ]] || fail "50-microos.preset"
@@ -134,6 +139,8 @@ kept=(
   /usr/lib/systemd/user-preset/60-microos-android.preset
   /usr/lib/systemd/user-preset/60-microos-audio.preset
   /usr/share/pipewire/pipewire.conf.d/90-microos-null-sink.conf
+  /usr/share/wireplumber/scripts/microos/switch-on-connect.lua
+  /usr/share/wireplumber/wireplumber.conf.d/53-microos-switch.conf
   /usr/lib/dracut/dracut.conf.d/90-microos.conf
   /usr/lib/dracut/modules.d/91microos-ostree-remap/module-setup.sh
   /usr/lib/dracut/modules.d/91microos-ostree-remap/prepare-root.conf
