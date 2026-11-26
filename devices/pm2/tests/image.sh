@@ -696,6 +696,8 @@ fzlib=$(jq -r .layer.library_path /usr/share/vulkan/guestos-android/VkLayer_foss
 [[ $(< /usr/share/microos-android/display) == $'width=960\nheight=640\ndensity=213\nubwc=0' ]] || fail "/usr/share/microos-android/display"
 [[ $(rpm -q --qf '%{VENDOR}' microos-android-guest-apks) == MicroOS ]] ||
   fail "microos-android-guest-apks is not the MicroOS build"
+! rpm -q microos-android-guest-systemui > /dev/null 2>&1 || fail "microos-android-guest-systemui is installed"
+[[ ! -e /usr/share/microos-android/overlay.d ]] || fail "/usr/share/microos-android/overlay.d is in the image"
 guestfiles=/usr/share/microos-android/overlay
 guestlist=/usr/share/microos-android/overlay.manifest
 [[ $(rpm -qf --qf '%{NAME}' "$guestlist" 2>/dev/null) == microos-android-guest-apks ]] ||

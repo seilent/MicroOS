@@ -46,7 +46,7 @@ done
 grep -qx 'install_weak_deps=False' /etc/dnf/libdnf5.conf.d/10-microos.conf || fail "10-microos.conf does not turn off weak deps"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"
 own=$(rpm -qa --qf '%{NAME}\t%{VENDOR}\n' | awk -F'\t' '$2 == "MicroOS" { print $1 }' | LC_ALL=C sort | paste -sd' ')
-[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hexagonrpc hyprcursor hyprgraphics hyprgrass hyprland hyprland-guiutils hyprlang hyprpicker hyprsunset hyprtoolkit hyprutils hyprwire microos-android microos-android-guest-apks microos-android-guestos microos-android-sensors microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
+[[ $own == 'aquamarine audioreach-topology gamescope gamescope-session gamescope-session-steam hexagonrpc hyprcursor hyprgraphics hyprgrass hyprland hyprland-guiutils hyprlang hyprpicker hyprsunset hyprtoolkit hyprutils hyprwire microos-android microos-android-guest-apks microos-android-guest-systemui microos-android-guestos microos-android-sensors microos-fonts microos-kernel microset microset-fonts microset-settings xdg-desktop-portal-hyprland' ]] ||
   fail "MicroOS rpms: $own"
 for p in qbootctl inputplumber steamos-manager mangohud lsfg-vk microos-eq libfreeaptx \
   pipewire-codec-aptx microos-steam-seed; do
@@ -415,6 +415,23 @@ while read -r sum mode path; do
 done < "$guestlist"
 [[ $(find "$guestfiles" -type f | wc -l) == $(wc -l < "$guestlist") ]] ||
   fail "$guestfiles holds files $guestlist does not list"
+sets=/usr/share/microos-android/overlay.d
+suiapk=system/system_ext/priv-app/SystemUI/SystemUI.apk
+suifiles=$(printf '%s\n' "$sets/systemui.base" "$sets/systemui.manifest" "$sets/systemui.system" "$sets/systemui/$suiapk")
+[[ $(find "$sets" -type f | LC_ALL=C sort) == "$suifiles" ]] || fail "$sets is not the SystemUI set alone"
+while read -r f; do
+  [[ ! -L $f && $(rpm -qf --qf '%{NAME}' "$f" 2>/dev/null) == microos-android-guest-systemui ]] ||
+    fail "$f is not microos-android-guest-systemui's"
+done <<< "$suifiles"
+[[ $(cut -d' ' -f2- "$sets/systemui.manifest") == "0644 $suiapk" ]] ||
+  fail "$sets/systemui.manifest does not list the SystemUI APK alone"
+read -r suisum _ < "$sets/systemui.manifest"
+[[ $(sha256sum < "$sets/systemui/$suiapk") == "$suisum  -" && $(stat -c %04a "$sets/systemui/$suiapk") == 0644 ]] ||
+  fail "$sets/systemui/$suiapk does not match $sets/systemui.manifest"
+[[ $(< "$sets/systemui.base") =~ ^[0-9a-f]{64}\ /$suiapk$ ]] || fail "$sets/systemui.base does not name the image's SystemUI APK"
+systempin=$(sed -n 's/^SYSTEM_SHA256=//p' /usr/share/microos-android/images.env)
+[[ -n $systempin && $(< "$sets/systemui.system") == "SYSTEM_SHA256=$systempin" ]] ||
+  fail "$sets/systemui.system is not made for the system image images.env pins"
 [[ ! -e /usr/share/guestos/android/system ]] ||
   fail "/usr/share/guestos/android/system is in the image, Lepton's guest APKs are gone"
 for c in flock adb lxc-info pw-cli pw-dump; do
@@ -456,9 +473,10 @@ dropin=$(printf '%s\n' '[Unit]' 'Before=systemd-user-sessions.service' '' '[Serv
   fail "waydroid-container.service.d/10-microos.conf"
 [[ $(stat -c %a /usr/libexec/microos/microos-android-guard) == 755 ]] || fail "microos-android-guard is not 755"
 [[ $(stat -c %a /usr/libexec/microos/microos-android-overlay) == 755 ]] || fail "microos-android-overlay is not 755"
-mkdir "$tmp/overlay"
-out=$(MICROOS_WAYDROID_OVERLAY=$tmp/overlay MICROOS_ANDROID_OVERLAY_STATE=$tmp/overlay.manifest \
-  /usr/libexec/microos/microos-android-overlay) || fail "microos-android-overlay exited $? on an empty overlay"
+mkdir "$tmp/overlay" "$tmp/nosets"
+out=$(MICROOS_ANDROID_OVERLAY_SETS=$tmp/nosets MICROOS_WAYDROID_OVERLAY=$tmp/overlay \
+  MICROOS_ANDROID_OVERLAY_STATE=$tmp/overlay.manifest /usr/libexec/microos/microos-android-overlay) ||
+  fail "microos-android-overlay exited $? on an empty overlay"
 [[ $out == "microos-android-overlay: $(wc -l < "$guestlist") files, $(wc -l < "$guestlist") copied, 0 removed" ]] ||
   fail "microos-android-overlay printed: $out"
 cmp -s "$guestlist" "$tmp/overlay.manifest" || fail "microos-android-overlay did not record $guestlist"
@@ -466,6 +484,37 @@ while read -r _ mode path; do
   cmp -s "$guestfiles/$path" "$tmp/overlay/$path" && [[ $(stat -c %04a "$tmp/overlay/$path") == "$mode" ]] ||
     fail "microos-android-overlay did not place $path"
 done < "$guestlist"
+mkdir -p "$tmp/sets" "$tmp/bin" "$tmp/images/current" "$tmp/overlay2"
+cp -a "$sets/." "$tmp/sets/"
+printf 'stock\n' > "$tmp/stock"
+stocksum=$(sha256sum < "$tmp/stock" | cut -d' ' -f1)
+: > "$tmp/images/current/system.img"
+cat > "$tmp/bin/debugfs" <<EOF
+#!/bin/sh
+[ "\$1 \$2 \$3" = "-R cat /$suiapk $tmp/images/current/system.img" ] || exit 9
+cat "$tmp/stock"
+EOF
+chmod 755 "$tmp/bin/debugfs"
+printf '%s /%s\n' "$stocksum" "$suiapk" > "$tmp/sets/systemui.base"
+ovset() {
+  PATH=$tmp/bin:$PATH MICROOS_ANDROID_OVERLAY_SETS=$tmp/sets MICROOS_ANDROID_IMAGES=$tmp/images \
+    MICROOS_WAYDROID_OVERLAY=$1 MICROOS_ANDROID_OVERLAY_STATE=$1.manifest /usr/libexec/microos/microos-android-overlay
+}
+out=$(ovset "$tmp/overlay") || fail "microos-android-overlay exited $? with the SystemUI set on a matching base"
+[[ $out == "microos-android-overlay: $(($(wc -l < "$guestlist") + 1)) files, 1 copied, 0 removed" ]] ||
+  fail "microos-android-overlay with the SystemUI set printed: $out"
+cmp -s "$sets/systemui/$suiapk" "$tmp/overlay/$suiapk" && [[ $(stat -c %04a "$tmp/overlay/$suiapk") == 0644 ]] ||
+  fail "microos-android-overlay did not place $suiapk"
+cmp -s <(cat "$guestlist" "$sets/systemui.manifest") "$tmp/overlay.manifest" ||
+  fail "microos-android-overlay did not record $guestlist and $sets/systemui.manifest"
+cp "$sets/systemui.base" "$tmp/sets/systemui.base"
+read -r basesum _ < "$sets/systemui.base"
+rc=0
+ovset "$tmp/overlay2" > /dev/null 2> "$tmp/err" || rc=$?
+[[ $rc == 1 && $(< "$tmp/err") == "microos-android-overlay: /$suiapk in $tmp/images/current/system.img has sha256 $stocksum, $tmp/sets/systemui.base wants $basesum" ]] ||
+  fail "microos-android-overlay on another SystemUI than $sets/systemui.base: rc $rc: $(< "$tmp/err")"
+[[ -z $(ls -A "$tmp/overlay2") && ! -e $tmp/overlay2.manifest ]] ||
+  fail "microos-android-overlay placed files or wrote its state on another SystemUI than $sets/systemui.base"
 command -v nft >/dev/null || fail "nft missing, the Waydroid bridge and its forward policy need it"
 [[ $(< /usr/share/microos/waydroid-forward.nft) == $'destroy table inet microos_waydroid\ntable inet microos_waydroid {\n\tchain prerouting {\n\t\ttype filter hook prerouting priority filter; policy accept;\n\t\tiifname "waydroid0" udp sport 5353 @th,80,1 1 drop\n\t\tiifname "waydroid0" udp sport 5353 @th,128,16 != 0 drop\n\t}\n\tchain forward {\n\t\ttype filter hook forward priority filter; policy drop;\n\t\tiifname "waydroid0" oifname "wl*" accept\n\t\tiifname "wl*" oifname "waydroid0" ct state established,related accept\n\t}\n}' ]] \
   || fail "waydroid-forward.nft is not the drop policy with waydroid0 to Wi-Fi only and the guest mDNS query only rules"

@@ -28,6 +28,7 @@ own=(
   xdg-desktop-portal-hyprland/xdg-desktop-portal-hyprland
   microos-fonts/microos-fonts
   android-guest-apks/microos-android-guest-apks
+  android-guest-systemui/microos-android-guest-systemui
   android-guestos/microos-android-guestos
   android-sensors/microos-android-sensors
   microos-android/microos-android

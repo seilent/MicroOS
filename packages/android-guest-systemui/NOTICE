@@ -1,0 +1,15 @@
+microos-android-guest-systemui
+
+SystemUI.apk is the SystemUI of the Waydroid LineageOS 20 system image
+lineage-20.0-20260927-VANILLA-waydroid_arm64_only-system.zip, at
+/system/system_ext/priv-app/SystemUI/SystemUI.apk, built from LineageOS
+android_frameworks_base with the Waydroid patches, Copyright The Android Open
+Source Project, The LineageOS Project and the Waydroid contributors, licensed
+under the Apache License, Version 2.0. Its notice from the image, with the
+license text, is in NOTICE.SystemUI.
+
+MicroOS changed its classes.dex: NavigationBar.getBarLayoutParamsForRotation,
+NavigationBarView.updateCurrentRotation and the WM Shell
+DisplayLayout.recalcInsets put the 3 button navigation bar on the right edge
+in landscape. 0001-navbar-right-in-landscape.patch in the source RPM is the
+change. MicroOS signed the changed APK with the AOSP test platform key.

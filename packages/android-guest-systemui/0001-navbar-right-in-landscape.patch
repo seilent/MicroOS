@@ -1,0 +1,130 @@
+--- a/com/android/systemui/navigationbar/NavigationBar.smali
++++ b/com/android/systemui/navigationbar/NavigationBar.smali
+@@ -1268,7 +1268,7 @@
+     .line 45
+     .line 46
+     .line 47
+-    move-result-object v3
++    move-result-object v7
+ 
+     .line 48
+     const v6, 0x1110191
+@@ -1276,7 +1276,7 @@
+     .line 49
+     .line 50
+     .line 51
+-    invoke-virtual {v3, v6}, Landroid/content/res/Resources;->getBoolean(I)Z
++    invoke-virtual {v7, v6}, Landroid/content/res/Resources;->getBoolean(I)Z
+ 
+     .line 52
+     .line 53
+@@ -1284,11 +1284,17 @@
+     move-result v3
+ 
+     .line 55
+-    if-eqz v3, :cond_3a
++    if-nez v3, :goto_3c
++
++    const v6, 0x10e00b1
++
++    invoke-virtual {v7, v6}, Landroid/content/res/Resources;->getInteger(I)I
++
++    move-result v3
+ 
+     .line 56
+     .line 57
+-    goto :goto_3c
++    if-eqz v3, :goto_3c
+ 
+     .line 58
+     :cond_3a
+@@ -1368,27 +1374,27 @@
+ 
+     .line 91
+     .line 92
+-    if-eqz v1, :cond_86
++    const v3, 0x10501d8
+ 
+     .line 93
+     .line 94
+-    const v3, 0x10501d8
++    if-eqz v1, :cond_74
+ 
+     .line 95
+     .line 96
+     .line 97
+-    if-eq v1, v4, :cond_74
++    if-eq v1, v4, :cond_86
+ 
+     .line 98
+     .line 99
+     const/4 v11, 0x2
+ 
+     .line 100
+-    if-eq v1, v11, :cond_86
++    if-eq v1, v11, :cond_74
+ 
+     .line 101
+     .line 102
+-    if-eq v1, v8, :cond_6a
++    if-eq v1, v8, :cond_86
+ 
+     .line 103
+     .line 104
+--- a/com/android/systemui/navigationbar/NavigationBarView.smali
++++ b/com/android/systemui/navigationbar/NavigationBarView.smali
+@@ -3333,7 +3333,9 @@
+     const/4 v2, 0x1
+ 
+     .line 18
+-    if-ne v0, v2, :cond_15
++    and-int/lit8 v0, v0, 0x1
++
++    if-nez v0, :cond_15
+ 
+     .line 19
+     .line 20
+--- a/com/android/wm/shell/common/DisplayLayout.smali
++++ b/com/android/wm/shell/common/DisplayLayout.smali
+@@ -1514,7 +1514,15 @@
+     move-result v10
+ 
+     .line 49
+-    if-eqz v10, :cond_35
++    if-nez v10, :goto_36
++
++    const v10, 0x10e00b1
++
++    invoke-virtual {p1, v10}, Landroid/content/res/Resources;->getInteger(I)I
++
++    move-result v10
++
++    if-nez v10, :cond_35
+ 
+     .line 50
+     .line 51
+@@ -1541,10 +1549,6 @@
+     .line 58
+     if-le v1, v2, :cond_42
+ 
+-    .line 59
+-    .line 60
+-    if-ne v0, v8, :cond_40
+-
+     .line 61
+     .line 62
+     move v0, v11
+@@ -1552,13 +1556,6 @@
+     .line 63
+     goto :goto_43
+ 
+-    .line 64
+-    :cond_40
+-    move v0, v8
+-
+-    .line 65
+-    goto :goto_43
+-
+     .line 66
+     :cond_42
+     move v0, v12
