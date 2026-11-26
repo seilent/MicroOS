@@ -374,7 +374,7 @@ def main_run(binary):
     check("one accel event", len(events), 1)
     stamp, handle, kind, payload = events[0]
     check("accel event handle and type", (handle, kind), (1, 1))
-    check("accel event in the guest frame", struct.unpack_from("<fffb", payload), (2.0, -1.0, 9.0, 3))
+    check("accel event in the guest frame", struct.unpack_from("<fffb", payload), (-2.0, 1.0, 9.0, 3))
     check("accel event stamped", stamp > 0, True)
     check("poll result ok and no dynamic sensors", empty_poll(items)[0], [0, OK])
     check("no dynamic sensors", empty_poll(items)[1][1], (0, 0))
@@ -384,7 +384,7 @@ def main_run(binary):
     _, kind, status, items = daemon.call(POLL, "i:16")
     events = events_of(items)
     check("queued samples return at once", (kind, len(events)), ("reply", 2))
-    check("unpacked floats", struct.unpack_from("<fffb", events[0][3]), (0.25, -0.5, 9.5, 2))
+    check("unpacked floats", struct.unpack_from("<fffb", events[0][3]), (-0.25, 0.5, 9.5, 2))
     check("status out of range is unreliable", struct.unpack_from("<b", events[1][3], 12)[0], 0)
     check("stamps increase", events[0][0] > stamp and events[1][0] > events[0][0], True)
 
@@ -498,7 +498,7 @@ def main_run(binary):
     daemon.ssc(0, *SERVER, report(ACCEL, [sample((1.0, 2.0, 3.0))]))
     status, items = daemon.complete(ident)
     check("sensor hub again after test input", [struct.unpack_from("<fff", e[3]) for e in events_of(items)],
-          [(2.0, -1.0, 3.0)])
+          [(-2.0, 1.0, 3.0)])
 
     daemon.ssc(0, *SERVER, response(9, 1, 2))
     daemon.ssc(0, *SERVER, report(ACCEL, [event(130, uint(1, 7))]))

@@ -412,8 +412,8 @@ static void sensor_sample(struct sensor *sensor, const guint8 *payload, gsize le
 	if (sensor == &sensors[ACCEL]) {
 		if (n < 3 || turn >= 0)
 			return;
-		event.u.vec3.x = values[1];
-		event.u.vec3.y = -values[0];
+		event.u.vec3.x = -values[1];
+		event.u.vec3.y = values[0];
 		event.u.vec3.z = values[2];
 		event.u.vec3.status = status >= 0 && status <= 3 ? status : 0;
 	} else {
