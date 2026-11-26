@@ -322,7 +322,8 @@ mf() {
   done > "$o/manifest"
 }
 ov() {
-  MICROOS_ANDROID_OVERLAY_MANIFEST=$o/manifest MICROOS_ANDROID_OVERLAY_DIR=$o/ship MICROOS_WAYDROID_OVERLAY=$o/wd \
+  PATH=$o/bin:$PATH MICROOS_ANDROID_OVERLAY_MANIFEST=$o/manifest MICROOS_ANDROID_OVERLAY_DIR=$o/ship \
+    MICROOS_ANDROID_OVERLAY_SETS=$o/sets MICROOS_ANDROID_IMAGES=$o/images MICROOS_WAYDROID_OVERLAY=$o/wd \
     MICROOS_ANDROID_OVERLAY_STATE=$o/var/overlay.manifest "$overlay" > "$o/out" 2> "$o/err"
 }
 snap() { (cd "$o/wd" && find . -exec stat -c '%n %F %i %y %04a %u %g' {} + | LC_ALL=C sort); }
@@ -430,5 +431,158 @@ ov || rc2=$?
   fail "no overlay dir: rc $rc2: $(< "$o/err")"
 [[ ! -e $o/wd ]] && cmp -s "$o/state.ok" "$o/var/overlay.manifest" ||
   fail "no overlay dir made the dir or wrote the state"
+mv "$o/wd.off" "$o/wd"
+
+sui=system/system_ext/priv-app/SystemUI/SystemUI.apk
+img=$o/images/current/system.img
+mkdir -p "$o/sets/systemui/${sui%/*}" "${img%/*}" "$o/bin"
+: > "$img"
+printf 'stock\n' > "$o/stock"
+printf 'patched\n' > "$o/sets/systemui/$sui"
+cat > "$o/bin/debugfs" <<EOF
+#!/bin/sh
+echo "debugfs \$*" >> "$o/calls"
+echo 'debugfs 1.47.3 (8-Jul-2025)' >&2
+[ "\$1 \$3" = "-R $img" ] || exit 9
+if [ "\$2" != "cat /$sui" ]; then
+  echo "\${2#cat }: File not found by ext2_lookup " >&2
+elif [ -e "$o/short" ]; then
+  head -c 3 "$o/stock"
+  echo "/$sui: Attempt to read block from filesystem resulted in short read" >&2
+else
+  cat "$o/stock"
+fi
+EOF
+chmod 755 "$o/bin/debugfs"
+stock=$(sha256sum < "$o/stock" | cut -d' ' -f1)
+sm() {
+  printf '%s 0644 %s\n' "$(sha256sum < "$o/sets/systemui/$sui" | cut -d' ' -f1)" "$sui" > "$o/sets/systemui.manifest"
+}
+sb() { printf '%s /%s\n' "$1" "$sui" > "$o/sets/systemui.base"; }
+
+mf 0755 "$halbin" 0644 "$initrc" 0644 "$vintf" 0644 "$perm"
+sm
+sb "$stock"
+ov || fail "overlay exited $? on a set with a matching base: $(< "$o/err")"
+[[ $(< "$o/out") == 'microos-android-overlay: 5 files, 1 copied, 0 removed' ]] ||
+  fail "a set with a matching base printed: $(< "$o/out")"
+cmp -s "$o/sets/systemui/$sui" "$o/wd/$sui" && [[ $(stat -c %04a "$o/wd/$sui") == 0644 ]] ||
+  fail "a set with a matching base did not place $sui"
+[[ $(cd "$o/wd/system" && stat -c %04a system_ext system_ext/priv-app system_ext/priv-app/SystemUI | sort -u) == 0755 ]] ||
+  fail "a set with a matching base made its parents with other modes"
+cmp -s <(cat "$o/manifest" "$o/sets/systemui.manifest") "$o/var/overlay.manifest" ||
+  fail "a set with a matching base did not record the union: $(< "$o/var/overlay.manifest")"
+[[ $(< "$o/calls") == "debugfs -R cat /$sui $img" ]] || fail "a set with a matching base read the image: $(< "$o/calls")"
+untouched "a set with a matching base"
+
+before=$(snap)
+st=$(stat -c '%i %y' "$o/var/overlay.manifest")
+ov || fail "overlay exited $? on a rerun with a set: $(< "$o/err")"
+[[ $(< "$o/out") == 'microos-android-overlay: 5 files, 0 copied, 0 removed' ]] ||
+  fail "a rerun with a set printed: $(< "$o/out")"
+[[ $(snap) == "$before" && $(stat -c '%i %y' "$o/var/overlay.manifest") == "$st" ]] ||
+  fail "a rerun with a set rewrote the overlay or the state"
+
+printf 'service v3\n' > "$o/ship/$initrc"
+printf 'patched v2\n' > "$o/sets/systemui/$sui"
+mf 0755 "$halbin" 0644 "$initrc" 0644 "$vintf" 0644 "$perm"
+sm
+other=$(printf 'other\n' | sha256sum | cut -d' ' -f1)
+sb "$other"
+rc2=0
+ov || rc2=$?
+[[ $rc2 == 1 && $(< "$o/err") == "microos-android-overlay: /$sui in $img has sha256 $stock, $o/sets/systemui.base wants $other" ]] ||
+  fail "a base mismatch: rc $rc2: $(< "$o/err")"
+[[ $(snap) == "$before" && $(stat -c '%i %y' "$o/var/overlay.manifest") == "$st" ]] ||
+  fail "a base mismatch placed a file or wrote the state"
+[[ -z $(find "$o/wd" -name '.microos.*') ]] || fail "a base mismatch left temp files: $(find "$o/wd" -name '.microos.*')"
+untouched "a base mismatch"
+printf 'service v2\n' > "$o/ship/$initrc"
+printf 'patched\n' > "$o/sets/systemui/$sui"
+sm
+sb "$stock"
+
+mkdir -p "$o/ship/${sui%/*}"
+cp "$o/sets/systemui/$sui" "$o/ship/$sui"
+mf 0755 "$halbin" 0644 "$initrc" 0644 "$vintf" 0644 "$perm" 0644 "$sui"
+rc2=0
+ov || rc2=$?
+[[ $rc2 == 1 && $(< "$o/err") == "microos-android-overlay: $sui is in $o/manifest and $o/sets/systemui.manifest" ]] ||
+  fail "a path in two manifests: rc $rc2: $(< "$o/err")"
+[[ $(snap) == "$before" && $(stat -c '%i %y' "$o/var/overlay.manifest") == "$st" ]] ||
+  fail "a path in two manifests changed the overlay or the state"
+rm -r "${o:?}/ship/system/system_ext"
+mf 0755 "$halbin" 0644 "$initrc" 0644 "$vintf" 0644 "$perm"
+
+mv "$o/sets/systemui.manifest" "$o/systemui.manifest.off"
+ov || fail "overlay exited $? on a set whose manifest is gone: $(< "$o/err")"
+[[ $(< "$o/out") == 'microos-android-overlay: 4 files, 0 copied, 1 removed' ]] ||
+  fail "a set whose manifest is gone printed: $(< "$o/out")"
+[[ ! -e $o/wd/$sui && -f $o/wd/$halbin && -f $o/wd/$perm ]] || fail "the gone set's $sui is still in the overlay"
+cmp -s "$o/manifest" "$o/var/overlay.manifest" || fail "the state after the set went is not the manifest"
+untouched "a set whose manifest is gone"
+mv "$o/systemui.manifest.off" "$o/sets/systemui.manifest"
+ov || fail "overlay exited $? when the set came back: $(< "$o/err")"
+[[ $(< "$o/out") == 'microos-android-overlay: 5 files, 1 copied, 0 removed' && -f $o/wd/$sui ]] ||
+  fail "the set coming back printed: $(< "$o/out")"
+
+before=$(snap)
+st=$(stat -c '%i %y' "$o/var/overlay.manifest")
+refused() {
+  rc2=0
+  ov || rc2=$?
+  [[ $rc2 == 1 && $(< "$o/err") == "microos-android-overlay: $1" ]] || fail "$2: rc $rc2: $(< "$o/err")"
+  [[ $(snap) == "$before" && $(stat -c '%i %y' "$o/var/overlay.manifest") == "$st" ]] ||
+    fail "$2 changed the overlay or the state"
+  [[ -z $(find "$o/wd" -name '.microos.*') ]] || fail "$2 left temp files"
+  untouched "$2"
+}
+bfile=$o/sets/systemui.base
+mv "$img" "$img.off"
+refused "no $img, $bfile needs it" "a base with no image"
+mv "$img.off" "$img"
+printf 'not a sha256 line\n' > "$bfile"
+refused "line 1 of $bfile is not a sha256 and an image path" "a malformed base line"
+printf '%s /system/../system/%s\n' "$stock" "$sui" > "$bfile"
+refused "line 1 of $bfile leaves the image" "a base line with .."
+printf '%s /system/missing.apk\n' "$stock" > "$bfile"
+refused "debugfs cannot read /system/missing.apk in $img: /system/missing.apk: File not found by ext2_lookup " \
+  "a base naming a path the image lacks"
+sb "$stock"
+: > "$o/short"
+refused "debugfs cannot read /$sui in $img: /$sui: Attempt to read block from filesystem resulted in short read" \
+  "a debugfs read failure"
+rm "$o/short"
+mv "$o/stock" "$o/stock.off"
+: > "$o/stock"
+refused "debugfs cannot read /$sui in $img: it printed nothing" "a debugfs read with no output"
+mv "$o/stock.off" "$o/stock"
+printf '%s 0644 %s\n' "$stock" "$sui" > "$o/sets/ghost.manifest"
+refused "no $o/sets/ghost for $o/sets/ghost.manifest" "a manifest with no set dir"
+rm "$o/sets/ghost.manifest"
+printf 'tampered\n' > "$o/sets/systemui/$sui"
+refused "$o/sets/systemui/$sui does not match its sha256 in $o/sets/systemui.manifest" "a corrupt set file"
+printf 'patched\n' > "$o/sets/systemui/$sui"
+mkdir -p "$o/sets/alt/${sui%/*}"
+cp "$o/sets/systemui/$sui" "$o/sets/alt/$sui"
+cp "$o/sets/systemui.manifest" "$o/sets/alt.manifest"
+refused "$sui is in $o/sets/alt.manifest and $o/sets/systemui.manifest" "two sets listing the same path"
+rm -r "${o:?}/sets/alt" "${o:?}/sets/alt.manifest"
+ov || fail "overlay exited $? once the error cases were undone: $(< "$o/err")"
+[[ $(< "$o/out") == 'microos-android-overlay: 5 files, 0 copied, 0 removed' && $(snap) == "$before" ]] ||
+  fail "the run after the error cases printed: $(< "$o/out")"
+
+old=$here/waydroid-host/overlay-6fb6323
+blob=$(printf 'blob %s\0' "$(stat -c %s "$old")" | cat - "$old" | sha1sum | cut -d' ' -f1)
+[[ $blob == 316680801b1b74cc148d22c40948371acc02909e ]] || fail "$old is git blob $blob, 6fb6323 ships 316680801b1b"
+rc2=0
+MICROOS_ANDROID_OVERLAY_MANIFEST=$o/manifest MICROOS_ANDROID_OVERLAY_DIR=$o/ship MICROOS_WAYDROID_OVERLAY=$o/wd \
+  MICROOS_ANDROID_OVERLAY_STATE=$o/var/overlay.manifest bash "$old" > "$o/out" 2> "$o/err" || rc2=$?
+[[ $rc2 == 0 && $(< "$o/out") == 'microos-android-overlay: 4 files, 0 copied, 1 removed' ]] ||
+  fail "the 6fb6323 script on the union state: rc $rc2: $(< "$o/out") $(< "$o/err")"
+[[ ! -e $o/wd/$sui && -f $o/wd/$halbin && -f $o/wd/$initrc && -f $o/wd/$vintf && -f $o/wd/$perm ]] ||
+  fail "the 6fb6323 script did not remove only the set's $sui"
+cmp -s "$o/manifest" "$o/var/overlay.manifest" || fail "the 6fb6323 script did not record its manifest"
+untouched "the 6fb6323 script"
 
 exit "$rc"

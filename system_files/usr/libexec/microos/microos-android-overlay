@@ -3,9 +3,14 @@ set -euo pipefail
 
 manifest=${MICROOS_ANDROID_OVERLAY_MANIFEST:-/usr/share/microos-android/overlay.manifest}
 shipped=${MICROOS_ANDROID_OVERLAY_DIR:-/usr/share/microos-android/overlay}
+sets=${MICROOS_ANDROID_OVERLAY_SETS:-/usr/share/microos-android/overlay.d}
+images=${MICROOS_ANDROID_IMAGES:-/var/lib/microos-android/images}
 overlay=${MICROOS_WAYDROID_OVERLAY:-/var/lib/waydroid/overlay}
 state=${MICROOS_ANDROID_OVERLAY_STATE:-/var/lib/microos-android/overlay.manifest}
 entry='^([0-9a-f]{64}) (0[0-7]{3}) ((system|vendor)(/[A-Za-z0-9._@+-]+)+)$'
+based='^([0-9a-f]{64}) (/system(/[A-Za-z0-9._@+-]+)+)$'
+banner='^debugfs [0-9][0-9.]* \(.*\)$'
+empty=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 
 fail() { printf 'microos-android-overlay: %s\n' "$*" >&2; exit 1; }
 load() {
@@ -17,20 +22,63 @@ load() {
     [[ $l =~ $entry ]] || fail "line $n of $1 is not a sha256, a mode and an overlay path"
     k=${BASH_REMATCH[3]}
     [[ /$k/ != */./* && /$k/ != */../* ]] || fail "line $n of $1 leaves the overlay"
-    [[ -z ${into["$k"]:-} ]] || fail "$k is in $1 twice"
+    if [[ -n ${into["$k"]:-} ]]; then
+      [[ -z ${3:-} || $1 == "${from["$k"]}" ]] || fail "$k is in ${from["$k"]} and $1"
+      fail "$k is in $1 twice"
+    fi
     into["$k"]="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+    [[ -n ${3:-} ]] || continue
+    from["$k"]=$1
+    src["$k"]=$3/$k
+    lines+=("$l")
   done < "$1"
 }
 
-declare -A want had
-load "$manifest" want
+declare -A want had from src
+lines=()
+names=()
+load "$manifest" want "$shipped"
+if [[ -d $sets ]]; then
+  for f in "$sets"/*.manifest; do
+    [[ -f $f ]] || continue
+    n=${f##*/}
+    n=${n%.manifest}
+    [[ -d $sets/$n && ! -L $sets/$n ]] || fail "no $sets/$n for $f"
+    load "$f" want "$sets/$n"
+    names+=("$n")
+  done
+fi
 [[ ! -e $state ]] || load "$state" had
 [[ -d $overlay && ! -L $overlay ]] || fail "no $overlay, waydroid init comes first"
 
+img=$images/current/system.img
+for n in "${names[@]}"; do
+  b=$sets/$n.base
+  [[ -f $b ]] || continue
+  [[ -f $img ]] || fail "no $img, $b needs it"
+  m=0
+  while IFS= read -r l || [[ -n $l ]]; do
+    m=$((m + 1))
+    [[ $l =~ $based ]] || fail "line $m of $b is not a sha256 and an image path"
+    sum=${BASH_REMATCH[1]}
+    path=${BASH_REMATCH[2]}
+    [[ $path/ != */./* && $path/ != */../* ]] || fail "line $m of $b leaves the image"
+    out=$({ debugfs -R "cat $path" "$img" < /dev/null | sha256sum; } 2>&1) ||
+      fail "debugfs cannot read $path in $img: $out"
+    mapfile -t said <<< "$out"
+    for s in "${said[@]:0:${#said[@]}-1}"; do
+      [[ $s =~ $banner ]] || fail "debugfs cannot read $path in $img: $s"
+    done
+    got=${said[-1]%% *}
+    [[ $got != "$empty" ]] || fail "debugfs cannot read $path in $img: it printed nothing"
+    [[ $got == "$sum" ]] || fail "$path in $img has sha256 $got, $b wants $sum"
+  done < "$b"
+done
+
 for p in "${!want[@]}"; do
-  f=$shipped/$p
+  f=${src[$p]}
   [[ -f $f && ! -L $f && $(sha256sum < "$f") == "${want[$p]% *}  -" ]] ||
-    fail "$f does not match its sha256 in $manifest"
+    fail "$f does not match its sha256 in ${from[$p]}"
 done
 
 uid=$(id -u)
@@ -54,8 +102,8 @@ for p in "${!want[@]}"; do
     [[ -d $d ]] || mkdir -m 0755 -- "$d" || fail "cannot make $d"
   done
   tmp=$(mktemp -- "$d/.microos.XXXXXX") || fail "cannot make a temp file in $d"
-  cp -- "$shipped/$p" "$tmp" || fail "cannot copy $shipped/$p to $tmp"
-  [[ $(sha256sum < "$tmp") == "$sum  -" ]] || fail "the copy of $shipped/$p does not match its sha256 in $manifest"
+  cp -- "${src[$p]}" "$tmp" || fail "cannot copy ${src[$p]} to $tmp"
+  [[ $(sha256sum < "$tmp") == "$sum  -" ]] || fail "the copy of ${src[$p]} does not match its sha256 in ${from[$p]}"
   chmod -- "$mode" "$tmp" || fail "cannot set $tmp to $mode"
   mv -fT -- "$tmp" "$t" || fail "cannot move $tmp to $t"
   tmp=
@@ -70,8 +118,9 @@ for p in "${!had[@]}"; do
   removed=$((removed + 1))
 done
 
-if [[ ! -f $state || $(< "$state") != "$(< "$manifest")" ]]; then
-  cp -- "$manifest" "$state.new" || fail "cannot write $state.new"
+union=$(printf '%s\n' "${lines[@]}")
+if [[ ! -f $state || $(< "$state") != "$union" ]]; then
+  { (( ${#lines[@]} == 0 )) || printf '%s\n' "${lines[@]}"; } > "$state.new" || fail "cannot write $state.new"
   mv -fT -- "$state.new" "$state" || fail "cannot move $state.new to $state"
 fi
 echo "microos-android-overlay: ${#want[@]} files, $copied copied, $removed removed"
