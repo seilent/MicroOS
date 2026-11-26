@@ -321,7 +321,7 @@ case_name="ro.debuggable read fails at start"
 : > "${STATE}/fail-once"
 start_writer
 waitout "frame generation 2x for ${on_app}, base cap 30" || fail "no generation after the read again: $(cat "${T}/out")"
-grep -qxF "microos-android-lsfg: the clear at start failed (rc=125)" "${T}/out" || fail "the failed start not logged: $(cat "${T}/out")"
+grep -qxF "microos-android-lsfg: the clear at start failed (rc=255)" "${T}/out" || fail "the failed start not logged: $(cat "${T}/out")"
 grep -qxF "microos-android-lsfg: ro.debuggable unknown, read again at the next reconcile" "${T}/out" \
     || fail "the unknown read not logged: $(cat "${T}/out")"
 [[ "$(grep -c '^getprop ro.debuggable$' "${STATE}/guest")" == 1 ]] || fail "not one read again: $(cat "${STATE}/guest")"
