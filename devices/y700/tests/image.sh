@@ -42,6 +42,9 @@ for c in mkbootimg unpack_bootimg avbtool skopeo jq flock python3 btrfs mkfs.vfa
   chronyd wpa_supplicant gamescope gamescope-session-plus vulkaninfo pgrep zstd start-hyprland; do
   command -v "$c" >/dev/null || fail "$c missing"
 done
+[[ $(rpm -q --qf '%{VERSION}-%{RELEASE}' zstd) == "$(rpm -q --qf '%{VERSION}-%{RELEASE}' libzstd)" ]] ||
+  fail "zstd $(rpm -q zstd) and libzstd $(rpm -q libzstd) differ"
+zstd --version > /dev/null || fail "zstd does not run"
 [[ $(rpm -qf "$(command -v hyprland-dialog)" 2>/dev/null) == hyprland-guiutils-* ]] || fail "hyprland-dialog is not on PATH from hyprland-guiutils"
 grep -qx 'install_weak_deps=False' /etc/dnf/libdnf5.conf.d/10-microos.conf || fail "10-microos.conf does not turn off weak deps"
 [[ -z $(rpm -qa '*-debuginfo' '*-debugsource') ]] || fail "debug rpms installed: $(rpm -qa '*-debuginfo' '*-debugsource' | tr '\n' ' ')"

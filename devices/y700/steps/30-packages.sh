@@ -118,7 +118,6 @@ dnf -y install \
   procps-ng \
   bluez \
   e2fsprogs \
-  zstd \
   quickshell \
   qt6-qtbase \
   qt6-qtdeclarative \
