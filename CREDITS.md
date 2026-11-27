@@ -96,13 +96,14 @@ Fedora's patches, the SteamOS CloseFB patch rebased by me and two of mine, `es-d
 `inputplumber` carries three of mine and my polkit rule, `wvkbd` carries two of mine, `audioreach-topology` carries my
 legacy TDM module and subgraph and my Y700 topology, `hexagonrpc` carries the five commits of hexagonrpc PR 27 and seven
 of mine, the composer in `microos-android-guest-apks` carries my roundtrip queue, pen and vsync patches
-(`packages/android-guest-apks/hwc/`), `microos-android-guest-systemui` carries my navigation bar patch
+(`packages/android-guest-apks/hwc/`) and its audio HAL my libpulse output patch (`packages/android-guest-apks/audio/`),
+`microos-android-guest-systemui` carries my navigation bar patch
 (`packages/android-guest-systemui/0001-navbar-right-in-landscape.patch`), and `lsfg-vk` and the lsfg-vk layer in
 `microos-android-guestos` are my fork's `microos-layer` branch (`PATCHES.md` in each package); the others are built as
-is. License texts in `packages/android-guest-apks/hwc/licenses/`, `packages/audioreach-topology/`,
-`packages/gamescope/`, `packages/gamescope-session/`, `packages/gamescope-session-y700/`, `packages/es-de/`,
-`packages/hexagonrpc/`, `packages/inputplumber/`, `packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and
-`packages/steamos-manager/`.
+is. License texts in `packages/android-guest-apks/hwc/licenses/`, `packages/android-guest-apks/audio/licenses/`,
+`packages/audioreach-topology/`, `packages/gamescope/`, `packages/gamescope-session/`,
+`packages/gamescope-session-y700/`, `packages/es-de/`, `packages/hexagonrpc/`, `packages/inputplumber/`,
+`packages/lsfg-vk/`, `packages/mangohud/`, `packages/plymouth/` and `packages/steamos-manager/`.
 
 
 ## Kernel
