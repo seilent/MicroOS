@@ -103,6 +103,8 @@ done
 [[ -L /etc/systemd/system/multi-user.target.wants/microos-update-boot.path ]] || fail "microos-update-boot.path is not wanted by multi-user.target"
 [[ $(systemctl is-enabled microos-update-boot.service) == static ]] || fail "microos-update-boot.service is not static"
 systemctl cat microos-update-check.service | grep -qx 'ExecStart=/usr/bin/microos-update --auto' || fail "microos-update-check.service does not run --auto"
+[[ $(systemctl cat chronyd.service | grep '^ExecStart=' | tail -n 2) == $'ExecStart=\nExecStart=/usr/sbin/chronyd -n -s $OPTIONS' ]] ||
+  fail "chronyd does not start the clock from its drift file"
 for c in zstd cpio systemd-run systemd-inhibit; do
   command -v "$c" > /dev/null || fail "$c missing, microos-update --auto needs it"
 done
@@ -188,6 +190,7 @@ kept=(
   /usr/lib/systemd/system/waydroid-container.service.d/20-microos-selinux-watch.conf
   /usr/lib/systemd/system/waydroid-container.service.d/30-microos-android-adb.conf
   /usr/lib/systemd/system/emergency.service.d/10-microos.conf
+  /usr/lib/systemd/system/chronyd.service.d/10-microos.conf
   /usr/lib/systemd/system/microos-android-adb.service
   /usr/lib/systemd/system/microos-android-adb.socket
   /usr/lib/systemd/system/microos-android-images.service
