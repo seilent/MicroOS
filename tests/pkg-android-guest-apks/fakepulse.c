@@ -1155,6 +1155,11 @@ static void set_stream_delay(void *arg)
 	server.stream_delay = *(uint64_t *)arg;
 }
 
+static void set_connect_delay(void *arg)
+{
+	server.connect_delay = *(uint64_t *)arg;
+}
+
 static void fail_stream(void *arg)
 {
 	server.fail_stream = true;
@@ -1199,6 +1204,11 @@ void fake_set_timing_interval(uint64_t usec)
 void fake_set_stream_delay(uint64_t usec)
 {
 	server_set(set_stream_delay, &usec);
+}
+
+void fake_set_connect_delay(uint64_t usec)
+{
+	server_set(set_connect_delay, &usec);
 }
 
 void fake_set_pcm_open_delay(uint64_t usec)
@@ -1360,6 +1370,21 @@ unsigned int fake_log_count(const char *needle)
 			n++;
 	pthread_mutex_unlock(&log_lock);
 	return n;
+}
+
+bool fake_log_line(const char *needle, unsigned int nth, char *line, size_t len)
+{
+	bool found = false;
+
+	pthread_mutex_lock(&log_lock);
+	for (unsigned int i = 0; i < log_count && !found; i++) {
+		if (strstr(logs[i], needle) && !nth--) {
+			snprintf(line, len, "%s", logs[i]);
+			found = true;
+		}
+	}
+	pthread_mutex_unlock(&log_lock);
+	return found;
 }
 
 void fake_set_prop(const char *key, const char *value)

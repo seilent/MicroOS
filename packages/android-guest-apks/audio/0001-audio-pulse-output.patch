@@ -4,11 +4,11 @@ Date: Fri, 27 Nov 2026 01:33:12 +0900
 Subject: [PATCH] audio: play the output through libpulse
 
 ---
- audio/audio_hw.c | 730 ++++++++++++++++++++++++++++++++++++++---------
- 1 file changed, 596 insertions(+), 134 deletions(-)
+ audio/audio_hw.c | 782 +++++++++++++++++++++++++++++++++++++++--------
+ 1 file changed, 648 insertions(+), 134 deletions(-)
 
 diff --git a/audio/audio_hw.c b/audio/audio_hw.c
-index 35f2070..e518a48 100644
+index 35f2070..8ccc0e7 100644
 --- a/audio/audio_hw.c
 +++ b/audio/audio_hw.c
 @@ -15,12 +15,14 @@
@@ -43,7 +43,7 @@ index 35f2070..e518a48 100644
  
  /* Minimum granularity - Arbitrary but small value */
  #define CODEC_BASE_FRAME_COUNT 32
-@@ -59,26 +63,38 @@
+@@ -59,26 +63,40 @@
  #define CAPTURE_PERIOD_START_THRESHOLD 0
  #define CAPTURE_CODEC_SAMPLING_RATE 16000
  
@@ -89,10 +89,12 @@ index 35f2070..e518a48 100644
 +    unsigned int failed_attempts;
 +    pa_usec_t last_attempt;
 +    pa_usec_t last_report;
++    pa_usec_t ready_time;
++    pa_usec_t connect_time;
  };
  
  /* Configuration for a stream */
-@@ -124,21 +140,43 @@ struct alsa_stream_in {
+@@ -124,21 +142,50 @@ struct alsa_stream_in {
      unsigned int read;
  };
  
@@ -131,8 +133,15 @@ index 35f2070..e518a48 100644
 +    bool restarted;
 +    bool stream_tried;
 +    bool stream_failing;
++    bool start_pending;
++    bool first_written;
 +    pa_usec_t last_stream_attempt;
 +    pa_usec_t last_debug;
++    pa_usec_t start_time;
++    pa_usec_t created_time;
++    pa_usec_t ready_time;
++    pa_usec_t first_wait;
++    size_t first_dropped;
 +    pthread_mutex_t stats_lock;
 +    struct out_stats stats;
 +    struct alsa_stream_out *next;
@@ -143,7 +152,7 @@ index 35f2070..e518a48 100644
  static void select_devices(struct alsa_audio_device *adev)
  {
      int headphones_on;
-@@ -153,107 +191,412 @@ static void select_devices(struct alsa_audio_device *adev)
+@@ -153,107 +200,441 @@ static void select_devices(struct alsa_audio_device *adev)
      ALOGV("hp=%c speaker=%c headset-mic=%c", headphones_on ? 'y' : 'n', speaker_on ? 'y' : 'n', headset_mic_on ? 'y' : 'n');
  }
  
@@ -212,6 +221,8 @@ index 35f2070..e518a48 100644
 +        if (adev->failing)
 +            ALOGI("pulse: connected after %u attempts", adev->failed_attempts);
 +        adev->failing = false;
++        adev->ready_time = pa_rtclock_now();
++        adev->connect_time = adev->ready_time - adev->last_attempt;
 +        break;
 +    case PA_CONTEXT_FAILED:
 +    case PA_CONTEXT_TERMINATED:
@@ -296,6 +307,8 @@ index 35f2070..e518a48 100644
 +{
 +    struct alsa_stream_out *out = userdata;
 +
++    if (pa_stream_get_state(s) == PA_STREAM_READY)
++        out->ready_time = pa_rtclock_now();
 +    pa_threaded_mainloop_signal(out->dev->loop, 0);
 +}
 +
@@ -425,6 +438,8 @@ index 35f2070..e518a48 100644
 +        return;
 +    out->stream_tried = true;
 +    out->last_stream_attempt = now;
++    out->created_time = now;
++    out->ready_time = 0;
 +    out->s = pa_stream_new(adev->context, "Waydroid", &spec, pa_channel_map_init_stereo(&map));
 +    if (!out->s)
 +        return;
@@ -464,6 +479,11 @@ index 35f2070..e518a48 100644
 +                ALOGE("pulse stream: %s, reopening", pa_strerror(pa_context_errno(adev->context)));
 +            }
 +            stream_close(out);
++            if (!out->start_pending) {
++                out->start_pending = true;
++                out->first_written = false;
++                out->start_time = pa_rtclock_now();
++            }
 +            break;
 +        }
 +    }
@@ -495,7 +515,7 @@ index 35f2070..e518a48 100644
 +            return false;
 +    } else if (!adev->connecting) {
 +        return false;
-     }
++    }
 +    if (adev->context) {
 +        if (out->bound)
 +            pa_context_rttime_restart(adev->context, out->bound, deadline);
@@ -503,7 +523,7 @@ index 35f2070..e518a48 100644
 +            out->bound = pa_context_rttime_new(adev->context, deadline, bound_cb, out);
 +        if (!out->bound)
 +            return false;
-+    }
+     }
 +    pa_threaded_mainloop_wait(adev->loop);
 +    if (out->bound)
 +        adev->api->time_restart(out->bound, NULL);
@@ -618,6 +638,24 @@ index 35f2070..e518a48 100644
 +             st.stalls, st.dropped, st.reconnects, st.fill, (uint64_t)st.latency, st.written, st.presented);
 +}
 +
++static bool log_start(struct alsa_stream_out *out, char *buf, size_t len)
++{
++    struct alsa_audio_device *adev = out->dev;
++    char connect[32];
++
++    if (!out->s || !out->ready_time)
++        return false;
++    out->start_pending = false;
++    if (adev->ready_time > out->start_time)
++        snprintf(connect, sizeof(connect), "connect_us=%" PRIu64, (uint64_t)adev->connect_time);
++    else
++        snprintf(connect, sizeof(connect), "context=up");
++    snprintf(buf, len, "pulse stream: ready %s create_us=%" PRIu64 " first_wait_us=%" PRIu64 " first_dropped=%zu",
++             connect, (uint64_t)(out->ready_time - out->created_time), (uint64_t)out->first_wait,
++             out->first_dropped);
++    return true;
++}
++
 +static unsigned int out_period(void)
 +{
 +    char value[PROPERTY_VALUE_MAX];
@@ -632,7 +670,7 @@ index 35f2070..e518a48 100644
  }
  
  static uint32_t out_get_sample_rate(const struct audio_stream *stream)
-@@ -270,11 +613,8 @@ static int out_set_sample_rate(struct audio_stream *stream, uint32_t rate)
+@@ -270,11 +651,8 @@ static int out_set_sample_rate(struct audio_stream *stream, uint32_t rate)
  
  static size_t out_get_buffer_size(const struct audio_stream *stream)
  {
@@ -646,7 +684,7 @@ index 35f2070..e518a48 100644
      ALOGV("out_get_buffer_size: %zu", size);
      return size;
  }
-@@ -371,10 +711,24 @@ static int out_set_format(struct audio_stream *stream, audio_format_t format)
+@@ -371,10 +749,24 @@ static int out_set_format(struct audio_stream *stream, audio_format_t format)
  static int do_output_standby(struct alsa_stream_out *out)
  {
      struct alsa_audio_device *adev = out->dev;
@@ -673,7 +711,7 @@ index 35f2070..e518a48 100644
          adev->active_output = NULL;
          out->standby = 1;
      }
-@@ -398,6 +752,11 @@ static int out_standby(struct audio_stream *stream)
+@@ -398,6 +790,11 @@ static int out_standby(struct audio_stream *stream)
  static int out_dump(const struct audio_stream *stream, int fd)
  {
      ALOGV("out_dump");
@@ -685,7 +723,7 @@ index 35f2070..e518a48 100644
      return 0;
  }
  
-@@ -440,7 +799,7 @@ static uint32_t out_get_latency(const struct audio_stream_out *stream)
+@@ -440,7 +837,7 @@ static uint32_t out_get_latency(const struct audio_stream_out *stream)
  {
      ALOGV("out_get_latency");
      struct alsa_stream_out *out = (struct alsa_stream_out *)stream;
@@ -694,7 +732,7 @@ index 35f2070..e518a48 100644
  }
  
  static int out_set_volume(struct audio_stream_out *stream, float left,
-@@ -453,44 +812,55 @@ static int out_set_volume(struct audio_stream_out *stream, float left,
+@@ -453,44 +850,67 @@ static int out_set_volume(struct audio_stream_out *stream, float left,
  static ssize_t out_write(struct audio_stream_out *stream, const void* buffer,
          size_t bytes)
  {
@@ -704,8 +742,8 @@ index 35f2070..e518a48 100644
      size_t frame_size = audio_stream_out_frame_size(stream);
      size_t out_frames = bytes / frame_size;
 +    size_t queued = 0;
-+    bool ready, stalled = false, lost = false;
-+    char line[256];
++    bool ready, stalled = false, lost = false, start_due = false, debug = false;
++    char line[256], start_line[256];
 +    pa_usec_t start = pa_rtclock_now(), deadline = start + PLAYBACK_WRITE_BOUND_USEC, now, left;
  
 -    /* acquiring hw device mutex systematically is useful if a low priority thread is waiting
@@ -751,6 +789,13 @@ index 35f2070..e518a48 100644
 +    if (ready)
 +        queued = queue_frames(out, buffer, bytes, deadline, &stalled, &lost) / frame_size;
 +    update_stats(out, out_frames, out_frames - queued, stalled);
++    if (out->start_pending && !out->first_written) {
++        out->first_written = true;
++        out->first_wait = pa_rtclock_now() - start;
++        out->first_dropped = out_frames - queued;
++    }
++    if (out->start_pending)
++        start_due = log_start(out, start_line, sizeof(start_line));
 +    pa_threaded_mainloop_unlock(adev->loop);
 +
 +    now = pa_rtclock_now();
@@ -758,7 +803,7 @@ index 35f2070..e518a48 100644
 +        out->last_debug = now;
 +        if (property_get_bool(PLAYBACK_DEBUG_PROP, false)) {
 +            format_stats(out, line, sizeof(line));
-+            ALOGI("%s", line);
++            debug = true;
 +        }
      }
 -exit:
@@ -767,6 +812,11 @@ index 35f2070..e518a48 100644
 -    if (ret < 0) {
 -        usleep((int64_t)bytes * 1000000 / audio_stream_out_frame_size(stream) /
 -                out_get_sample_rate(&stream->common));
++    if (start_due)
++        ALOGI("%s", start_line);
++    if (debug)
++        ALOGI("%s", line);
++
 +    if (!ready || lost) {
 +        left = (pa_usec_t)(out_frames - queued) * PA_USEC_PER_SEC / out_get_sample_rate(&stream->common);
 +        if (left > now - start)
@@ -774,7 +824,7 @@ index 35f2070..e518a48 100644
      }
  
      return bytes;
-@@ -499,9 +869,33 @@ exit:
+@@ -499,9 +919,33 @@ exit:
  static int out_get_render_position(const struct audio_stream_out *stream,
          uint32_t *dsp_frames)
  {
@@ -810,7 +860,7 @@ index 35f2070..e518a48 100644
  }
  
  static int out_add_audio_effect(const struct audio_stream *stream, effect_handle_t effect)
-@@ -793,11 +1187,17 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
+@@ -793,11 +1237,17 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
  
      struct alsa_audio_device *ladev = (struct alsa_audio_device *)dev;
      struct alsa_stream_out *out;
@@ -828,7 +878,7 @@ index 35f2070..e518a48 100644
  
      out->stream.common.get_sample_rate = out_get_sample_rate;
      out->stream.common.set_sample_rate = out_set_sample_rate;
-@@ -816,12 +1216,12 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
+@@ -816,12 +1266,12 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
      out->stream.write = out_write;
      out->stream.get_render_position = out_get_render_position;
      out->stream.get_next_write_timestamp = out_get_next_write_timestamp;
@@ -843,12 +893,14 @@ index 35f2070..e518a48 100644
  
      if (out->config.rate != config->sample_rate ||
             audio_channel_count_from_out_mask(config->channel_mask) != CHANNEL_STEREO ||
-@@ -837,12 +1237,23 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
+@@ -837,12 +1287,25 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
  
      out->dev = ladev;
      out->standby = 1;
 -    out->unavailable = false;
 +    out->corked = true;
++    out->start_pending = true;
++    out->start_time = pa_rtclock_now();
 +    out->stats.fill = -1;
  
      config->format = out_get_format(&out->stream.common);
@@ -868,7 +920,7 @@ index 35f2070..e518a48 100644
      *stream_out = &out->stream;
  
      return 0;
-@@ -852,6 +1263,26 @@ static void adev_close_output_stream(struct audio_hw_device *dev,
+@@ -852,6 +1315,26 @@ static void adev_close_output_stream(struct audio_hw_device *dev,
          struct audio_stream_out *stream)
  {
      ALOGV("adev_close_output_stream...");
@@ -895,7 +947,7 @@ index 35f2070..e518a48 100644
      free(stream);
  }
  
-@@ -1026,6 +1457,19 @@ static int adev_dump(const audio_hw_device_t *device, int fd)
+@@ -1026,6 +1509,19 @@ static int adev_dump(const audio_hw_device_t *device, int fd)
  static int adev_close(hw_device_t *device)
  {
      ALOGV("adev_close");
@@ -915,7 +967,7 @@ index 35f2070..e518a48 100644
      free(device);
      return 0;
  }
-@@ -1049,6 +1493,24 @@ static int adev_open(const hw_module_t* module, const char* name,
+@@ -1049,6 +1545,24 @@ static int adev_open(const hw_module_t* module, const char* name,
      if (!adev)
          return -ENOMEM;
  

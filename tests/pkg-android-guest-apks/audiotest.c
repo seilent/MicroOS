@@ -20,6 +20,7 @@ enum { RECORDS = 16384, RATE = 48000, FRAME = 4 };
 
 #define PERIOD_PROP "vendor.microos.audio.period_frames"
 #define DEBUG_PROP "vendor.microos.audio.debug"
+#define START_LINE "pulse stream: ready "
 
 extern struct audio_module HAL_MODULE_INFO_SYM;
 
@@ -65,6 +66,14 @@ struct capture {
 	struct audio_stream_in *in;
 	uint64_t begin;
 	uint64_t end;
+};
+
+struct start {
+	bool up;
+	uint64_t connect;
+	uint64_t create;
+	uint64_t wait;
+	uint64_t dropped;
 };
 
 static const char *current;
@@ -310,6 +319,21 @@ static int64_t position_error(struct audio_stream_out *out, unsigned int ms, uns
 		sleep_ms(1);
 	}
 	return worst;
+}
+
+static bool start_line(unsigned int nth, struct start *st)
+{
+	char line[256];
+
+	memset(st, 0, sizeof(*st));
+	if (!fake_log_line(START_LINE, nth, line, sizeof(line)))
+		return false;
+	st->up = !strncmp(line, START_LINE "context=up ", strlen(START_LINE "context=up "));
+	if (st->up)
+		return sscanf(line, START_LINE "context=up create_us=%" SCNu64 " first_wait_us=%" SCNu64
+			      " first_dropped=%" SCNu64, &st->create, &st->wait, &st->dropped) == 3;
+	return sscanf(line, START_LINE "connect_us=%" SCNu64 " create_us=%" SCNu64 " first_wait_us=%" SCNu64
+		      " first_dropped=%" SCNu64, &st->connect, &st->create, &st->wait, &st->dropped) == 4;
 }
 
 static void *capture_main(void *arg)
@@ -805,16 +829,117 @@ static void case_stream_failed(void)
 	end();
 }
 
+static void case_start_line(void)
+{
+	audio_hw_device_t *dev;
+	struct audio_stream_out *out;
+	struct start st;
+	bool ok;
+	int ret;
+
+	begin("one start line per open and reopen");
+	fake_set_connect_delay(20000);
+	fake_set_stream_delay(30000);
+	dev = dev_open();
+	out = out_open(dev, &ret);
+	writer_start(out, 256);
+	sleep_ms(200);
+	expect(fake_log_count(START_LINE) == 1, "%u start lines after the open", fake_log_count(START_LINE));
+	ok = start_line(0, &st);
+	expect(ok && !st.up && st.connect >= 20000 && st.connect < 60000 && st.create >= 30000 && st.create < 70000 &&
+	       st.wait >= st.create && st.wait < 100000 && !st.dropped,
+	       "open: up %d connect %" PRIu64 " create %" PRIu64 " wait %" PRIu64 " dropped %" PRIu64, st.up,
+	       st.connect, st.create, st.wait, st.dropped);
+	writer_hold();
+	out->common.standby(&out->common);
+	writer_release();
+	sleep_ms(100);
+	expect(fake_log_count(START_LINE) == 1, "%u start lines after a standby", fake_log_count(START_LINE));
+	fake_fail_stream();
+	sleep_ms(200);
+	expect(fake_log_count(START_LINE) == 2, "%u start lines after a stream failure", fake_log_count(START_LINE));
+	ok = start_line(1, &st);
+	expect(ok && st.up && st.create >= 30000 && st.create < 70000 && st.wait >= st.create && st.wait < 100000 &&
+	       !st.dropped,
+	       "stream reopen: up %d create %" PRIu64 " wait %" PRIu64 " dropped %" PRIu64, st.up, st.create, st.wait,
+	       st.dropped);
+	fake_set_up(false);
+	sleep_ms(300);
+	fake_set_up(true);
+	sleep_ms(300);
+	expect(fake_log_count(START_LINE) == 3, "%u start lines after the server came back",
+	       fake_log_count(START_LINE));
+	ok = start_line(2, &st);
+	expect(ok && !st.up && st.connect >= 20000 && st.connect < 60000 && st.create >= 30000 && st.create < 70000 &&
+	       st.dropped == 256,
+	       "server back: up %d connect %" PRIu64 " create %" PRIu64 " dropped %" PRIu64, st.up, st.connect,
+	       st.create, st.dropped);
+	writer_hold();
+	dev->close_output_stream(dev, out);
+	out = out_open(dev, &ret);
+	expect(!ret && out, "second open_output_stream: %d", ret);
+	atomic_store(&w.out, out);
+	writer_release();
+	sleep_ms(200);
+	writer_stop();
+	expect(fake_log_count(START_LINE) == 4, "%u start lines after a second open", fake_log_count(START_LINE));
+	ok = start_line(3, &st);
+	expect(ok && st.up && st.create >= 30000 && st.create < 70000 && st.wait >= st.create && st.wait < 100000 &&
+	       !st.dropped,
+	       "second open: up %d create %" PRIu64 " wait %" PRIu64 " dropped %" PRIu64, st.up, st.create, st.wait,
+	       st.dropped);
+	dev->close_output_stream(dev, out);
+	dev->common.close(&dev->common);
+	end();
+
+	begin("a start line naming a first write past the bound");
+	fake_set_stream_delay(150000);
+	dev = dev_open();
+	out = out_open(dev, &ret);
+	writer_start(out, 256);
+	sleep_ms(300);
+	writer_stop();
+	expect(fake_log_count(START_LINE) == 1, "%u start lines", fake_log_count(START_LINE));
+	ok = start_line(0, &st);
+	expect(ok && !st.up && st.create >= 150000 && st.create < 200000 && st.wait >= 99000 && st.wait <= 110000 &&
+	       st.dropped == 256,
+	       "up %d create %" PRIu64 " wait %" PRIu64 " dropped %" PRIu64, st.up, st.create, st.wait, st.dropped);
+	dev->close_output_stream(dev, out);
+	dev->common.close(&dev->common);
+	end();
+
+	begin("a stream failing before it came up keeps the first write");
+	fake_set_stream_delay(150000);
+	dev = dev_open();
+	out = out_open(dev, &ret);
+	writer_start(out, 256);
+	sleep_ms(120);
+	fake_set_up(false);
+	sleep_ms(5);
+	fake_set_up(true);
+	sleep_ms(400);
+	writer_stop();
+	expect(fake_log_count(START_LINE) == 1, "%u start lines", fake_log_count(START_LINE));
+	ok = start_line(0, &st);
+	expect(ok && !st.up && st.wait >= 99000 && st.wait <= 110000 && st.dropped == 256,
+	       "up %d wait %" PRIu64 " dropped %" PRIu64, st.up, st.wait, st.dropped);
+	dev->close_output_stream(dev, out);
+	dev->common.close(&dev->common);
+	end();
+}
+
 static void case_period_switch(void)
 {
 	audio_hw_device_t *dev;
 	struct audio_stream_out *out, *next;
 	struct stats a, b;
+	struct start st;
 	char value[64] = "";
 	unsigned int c0;
 	int ret;
 
 	begin("a second output at another period while the first plays");
+	fake_set_connect_delay(20000);
 	dev = dev_open();
 	out = out_open(dev, &ret);
 	writer_start(out, 256);
@@ -833,6 +958,8 @@ static void case_period_switch(void)
 	expect(!fake_log_count("reopening") && !fake_log_count("reconnecting"), "the period switch logged a failure");
 	expect(fake_streams() == 1, "%u streams, the first output's old stream not released", fake_streams());
 	expect(b.dropped - a.dropped <= 256, "dropped %" PRIu64 " frames across the switch", b.dropped - a.dropped);
+	expect(fake_log_count(START_LINE) == 2, "%u start lines across the switch", fake_log_count(START_LINE));
+	expect(start_line(1, &st) && !st.up, "the first output's reopen read the context as up");
 	if (next)
 		dev->close_output_stream(dev, next);
 	dev->close_output_stream(dev, out);
@@ -985,6 +1112,7 @@ int main(void)
 	case_blocked_read();
 	case_capture_start();
 	case_stream_failed();
+	case_start_line();
 	case_period_switch();
 	case_close_creating();
 	case_device_close();

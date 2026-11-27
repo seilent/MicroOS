@@ -99,7 +99,7 @@ pins=$(printf '%s\n' \
   "01870ad79f25ac482a18a3c0c7ae0474f8e2d51dd1e963f1dcba16c1eba3e3de 0644 ${rro#"$overlay"/}" \
   "4ef8bc89e575d9be09ce25975e368493ee0b04256a67ab1b584bf1717a894166 0644 ${volumes#"$overlay"/}" \
   "3e0242a9cb3a1b9460a946f89a57189161c428747f505ebdf2c1709e77355a1f 0644 ${vendorvintf#"$overlay"/}" \
-  "7aaacce2124037b204bc78376f166089e09299a26357781258d07f03908303c5 0644 ${audiohal#"$overlay"/}" \
+  "a4d86db7c7f6c6b10ef1713af59f7a4dfc96a99271a1b557cc494b1d33ed0633 0644 ${audiohal#"$overlay"/}" \
   "83ec0b77a6dc967872b7ae935d082a3037fdd35bd3c5ac0f1d352eddba8fdce0 0644 ${hwc#"$overlay"/}")
 [[ $(< "$root$manifest") == "$pins" ]] ||
   fail "$manifest is not the pinned lights and vibrator HALs, helper, telephony and display overlay, volume, VINTF," \
