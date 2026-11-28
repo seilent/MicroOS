@@ -26,6 +26,7 @@
 0040-ASoC-qcom-sc8280xp-Set-up-the-Lenovo-Legion-Y700-202.patch
 0050-dt-bindings-usb-Add-GPIO-controlled-USB-2.0-port-mul.patch
 0051-usb-roles-Add-GPIO-controlled-USB-2.0-port-multiplex.patch
+0052-usb-typec-ucsi-Fix-the-USB-data-check-on-partner-cha.patch
 0053-usb-typec-ucsi-debugfs-Fix-GET-commands-on-UCSI-2.0.patch
 0054-usb-dwc3-qcom-Defer-the-VBUS-override-while-suspende.patch
 0060-serial-qcom-geni-Clear-pending-IRQs-while-suspended.patch

@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: seilent <github@seilent.net>
+Date: Sat, 28 Nov 2026 12:08:05 +0900
+Subject: [PATCH] usb: typec: ucsi: Fix the USB data check on partner change
+
+Since commit 0c8ee850572b ("usb: typec: ucsi: Add UCSI_USB4_IMPLIES_USB
+quirk for X1E80100"), ucsi_partner_change() clears the USB role of a
+partner without the USB flag only on platforms with the
+UCSI_USB4_IMPLIES_USB quirk. On every other platform a partner without
+USB data, such as a USB PD charger that the PPM reports as a DFP, gets
+a data role on a connector change, and the USB controller is switched
+to device mode for it. ucsi_register_port() gives the same partner no
+role.
+
+Check for USB data in one helper used by both paths: a partner supports
+USB data when it sets the USB flag, or, with UCSI_USB4_IMPLIES_USB, when
+it reports USB4 Gen 3 or Gen 4. ucsi_register_port() now honors the
+quirk too, so on X1E80100 a USB4 dock without the USB flag that is
+connected when the port registers gets its role.
+
+Fixes: 0c8ee850572b ("usb: typec: ucsi: Add UCSI_USB4_IMPLIES_USB quirk for X1E80100")
+Cc: stable@vger.kernel.org
+Signed-off-by: seilent <github@seilent.net>
+---
+ drivers/usb/typec/ucsi/ucsi.c | 18 ++++++++++++------
+ 1 file changed, 12 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/usb/typec/ucsi/ucsi.c b/drivers/usb/typec/ucsi/ucsi.c
+index 5aab8ab9f0132..90a703aa76b95 100644
+--- a/drivers/usb/typec/ucsi/ucsi.c
++++ b/drivers/usb/typec/ucsi/ucsi.c
+@@ -1326,6 +1326,16 @@ static void ucsi_unregister_partner(struct ucsi_connector *con)
+ 	con->partner = NULL;
+ }
+ 
++static bool ucsi_partner_supports_usb(struct ucsi_connector *con)
++{
++	if (UCSI_CONSTAT(con, PARTNER_FLAG_USB))
++		return true;
++
++	return (con->ucsi->quirks & UCSI_USB4_IMPLIES_USB) &&
++	       (UCSI_CONSTAT(con, PARTNER_FLAG_USB4_GEN3) ||
++		UCSI_CONSTAT(con, PARTNER_FLAG_USB4_GEN4));
++}
++
+ static void ucsi_partner_change(struct ucsi_connector *con)
+ {
+ 	enum usb_role u_role = USB_ROLE_NONE;
+@@ -1367,10 +1377,7 @@ static void ucsi_partner_change(struct ucsi_connector *con)
+ 			typec_partner_set_usb_mode(con->partner, USB_MODE_USB4);
+ 	}
+ 
+-	if ((!UCSI_CONSTAT(con, PARTNER_FLAG_USB)) &&
+-	    ((con->ucsi->quirks & UCSI_USB4_IMPLIES_USB) &&
+-	     (!(UCSI_CONSTAT(con, PARTNER_FLAG_USB4_GEN3) ||
+-		UCSI_CONSTAT(con, PARTNER_FLAG_USB4_GEN4)))))
++	if (!ucsi_partner_supports_usb(con))
+ 		u_role = USB_ROLE_NONE;
+ 
+ 	ret = usb_role_switch_set_role(con->usb_role_sw, u_role);
+@@ -1963,8 +1970,7 @@ static int ucsi_register_port(struct ucsi *ucsi, struct ucsi_connector *con)
+ 			ucsi_check_cable(con);
+ 	}
+ 
+-	/* Only notify USB controller if partner supports USB data */
+-	if (!(UCSI_CONSTAT(con, PARTNER_FLAG_USB)))
++	if (!ucsi_partner_supports_usb(con))
+ 		u_role = USB_ROLE_NONE;
+ 
+ 	ret = usb_role_switch_set_role(con->usb_role_sw, u_role);
+-- 
+2.43.0
+
