@@ -69,6 +69,7 @@ if (( new )); then
 fi
 
 props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui)
+props+=(debug.stagefright.ccodec=4)
 (( ubwc )) || props+=(debug.mesa.fd.mesa.debug=noubwc debug.mesa.tu.debug=noubwc)
 [[ $light != 1 ]] || props+=(ro.vendor.microos.light_sensor=1)
 python3 - "$wcfg" "${props[@]}" <<'PY'
@@ -77,7 +78,7 @@ import sys
 
 path = sys.argv[1]
 owned = ("ro.sf.lcd_density", "ro.adb.secure", "ro.debuggable", "persist.waydroid.suspend", "persist.waydroid.fake_wifi",
-         "debug.mesa.fd.mesa.debug", "debug.mesa.tu.debug", "ro.vendor.microos.light_sensor")
+         "debug.stagefright.ccodec", "debug.mesa.fd.mesa.debug", "debug.mesa.tu.debug", "ro.vendor.microos.light_sensor")
 cfg = configparser.ConfigParser(interpolation=None)
 cfg.optionxform = str
 with open(path) as handle:

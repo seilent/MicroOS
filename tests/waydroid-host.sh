@@ -154,7 +154,7 @@ im() {
     MICROOS_FETCH=$w/fetch MICROOS_SPACE_FLOOR=0 "$images" "$@" > "$w/out" 2> "$w/err"
 }
 props() { python3 -c 'import configparser, sys; c = configparser.ConfigParser(interpolation=None); c.optionxform = str; c.read(sys.argv[1]); print(" ".join(k + "=" + v for k, v in c["properties"].items()))' "$w/waydroid.cfg"; }
-base='persist.waydroid.multi_windows=true ro.sf.lcd_density=400 ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui'
+base='persist.waydroid.multi_windows=true ro.sf.lcd_density=400 ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui debug.stagefright.ccodec=4'
 
 reset
 rm "$w/lock"
@@ -201,9 +201,11 @@ im || fail "images exited $? on a ready state with no inputs file: $(< "$w/err")
 printf 'width=2560\ndensity=320\nubwc=1\n' > "$w/display"
 sed -i 's/^persist.waydroid.fake_wifi = .*/persist.waydroid.fake_wifi = com.example.app/' "$w/waydroid.cfg"
 grep -qxF 'persist.waydroid.fake_wifi = com.example.app' "$w/waydroid.cfg" || fail "no fake Wi-Fi line to replace in $w/waydroid.cfg"
+sed -i 's/^debug.stagefright.ccodec = .*/debug.stagefright.ccodec = 0/' "$w/waydroid.cfg"
+grep -qxF 'debug.stagefright.ccodec = 0' "$w/waydroid.cfg" || fail "no Codec2 line to replace in $w/waydroid.cfg"
 im || fail "images exited $? on a ready set: $(< "$w/err")"
 [[ $(< "$calls") == 'waydroid upgrade -o' ]] || fail "ready set calls: $(< "$calls")"
-[[ $(props) == "${base/400/320}" ]] || fail "props with UBWC on, density 320 and another fake Wi-Fi list: $(props)"
+[[ $(props) == "${base/400/320}" ]] || fail "props with UBWC on, density 320, another fake Wi-Fi list and Codec2 off: $(props)"
 [[ $(st) != "$s1" && $(< "$w/state") == $'state=ready\nset='"$SET" && $(< "$w/inputs") == "$(st)" ]] ||
   fail "state and inputs after a props only run: $(< "$w/state"), $(< "$w/inputs")"
 printf 'width=2560\ndensity=400\nubwc=0\nlight_sensor=1\norientation=landscape:0,landscape-flipped:2,portrait:1,portrait-flipped:3\n' > "$w/display"

@@ -798,6 +798,8 @@ for l in Type=exec ExecStart=/usr/libexec/microos/microos-android-images Nice=19
 done
 grep -qF 'props=("ro.sf.lcd_density=$density" ro.adb.secure=1 ro.debuggable=1 persist.waydroid.suspend=false persist.waydroid.fake_wifi=com.android.systemui)' \
   /usr/libexec/microos/microos-android-images || fail "microos-android-images does not set the adb, debuggable, suspend and fake Wi-Fi props"
+grep -qxF 'props+=(debug.stagefright.ccodec=4)' /usr/libexec/microos/microos-android-images ||
+  fail "microos-android-images does not turn Codec2 on"
 for c in flock unzip debugfs df lxc-info sha256sum; do
   command -v "$c" >/dev/null || fail "$c missing, microos-android-images needs it"
 done
